@@ -313,13 +313,21 @@ impl MobkitRuntimeHandle {
                 let pending_sequence = self.next_gating_sequence();
                 let pending_id = format!("gate-pending-{pending_sequence:06}");
                 let created_at_ms = current_time_ms();
-                // Clamp so a caller can't set a deadline that saturates past
-                // `u64::MAX` and never expires (the timeout-fallback guarantee
-                // must always be reachable).
+                // Clamp both ends. The upper bound stops a deadline that
+                // saturates past `u64::MAX` from never expiring (the
+                // timeout-fallback guarantee must stay reachable). The lower
+                // bound stops a tiny/zero `approval_timeout_ms` from minting a
+                // pending entry that `refresh_gating_timeouts` treats as already
+                // expired on the next RPC, which would make R3 approval
+                // impossible to complete. Absent (`None`) still uses the
+                // default, which already sits inside the clamp.
                 let timeout_ms = request
                     .approval_timeout_ms
                     .unwrap_or(GATING_APPROVAL_TIMEOUT_DEFAULT_MS)
-                    .min(GATING_APPROVAL_TIMEOUT_MAX_MS);
+                    .clamp(
+                        GATING_APPROVAL_TIMEOUT_MIN_MS,
+                        GATING_APPROVAL_TIMEOUT_MAX_MS,
+                    );
                 let mut approval_route_id = None;
                 let mut approval_delivery_id = None;
                 let mut approval_notification_error = None;

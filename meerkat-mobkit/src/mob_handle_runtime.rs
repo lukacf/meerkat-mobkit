@@ -4236,6 +4236,78 @@ realm_profile = "worker-v2"
         );
     }
 
+    /// Regression for meerkat 0.7.2 fix #1: a custom `Config.retry` must reach
+    /// the agent's effective `RetryPolicy` through MobKit's session-service build
+    /// path, instead of silently falling back to the 3-retry / 30s default.
+    ///
+    /// We build through the same `FactoryAgentBuilder` MobKit's session service
+    /// uses (`build_*_session_service` -> `FactoryAgentBuilder::new(factory,
+    /// config)`), then read the effective policy back through the public
+    /// `Agent::retry_policy()` accessor. The stub `LlmClient` exists only so the
+    /// offline `build_agent` succeeds; no turn is run and no provider behavior is
+    /// faked. The assertion targets the *plumbed config value*, not retry timing.
+    #[tokio::test]
+    async fn config_retry_reaches_agent_effective_retry_policy() {
+        use meerkat_session::SessionAgentBuilder as _;
+
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let factory = AgentFactory::new(dir.path()).builtins(true);
+
+        // Non-default retry config: max_retries away from the canonical 3.
+        let mut config = Config::default();
+        assert_ne!(
+            config.retry.max_retries, 11,
+            "test sentinel must differ from default"
+        );
+        config.retry.max_retries = 11;
+        config.retry.initial_delay = std::time::Duration::from_millis(125);
+        config.retry.max_delay = std::time::Duration::from_secs(7);
+        config.retry.multiplier = 3.5;
+
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        // Build-only stub so the offline build_agent succeeds; never run.
+        builder.default_llm_client = Some(Arc::new(CapturingLlmClient::default()));
+
+        let req = CreateSessionRequest {
+            model: "mock-model".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: None,
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+        };
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        let factory_agent = builder
+            .build_agent(&req, event_tx)
+            .await
+            .unwrap_or_else(|e| panic!("build_agent should succeed offline: {e}"));
+
+        let effective = factory_agent.agent().retry_policy();
+        assert_eq!(
+            effective.max_retries, 11,
+            "Config.retry.max_retries must be plumbed into the agent's effective \
+             RetryPolicy, not the default 3"
+        );
+        assert_eq!(
+            effective.initial_delay,
+            std::time::Duration::from_millis(125),
+            "Config.retry.initial_delay must be plumbed, not the 500ms default"
+        );
+        assert_eq!(
+            effective.max_delay,
+            std::time::Duration::from_secs(7),
+            "Config.retry.max_delay must be plumbed, not the 30s default"
+        );
+        assert!(
+            (effective.multiplier - 3.5).abs() < f64::EPSILON,
+            "Config.retry.multiplier must be plumbed, not the 2.0 default"
+        );
+    }
+
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,

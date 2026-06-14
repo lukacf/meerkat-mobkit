@@ -482,6 +482,27 @@ impl AccessView {
         self.allows_agent(ACTION_AGENT_VIEW, identity)
     }
 
+    /// True when the agent's resource attributes (role/labels) are present in
+    /// the shared attribute cache, keyed by identity or projected `agent_id`.
+    ///
+    /// A cache-MISS means `decide_agent` falls back to a bare-identity resource
+    /// with `role: None, labels: None`, so a label/role-scoped deny rule fails
+    /// the rule closed and DOES NOT match — i.e. the agent is not actually
+    /// hidden. Long-lived SSE streams use this to detect a member spawned after
+    /// the one-time subscribe prime and re-prime the cache before deciding, so
+    /// the deny resolves against real attributes instead of failing open.
+    pub fn knows_agent(&self, identity: &str) -> bool {
+        let cache = self
+            .inner
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.contains_key(identity)
+            || cache
+                .values()
+                .any(|attributes| attributes.agent_id.as_deref() == Some(identity))
+    }
+
     /// Can this principal read and edit the access configuration?
     ///
     /// Admins always can. While enforcement is enabled, subjects granted
@@ -614,6 +635,56 @@ mod tests {
         });
         assert!(bob.can_view_agent("identity:pay-1"));
         assert!(!bob.can_view_agent("identity:other"));
+    }
+
+    #[test]
+    fn knows_agent_detects_cold_cache_so_label_deny_can_be_made_fail_closed() {
+        // A broad allow + a label-scoped DENY. On a cold cache the deny cannot
+        // match (no labels), so the member would FAIL OPEN (visible). The
+        // long-lived SSE streams use `knows_agent` to detect this cold state
+        // and re-prime before deciding so the deny resolves fail-closed.
+        let mut config = enabled_config();
+        // Everyone-views-all (subject-only allow).
+        config.rules.push(AccessRule {
+            id: "anon-view-all".to_string(),
+            actions: vec!["agent.view".to_string()],
+            agents: vec!["*".to_string()],
+            ..AccessRule::default()
+        });
+        // Deny view of any member labeled org=secret.
+        config.rules.push(AccessRule {
+            id: "deny-secret".to_string(),
+            effect: AccessEffect::Deny,
+            actions: vec!["agent.view".to_string()],
+            match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+            ..AccessRule::default()
+        });
+        let controller = AccessController::new(config).expect("controller");
+        let view = controller.view_for_subject(None);
+
+        // Cold cache: the secret member is unknown, so the label-scoped deny
+        // does NOT match and the broad allow leaks it (the fail-open bug).
+        assert!(!view.knows_agent("identity:secret-1"));
+        assert!(
+            view.can_view_agent("identity:secret-1"),
+            "cold cache currently fails OPEN — this is what knows_agent() detects"
+        );
+
+        // The SSE re-prime path records the member's real attributes (here via
+        // record_agent_attributes, which the prime ultimately calls).
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "identity:secret-1".to_string(),
+            agent_id: Some("secret-1".to_string()),
+            role: Some("worker".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+        });
+
+        // Now the agent is known and the deny resolves fail-closed.
+        assert!(view.knows_agent("identity:secret-1"));
+        assert!(
+            !view.can_view_agent("identity:secret-1"),
+            "after re-prime the label-scoped deny must hide the member"
+        );
     }
 
     #[test]

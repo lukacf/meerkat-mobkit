@@ -284,6 +284,11 @@ async fn mob_events_sse_handler(
         return Err(sse_access_denied(ACTION_MOB_OBSERVE));
     }
     let stream_view = access_view.filter(AccessView::enforced);
+    // Captured so the long-lived stream can re-prime the shared attribute cache
+    // for members spawned AFTER the one-time subscribe prime (the view reads
+    // attributes through the controller's shared cache).
+    let reprime_runtime = state.prime_runtime.clone();
+    let reprime_access = state.access.clone();
     let mut router_handle = (state.subscribe_fn)().await.map_err(|err| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -293,12 +298,27 @@ async fn mob_events_sse_handler(
 
     let stream = stream! {
         let mut seq = 0_u64;
+        // Agents we've already attempted a cache re-prime for, so an agent that
+        // genuinely has no roster attributes does not trigger a re-prime on
+        // every event.
+        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(attributed) = router_handle.event_rx.recv().await {
             // Decode the comms-safe roster member id back to the public
             // alias space: SDK `EventStream` consumers filter by alias, and
             // fail-closed per-agent ABAC view rules are written against
             // aliases — an encoded id would silently drop both.
             let source = crate::member_comms_id::runtime_event_alias(&attributed.source);
+            // Cold-cache fail-open guard: a member spawned after the one-time
+            // subscribe prime has no cached attributes, so a label/role-scoped
+            // `agent.view` deny would NOT match and the member's events would
+            // leak. Re-prime the shared cache once per newly-seen unknown agent
+            // before the decision so the deny resolves fail-closed.
+            if let Some(view) = stream_view.as_ref()
+                && !view.knows_agent(&source)
+                && reprimed.insert(source.clone())
+            {
+                prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref()).await;
+            }
             if stream_view
                 .as_ref()
                 .is_some_and(|view| !view.can_view_agent(&source))
@@ -597,7 +617,15 @@ async fn mob_structural_events_sse_handler(
         })?;
 
     let store = state.store;
+    // Captured so the long-lived stream can re-prime the shared attribute cache
+    // for members spawned AFTER the one-time subscribe prime.
+    let reprime_runtime = state.prime_runtime.clone();
+    let reprime_handle = state.handle.clone();
+    let reprime_access = state.access.clone();
     let stream = stream! {
+        // Agents we've already attempted a cache re-prime for, so an agent that
+        // genuinely has no roster attributes does not re-prime on every event.
+        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(event) = subscription.event_rx.recv().await {
             let envelope = store.project_event_for_query(&event).await;
             if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
@@ -606,12 +634,36 @@ async fn mob_structural_events_sse_handler(
             // Agent-attributed structural events are gated by `agent.view`
             // on their agent; mob-level events (no attribution) pass on the
             // `mob.observe` grant alone.
-            if let Some(identity) = envelope.agent_identity.as_deref()
-                && stream_view
+            if let Some(identity) = envelope.agent_identity.as_deref() {
+                // Cold-cache fail-open guard: a member spawned after the
+                // one-time subscribe prime has no cached attributes, so a
+                // label/role-scoped `agent.view` deny would NOT match and the
+                // member's lifecycle would leak. Re-prime the shared cache once
+                // per newly-seen unknown agent before deciding.
+                if let Some(view) = stream_view.as_ref()
+                    && !view.knows_agent(identity)
+                    && reprimed.insert(identity.to_string())
+                {
+                    if reprime_runtime.is_some() {
+                        prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref())
+                            .await;
+                    } else if let Some(controller) = reprime_access
+                        .as_ref()
+                        .filter(|controller| controller.enabled())
+                    {
+                        crate::http_console::prime_access_cache_from_handle(
+                            &reprime_handle,
+                            controller,
+                        )
+                        .await;
+                    }
+                }
+                if stream_view
                     .as_ref()
                     .is_some_and(|view| !view.can_view_agent(identity))
-            {
-                continue;
+                {
+                    continue;
+                }
             }
             let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
             yield Ok::<Event, Infallible>(

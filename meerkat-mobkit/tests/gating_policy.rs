@@ -416,6 +416,10 @@ fn phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit() {
         .to_string(),
         Duration::from_secs(1),
     ));
+    // `approval_timeout_ms` is clamped to a 1s floor (a value of 0 would
+    // otherwise mint an already-expired pending entry; see
+    // GATING_APPROVAL_TIMEOUT_MIN_MS). Request the minimum, then sleep just past
+    // it so the timeout-fallback path genuinely fires on the next gating RPC.
     let _r3_timeout = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         &json!({
@@ -426,12 +430,13 @@ fn phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit() {
                 "action":"delete_prod_data",
                 "actor_id":"agent-r3",
                 "risk_tier":"r3",
-                "approval_timeout_ms":0
+                "approval_timeout_ms":1
             }
         })
         .to_string(),
         Duration::from_secs(1),
     ));
+    std::thread::sleep(Duration::from_millis(1_100));
     let pending = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         r#"{"jsonrpc":"2.0","id":"phase12-pending","method":"mobkit/gating/pending","params":{}}"#,
@@ -522,6 +527,58 @@ fn r3_approval_timeout_is_clamped_so_deadline_never_saturates() {
     // Clamped to the 7-day ceiling, not the u64::MAX request.
     let seven_days_ms = 7 * 24 * 60 * 60 * 1_000;
     assert_eq!(deadline, created.saturating_add(seven_days_ms));
+}
+
+/// Regression: a caller-supplied R3 approval timeout of `0` (or any tiny
+/// value) must be clamped UP to a 1s floor. Without the clamp the pending
+/// entry's `deadline_at_ms` equals `created_at_ms`, so `refresh_gating_timeouts`
+/// treats it as already-expired on the very next gating RPC and replaces it
+/// with a `timeout_fallback` SafeDraft before any approver can act — making R3
+/// approval impossible to complete.
+#[test]
+fn r3_approval_timeout_zero_is_clamped_up_so_pending_stays_approvable() {
+    let mut runtime = runtime_for_gating();
+    let _evaluated = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"floor-r3",
+            "method":"mobkit/gating/evaluate",
+            "params":{
+                "action":"delete_prod_data",
+                "actor_id":"agent-floor",
+                "risk_tier":"r3",
+                "approval_timeout_ms": 0
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    // The very next gating RPC runs refresh_gating_timeouts. The pending entry
+    // must survive it (not be immediately expired) because the deadline was
+    // floored to created + 1s.
+    let pending = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"floor-pending","method":"mobkit/gating/pending","params":{}}"#,
+        Duration::from_secs(1),
+    ));
+    runtime.shutdown();
+
+    let entries = pending["result"]["pending"]
+        .as_array()
+        .expect("pending entries");
+    assert_eq!(
+        entries.len(),
+        1,
+        "pending approval must not be auto-expired"
+    );
+    let entry = &entries[0];
+    let created = entry["created_at_ms"].as_u64().expect("created_at_ms");
+    let deadline = entry["deadline_at_ms"].as_u64().expect("deadline_at_ms");
+    assert!(
+        deadline >= created.saturating_add(1_000),
+        "deadline must be floored to >= created + 1s: created={created} deadline={deadline}"
+    );
 }
 
 #[test]

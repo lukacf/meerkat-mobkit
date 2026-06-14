@@ -4254,7 +4254,12 @@ fn identity_error_response(
             (-32002, format!("not addressable: {}", na.identity))
         }
         IdentityRuntimeError::NoActiveLease(id) => (-32003, format!("no active lease: {id}")),
-        IdentityRuntimeError::LeaseLost(id) => (-32004, format!("lease lost: {id}")),
+        // -32005, NOT -32004: -32004 is the SDKs' reserved
+        // `CAPABILITY_UNAVAILABLE_CODE`, which both SDKs reify into a
+        // permanent-capability-gap error type. `LeaseLost` is a transient,
+        // recoverable lease-renewal failure on the identity send/dispatch path,
+        // so it gets its own identity-plane code (sibling to -32001..-32003).
+        IdentityRuntimeError::LeaseLost(id) => (-32005, format!("lease lost: {id}")),
         _ => (-32603, format!("{err}")),
     };
     JsonRpcResponse {
@@ -4358,8 +4363,9 @@ fn serialize_response(response: &JsonRpcResponse) -> String {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        error_response, handle_unified_rpc_json, resolve_rpc_identity_control_target,
-        rpc_live_identity_alias_visible, rpc_member_id_matches_durable_identity,
+        error_response, handle_unified_rpc_json, identity_error_response,
+        resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
+        rpc_member_id_matches_durable_identity,
     };
     use crate::identity_first::contracts::RosterProvider;
     use crate::identity_first::{
@@ -4615,6 +4621,28 @@ comms = true
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn identity_lease_lost_maps_off_capability_unavailable_code() {
+        // -32004 is the SDKs' CAPABILITY_UNAVAILABLE_CODE, which both SDKs
+        // reify into a permanent-capability-gap error type. LeaseLost is a
+        // transient/recoverable lease-renewal failure and MUST NOT collide
+        // with that code, or a recoverable lease loss is mis-typed as a
+        // permanent capability gap. Regression for the -32004 collision.
+        let identity = AgentIdentity::parse("review:singleton").expect("valid identity");
+        let err = crate::identity_first::IdentityRuntimeError::LeaseLost(identity);
+        let response = identity_error_response(json!("req-1"), &err);
+        let error = response.error.expect("lease-lost must surface an error");
+        assert_ne!(
+            error.code, -32004,
+            "LeaseLost must not use the capability code"
+        );
+        assert_eq!(
+            error.code, -32005,
+            "LeaseLost has its own identity-plane code"
+        );
+        assert!(error.message.contains("lease lost"));
     }
 
     #[test]

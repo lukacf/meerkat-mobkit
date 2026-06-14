@@ -939,7 +939,11 @@ mod tests {
         std::fs::write(
             &fake_rkat,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho flow-editor-rkat-ok\n",
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$@\" > {}\n\
+                 echo flow-editor-rkat-ok\n\
+                 printf 'run\\tmob=docs\\tflow=main\\trun_id=run-1\\tstatus=completed\\n'\n\
+                 printf 'result\\t{{\"reply\":\"OK\"}}\\n'\n",
                 args_file.to_string_lossy()
             ),
         )
@@ -1012,8 +1016,11 @@ mod tests {
         let argv = std::fs::read_to_string(args_file).expect("recorded fake rkat args");
         assert!(argv.lines().any(|line| line == "mob"));
         assert!(argv.lines().any(|line| line == "run"));
-        assert!(argv.lines().any(|line| line == "--prompt"));
-        assert!(argv.lines().any(|line| line == "Reply with exactly OK."));
+        // Single-token hyphen-safe `--prompt=<text>` form.
+        assert!(
+            argv.lines()
+                .any(|line| line == "--prompt=Reply with exactly OK.")
+        );
     }
 
     /// Security regression: `mobkit/mobpacks/validate` with

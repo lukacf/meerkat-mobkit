@@ -191,6 +191,14 @@ class SubscribeResult:
 
 @dataclass(frozen=True)
 class SendMessageResult:
+    """Result of a send to a member/identity.
+
+    ``session_id`` may be an empty string even when ``accepted`` is ``True``:
+    in a narrow race (the target's materialized session is concurrently
+    retired/rebound during the send), the server cannot resolve the delivering
+    session. The send still succeeded; treat an empty ``session_id`` as
+    "unknown", not as a usable session reference.
+    """
     accepted: bool
     member_id: str
     session_id: str
@@ -653,14 +661,24 @@ class MobRun:
 
 MEMBER_STATE_ACTIVE: str = "active"
 MEMBER_STATE_RETIRING: str = "retiring"
+# meerkat 0.7.x emits three additional member states beyond active/retiring.
+# `MobMemberStatus` is `#[non_exhaustive]`, so treat the string field as open:
+# branch on the documented values but tolerate future additions.
+MEMBER_STATE_BROKEN: str = "broken"
+MEMBER_STATE_COMPLETED: str = "completed"
+MEMBER_STATE_UNKNOWN: str = "unknown"
 
 
 @dataclass(frozen=True)
 class MemberSnapshot:
     """Snapshot of a mob member from the roster.
 
-    The ``state`` field is one of :data:`MEMBER_STATE_ACTIVE` or
-    :data:`MEMBER_STATE_RETIRING`.
+    The ``state`` field is one of :data:`MEMBER_STATE_ACTIVE`,
+    :data:`MEMBER_STATE_RETIRING`, :data:`MEMBER_STATE_BROKEN`,
+    :data:`MEMBER_STATE_COMPLETED`, or :data:`MEMBER_STATE_UNKNOWN`. The
+    underlying ``MobMemberStatus`` is ``#[non_exhaustive]`` on the Rust side, so
+    consumers should branch on the known values and tolerate future ones rather
+    than assuming the set is closed.
     """
     agent_identity: str
     role: str
@@ -670,10 +688,12 @@ class MemberSnapshot:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemberSnapshot:
+        # `.get()` with defaults (not hard-indexing) to match the TS parser's
+        # graceful degradation rather than raising KeyError on a missing key.
         return cls(
-            agent_identity=data["agent_identity"],
-            role=data["role"],
-            state=data["state"],
+            agent_identity=str(data.get("agent_identity", "")),
+            role=str(data.get("role", "")),
+            state=str(data.get("state", "")),
             wired_to=list(data.get("wired_to", [])),
             labels=dict(data.get("labels", {})),
         )
@@ -760,14 +780,17 @@ class GatingAuditEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GatingAuditEntry:
+        # `.get()` with defaults (not hard-indexing) to match the TS parser's
+        # graceful degradation: a missing key from an older/edge gateway should
+        # not raise KeyError where TypeScript silently defaults.
         return cls(
-            audit_id=data["audit_id"],
-            timestamp_ms=data["timestamp_ms"],
-            event_type=data["event_type"],
-            action_id=data["action_id"],
-            actor_id=data["actor_id"],
+            audit_id=str(data.get("audit_id", "")),
+            timestamp_ms=int(data.get("timestamp_ms", 0)),
+            event_type=str(data.get("event_type", "")),
+            action_id=str(data.get("action_id", "")),
+            actor_id=str(data.get("actor_id", "")),
             risk_tier=data.get("risk_tier"),
-            outcome=data["outcome"],
+            outcome=str(data.get("outcome", "")),
         )
 
 
@@ -1447,20 +1470,45 @@ class MobUnreachablePeer:
 
 @dataclass(frozen=True)
 class PeerConnectivitySnapshot:
-    """Live connectivity for a member's wired peers."""
+    """Live connectivity for a member's wired peers.
+
+    meerkat 0.7.x projects this as a tri-state, internally-tagged object:
+    ``{"status": "known", "snapshot": {...}}`` carries the counts, while
+    ``{"status": "not_applicable"}`` (no bridge session backs the member) and
+    ``{"status": "probe_timed_out"}`` (the live probe did not resolve in time)
+    carry no counts. ``status`` distinguishes the three; the counts are only
+    meaningful when ``status == "known"``. The legacy flat shape (counts at the
+    top level, no ``status``) is still accepted for backward compatibility.
+    """
     reachable_peer_count: int
     unknown_peer_count: int
     unreachable_peers: list[MobUnreachablePeer]
+    status: str = "known"
+
+    @property
+    def is_known(self) -> bool:
+        """True when the snapshot carries resolved peer counts."""
+        return self.status == "known"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PeerConnectivitySnapshot:
+        # 0.7.x tri-state: read counts from `.snapshot` behind the `status`
+        # discriminator. `not_applicable` / `probe_timed_out` carry no snapshot.
+        status = str(data.get("status", "known"))
+        snapshot = data.get("snapshot")
+        if isinstance(snapshot, dict):
+            counts = snapshot
+        else:
+            # Legacy flat shape (no `status`/`snapshot`): counts at top level.
+            counts = data
         return cls(
-            reachable_peer_count=int(data.get("reachable_peer_count", 0)),
-            unknown_peer_count=int(data.get("unknown_peer_count", 0)),
+            reachable_peer_count=int(counts.get("reachable_peer_count", 0)),
+            unknown_peer_count=int(counts.get("unknown_peer_count", 0)),
             unreachable_peers=[
                 MobUnreachablePeer.from_dict(p)
-                for p in data.get("unreachable_peers", [])
+                for p in counts.get("unreachable_peers", [])
             ],
+            status=status,
         )
 
 

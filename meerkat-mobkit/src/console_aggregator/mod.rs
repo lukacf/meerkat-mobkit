@@ -2361,7 +2361,10 @@ async fn retire_stale_console_members_for_runtime_entry(
     let primary_mob_id = primary_handle.mob_id().to_string();
     let mut handles = vec![(primary_mob_id.clone(), primary_handle)];
     if let Some(state) = entry.runtime.agent_mob_mcp_state() {
-        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
+        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
+            .await
+            .unwrap_or_default()
+        {
             if mob_id.as_str() != primary_mob_id {
                 handles.push((mob_id.to_string(), handle));
             }
@@ -2621,7 +2624,10 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     if !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
-    for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
+    for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
+        .await
+        .unwrap_or_default()
+    {
         if mob_id.as_str() == primary_mob_id {
             continue;
         }
@@ -3668,6 +3674,75 @@ fn frames_from_session_history_message(
     )
 }
 
+/// Derive `assistant_image` frames from a session-history tool result's text,
+/// mirroring the live ingest edge (`parse_generate_image_tool_result` ->
+/// per-image `assistant_image` envelopes). The serialized
+/// `ImageGenerationToolResult` is self-describing, so — unlike the live path —
+/// no tool name is needed: we parse the result text directly. Returns an empty
+/// vec for non-image tool results. The console dedupes images by blob/reference,
+/// so an overlap with a live `assistant_image` frame collapses to one image.
+#[allow(clippy::too_many_arguments)]
+fn session_history_assistant_image_frames(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    offset: usize,
+    result_idx: usize,
+    timestamp_ms: u64,
+    tool_use_id: &str,
+    result_text: &str,
+) -> Vec<NewConsoleFrame> {
+    let Ok(image_result) = serde_json::from_str::<
+        meerkat_core::image_generation::ImageGenerationToolResult,
+    >(result_text) else {
+        return Vec::new();
+    };
+    image_result
+        .images
+        .iter()
+        .enumerate()
+        .map(|(image_idx, image)| NewConsoleFrame {
+            id: None,
+            // Key on the stable image identity so a backfill frame and any live
+            // `assistant_image` frame for the same image collapse on dedupe.
+            dedupe_key: format!(
+                "console-assistant-image:{runtime_key}:{}",
+                image.blob_ref.blob_id
+            ),
+            timestamp_ms,
+            runtime_key: runtime_key.to_string(),
+            identity: identity.to_string(),
+            conversation_id: Some(identity.to_string()),
+            session_id: Some(session_id.to_string()),
+            kind: "assistant_image".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "source_event_type": "session_history",
+                "tool_call_id": tool_use_id,
+                "image_id": image.image_id.0.to_string(),
+                "blob_id": image.blob_ref.blob_id,
+                "media_type": image.media_type.as_str(),
+                "width": image.width,
+                "height": image.height,
+                "revised_prompt": image_result.revised_prompt.clone(),
+                "type": "session_history",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some(format!(
+                    "{session_id}:{offset}:{result_idx}:image:{image_idx}"
+                )),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        })
+        .collect()
+}
+
 fn frames_from_session_history_message_with_namespace(
     runtime_key: &str,
     identity: &str,
@@ -3688,16 +3763,17 @@ fn frames_from_session_history_message_with_namespace(
         return results
             .into_iter()
             .enumerate()
-            .map(|(idx, result)| {
+            .flat_map(|(idx, result)| {
                 let content = serde_json::to_value(&result.content).unwrap_or(Value::Null);
                 let result_text = result.text_content();
                 let tool_use_id = result.tool_use_id.clone();
-                NewConsoleFrame {
+                let timestamp_ms = created_at.timestamp_millis().max(0) as u64;
+                let mut frames = vec![NewConsoleFrame {
                     id: None,
                     dedupe_key: format!(
                         "session-history:{runtime_key}:{session_id}:{offset}:{idx}:{payload_hash}"
                     ),
-                    timestamp_ms: created_at.timestamp_millis().max(0) as u64,
+                    timestamp_ms,
                     runtime_key: runtime_key.to_string(),
                     identity: identity.to_string(),
                     conversation_id: Some(identity.to_string()),
@@ -3723,7 +3799,25 @@ fn frames_from_session_history_message_with_namespace(
                     run_id: None,
                     parent_frame_id: None,
                     caused_by_frame_id: None,
-                }
+                }];
+                // Backfill parity with the live ingest edge: a generate_image
+                // tool result serializes an `ImageGenerationToolResult` into the
+                // result text (which carries NO tool name on meerkat 0.7.x). The
+                // live path emits per-image `assistant_image` frames; without
+                // this the image renders as raw tool JSON after a reload /
+                // history backfill. Parse the result directly and mirror those
+                // frames (the console dedupes images by blob/reference).
+                frames.extend(session_history_assistant_image_frames(
+                    runtime_key,
+                    identity,
+                    session_id,
+                    offset,
+                    idx,
+                    timestamp_ms,
+                    &tool_use_id,
+                    &result_text,
+                ));
+                frames
             })
             .collect();
     }
@@ -8963,6 +9057,90 @@ comms = true
         );
         assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
         assert_eq!(frame.timestamp_ms, 50);
+    }
+
+    #[test]
+    fn session_history_projection_derives_assistant_image_from_image_tool_result() {
+        // Regression: a generate_image tool result rebuilt from session-history
+        // backfill must derive an `assistant_image` frame (image_id/blob_id/
+        // media_type/width/height) just like the live ingest edge does. Without
+        // it the image renders as raw tool JSON after a reload / fresh store.
+        // The serialized ImageGenerationToolResult carries NO tool name, so the
+        // backfill parses it directly.
+        let image_result = json!({
+            "operation_id": "00000000-0000-0000-0000-0000000000aa",
+            "terminal": { "terminal": "generated" },
+            "images": [
+                {
+                    "image_id": "00000000-0000-0000-0000-000000000051",
+                    "blob_ref": {
+                        "blob_id": "sha256:test-generated-image",
+                        "media_type": "image/png"
+                    },
+                    "media_type": "image/png",
+                    "width": 1024,
+                    "height": 768
+                }
+            ],
+            "provider_text": { "disposition": "not_emitted" },
+            "revised_prompt": { "disposition": "not_requested" },
+            "native_metadata": { "provider": "not_emitted" }
+        });
+        // Sanity: the fixture must be a valid ImageGenerationToolResult so the
+        // test pins the real wire contract, not an arbitrary blob.
+        serde_json::from_value::<meerkat_core::image_generation::ImageGenerationToolResult>(
+            image_result.clone(),
+        )
+        .expect("fixture must be a valid ImageGenerationToolResult");
+        let result_text = serde_json::to_string(&image_result).expect("serialize image result");
+
+        let frames = frames_from_session_history_message(
+            "runtime-a",
+            "artist:singleton",
+            "session-a",
+            6,
+            json!({
+                "role": "tool_results",
+                "results": [
+                    {
+                        "tool_use_id": "call-image",
+                        "content": result_text,
+                        "is_error": false
+                    }
+                ],
+                "created_at": "1970-01-01T00:00:00.060Z"
+            }),
+        );
+
+        // The generic tool_execution_completed frame is still emitted...
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.kind == "tool_execution_completed"),
+            "tool_execution_completed frame must still be present: {frames:#?}"
+        );
+        // ...plus a derived assistant_image frame so the picture renders.
+        let image_frame = frames
+            .iter()
+            .find(|frame| frame.kind == "assistant_image")
+            .expect("backfill must derive an assistant_image frame");
+        assert_eq!(
+            image_frame.payload["blob_id"],
+            json!("sha256:test-generated-image")
+        );
+        assert_eq!(
+            image_frame.payload["image_id"],
+            json!("00000000-0000-0000-0000-000000000051")
+        );
+        assert_eq!(image_frame.payload["media_type"], json!("image/png"));
+        assert_eq!(image_frame.payload["width"], json!(1024));
+        assert_eq!(image_frame.payload["height"], json!(768));
+        assert_eq!(image_frame.payload["tool_call_id"], json!("call-image"));
+        assert_eq!(
+            image_frame.source.kind,
+            ConsoleFrameSourceKind::SessionHistory
+        );
+        assert_eq!(image_frame.timestamp_ms, 60);
     }
 
     #[test]

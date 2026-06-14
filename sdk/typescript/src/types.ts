@@ -57,6 +57,12 @@ function validateAgentIdentity(identity: string): string {
 
 export const MEMBER_STATE_ACTIVE = "active" as const;
 export const MEMBER_STATE_RETIRING = "retiring" as const;
+// meerkat 0.7.x emits three additional member states beyond active/retiring.
+// `MobMemberStatus` is `#[non_exhaustive]` on the Rust side, so branch on the
+// known values and tolerate future ones rather than assuming a closed set.
+export const MEMBER_STATE_BROKEN = "broken" as const;
+export const MEMBER_STATE_COMPLETED = "completed" as const;
+export const MEMBER_STATE_UNKNOWN = "unknown" as const;
 
 // -- SessionCreatedContext ------------------------------------------------
 
@@ -393,6 +399,12 @@ export function parseCallToolResult(raw: unknown): CallToolResult {
 export interface MemberSnapshot {
   readonly agentIdentity: string;
   readonly role: string;
+  /**
+   * One of {@link MEMBER_STATE_ACTIVE}, {@link MEMBER_STATE_RETIRING},
+   * {@link MEMBER_STATE_BROKEN}, {@link MEMBER_STATE_COMPLETED}, or
+   * {@link MEMBER_STATE_UNKNOWN}. The underlying `MobMemberStatus` is
+   * `#[non_exhaustive]`, so branch on the known values and tolerate future ones.
+   */
   readonly state: string;
   readonly wiredTo: readonly string[];
   readonly labels: Readonly<Record<string, string>>;
@@ -961,7 +973,19 @@ export function parseMobUnreachablePeer(raw: unknown): MobUnreachablePeer {
   };
 }
 
+/**
+ * Live connectivity for a member's wired peers.
+ *
+ * meerkat 0.7.x projects this as a tri-state, internally-tagged object:
+ * `{"status": "known", "snapshot": {...}}` carries the counts, while
+ * `{"status": "not_applicable"}` (no bridge session backs the member) and
+ * `{"status": "probe_timed_out"}` (the live probe did not resolve in time)
+ * carry no counts. `status` distinguishes the three; the counts are only
+ * meaningful when `status === "known"`. The legacy flat shape (counts at the
+ * top level, no `status`) is still accepted for backward compatibility.
+ */
 export interface PeerConnectivitySnapshot {
+  readonly status: string;
   readonly reachablePeerCount: number;
   readonly unknownPeerCount: number;
   readonly unreachablePeers: readonly MobUnreachablePeer[];
@@ -969,10 +993,18 @@ export interface PeerConnectivitySnapshot {
 
 export function parsePeerConnectivitySnapshot(raw: unknown): PeerConnectivitySnapshot {
   const d = asRecord(raw);
+  // 0.7.x tri-state: read counts from `.snapshot` behind the `status`
+  // discriminator. `not_applicable` / `probe_timed_out` carry no snapshot.
+  const status = String(d.status ?? "known");
+  const counts =
+    typeof d.snapshot === "object" && d.snapshot !== null
+      ? asRecord(d.snapshot)
+      : d;
   return {
-    reachablePeerCount: Number(d.reachable_peer_count ?? 0),
-    unknownPeerCount: Number(d.unknown_peer_count ?? 0),
-    unreachablePeers: asRecordArray(d.unreachable_peers).map(parseMobUnreachablePeer),
+    status,
+    reachablePeerCount: Number(counts.reachable_peer_count ?? 0),
+    unknownPeerCount: Number(counts.unknown_peer_count ?? 0),
+    unreachablePeers: asRecordArray(counts.unreachable_peers).map(parseMobUnreachablePeer),
   };
 }
 

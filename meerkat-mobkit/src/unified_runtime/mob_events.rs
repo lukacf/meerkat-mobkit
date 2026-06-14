@@ -429,6 +429,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MobDestroyStorageFinalizing => "mob_destroy_storage_finalizing",
         MobEventKind::MobReset => "mob_reset",
         MobEventKind::MemberSpawned(_) => "member_spawned",
+        MobEventKind::MemberSessionBindingRecovered(_) => "member_session_binding_recovered",
         MobEventKind::MemberRetired { .. } => "member_retired",
         MobEventKind::MemberReset { .. } => "member_reset",
         MobEventKind::MemberKickoffUpdated { .. } => "member_kickoff_updated",
@@ -453,8 +454,23 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
     }
 }
 
+/// Decode a raw mob-roster member id into the public alias space.
+///
+/// For identity-first members the roster id is the comms-safe encoding
+/// (`mk--rt_creview_csingleton_c0`), so every member-id slot surfaced on a
+/// projection boundary MUST be decoded before it reaches a console/SDK. This
+/// keeps the structural-event surface symmetric with every sibling projection
+/// (the agent-event SSE path, console aggregator, etc.) which all decode.
+fn decode_member_id(member_id: &str) -> String {
+    crate::member_comms_id::runtime_alias_str(member_id).into_owned()
+}
+
 /// Pull `(run_id, step_id, agent_identity)` out of variants that carry
 /// them. Variants without a given field return `None` for that slot.
+///
+/// Every `agent_identity` slot is decoded through [`decode_member_id`] so the
+/// projected envelope speaks the public alias space, not the comms-safe
+/// `mk--` roster encoding.
 pub(crate) fn extract_structural_fields(
     kind: &MobEventKind,
 ) -> (Option<String>, Option<String>, Option<String>) {
@@ -475,7 +491,7 @@ pub(crate) fn extract_structural_fields(
         } => (
             Some(run_id.to_string()),
             Some(step_id.as_str().to_string()),
-            Some(target.identity.as_str().to_string()),
+            Some(decode_member_id(target.identity.as_str())),
         ),
         MobEventKind::StepTargetFailed {
             run_id,
@@ -485,7 +501,7 @@ pub(crate) fn extract_structural_fields(
         } => (
             Some(run_id.to_string()),
             Some(step_id.as_str().to_string()),
-            Some(target.identity.as_str().to_string()),
+            Some(decode_member_id(target.identity.as_str())),
         ),
         MobEventKind::StepCompleted { run_id, step_id }
         | MobEventKind::StepFailed {
@@ -505,21 +521,30 @@ pub(crate) fn extract_structural_fields(
         } => (
             Some(run_id.to_string()),
             Some(step_id.as_str().to_string()),
-            Some(escalated_to.as_str().to_string()),
+            Some(decode_member_id(escalated_to.as_str())),
         ),
-        MobEventKind::MemberSpawned(event) => {
-            (None, None, Some(event.agent_identity.as_str().to_string()))
-        }
+        MobEventKind::MemberSpawned(event) => (
+            None,
+            None,
+            Some(decode_member_id(event.agent_identity.as_str())),
+        ),
+        // Crash-recovery rebind fact for a member; attribute it to that member
+        // so console/SSE projection keys it under the right identity.
+        MobEventKind::MemberSessionBindingRecovered(event) => (
+            None,
+            None,
+            Some(decode_member_id(event.agent_identity.as_str())),
+        ),
         MobEventKind::MemberRetired { agent_identity, .. }
         | MobEventKind::MemberReset { agent_identity, .. } => {
-            (None, None, Some(agent_identity.as_str().to_string()))
+            (None, None, Some(decode_member_id(agent_identity.as_str())))
         }
         MobEventKind::MemberKickoffUpdated { member, .. } => {
-            (None, None, Some(member.as_str().to_string()))
+            (None, None, Some(decode_member_id(member.as_str())))
         }
         MobEventKind::ExternalPeerWired { local, .. }
         | MobEventKind::ExternalPeerUnwired { local, .. } => {
-            (None, None, Some(local.as_str().to_string()))
+            (None, None, Some(decode_member_id(local.as_str())))
         }
         // MobOwnerBridgeSessionBound is mob-scoped (owner bridge binding):
         // it carries no run/step/member structural fields.
@@ -625,6 +650,76 @@ mod tests {
             .await;
         assert_eq!(envelope.kind, "member_spawned");
         assert_eq!(envelope.agent_identity.as_deref(), Some("researcher"));
+    }
+
+    #[tokio::test]
+    async fn projects_identity_first_member_in_public_alias_space_and_filters_round_trip() {
+        // Identity-first members carry the comms-safe ENCODED roster id on the
+        // raw MobEvent (`mk--rt_creview_csingleton_c0`). The structural surface
+        // is a projection boundary, so the envelope's `agent_identity` MUST be
+        // decoded back to the public alias and a client filter keyed by that
+        // alias MUST match. Regression for the `mk--` leak / dropped-filter bug.
+        let alias = "rt:review:singleton:0";
+        let encoded = crate::member_comms_id::mob_member_id_str(alias).into_owned();
+        assert_ne!(encoded, alias, "alias must actually encode for this test");
+        let identity = AgentIdentity::from(encoded.as_str());
+
+        for kind in [
+            MobEventKind::MemberSpawned(MemberSpawnedEvent::new(
+                identity.clone(),
+                Generation::INITIAL,
+                FenceToken::new(1),
+                AgentRuntimeId::initial(identity.clone()),
+                ProfileName::from("review"),
+            )),
+            MobEventKind::MemberRetired {
+                agent_identity: identity.clone(),
+                generation: Generation::INITIAL,
+                role: ProfileName::from("review"),
+            },
+            MobEventKind::StepDispatched {
+                run_id: RunId::new(),
+                step_id: StepId::from("step-a"),
+                target: AgentRuntimeId::initial(identity.clone()),
+            },
+        ] {
+            let store = MobEventsStore::new();
+            let envelope = store.project_mob_event(&mob_event(1, kind)).await;
+
+            // The public surface speaks the alias, never the `mk--` encoding.
+            assert_eq!(
+                envelope.agent_identity.as_deref(),
+                Some(alias),
+                "structural envelope must decode the roster id to the alias"
+            );
+            assert!(
+                !envelope
+                    .agent_identity
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("mk--"),
+                "encoded mk-- id must not leak onto the public surface"
+            );
+
+            // A client filtering by the public alias (identity or member_id)
+            // matches; the encoded form does not (it is never client-visible).
+            let query = EventQuery {
+                identity: Some(alias.to_string()),
+                ..EventQuery::default()
+            };
+            assert!(
+                envelope_matches(&envelope, &query),
+                "identity-filter by the public alias must match"
+            );
+            let member_query = EventQuery {
+                member_id: Some(alias.to_string()),
+                ..EventQuery::default()
+            };
+            assert!(
+                envelope_matches(&envelope, &member_query),
+                "member_id-filter by the public alias must match"
+            );
+        }
     }
 
     #[tokio::test]

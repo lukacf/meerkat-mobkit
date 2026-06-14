@@ -608,10 +608,13 @@ impl UnifiedRuntime {
     /// Resolve a member's peer_id, comms name, and transport key from the roster entry.
     ///
     /// Returns peer id, comms name, and the member transport key. The comms
-    /// name is derived as `"{mob_id}/{profile}/{meerkat_id}"`, matching the
-    /// format used by meerkat-mob's `derived_comms_name()` and
-    /// `build_agent_config()`. If meerkat-mob changes this format, this must
-    /// be updated to match.
+    /// name is built through `meerkat_core::MemberCommsName::new`, the single
+    /// fail-closed owner meerkat-mob routes all such names through
+    /// (`render_member_comms_name`). It validates each of the three components
+    /// against the identifier-safe slug rule and renders `{mob_id}/{role}/{member}`.
+    /// Routing through the typed owner (rather than a raw `format!`) means a
+    /// slug-invalid `mob_id`/`role` is rejected here with a clear error instead
+    /// of minting a descriptor that silently fails to match at comms ingress.
     async fn get_member_peer_info(
         &self,
         handle: &MobHandle,
@@ -647,7 +650,17 @@ impl UnifiedRuntime {
                 "member '{meerkat_id}' in mob '{mob_id}' has invalid transport public key: {err}"
             ))
         })?;
-        let comms_name = format!("{}/{}/{}", mob_id, entry.role, meerkat_id);
+        let comms_name = meerkat_core::MemberCommsName::new(
+            mob_id,
+            entry.role.as_str(),
+            meerkat_id.as_str(),
+        )
+        .map_err(|err| {
+            CrossMobError::PeerSpec(format!(
+                "member '{meerkat_id}' in mob '{mob_id}' has an invalid comms name component: {err}"
+            ))
+        })?
+        .to_string();
         Ok(MemberPeerInfo {
             peer_id,
             comms_name,

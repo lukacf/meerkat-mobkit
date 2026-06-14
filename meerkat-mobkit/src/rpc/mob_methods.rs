@@ -358,11 +358,15 @@ pub(super) async fn handle_send_message(
                 {
                     // Report the bridge session that took the delivery —
                     // re-read after the send so a lazy materialization or a
-                    // delivered-session rebind is reflected. A concurrent
-                    // retire/rebind between the send and the re-read can
-                    // transiently surface no session; fall back to the
-                    // resolve-time binding rather than fabricating an empty
-                    // session reference on the wire.
+                    // delivered-session rebind is reflected, falling back to the
+                    // resolve-time binding. NOTE: in the narrow race where BOTH
+                    // the post-send re-read AND the resolve-time session are
+                    // None (e.g. a dormant identity whose materialized session
+                    // is concurrently retired/rebound in the send→re-read
+                    // window), this yields an EMPTY string. The send still
+                    // succeeded (`accepted: true`), so `session_id` may be
+                    // empty on success; consumers must treat an empty
+                    // `session_id` as "unknown", not as a usable reference.
                     Ok(_token) => Ok(identity_rt
                         .status(identity)
                         .await

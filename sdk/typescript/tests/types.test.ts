@@ -29,6 +29,7 @@ import {
   parseMemoryIndexResult,
   parseCallToolResult,
   parseMemberSnapshot,
+  parseRichMemberSnapshot,
   parseRuntimeRouteResult,
   parseGatingEvaluateResult,
   parseGatingDecisionResult,
@@ -70,6 +71,68 @@ describe("constants", () => {
 
   it("MEMBER_STATE_RETIRING is 'retiring'", () => {
     assert.equal(MEMBER_STATE_RETIRING, "retiring");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseRichMemberSnapshot / peer connectivity tri-state
+// ---------------------------------------------------------------------------
+
+describe("parseRichMemberSnapshot peer_connectivity", () => {
+  it("reads counts from the nested 0.7.x known snapshot", () => {
+    // Regression: the old flat reader returned all-zeros for the tri-state shape.
+    const snapshot = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 5,
+      is_final: false,
+      peer_connectivity: {
+        status: "known",
+        snapshot: {
+          reachable_peer_count: 3,
+          unknown_peer_count: 1,
+          unreachable_peers: [{ peer: "p1", reason: "x" }],
+        },
+      },
+    });
+    assert.ok(snapshot.peerConnectivity);
+    assert.equal(snapshot.peerConnectivity?.status, "known");
+    assert.equal(snapshot.peerConnectivity?.reachablePeerCount, 3);
+    assert.equal(snapshot.peerConnectivity?.unknownPeerCount, 1);
+    assert.equal(snapshot.peerConnectivity?.unreachablePeers.length, 1);
+  });
+
+  it("surfaces not_applicable and probe_timed_out distinctly with zero counts", () => {
+    const notApplicable = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 0,
+      is_final: false,
+      peer_connectivity: { status: "not_applicable" },
+    });
+    assert.equal(notApplicable.peerConnectivity?.status, "not_applicable");
+    assert.equal(notApplicable.peerConnectivity?.reachablePeerCount, 0);
+
+    const timedOut = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 0,
+      is_final: false,
+      peer_connectivity: { status: "probe_timed_out" },
+    });
+    assert.equal(timedOut.peerConnectivity?.status, "probe_timed_out");
+  });
+
+  it("still accepts the legacy flat shape", () => {
+    const snapshot = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 0,
+      is_final: false,
+      peer_connectivity: {
+        reachable_peer_count: 2,
+        unknown_peer_count: 0,
+        unreachable_peers: [],
+      },
+    });
+    assert.equal(snapshot.peerConnectivity?.reachablePeerCount, 2);
+    assert.equal(snapshot.peerConnectivity?.status, "known");
   });
 });
 

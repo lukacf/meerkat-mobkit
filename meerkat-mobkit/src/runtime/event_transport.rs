@@ -138,6 +138,25 @@ pub(super) fn merge_unified_events(
     merged
 }
 
+/// True when a caller-supplied agent-scope filter matches a projected
+/// `agent_id`. The projected id is the generation-suffixed public alias
+/// (`{alias}:{generation}`, e.g. `worker:0` or `rt:review:singleton:0:1`), but
+/// callers naturally pass the BARE member id / durable identity (the value every
+/// sibling identity surface accepts). Accept either form: an exact match, or the
+/// bare alias whose only difference is a trailing `:{generation}` segment.
+fn agent_scope_filter_matches(selected: &str, agent_id: &str) -> bool {
+    if selected == agent_id {
+        return true;
+    }
+    // `agent_id == "{selected}:{generation}"` where generation is numeric.
+    agent_id
+        .strip_prefix(selected)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|generation| {
+            !generation.is_empty() && generation.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
 fn event_matches_request(event: &EventEnvelope<UnifiedEvent>, request: &SubscribeRequest) -> bool {
     match request.scope {
         SubscribeScope::Mob => true,
@@ -145,7 +164,7 @@ fn event_matches_request(event: &EventEnvelope<UnifiedEvent>, request: &Subscrib
             UnifiedEvent::Agent { agent_id, .. } => request
                 .agent_id
                 .as_deref()
-                .map(|selected| selected == agent_id)
+                .map(|selected| agent_scope_filter_matches(selected, agent_id))
                 .unwrap_or(false),
             UnifiedEvent::Module(_) => false,
         },
@@ -218,4 +237,35 @@ pub(super) fn insert_event_sorted(
         })
         .unwrap_or_else(|index| index);
     events.insert(insertion_index, event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_scope_filter_matches;
+
+    #[test]
+    fn agent_scope_filter_accepts_bare_and_generation_suffixed_ids() {
+        // Real events carry the generation-suffixed alias. A caller filtering by
+        // the bare member id / durable identity (what every sibling identity
+        // surface accepts) must match — the old exact-compare returned zero
+        // events silently. Regression for the agent-scope filter id mismatch.
+
+        // Bare alias matches the generation-suffixed projected id.
+        assert!(agent_scope_filter_matches("worker", "worker:0"));
+        assert!(agent_scope_filter_matches("worker", "worker:12"));
+        // Identity-first alias with embedded colons + a trailing generation.
+        assert!(agent_scope_filter_matches(
+            "rt:review:singleton:0",
+            "rt:review:singleton:0:1"
+        ));
+        // Exact match still works (caller passed the full suffixed id).
+        assert!(agent_scope_filter_matches("worker:0", "worker:0"));
+
+        // Must NOT over-match a different member that merely shares a prefix.
+        assert!(!agent_scope_filter_matches("worker", "worker-2:0"));
+        assert!(!agent_scope_filter_matches("work", "worker:0"));
+        // The trailing segment must be a numeric generation, not arbitrary text.
+        assert!(!agent_scope_filter_matches("worker", "worker:abc"));
+        assert!(!agent_scope_filter_matches("worker", "worker:"));
+    }
 }

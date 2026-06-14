@@ -8,6 +8,7 @@ import {
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
   ContractMismatchError,
+  LeaseLostError,
   NotConnectedError,
   MobkitRpcError,
 } from "../dist/index.js";
@@ -123,6 +124,24 @@ describe("CapabilityUnavailableError", () => {
   it("has name set to CapabilityUnavailableError", () => {
     const err = new CapabilityUnavailableError("msg");
     assert.equal(err.name, "CapabilityUnavailableError");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LeaseLostError
+// ---------------------------------------------------------------------------
+
+describe("LeaseLostError", () => {
+  it("uses the dedicated lease-lost code and is NOT a CapabilityUnavailableError", () => {
+    // -32004 is CAPABILITY_UNAVAILABLE_CODE (permanent capability gap). A
+    // transient/recoverable lease loss must use -32005 and surface as its own
+    // type so callers do not give up on an identity that needs a re-acquire.
+    const err = new LeaseLostError("lease lost: review:singleton", "rid", "mobkit/send");
+    assert.ok(err instanceof MobKitError);
+    assert.ok(err instanceof RpcError);
+    assert.ok(!(err instanceof CapabilityUnavailableError));
+    assert.equal(err.name, "LeaseLostError");
+    assert.equal(err.code, -32005);
   });
 });
 

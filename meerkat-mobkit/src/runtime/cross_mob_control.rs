@@ -479,8 +479,25 @@ async fn handle_lookup_member(
         }
     };
     // The comms name derives from the roster id (the comms-safe encoding),
-    // matching meerkat-mob's `derived_comms_name()` — not the public alias.
-    let comms_name = format!("{}/{}/{}", mob_id, entry.role, mid);
+    // not the public alias. Build it through meerkat_core::MemberCommsName::new,
+    // the fail-closed typed owner meerkat-mob routes all such names through, so
+    // a slug-invalid component is rejected with a clear error rather than
+    // minting a descriptor that silently fails to match at comms ingress.
+    let comms_name = match meerkat_core::MemberCommsName::new(
+        mob_id.as_str(),
+        entry.role.as_str(),
+        mid.as_str(),
+    ) {
+        Ok(name) => name.to_string(),
+        Err(err) => {
+            return ControlResponse::Err {
+                code: "invalid_comms_name".to_string(),
+                message: format!(
+                    "member '{remote_member}' in mob '{mob_id}' has an invalid comms name component: {err}"
+                ),
+            };
+        }
+    };
     ControlResponse::Member {
         peer_id,
         comms_name,
