@@ -6590,7 +6590,10 @@ async fn collect_console_snapshot_read_model(
     let mut delegate_groups: Vec<Vec<ConsoleMember>> = Vec::new();
     loop {
         let mut progressed = false;
-        for (mob_id, delegate_handle) in Box::pin(mcp_state.mob_handles_snapshot()).await {
+        for (mob_id, delegate_handle) in Box::pin(mcp_state.mob_handles_snapshot())
+            .await
+            .unwrap_or_default()
+        {
             if processed.contains(mob_id.as_str()) {
                 continue;
             }

@@ -2361,7 +2361,10 @@ async fn retire_stale_console_members_for_runtime_entry(
     let primary_mob_id = primary_handle.mob_id().to_string();
     let mut handles = vec![(primary_mob_id.clone(), primary_handle)];
     if let Some(state) = entry.runtime.agent_mob_mcp_state() {
-        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
+        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
+            .await
+            .unwrap_or_default()
+        {
             if mob_id.as_str() != primary_mob_id {
                 handles.push((mob_id.to_string(), handle));
             }
@@ -2621,7 +2624,10 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     if !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
-    for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
+    for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
+        .await
+        .unwrap_or_default()
+    {
         if mob_id.as_str() == primary_mob_id {
             continue;
         }

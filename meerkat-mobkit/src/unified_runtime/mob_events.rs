@@ -429,6 +429,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MobDestroyStorageFinalizing => "mob_destroy_storage_finalizing",
         MobEventKind::MobReset => "mob_reset",
         MobEventKind::MemberSpawned(_) => "member_spawned",
+        MobEventKind::MemberSessionBindingRecovered(_) => "member_session_binding_recovered",
         MobEventKind::MemberRetired { .. } => "member_retired",
         MobEventKind::MemberReset { .. } => "member_reset",
         MobEventKind::MemberKickoffUpdated { .. } => "member_kickoff_updated",
@@ -508,6 +509,11 @@ pub(crate) fn extract_structural_fields(
             Some(escalated_to.as_str().to_string()),
         ),
         MobEventKind::MemberSpawned(event) => {
+            (None, None, Some(event.agent_identity.as_str().to_string()))
+        }
+        // Crash-recovery rebind fact for a member; attribute it to that member
+        // so console/SSE projection keys it under the right identity.
+        MobEventKind::MemberSessionBindingRecovered(event) => {
             (None, None, Some(event.agent_identity.as_str().to_string()))
         }
         MobEventKind::MemberRetired { agent_identity, .. }

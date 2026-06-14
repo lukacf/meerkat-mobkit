@@ -791,6 +791,7 @@ async fn reconcile_agent_event_streams(
         handles.extend(
             Box::pin(state.mob_handles_snapshot())
                 .await
+                .unwrap_or_default()
                 .into_iter()
                 .filter_map(|(mob_id, child_handle)| {
                     if mob_id.as_str() == primary_mob_id {

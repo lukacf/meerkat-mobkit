@@ -50,7 +50,10 @@ async fn run_implicit_delegate_retirement(
     loop {
         tokio::time::sleep(sweep_interval).await;
         let mut seen = BTreeSet::new();
-        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot()).await {
+        for (mob_id, handle) in Box::pin(state.mob_handles_snapshot())
+            .await
+            .unwrap_or_default()
+        {
             let is_primary_mob = mob_id.as_str() == primary_mob_id;
             let is_implicit_mob = Box::pin(state.is_implicit_mob(&mob_id)).await;
             if !is_primary_mob && !is_implicit_mob {
