@@ -100,11 +100,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS uses larger paid runners (12-core / 30 GB) so the build has the
-        # cores + RAM to run at full parallelism without OOM — the standard
-        # macos-15 (3-core / 7 GB) took ~125 min for the arm64 leg. Linux/Windows
-        # stay on standard runners (a user account cannot provision larger
-        # GitHub-hosted Linux/Windows runners); opt-level 1 + caching carry them.
+        # macOS uses larger paid runners so the -j2 cap (see build step) fits
+        # comfortably in RAM and the faster cores cut wall-clock — the standard
+        # macos-15 (3-core / 7 GB) took ~125 min for the arm64 leg and can't hold
+        # the 5.8 GB schema crate plus a neighbour. Linux/Windows stay on standard
+        # 16 GB runners (a user account cannot provision larger GitHub-hosted
+        # Linux/Windows runners); opt-level 1 + caching carry them.
         include:
           - runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -141,7 +142,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
+          # -j 2 is a hard memory cap, not a perf knob: meerkat-machine-schema is
+          # ~5.8 GB (opt-level 0, irreducible) and several meerkat crates are
+          # multi-GB, so unbounded parallelism OOMs/thrashes every runner. Two
+          # concurrent heavy crates (~12 GB peak) fit the 16 GB runners. Real
+          # speed comes from caching (warm builds recompile only meerkat-mobkit),
+          # not from raising this.
+          cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j 2
 
       - name: Package artifacts
         shell: bash
