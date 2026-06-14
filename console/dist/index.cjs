@@ -5513,6 +5513,8 @@ function appendOptimisticConversationEntry2(entries, optimisticEntry) {
 }
 function inferResponsePhaseFromFrames2(frames, fallback = null) {
   let phase = fallback;
+  let interactionOpen = false;
+  let runOpen = false;
   for (const frame of frames) {
     switch (frame.event) {
       case "user_input":
@@ -5520,6 +5522,11 @@ function inferResponsePhaseFromFrames2(frames, fallback = null) {
         else phase = "waiting";
         break;
       case "interaction_started":
+        interactionOpen = true;
+        phase = "waiting";
+        break;
+      case "run_started":
+        runOpen = true;
         phase = "waiting";
         break;
       case "tool_call_requested":
@@ -5545,11 +5552,18 @@ function inferResponsePhaseFromFrames2(frames, fallback = null) {
         phase = "generating";
         break;
       case "text_complete":
+        phase = interactionOpen || runOpen ? "waiting" : null;
+        break;
       case "interaction_complete":
       case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        phase = null;
+        break;
       case "run_completed":
       case "run_failed":
-        phase = null;
+        runOpen = false;
+        phase = interactionOpen ? "waiting" : null;
         break;
       case "system_notice":
         if (systemNoticeClearsBusyState2(frame)) phase = null;
@@ -5557,7 +5571,9 @@ function inferResponsePhaseFromFrames2(frames, fallback = null) {
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
         const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) phase = null;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
+          phase = interactionOpen || runOpen ? "waiting" : null;
+        }
         break;
       }
       default:
@@ -5589,10 +5605,11 @@ function latestRoutableFrameIsTerminal(frames) {
       case "user_input":
         return isTerminalUserInputStatus(frame.status);
       case "text_complete":
-      case "interaction_complete":
-      case "interaction_failed":
       case "run_completed":
       case "run_failed":
+        return !hasOpenLifecycleBefore(frames, index);
+      case "interaction_complete":
+      case "interaction_failed":
       case "message_delivery_failed":
         return true;
       case "system_notice":
@@ -5618,6 +5635,36 @@ function latestRoutableFrameIsTerminal(frames) {
     }
   }
   return false;
+}
+function hasOpenLifecycleBefore(frames, beforeIndex) {
+  let interactionOpen = false;
+  let runOpen = false;
+  for (let index = 0; index < beforeIndex; index += 1) {
+    switch (frames[index].event) {
+      case "interaction_started":
+        interactionOpen = true;
+        break;
+      case "run_started":
+        runOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        break;
+      case "message_delivery_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      default:
+        break;
+    }
+  }
+  return interactionOpen || runOpen;
 }
 function buildConversationViewState2(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -13906,9 +13953,51 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   function updateBusyStateForFrame(identity, frame) {
+    const lifecycle = identityLifecycleRef.current[identity] ?? {
+      interactionOpen: false,
+      runOpen: false
+    };
+    let sawLifecycle = true;
+    switch (frame.event) {
+      case "interaction_started":
+        lifecycle.interactionOpen = true;
+        break;
+      case "run_started":
+        lifecycle.runOpen = true;
+        break;
+      case "run_completed":
+      case "run_failed":
+        lifecycle.runOpen = false;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "message_delivery_failed":
+        lifecycle.interactionOpen = false;
+        lifecycle.runOpen = false;
+        break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState2(frame)) {
+          lifecycle.interactionOpen = false;
+          lifecycle.runOpen = false;
+        } else {
+          sawLifecycle = false;
+        }
+        break;
+      default:
+        sawLifecycle = false;
+        break;
+    }
+    identityLifecycleRef.current[identity] = lifecycle;
+    if (sawLifecycle) {
+      applyBusyState(identity, lifecycle.interactionOpen || lifecycle.runOpen);
+      return;
+    }
     const transition = busyTransitionForFrame(frame);
     if (transition !== null) {
-      applyBusyState(identity, transition);
+      applyBusyState(
+        identity,
+        transition || lifecycle.interactionOpen || lifecycle.runOpen
+      );
     }
   }
   function recomputeBusyStateFromLog(identity) {
@@ -13920,12 +14009,46 @@ function ConsoleApp({ baseUrl }) {
       if (rankDelta !== 0) return rankDelta;
       return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
     });
-    let nextBusy = false;
+    const lifecycle = { interactionOpen: false, runOpen: false };
+    let legacyBusy = false;
     for (const frame of lifecycleFrames) {
-      const transition = busyTransitionForFrame(frame);
-      if (transition !== null) nextBusy = transition;
+      switch (frame.event) {
+        case "interaction_started":
+          lifecycle.interactionOpen = true;
+          break;
+        case "run_started":
+          lifecycle.runOpen = true;
+          break;
+        case "run_completed":
+        case "run_failed":
+          lifecycle.runOpen = false;
+          break;
+        case "interaction_complete":
+        case "interaction_failed":
+        case "message_delivery_failed":
+          lifecycle.interactionOpen = false;
+          lifecycle.runOpen = false;
+          legacyBusy = false;
+          break;
+        case "system_notice":
+          if (systemNoticeClearsBusyState2(frame)) {
+            lifecycle.interactionOpen = false;
+            lifecycle.runOpen = false;
+            legacyBusy = false;
+          }
+          break;
+        default: {
+          const transition = busyTransitionForFrame(frame);
+          if (transition !== null) legacyBusy = transition;
+          break;
+        }
+      }
     }
-    applyBusyState(identity, nextBusy);
+    identityLifecycleRef.current[identity] = lifecycle;
+    applyBusyState(
+      identity,
+      lifecycle.interactionOpen || lifecycle.runOpen || legacyBusy
+    );
   }
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
@@ -14155,6 +14278,7 @@ function ConsoleApp({ baseUrl }) {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
   const identityBusyRef = import_react28.default.useRef({});
+  const identityLifecycleRef = import_react28.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
   const phaseRef = import_react28.default.useRef({});
   const phaseValueByKey = import_react28.default.useRef({});
@@ -14238,7 +14362,7 @@ function ConsoleApp({ baseUrl }) {
       forceRender();
     }, delayMs);
   }
-  function updatePanelPhaseFromFrame(panelKey, frame) {
+  function updatePanelPhaseFromFrame(panelKey, frame, lifecycleBusy = false) {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
@@ -14286,16 +14410,20 @@ function ConsoleApp({ baseUrl }) {
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
+        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
       case "interaction_complete":
       case "interaction_failed":
+        return commitPanelPhase(panelKey, null);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
       case "system_notice":
         if (systemNoticeClearsBusyState2(frame)) return commitPanelPhase(panelKey, null);
         return false;
       case "turn_completed":
-        if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
+        if (isTerminalTurnCompletedFrame(frame)) {
+          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        }
         return false;
       case "message_delivery_failed":
         return commitPanelPhase(panelKey, null);
@@ -14307,13 +14435,15 @@ function ConsoleApp({ baseUrl }) {
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
+    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey2(panel.id, target),
-        frame
+        frame,
+        lifecycleBusy
       )) changed = true;
     }
     return changed;
@@ -14730,8 +14860,8 @@ function ConsoleApp({ baseUrl }) {
       const identity = canonicalIdentity || frame.identity?.trim();
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
         appendFrame(identity, frame);
-        updatePhaseForIdentity(identity, frame);
         updateBusyStateForFrame(identity, frame);
+        updatePhaseForIdentity(identity, frame);
       }
       forceRender();
       if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame)) && identity && identity !== "_system") {
