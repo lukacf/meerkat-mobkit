@@ -64,11 +64,6 @@ crate.annotation(
     gen_build_script = "off",
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
-crate.annotation(
-    crate = "meerkat-live",
-    gen_build_script = "off",
-    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
-)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
