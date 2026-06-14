@@ -131,10 +131,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Self-hosted: keep the working tree + target/ across runs so cargo
+          # reuses unchanged crates (a clean checkout rewrites mtimes and forces a
+          # full rebuild, defeating the warm cache). GitHub-hosted is ephemeral.
+          clean: ${{ !matrix.self_hosted }}
 
-      # Self-hosted runner already has the rustc-stable toolchain + sccache on
-      # PATH (it mirrors meerkat's runner env) and caches via sccache, so it skips
-      # the toolchain install / target add / Actions cache that GitHub-hosted needs.
+      # Self-hosted runner already has the rustc-stable toolchain on PATH (it
+      # mirrors meerkat's runner env) and reuses its persistent target/, so it
+      # skips the toolchain install / target add / Actions cache GitHub-hosted needs.
       - name: Install Rust
         if: ${{ !matrix.self_hosted }}
         uses: dtolnay/rust-toolchain@stable
@@ -154,12 +159,15 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.self_hosted }}" == "true" ]]; then
-            # 32-core / 128 GB self-hosted runner: full parallelism (no OOM) +
-            # sccache against the VM's persistent local cache for warm builds.
-            export RUSTC_WRAPPER=/usr/local/bin/sccache
-            export CARGO_INCREMENTAL=0
+            # 32-core / 128 GB self-hosted runner: full parallelism (no OOM). High
+            # codegen-units fans a single big crate's codegen across all cores,
+            # which cuts the serial dependency tail (meerkat_core -> runtime -> mob
+            # -> mobkit) that idles most cores at the default unit count. Safe on
+            # 128 GB; scoped to self-hosted (it would OOM 16 GB GitHub runners).
+            # The persistent target/ (checkout clean:false) reuses unchanged crates,
+            # so warm releases recompile only meerkat-mobkit + relink (~minutes).
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
             cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
-            /usr/local/bin/sccache --show-stats || true
           else
             # GitHub-hosted: -j is a hard memory cap — meerkat-machine-schema is
             # ~5.8 GB at opt-0 and several meerkat crates are multi-GB, so higher
