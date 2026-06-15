@@ -24,7 +24,9 @@ xcode_version(
 xcode_config(
     name = "rbe_xcodes",
     versions = [":xcode_26_4_0", ":xcode_26_4_1"],
-    default = ":xcode_26_4_1",
+    # Default to the Xcode the macOS RBE executors actually have installed
+    # (26.4.1 is not present; builds fail with a Failed-Precondition otherwise).
+    default = ":xcode_26_4_0",
 )
 
 platform(
