@@ -62,6 +62,9 @@ doc_markdown = "allow"
 match_bool = "allow"
 items_after_statements = "allow"
 too_many_lines = "allow"
+# Large async orchestration futures are expected here (meerkat allows this too);
+# boxing every one is noise. meerkat 0.7.4 nudged an rpc dispatch future over the limit.
+large_futures = "allow"
 wildcard_imports = "allow"
 struct_excessive_bools = "allow"
 fn_params_excessive_bools = "allow"
