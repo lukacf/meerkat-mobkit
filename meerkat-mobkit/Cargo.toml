@@ -56,7 +56,7 @@ meerkat-models = "0.7"
 # meerkat 0.7 split session memory out of `memory-store` (which now only maps
 # to meerkat-store/memory); explicit `memory` enables need `memory-store-session`.
 meerkat = { version = "0.7", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store"] }
-meerkat-runtime = { version = "0.7", features = ["sqlite-store"] }
+meerkat-runtime = { version = "0.7", features = ["sqlite-store", "live"] }
 meerkat-session = { version = "0.7", features = ["session-store"] }
 meerkat-store = { version = "0.7", features = ["sqlite"] }
 meerkat-tools = "0.7"

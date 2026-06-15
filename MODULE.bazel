@@ -3,27 +3,12 @@ module(
     version = "0.7.4",
 )
 
-# Versions pinned to match meerkat's MODULE.bazel exactly so external-dep build
-# actions are identical -> they hit the shared hosted-BuildBuddy cache instead of
-# rebuilding. (Step 2 adds bazel_dep(meerkat) so the meerkat crates themselves
-# also become cache hits rather than being rebuilt from crates.io.)
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "apple_support", version = "1.24.5")
 bazel_dep(name = "rules_cc", version = "0.2.18")
 bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
-
-# meerkat as a Bazel module (read-only source at the released tag). The meerkat
-# crates with build-time machine-authority codegen build correctly as meerkat's
-# own targets — and hit the cache from meerkat's v0.7.3 hosted-BuildBuddy release
-# instead of being rebuilt from crates.io.
-bazel_dep(name = "meerkat", version = "0.0.0")
-git_override(
-    module_name = "meerkat",
-    remote = "https://github.com/lukacf/meerkat.git",
-    tag = "v0.7.3",
-)
 
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
 buildbuddy.msvc_toolchain(
@@ -53,39 +38,50 @@ register_toolchains(
     "@buildbuddy_toolchain//:ubuntu_cc_toolchain_arm64",
 )
 
-# isolate=True so mobkit's crate universe named "crates" doesn't collide with
-# meerkat's own "crates" universe (the meerkat module defines one too).
-crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate", isolate = True)
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
-# The meerkat machine-authority crates have a build.rs that generates authority/
-# agent-factory bridge code which only exists inside meerkat's own workspace build
-# (crate_universe builds them standalone from crates.io and they can't locate it).
-# Redirect those crates' libs to meerkat's own Bazel targets via the meerkat module
-# — correct codegen + features, and cache hits from meerkat's release. (meerkat-live
-# is not in mobkit's lock; it comes transitively from @meerkat//meerkat-runtime.)
+# The meerkat machine-authority crates have a build.rs that emits the authority /
+# agent-factory bridge code; that script can't run under crate_universe (it can't
+# locate the workspace-generated suffix), so mirror meerkat's own BUILD targets:
+# turn the build script off, hardcode the suffix env, and force the internal bridge
+# features the script would otherwise enable. (mobkit's Cargo.toml enables the
+# `live` feature so meerkat-live is in the lock and crate_universe resolves it.)
 crate.annotation(
     crate = "meerkat",
-    override_target_lib = "@meerkat//meerkat:meerkat",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_AGENT_FACTORY_POLICY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_agent_factory_build"},
 )
 crate.annotation(
     crate = "meerkat-core",
-    override_target_lib = "@meerkat//meerkat-core:meerkat_core",
+    gen_build_script = "off",
+    crate_features = [
+        "__meerkat-generated-authority-bridge",
+        "__meerkat-facade-agent-factory-build",
+    ],
+    rustc_env = {
+        "MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge",
+        "MEERKAT_AGENT_FACTORY_POLICY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_agent_factory_build",
+    },
 )
 crate.annotation(
     crate = "meerkat-runtime",
-    override_target_lib = "@meerkat//meerkat-runtime:meerkat_runtime",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
+)
+crate.annotation(
+    crate = "meerkat-live",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 crate.annotation(
     crate = "meerkat-mob",
-    override_target_lib = "@meerkat//meerkat-mob:meerkat_mob",
+    gen_build_script = "off",
+    rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
-    manifests = [
-        "//:Cargo.toml",
-        "//meerkat-mobkit:Cargo.toml",
-    ],
+    manifests = ["//:Cargo.toml"],
     supported_platform_triples = [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",

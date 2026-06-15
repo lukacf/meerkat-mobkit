@@ -73,7 +73,3 @@ build:gcp-linux --platforms=//platforms:linux_x86_64
 build:gcp-linux --extra_execution_platforms=//platforms:linux_x86_64
 build:gcp-linux --nobuild_runfile_links
 build:gcp-linux --symlink_prefix=/
-
-# mobkit-specific: enable isolate=True on mobkit's crate universe so its "crates"
-# name doesn't collide with the meerkat module's own "crates" universe.
-common --experimental_isolated_extension_usages
