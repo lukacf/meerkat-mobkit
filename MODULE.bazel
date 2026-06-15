@@ -63,19 +63,19 @@ crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 # is not in mobkit's lock; it comes transitively from @meerkat//meerkat-runtime.)
 crate.annotation(
     crate = "meerkat",
-    override_targets = {"lib": "@meerkat//meerkat:meerkat"},
+    override_target_lib = "@meerkat//meerkat:meerkat",
 )
 crate.annotation(
     crate = "meerkat-core",
-    override_targets = {"lib": "@meerkat//meerkat-core:meerkat_core"},
+    override_target_lib = "@meerkat//meerkat-core:meerkat_core",
 )
 crate.annotation(
     crate = "meerkat-runtime",
-    override_targets = {"lib": "@meerkat//meerkat-runtime:meerkat_runtime"},
+    override_target_lib = "@meerkat//meerkat-runtime:meerkat_runtime",
 )
 crate.annotation(
     crate = "meerkat-mob",
-    override_targets = {"lib": "@meerkat//meerkat-mob:meerkat_mob"},
+    override_target_lib = "@meerkat//meerkat-mob:meerkat_mob",
 )
 crate.from_cargo(
     name = "crates",
