@@ -51,6 +51,14 @@ crate.annotation(
     gen_build_script = "off",
     rustc_env = {"MEERKAT_AGENT_FACTORY_POLICY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_agent_factory_build"},
 )
+# opt-level=0 on the heavy meerkat crates. These are large, generic-heavy crates
+# whose LLVM optimization at opt-1 is the cold-build long pole: meerkat_runtime
+# alone is one ~107-file rustc compile pinned to a single executor that ran 40-90+
+# min optimizing. They are cold-path orchestration/runtime code for an I/O-bound
+# gateway (awaiting LLM/network/comms, not crunching), so dropping their optimization
+# has no measurable runtime effect while collapsing the build time. opt-0 here is
+# appended after the global -Copt-level=1 (.bazelrc), so it wins. Mirrors the
+# existing meerkat-machine-schema opt-0 override below.
 crate.annotation(
     crate = "meerkat-core",
     gen_build_script = "off",
@@ -63,6 +71,7 @@ crate.annotation(
     rustc_flags = [
         "--cfg=meerkat_internal_generated_authority_bridge",
         "--cfg=meerkat_internal_agent_factory_build",
+        "-Copt-level=0",
     ],
     rustc_env = {
         "MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge",
@@ -72,17 +81,22 @@ crate.annotation(
 crate.annotation(
     crate = "meerkat-runtime",
     gen_build_script = "off",
+    rustc_flags = ["-Copt-level=0"],
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 crate.annotation(
     crate = "meerkat-live",
     gen_build_script = "off",
-    rustc_flags = ["--cfg=meerkat_internal_generated_authority_bridge"],
+    rustc_flags = [
+        "--cfg=meerkat_internal_generated_authority_bridge",
+        "-Copt-level=0",
+    ],
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 crate.annotation(
     crate = "meerkat-mob",
     gen_build_script = "off",
+    rustc_flags = ["-Copt-level=0"],
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
 # meerkat-machine-schema expands the machine! DSL into a single 265-arm generated
