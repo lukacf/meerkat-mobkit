@@ -538,10 +538,59 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
 
   assert.equal(
     inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "run_started", data: { prompt: "Hello" } },
+      { id: "evt-2", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-3", event: "text_complete", data: { content: "Done." } },
+    ]),
+    "waiting",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "run_started", data: { prompt: "Hello" } },
+      { id: "evt-2", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-3", event: "text_complete", data: { content: "Done." } },
+      { id: "evt-4", event: "run_completed", data: { result: "Done." } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "interaction_started", data: {} },
+      { id: "evt-2", event: "run_started", data: { prompt: "Step one" } },
+      { id: "evt-3", event: "text_complete", data: { content: "Step one done." } },
+      { id: "evt-4", event: "run_completed", data: { result: "Step one done." } },
+    ]),
+    "waiting",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "interaction_started", data: {} },
+      { id: "evt-2", event: "run_started", data: { prompt: "Step one" } },
+      { id: "evt-3", event: "text_complete", data: { content: "Step one done." } },
+      { id: "evt-4", event: "run_completed", data: { result: "Step one done." } },
+      { id: "evt-5", event: "interaction_complete", data: { result: "All done." } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
       { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
       { id: "evt-2", event: "turn_completed", data: { stop_reason: "end_turn" } },
     ]),
     null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "interaction_started", data: {} },
+      { id: "evt-2", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-3", event: "turn_completed", data: { stop_reason: "end_turn" } },
+    ]),
+    "waiting",
   );
 
   assert.equal(

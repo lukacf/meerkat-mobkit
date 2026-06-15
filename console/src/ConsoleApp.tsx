@@ -970,9 +970,52 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     frame: ConsoleFrame,
   ): void {
+    const lifecycle = identityLifecycleRef.current[identity] ?? {
+      interactionOpen: false,
+      runOpen: false,
+    };
+    let sawLifecycle = true;
+    switch (frame.event) {
+      case "interaction_started":
+        lifecycle.interactionOpen = true;
+        break;
+      case "run_started":
+        lifecycle.runOpen = true;
+        break;
+      case "run_completed":
+      case "run_failed":
+        lifecycle.runOpen = false;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "message_delivery_failed":
+        lifecycle.interactionOpen = false;
+        lifecycle.runOpen = false;
+        break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) {
+          lifecycle.interactionOpen = false;
+          lifecycle.runOpen = false;
+        } else {
+          sawLifecycle = false;
+        }
+        break;
+      default:
+        sawLifecycle = false;
+        break;
+    }
+    identityLifecycleRef.current[identity] = lifecycle;
+    if (sawLifecycle) {
+      applyBusyState(identity, lifecycle.interactionOpen || lifecycle.runOpen);
+      return;
+    }
+
     const transition = busyTransitionForFrame(frame);
     if (transition !== null) {
-      applyBusyState(identity, transition);
+      applyBusyState(
+        identity,
+        transition || lifecycle.interactionOpen || lifecycle.runOpen,
+      );
     }
   }
 
@@ -987,12 +1030,46 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         if (rankDelta !== 0) return rankDelta;
         return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
       });
-    let nextBusy = false;
+    const lifecycle = { interactionOpen: false, runOpen: false };
+    let legacyBusy = false;
     for (const frame of lifecycleFrames) {
-      const transition = busyTransitionForFrame(frame);
-      if (transition !== null) nextBusy = transition;
+      switch (frame.event) {
+        case "interaction_started":
+          lifecycle.interactionOpen = true;
+          break;
+        case "run_started":
+          lifecycle.runOpen = true;
+          break;
+        case "run_completed":
+        case "run_failed":
+          lifecycle.runOpen = false;
+          break;
+        case "interaction_complete":
+        case "interaction_failed":
+        case "message_delivery_failed":
+          lifecycle.interactionOpen = false;
+          lifecycle.runOpen = false;
+          legacyBusy = false;
+          break;
+        case "system_notice":
+          if (systemNoticeClearsBusyState(frame)) {
+            lifecycle.interactionOpen = false;
+            lifecycle.runOpen = false;
+            legacyBusy = false;
+          }
+          break;
+        default: {
+          const transition = busyTransitionForFrame(frame);
+          if (transition !== null) legacyBusy = transition;
+          break;
+        }
+      }
     }
-    applyBusyState(identity, nextBusy);
+    identityLifecycleRef.current[identity] = lifecycle;
+    applyBusyState(
+      identity,
+      lifecycle.interactionOpen || lifecycle.runOpen || legacyBusy,
+    );
   }
 
   /// Reconcile a server-history fetch into the identity log. Frames
@@ -1361,6 +1438,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // and to decide whether a fresh Send should bypass the stack
   // (idle + empty stack) or push to it (anything else).
   const identityBusyRef = React.useRef<Record<string, boolean>>({});
+  const identityLifecycleRef = React.useRef<
+    Record<string, { interactionOpen: boolean; runOpen: boolean }>
+  >({});
   const isIdentityBusy = (identity: string) =>
     identityBusyRef.current[identity] === true;
 
@@ -1482,7 +1562,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }, delayMs);
   }
 
-  function updatePanelPhaseFromFrame(panelKey: string, frame: ConsoleFrame): boolean {
+  function updatePanelPhaseFromFrame(
+    panelKey: string,
+    frame: ConsoleFrame,
+    lifecycleBusy = false,
+  ): boolean {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
@@ -1534,16 +1618,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
+        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
       case "interaction_complete":
       case "interaction_failed":
+        return commitPanelPhase(panelKey, null);
       case "run_completed":
       case "run_failed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
       case "system_notice":
         if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, null);
         return false;
       case "turn_completed":
-        if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
+        if (isTerminalTurnCompletedFrame(frame)) {
+          return commitPanelPhase(panelKey, lifecycleBusy ? "waiting" : null);
+        }
         return false;
       case "message_delivery_failed":
         return commitPanelPhase(panelKey, null);
@@ -1565,6 +1653,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // Helper: update phase for ALL panels showing a given identity
   function updatePhaseForIdentity(identity: string, frame: ConsoleFrame): boolean {
     let changed = false;
+    const lifecycleBusy = isIdentityBusy(identity);
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
@@ -1572,6 +1661,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (updatePanelPhaseFromFrame(
         buildPanelConversationKey(panel.id, target),
         frame,
+        lifecycleBusy,
       )) changed = true;
     }
     return changed;
@@ -2127,9 +2217,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         identity !== "_system"
       ) {
         appendFrame(identity, frame);
-        updatePhaseForIdentity(identity, frame);
-
         updateBusyStateForFrame(identity, frame);
+        updatePhaseForIdentity(identity, frame);
       }
 
       forceRender();

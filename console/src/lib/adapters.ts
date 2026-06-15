@@ -3606,6 +3606,8 @@ export function inferResponsePhaseFromFrames(
   fallback: ResponsePhase = null,
 ): ResponsePhase {
   let phase: ResponsePhase = fallback;
+  let interactionOpen = false;
+  let runOpen = false;
   for (const frame of frames) {
     switch (frame.event) {
       case "user_input":
@@ -3613,6 +3615,11 @@ export function inferResponsePhaseFromFrames(
         else phase = "waiting";
         break;
       case "interaction_started":
+        interactionOpen = true;
+        phase = "waiting";
+        break;
+      case "run_started":
+        runOpen = true;
         phase = "waiting";
         break;
       case "tool_call_requested":
@@ -3642,11 +3649,18 @@ export function inferResponsePhaseFromFrames(
         phase = "generating";
         break;
       case "text_complete":
+        phase = interactionOpen || runOpen ? "waiting" : null;
+        break;
       case "interaction_complete":
       case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        phase = null;
+        break;
       case "run_completed":
       case "run_failed":
-        phase = null;
+        runOpen = false;
+        phase = interactionOpen ? "waiting" : null;
         break;
       case "system_notice":
         if (systemNoticeClearsBusyState(frame)) phase = null;
@@ -3654,7 +3668,9 @@ export function inferResponsePhaseFromFrames(
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
         const stopReason = data.stop_reason ?? data.stopReason;
-        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) phase = null;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) {
+          phase = interactionOpen || runOpen ? "waiting" : null;
+        }
         break;
       }
       default:
@@ -3694,10 +3710,11 @@ function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
       case "user_input":
         return isTerminalUserInputStatus(frame.status);
       case "text_complete":
-      case "interaction_complete":
-      case "interaction_failed":
       case "run_completed":
       case "run_failed":
+        return !hasOpenLifecycleBefore(frames, index);
+      case "interaction_complete":
+      case "interaction_failed":
       case "message_delivery_failed":
         return true;
       case "system_notice":
@@ -3723,6 +3740,37 @@ function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
     }
   }
   return false;
+}
+
+function hasOpenLifecycleBefore(frames: ConsoleFrame[], beforeIndex: number): boolean {
+  let interactionOpen = false;
+  let runOpen = false;
+  for (let index = 0; index < beforeIndex; index += 1) {
+    switch (frames[index].event) {
+      case "interaction_started":
+        interactionOpen = true;
+        break;
+      case "run_started":
+        runOpen = true;
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      case "run_completed":
+      case "run_failed":
+        runOpen = false;
+        break;
+      case "message_delivery_failed":
+        interactionOpen = false;
+        runOpen = false;
+        break;
+      default:
+        break;
+    }
+  }
+  return interactionOpen || runOpen;
 }
 
 export function buildConversationViewState(args: {
