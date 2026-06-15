@@ -85,6 +85,14 @@ crate.annotation(
     gen_build_script = "off",
     rustc_env = {"MEERKAT_GENERATED_AUTHORITY_BRIDGE_SYMBOL_SUFFIX": "bazel_private_generated_authority_bridge"},
 )
+# meerkat-machine-schema expands the machine! DSL into a single 265-arm generated
+# match; optimizing it under --compilation_mode=opt is extremely slow (the same
+# pathological case that OOM'd cargo). It's cold-path schema code, so force
+# opt-level=0 in bazel too (mirrors the Cargo [profile.release.package] override).
+crate.annotation(
+    crate = "meerkat-machine-schema",
+    rustc_flags = ["-Copt-level=0"],
+)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",

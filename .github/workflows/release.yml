@@ -120,8 +120,17 @@ jobs:
           for entry in "${targets[@]}"; do
             IFS=: read -r target cfg ext <<< "$entry"
             echo "::group::build ${target} (${cfg})"
-            bb build --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
-              --remote_download_outputs=toplevel //meerkat-mobkit:mobkit_gateway_bin
+            # Retry the whole invocation: hosted RBE occasionally drops a task
+            # ("stream closed with task still claimed") and fails the build even
+            # after bazel's own per-action retries; re-invoking usually succeeds.
+            n=0
+            until bb build --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+              --remote_download_outputs=toplevel //meerkat-mobkit:mobkit_gateway_bin; do
+              n=$((n+1))
+              [ "${n}" -ge 3 ] && { echo "build ${target} failed after ${n} attempts" >&2; exit 1; }
+              echo "::warning::transient RBE failure on ${target}; retry ${n}/3"
+              sleep 20
+            done
             bin=$(bb cquery --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
               --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1)
             [[ -n "${bin}" && -f "${bin}" ]] || { echo "missing binary for ${target}: '${bin}'" >&2; exit 1; }
