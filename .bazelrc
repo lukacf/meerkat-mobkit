@@ -4,6 +4,14 @@ build:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
 build:buildbuddy --remote_upload_local_results
 build:buildbuddy --remote_timeout=600
 build:buildbuddy --remote_cache_compression
+# Compile the release binaries at opt-level 1, matching the cargo gateway's
+# [profile.release] choice. An I/O-bound orchestration server is plenty fast at
+# opt-1, which compiles far faster than bazel's default opt (= opt-3) and keeps the
+# cold cross-platform build inside a sane time budget. This is a global rustc flag
+# appended after -c opt's opt-level=3 (last wins), so it reaches the crate_universe
+# crates (the heavy meerkat tree) too. The per-crate opt-level=0 annotation on
+# meerkat-machine-schema is appended after THIS, so it still wins for that crate.
+build:buildbuddy --@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=1
 
 build:buildbuddy-macos-rbe --config=buildbuddy
 build:buildbuddy-macos-rbe --remote_executor=grpcs://remote.buildbuddy.io
