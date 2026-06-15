@@ -53,7 +53,9 @@ register_toolchains(
     "@buildbuddy_toolchain//:ubuntu_cc_toolchain_arm64",
 )
 
-crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+# isolate=True so mobkit's crate universe named "crates" doesn't collide with
+# meerkat's own "crates" universe (the meerkat module defines one too).
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate", isolate = True)
 
 # The meerkat machine-authority crates have a build.rs that generates authority/
 # agent-factory bridge code which only exists inside meerkat's own workspace build
