@@ -124,7 +124,11 @@ jobs:
             # ("stream closed with task still claimed") and fails the build even
             # after bazel's own per-action retries; re-invoking usually succeeds.
             n=0
-            until bb build --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+            # --jobs must be high to saturate the RBE fleet: bazel defaults it to
+            # the LOCAL runner's core count, which caps concurrency at ~32 and made
+            # a one-target build take 74 min. meerkat uses 64-192; 200 here lets the
+            # remote executors run the build wide.
+            until bb build --config="${cfg}" --compilation_mode=opt --jobs=200 "${hdr[@]}" \
               --remote_download_outputs=toplevel //meerkat-mobkit:mobkit_gateway_bin; do
               n=$((n+1))
               [ "${n}" -ge 3 ] && { echo "build ${target} failed after ${n} attempts" >&2; exit 1; }
