@@ -88,106 +88,60 @@ jobs:
         run: make fmt-check
 
   build_binaries:
-    name: Build gateway binary (${{ matrix.target }})
+    name: Build gateway binaries (BuildBuddy RBE)
     needs: [release_validate]
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive_ext: tar.gz
-            cargo_jobs: 0
-          - runs-on: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive_ext: tar.gz
-            cargo_jobs: 0
-          - runs-on: macos-15
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-            cargo_jobs: 0
-          - runs-on: macos-15-intel
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-            cargo_jobs: 0
-          - runs-on: windows-2022
-            target: x86_64-pc-windows-msvc
-            archive_ext: zip
-            cargo_jobs: 1
-
+    # Self-hosted runner has bb (BuildBuddy CLI) + the toolchain; the actual
+    # compiles run on hosted-BuildBuddy RBE (linux/macOS) and king.europe (windows).
+    runs-on: ["self-hosted", "mobkit-temp-linux"]
+    env:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+      CARGO_BAZEL_REPIN: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add release target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build gateway binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
-            export CARGO_PROFILE_RELEASE_OPT_LEVEL=1
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
-          fi
-          if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
-            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
-          else
-            scripts/repo-cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
-          fi
-
-      - name: Package artifacts
+      - name: Build + package all targets via BuildBuddy RBE
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
           VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
-          ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
           set -euo pipefail
-          BINARIES=("mobkit_gateway")
+          VERSION="${VERSION#v}"; VERSION="${VERSION//\//-}"
+          hdr=(--remote_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}" --bes_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}")
+          # target : .bazelrc RBE config : archive ext
+          targets=(
+            "x86_64-unknown-linux-gnu:buildbuddy-linux-rbe:tar.gz"
+            "aarch64-unknown-linux-gnu:buildbuddy-linux-arm64-rbe:tar.gz"
+            "aarch64-apple-darwin:buildbuddy-macos-rbe:tar.gz"
+            "x86_64-apple-darwin:buildbuddy-macos-x86-rbe:tar.gz"
+            "x86_64-pc-windows-msvc:buildbuddy-windows-rbe:zip"
+          )
           mkdir -p dist
-          target_dir="$(scripts/repo-cargo --print-env | sed -n 's/^CARGO_TARGET_DIR=//p')"
-          if [[ -z "$target_dir" ]]; then
-            echo "Unable to resolve CARGO_TARGET_DIR from scripts/repo-cargo" >&2
-            exit 1
-          fi
-          VERSION="${VERSION#v}"
-          VERSION="${VERSION//\//-}"
-
-          for bin in "${BINARIES[@]}"; do
-            if [[ "${RUNNER_OS}" == "Windows" ]]; then
-              src="${target_dir}/${TARGET}/release/${bin}.exe"
+          for entry in "${targets[@]}"; do
+            IFS=: read -r target cfg ext <<< "$entry"
+            echo "::group::build ${target} (${cfg})"
+            bb build --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+              --remote_download_outputs=toplevel //meerkat-mobkit:mobkit_gateway_bin
+            bin=$(bb cquery --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+              --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1)
+            [[ -n "${bin}" && -f "${bin}" ]] || { echo "missing binary for ${target}: '${bin}'" >&2; exit 1; }
+            name="mobkit-gateway-${VERSION}-${target}.${ext}"
+            if [[ "${ext}" == "zip" ]]; then
+              ( cd "$(dirname "${bin}")" && zip -q -j "${GITHUB_WORKSPACE}/dist/${name}" "$(basename "${bin}")" )
             else
-              src="${target_dir}/${TARGET}/release/${bin}"
+              tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
             fi
-            artifact_name="mobkit-gateway-${VERSION}-${TARGET}.${ARCHIVE_EXT}"
-
-            if [[ ! -f "$src" ]]; then
-              echo "Missing expected binary at $src" >&2
-              exit 1
-            fi
-
-            if [[ "$ARCHIVE_EXT" == "zip" ]]; then
-              7z a -tzip "${GITHUB_WORKSPACE}/dist/${artifact_name}" "$(cygpath -w "$src")"
-            else
-              tar -czf "dist/${artifact_name}" -C "$(dirname "$src")" "$(basename "$src")"
-            fi
-            echo "packaged=${bin} -> dist/${artifact_name}"
+            echo "packaged dist/${name}"
+            echo "::endgroup::"
           done
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
+          ls -la dist/
+          # repin only needs to happen once; the lock is now generated.
+          unset CARGO_BAZEL_REPIN || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mobkit-${{ matrix.target }}-${{ matrix.runs-on }}
+          name: mobkit-gateway-binaries
           path: dist/*
           if-no-files-found: error
 
