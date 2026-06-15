@@ -143,15 +143,22 @@ jobs:
               fi
               echo "::warning::transient RBE failure on ${target}; retry ${n}/3"; sleep 20
             done
-            local bin
-            bin=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
-                "${hdr[@]}" --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1) || true
-            if [ -z "${bin}" ] || [ ! -f "${bin}" ]; then
+            # cquery returns a path relative to the execution root; with
+            # --symlink_prefix=/ there is NO bazel-out convenience symlink in the
+            # workspace, so the relative path doesn't resolve from cwd. Prepend the
+            # execution root to get the real file (this was the v0.7.5 attach bug).
+            local relbin execroot bin
+            relbin=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
+                "${hdr[@]}" --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1)
+            execroot=$(bb --output_base="${ob}" info execution_root 2>/dev/null)
+            bin="${execroot}/${relbin}"
+            if [ -z "${relbin}" ] || [ ! -f "${bin}" ]; then
               echo "::error::missing binary for ${target}: '${bin}'"; tail -40 "${log}"; return 1
             fi
             local name="mobkit-gateway-${VERSION}-${target}.${ext}"
             if [ "${ext}" = "zip" ]; then
-              ( cd "$(dirname "${bin}")" && zip -q -j "${GITHUB_WORKSPACE}/dist/${name}" "$(basename "${bin}")" )
+              # The self-hosted runner has no `zip`; build the archive with python.
+              python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${GITHUB_WORKSPACE}/dist/${name}"
             else
               tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
             fi
@@ -169,16 +176,19 @@ jobs:
             sleep 8
           done
 
-          fail=0
+          # Ship whatever succeeded — a single flaky target (e.g. windows on the
+          # separate king.europe instance) must not throw away the other binaries.
+          ok=0; failed=""
           for i in "${!pids[@]}"; do
             if wait "${pids[$i]}"; then
-              echo "OK ${labels[$i]}"
+              echo "OK ${labels[$i]}"; ok=$((ok+1))
             else
-              echo "::error::FAILED ${labels[$i]}"; fail=1
+              echo "::error::FAILED ${labels[$i]}"; failed="${failed} ${labels[$i]}"
             fi
           done
           echo "=== dist ==="; ls -la dist/ || true
-          [ "${fail}" -eq 0 ] || { echo "one or more targets failed"; exit 1; }
+          [ -n "${failed}" ] && echo "::warning::targets failed:${failed} — shipping the ${ok} that succeeded"
+          [ "${ok}" -ge 1 ] || { echo "::error::all targets failed"; exit 1; }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
