@@ -4,14 +4,18 @@ build:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
 build:buildbuddy --remote_upload_local_results
 build:buildbuddy --remote_timeout=600
 build:buildbuddy --remote_cache_compression
-# Compile the release binaries at opt-level 1, matching the cargo gateway's
-# [profile.release] choice. An I/O-bound orchestration server is plenty fast at
-# opt-1, which compiles far faster than bazel's default opt (= opt-3) and keeps the
-# cold cross-platform build inside a sane time budget. This is a global rustc flag
-# appended after -c opt's opt-level=3 (last wins), so it reaches the crate_universe
-# crates (the heavy meerkat tree) too. The per-crate opt-level=0 annotation on
+# Compile the release binaries at opt-level 1 with many codegen units. opt-1
+# matches the cargo gateway's [profile.release] choice (an I/O-bound orchestration
+# server is plenty fast at opt-1, which compiles far faster than bazel's default opt
+# = opt-3). codegen-units=256 is the real lever for the cold cross-platform build:
+# the heavy meerkat crates (meerkat_runtime is ~107 files) are single rustc compiles
+# pinned to one executor, and at the default 16 units one crate took ~40 min; 256
+# units fans its codegen across the executor's 32 cores. These are global rustc
+# flags appended after -c opt's opt-level=3 (last wins), so they reach the
+# crate_universe crates too. Must be ONE comma-separated value — repeating the flag
+# replaces rather than appends. The per-crate opt-level=0 annotation on
 # meerkat-machine-schema is appended after THIS, so it still wins for that crate.
-build:buildbuddy --@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=1
+build:buildbuddy --@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=1,-Ccodegen-units=256
 
 build:buildbuddy-macos-rbe --config=buildbuddy
 build:buildbuddy-macos-rbe --remote_executor=grpcs://remote.buildbuddy.io
