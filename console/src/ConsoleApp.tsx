@@ -542,6 +542,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [selectedRosterMemberId, setSelectedRosterMemberId] =
     React.useState("");
   const [loading, setLoading] = React.useState(true);
+  // Per-identity reactive flag for an in-flight initial session-history fetch, so
+  // the chat pane can show a loading indicator instead of an empty "No messages
+  // yet" while a (potentially large) history is loading. (timelineFetchInFlightRef
+  // is a ref and doesn't trigger re-renders.)
+  const [loadingHistory, setLoadingHistory] = React.useState<Record<string, boolean>>({});
   const [error, setError] = React.useState("");
   // Recoverable per-action failures (e.g. an access-denied send). Rendered
   // as a dismissible banner inside the shell — never the fatal error screen.
@@ -1205,6 +1210,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       });
     }
 
+    setLoadingHistory((current) =>
+      current[normalized] ? current : { ...current, [normalized]: true },
+    );
     const request = (async () => {
       const { page } = await queryIdentityTimelinePage(normalized, {
         mode: "recent",
@@ -1215,6 +1223,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
+      setLoadingHistory((current) => {
+        if (!current[normalized]) return current;
+        const next = { ...current };
+        delete next[normalized];
+        return next;
+      });
     });
     timelineFetchInFlightRef.current[normalized] = request;
     return request;
@@ -2863,7 +2877,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // =========================================================================
 
   if (loading)
-    return <div data-testid="console-loading">Loading console...</div>;
+    return (
+      <div
+        data-testid="console-loading"
+        aria-live="polite"
+        aria-busy="true"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "0.6rem",
+          minHeight: "100vh",
+        }}
+      >
+        <span className="msg__typing-dots" aria-hidden="true">
+          <span /><span /><span />
+        </span>
+        <span>Loading console…</span>
+      </div>
+    );
   if (error) return <div data-testid="console-error">{error}</div>;
 
   // =========================================================================
@@ -3016,6 +3048,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         identity={identity}
         entries={entries}
         phase={phase}
+        isLoadingHistory={Boolean(loadingHistory[identity])}
         draft={draft}
         sending={isSending}
         readOnly={consoleReadOnly}

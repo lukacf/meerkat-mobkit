@@ -416,6 +416,12 @@ function eventSortRank(event: string | undefined): number {
     case "assistant_image":
     case "assistant_image_appended":
       return 35;
+    // Reasoning ("thinking") precedes the answer text it leads to; rank it before
+    // text so equal-timestamp (or timestamp-less) reasoning frames don't sort
+    // after the answer.
+    case "reasoning_delta":
+    case "reasoning_complete":
+      return 38;
     case "text_delta":
       return 40;
     case "text_complete":
@@ -481,8 +487,14 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
           return leftStarts ? -1 : 1;
         }
       }
-      const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-      const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      // A frame missing its own timestamp must NOT jump to the end of its
+      // interaction. Reasoning frames frequently arrive without a timestamp; with
+      // a MAX_SAFE_INTEGER fallback they sort after the answer text and render
+      // "thinking" at the end of the turn. Fall back to the interaction's group
+      // timestamp so the frame keeps its chronological position; eventSortRank and
+      // arrival order then break ties (reasoning before text).
+      const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : leftGroupTs;
+      const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : rightGroupTs;
       if (leftTs !== rightTs) {
         return leftTs - rightTs;
       }
