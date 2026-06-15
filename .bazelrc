@@ -21,9 +21,11 @@ build:buildbuddy-macos-x86-rbe --config=buildbuddy
 build:buildbuddy-macos-x86-rbe --remote_executor=grpcs://remote.buildbuddy.io
 build:buildbuddy-macos-x86-rbe --remote_download_minimal
 build:buildbuddy-macos-x86-rbe --platforms=//platforms:macos_x86_64
-build:buildbuddy-macos-x86-rbe --extra_execution_platforms=//platforms:macos_x86_64
+# No Intel-mac executors exist; cross-compile the x86_64 target on an
+# Apple-silicon executor (its Xcode carries the x86_64 toolchain).
+build:buildbuddy-macos-x86-rbe --extra_execution_platforms=//platforms:macos_arm64
 build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=OSFamily=darwin
-build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=Arch=amd64
+build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=Arch=arm64
 build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=use-self-hosted-executors=true
 build:buildbuddy-macos-x86-rbe --nobuild_runfile_links
 build:buildbuddy-macos-x86-rbe --symlink_prefix=/
