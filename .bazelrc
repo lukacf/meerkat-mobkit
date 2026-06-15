@@ -27,6 +27,7 @@ build:buildbuddy-macos-x86-rbe --extra_execution_platforms=//platforms:macos_arm
 build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=OSFamily=darwin
 build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=Arch=arm64
 build:buildbuddy-macos-x86-rbe --remote_default_exec_properties=use-self-hosted-executors=true
+build:buildbuddy-macos-x86-rbe --xcode_version_config=//platforms:rbe_xcodes
 build:buildbuddy-macos-x86-rbe --nobuild_runfile_links
 build:buildbuddy-macos-x86-rbe --symlink_prefix=/
 
