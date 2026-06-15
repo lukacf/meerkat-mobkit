@@ -88,137 +88,60 @@ jobs:
         run: make fmt-check
 
   build_binaries:
-    name: Build gateway binary (${{ matrix.target }})
+    name: Build gateway binaries (BuildBuddy RBE)
     needs: [release_validate]
-    runs-on: ${{ matrix.runs-on }}
-    # CARGO_TARGET_DIR is pinned to a fixed in-workspace `target/` (instead of
-    # repo-cargo's per-worktree cache dir) so Swatinem/rust-cache can find and
-    # cache the build. The repo's .cargo/config.toml (RUST_MIN_STACK) still
-    # applies since cargo reads it from the repo root.
+    # Self-hosted runner has bb (BuildBuddy CLI) + the toolchain; the actual
+    # compiles run on hosted-BuildBuddy RBE (linux/macOS) and king.europe (windows).
+    runs-on: ["self-hosted", "mobkit-temp-linux"]
     env:
-      CARGO_TARGET_DIR: target
-    strategy:
-      fail-fast: false
-      matrix:
-        # The heavy Linux x86_64 build runs on the reused meerkat self-hosted
-        # runner (32-core / 128 GB) with sccache + full parallelism: no OOM and a
-        # warm cross-release cache. Other targets stay GitHub-hosted — macOS on
-        # larger paid runners (-j2 fits 30 GB), and the 16 GB Linux-arm / Windows
-        # runners at -j1 (a hard memory cap: meerkat-machine-schema is ~5.8 GB at
-        # opt-0 and several meerkat crates are multi-GB, so higher -j OOMs 16 GB).
-        include:
-          - runs-on: ["self-hosted", "mobkit-temp-linux"]
-            target: x86_64-unknown-linux-gnu
-            archive_ext: tar.gz
-            self_hosted: true
-          - runs-on: ["ubuntu-24.04-arm"]
-            target: aarch64-unknown-linux-gnu
-            archive_ext: tar.gz
-            jobs: 1
-          - runs-on: ["macos-15-xlarge"]
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-            jobs: 2
-          - runs-on: ["macos-15-large"]
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-            jobs: 2
-          - runs-on: ["windows-latest"]
-            target: x86_64-pc-windows-msvc
-            archive_ext: zip
-            jobs: 1
-
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+      CARGO_BAZEL_REPIN: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # Self-hosted: keep the working tree + target/ across runs so cargo
-          # reuses unchanged crates (a clean checkout rewrites mtimes and forces a
-          # full rebuild, defeating the warm cache). GitHub-hosted is ephemeral.
-          clean: ${{ !matrix.self_hosted }}
 
-      # Self-hosted runner already has the rustc-stable toolchain on PATH (it
-      # mirrors meerkat's runner env) and reuses its persistent target/, so it
-      # skips the toolchain install / target add / Actions cache GitHub-hosted needs.
-      - name: Install Rust
-        if: ${{ !matrix.self_hosted }}
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add release target
-        if: ${{ !matrix.self_hosted }}
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Cache cargo build
-        if: ${{ !matrix.self_hosted }}
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build gateway binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ matrix.self_hosted }}" == "true" ]]; then
-            # 32-core / 128 GB self-hosted runner: full parallelism (no OOM). High
-            # codegen-units fans a single big crate's codegen across all cores,
-            # which cuts the serial dependency tail (meerkat_core -> runtime -> mob
-            # -> mobkit) that idles most cores at the default unit count. Safe on
-            # 128 GB; scoped to self-hosted (it would OOM 16 GB GitHub runners).
-            # The persistent target/ (checkout clean:false) reuses unchanged crates,
-            # so warm releases recompile only meerkat-mobkit + relink (~minutes).
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
-            cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}"
-          else
-            # GitHub-hosted: -j is a hard memory cap — meerkat-machine-schema is
-            # ~5.8 GB at opt-0 and several meerkat crates are multi-GB, so higher
-            # -j OOMs the 16 GB runners.
-            cargo build -p meerkat-mobkit --bin mobkit_gateway --release --target "${{ matrix.target }}" -j ${{ matrix.jobs }}
-          fi
-
-      - name: Package artifacts
+      - name: Build + package all targets via BuildBuddy RBE
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
           VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
-          ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
           set -euo pipefail
-          BINARIES=("mobkit_gateway")
+          VERSION="${VERSION#v}"; VERSION="${VERSION//\//-}"
+          hdr=(--remote_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}" --bes_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}")
+          # target : .bazelrc RBE config : archive ext
+          targets=(
+            "x86_64-unknown-linux-gnu:buildbuddy-linux-rbe:tar.gz"
+            "aarch64-unknown-linux-gnu:buildbuddy-linux-arm64-rbe:tar.gz"
+            "aarch64-apple-darwin:buildbuddy-macos-rbe:tar.gz"
+            "x86_64-apple-darwin:buildbuddy-macos-x86-rbe:tar.gz"
+            "x86_64-pc-windows-msvc:buildbuddy-windows-rbe:zip"
+          )
           mkdir -p dist
-          target_dir="${CARGO_TARGET_DIR:-target}"
-          VERSION="${VERSION#v}"
-          VERSION="${VERSION//\//-}"
-
-          for bin in "${BINARIES[@]}"; do
-            if [[ "${RUNNER_OS}" == "Windows" ]]; then
-              src="${target_dir}/${TARGET}/release/${bin}.exe"
+          for entry in "${targets[@]}"; do
+            IFS=: read -r target cfg ext <<< "$entry"
+            echo "::group::build ${target} (${cfg})"
+            bb build --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+              --remote_download_outputs=toplevel //meerkat-mobkit:mobkit_gateway_bin
+            bin=$(bb cquery --config="${cfg}" --compilation_mode=opt "${hdr[@]}" \
+              --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1)
+            [[ -n "${bin}" && -f "${bin}" ]] || { echo "missing binary for ${target}: '${bin}'" >&2; exit 1; }
+            name="mobkit-gateway-${VERSION}-${target}.${ext}"
+            if [[ "${ext}" == "zip" ]]; then
+              ( cd "$(dirname "${bin}")" && zip -q -j "${GITHUB_WORKSPACE}/dist/${name}" "$(basename "${bin}")" )
             else
-              src="${target_dir}/${TARGET}/release/${bin}"
+              tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
             fi
-            artifact_name="mobkit-gateway-${VERSION}-${TARGET}.${ARCHIVE_EXT}"
-
-            if [[ ! -f "$src" ]]; then
-              echo "Missing expected binary at $src" >&2
-              exit 1
-            fi
-
-            if [[ "$ARCHIVE_EXT" == "zip" ]]; then
-              7z a -tzip "${GITHUB_WORKSPACE}/dist/${artifact_name}" "$(cygpath -w "$src")"
-            else
-              tar -czf "dist/${artifact_name}" -C "$(dirname "$src")" "$(basename "$src")"
-            fi
-            echo "packaged=${bin} -> dist/${artifact_name}"
+            echo "packaged dist/${name}"
+            echo "::endgroup::"
           done
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
+          ls -la dist/
+          # repin only needs to happen once; the lock is now generated.
+          unset CARGO_BAZEL_REPIN || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mobkit-${{ matrix.target }}
+          name: mobkit-gateway-binaries
           path: dist/*
           if-no-files-found: error
 
