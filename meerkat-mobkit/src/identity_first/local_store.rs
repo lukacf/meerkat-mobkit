@@ -645,6 +645,28 @@ mod tests {
             15,
             "high-water must persist across reopen"
         );
+
+        // The session_snapshots arm of the union must actually count: a snapshot
+        // whose token exceeds the continuity record (the crash-window case the
+        // MAX-over-both-tables query is for) becomes the high-water.
+        let snap_only = LocalContinuityStore::in_memory().unwrap();
+        let sid = meerkat_core::types::SessionId::new();
+        snap_only
+            .save_session_snapshot(
+                &identity,
+                &sid,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(7),
+                &SessionSnapshot { data: vec![9] },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            snap_only.max_fencing_token().unwrap(),
+            7,
+            "high-water must come from session_snapshots when no continuity record is present"
+        );
     }
 
     /// The end-to-end restart regression: a lease provider seeded from the

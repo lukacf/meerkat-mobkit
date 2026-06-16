@@ -1789,7 +1789,15 @@ external_addressable = true
                         format!("failed to open continuity store: {e}"),
                     );
                 });
-            local_fencing_floor = store.max_fencing_token().unwrap_or(0);
+            // Fail loudly rather than silently degrading to floor 0 — a 0 floor
+            // would re-arm the very restart-abort this seeding prevents.
+            local_fencing_floor = store.max_fencing_token().unwrap_or_else(|e| {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to read continuity fencing high-water: {e}"),
+                )
+            });
             Arc::new(store)
         })
     } else {
