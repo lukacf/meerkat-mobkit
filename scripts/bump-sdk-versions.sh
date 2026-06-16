@@ -42,6 +42,21 @@ fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
     echo "  TypeScript SDK: $VERSION"
 fi
 
+# TypeScript SDK lockfile — the root package version lives in two places
+# (top-level + packages['']). Keep it in lockstep so it can't drift (it was
+# stale at 0.7.4 across 0.7.5–0.7.7).
+if [ -f "$ROOT/sdk/typescript/package-lock.json" ]; then
+    node -e "
+const fs = require('fs');
+const p = '$ROOT/sdk/typescript/package-lock.json';
+const lock = JSON.parse(fs.readFileSync(p, 'utf8'));
+lock.version = '$VERSION';
+if (lock.packages && lock.packages['']) lock.packages[''].version = '$VERSION';
+fs.writeFileSync(p, JSON.stringify(lock, null, 2) + '\n');
+"
+    echo "  TypeScript SDK lockfile: $VERSION"
+fi
+
 # Bazel build rules embed the crate version via rustc_env, which feeds
 # env!("CARGO_PKG_VERSION") in the bazel-built RELEASE binaries (e.g. their
 # `--version` output). Keep it in lockstep so released gateways don't report a

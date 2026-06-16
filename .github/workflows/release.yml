@@ -153,21 +153,31 @@ jobs:
             # root to get the real file (this was the v0.7.5 attach bug).
             package_bin() {
               local bazel_target="$1" archive_prefix="$2"
-              local relbin bin
-              relbin=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
-                  "${hdr[@]}" --output=files "${bazel_target}" 2>/dev/null | tail -1)
+              local binname="${bazel_target##*:}"
+              local relbin bin files
+              files=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
+                  "${hdr[@]}" --output=files "${bazel_target}" 2>/dev/null)
+              # Prefer the output whose basename is the bin target (so we never pick
+              # an aux output like a windows .pdb); fall back to the last line.
+              relbin=$(printf '%s\n' "${files}" | grep -E "/${binname}(\.exe)?$" | tail -1)
+              [ -n "${relbin}" ] || relbin=$(printf '%s\n' "${files}" | tail -1)
               bin="${execroot}/${relbin}"
               if [ -z "${relbin}" ] || [ ! -f "${bin}" ]; then
                 echo "::error::missing binary ${bazel_target} for ${target}: '${bin}'"; tail -40 "${log}"; return 1
               fi
               local name="${archive_prefix}-${VERSION}-${target}.${ext}"
+              local out="${GITHUB_WORKSPACE}/dist/${name}"
               if [ "${ext}" = "zip" ]; then
                 # The self-hosted runner has no `zip`; build the archive with python.
-                python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${GITHUB_WORKSPACE}/dist/${name}"
+                python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${out}" \
+                  || { echo "::error::failed to zip ${name}"; return 1; }
               else
-                tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
+                tar -czf "${out}" -C "$(dirname "${bin}")" "$(basename "${bin}")" \
+                  || { echo "::error::failed to tar ${name}"; return 1; }
               fi
-              echo "packaged dist/${name} ($(du -h "dist/${name}" | cut -f1))"
+              # Catch silent packaging failure / truncation before reporting success.
+              [ -s "${out}" ] || { echo "::error::archive ${name} missing or empty after packaging"; return 1; }
+              echo "packaged dist/${name} ($(du -h "${out}" | cut -f1))"
             }
             # Ship BOTH: the console/HTTP gateway (mobkit_gateway) and the SDK
             # stdin-RPC gateway (rpc_gateway). SDK users need rpc_gateway; before

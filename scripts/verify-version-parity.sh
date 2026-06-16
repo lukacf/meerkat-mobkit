@@ -54,6 +54,34 @@ if $PKG_OK; then
     green "  Package versions: OK"
 fi
 
+# 2. Bazel rustc_env parity — drives env!("CARGO_PKG_VERSION") in the
+# bazel-built RELEASE binaries (and their --version). Drifted to 0.7.4 across
+# 0.7.5–0.7.7 because nothing checked it; now it does.
+BAZEL_FILE="$ROOT/meerkat-mobkit/BUILD.bazel"
+if [ -f "$BAZEL_FILE" ]; then
+    BAD_BAZEL=$(grep -oE '"CARGO_PKG_VERSION": "[^"]*"' "$BAZEL_FILE" \
+        | grep -v "\"$CARGO_VER\"" | sort -u || true)
+    if [ -n "$BAD_BAZEL" ]; then
+        red "FAIL: BUILD.bazel CARGO_PKG_VERSION entries != $CARGO_VER:"
+        printf '%s\n' "$BAD_BAZEL"
+        FAIL=1
+    else
+        green "  BUILD.bazel CARGO_PKG_VERSION: OK"
+    fi
+fi
+
+# 3. TypeScript SDK lockfile root version parity.
+LOCK_FILE="$ROOT/sdk/typescript/package-lock.json"
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_VER=$(node -p "require('$LOCK_FILE').version" 2>/dev/null || echo "")
+    if [ -n "$LOCK_VER" ] && [ "$LOCK_VER" != "$CARGO_VER" ]; then
+        red "FAIL: package-lock.json version mismatch ($LOCK_VER != $CARGO_VER)"
+        FAIL=1
+    else
+        green "  package-lock.json version: OK"
+    fi
+fi
+
 echo ""
 if [ $FAIL -ne 0 ]; then
     red "Version parity check FAILED"

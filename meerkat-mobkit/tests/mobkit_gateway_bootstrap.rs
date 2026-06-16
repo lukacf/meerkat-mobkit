@@ -137,9 +137,12 @@ fn gateways_report_name_and_version() {
             .expect("run --version");
         assert!(out.status.success(), "{needle} --version exited non-zero");
         let stdout = String::from_utf8_lossy(&out.stdout);
+        // Assert the ACTUAL crate version, not just "some digit", so this test
+        // catches a stale/wrong baked-in version (the BUILD.bazel drift class).
         assert!(
-            stdout.contains(needle) && stdout.chars().any(|c| c.is_ascii_digit()),
-            "{needle} --version did not print name + version: {stdout:?}"
+            stdout.contains(needle) && stdout.contains(env!("CARGO_PKG_VERSION")),
+            "{needle} --version did not print name + version {}: {stdout:?}",
+            env!("CARGO_PKG_VERSION")
         );
     }
 }
