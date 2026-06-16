@@ -24,7 +24,9 @@ echo "release-hook: verifying version parity"
 echo "release-hook: staging SDK version files"
 git add \
   "$ROOT/sdk/python/pyproject.toml" \
-  "$ROOT/sdk/typescript/package.json"
+  "$ROOT/sdk/typescript/package.json" \
+  "$ROOT/sdk/typescript/package-lock.json" \
+  "$ROOT/meerkat-mobkit/BUILD.bazel"
 
 echo "$VERSION" > "$SENTINEL"
 echo "release-hook: done ($VERSION)"
