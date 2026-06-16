@@ -40,6 +40,7 @@ interface ChatPaneProps {
   sendLabel?: string;
   hasOlderHistory?: boolean;
   loadingOlderHistory?: boolean;
+  isLoadingHistory?: boolean;
   onLoadOlder?: () => void;
   /// Pending-message stack rendered between conversation body and
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
@@ -498,6 +499,7 @@ export function ChatPane({
   sendLabel = "Send",
   hasOlderHistory = false,
   loadingOlderHistory = false,
+  isLoadingHistory = false,
   onLoadOlder,
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
@@ -509,6 +511,16 @@ export function ChatPane({
   const messages = React.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
+  // The id of the in-progress (latest) agent turn. While `phase` is non-null the
+  // turn is still working, so we suppress that turn's "Worked for Ns" summary —
+  // otherwise it renders alongside the "working…" indicator (the done + working
+  // contradiction). Earlier, completed turns keep their summary regardless.
+  const lastAgentMessageId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].kind === "agent") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
   const scrollSignature = React.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
@@ -738,7 +750,25 @@ export function ChatPane({
             {loadingOlderHistory ? "Loading history" : "Load older history"}
           </button>
         )}
-        {messages.length === 0 && (
+        {messages.length === 0 && isLoadingHistory && (
+          <div
+            className="msg msg--origin"
+            data-testid={`chat-loading-history:${identity}`}
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div className="msg__time" />
+            <div className="msg__bubble">
+              <span className="msg__typing">
+                <span className="msg__typing-dots" aria-hidden="true">
+                  <span /><span /><span />
+                </span>
+                <span className="msg__typing-label">Loading conversation…</span>
+              </span>
+            </div>
+          </div>
+        )}
+        {messages.length === 0 && !isLoadingHistory && (
           <div className="msg msg--origin">
             <div className="msg__time" />
             <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
@@ -756,7 +786,7 @@ export function ChatPane({
               ) : (
                 m.text && <span className="msg__text">{m.text}</span>
               )}
-              {m.workedFor && (
+              {m.workedFor && !(phase && m.id === lastAgentMessageId) && (
                 <div className="msg__worked">
                   <span>Worked for {m.workedFor}</span>
                   <CopyInlineButton

@@ -113,3 +113,64 @@ test("chat pane disables composer in read-only mode", () => {
   assert.match(html, /View-only console/);
   assert.match(html, /view only/);
 });
+
+function renderChat(args: {
+  entries: ConversationTimelineEntry[];
+  phase: "waiting" | "tool-executing" | "generating" | null;
+  isLoadingHistory?: boolean;
+}): string {
+  return renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      agent: {
+        agent_id: "agent",
+        member_id: "agent",
+        identity: "agent",
+        label: "Agent",
+        kind: "mob_agent",
+        role: "worker",
+        state: "active",
+        model_capabilities: { image_input: true },
+      },
+      agentLabel: "Agent",
+      identity: "agent",
+      entries: args.entries,
+      phase: args.phase,
+      isLoadingHistory: args.isLoadingHistory ?? false,
+      draft: "",
+      sending: false,
+      readOnly: false,
+      staged: [],
+      onDraftChange: () => undefined,
+      onStagedChange: () => undefined,
+      onSend: () => true,
+    }),
+  );
+}
+
+const WORK_ENTRIES: ConversationTimelineEntry[] = [
+  message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Please review the PR." }),
+  message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "Review complete." }),
+];
+
+test("chat pane shows the working indicator XOR the worked-for summary, never both", () => {
+  // While the latest turn is still working, its "Worked for" summary must be
+  // suppressed (otherwise it renders alongside the working indicator).
+  const working = renderChat({ entries: WORK_ENTRIES, phase: "waiting" });
+  assert.match(working, /chat-typing:agent/);
+  assert.doesNotMatch(working, /Worked for/);
+
+  // Once the turn is done (phase null) the summary shows and the indicator is gone.
+  const done = renderChat({ entries: WORK_ENTRIES, phase: null });
+  assert.doesNotMatch(done, /chat-typing:agent/);
+  assert.match(done, /Worked for 2m 5s/);
+});
+
+test("chat pane shows a loading indicator while an empty session history is fetched", () => {
+  const loading = renderChat({ entries: [], phase: null, isLoadingHistory: true });
+  assert.match(loading, /Loading conversation/);
+  assert.doesNotMatch(loading, /No messages yet/);
+
+  const empty = renderChat({ entries: [], phase: null, isLoadingHistory: false });
+  assert.match(empty, /No messages yet/);
+  assert.doesNotMatch(empty, /Loading conversation/);
+});

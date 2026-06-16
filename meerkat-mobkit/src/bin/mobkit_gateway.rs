@@ -664,7 +664,14 @@ async fn run() -> anyhow::Result<()> {
             context_root.clone(),
             image_generation,
         )?;
-        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
+        // The explicit runtime adapter must share the session service's runtime
+        // persistence authority or meerkat 0.7 fails the bootstrap closed.
+        // `with_session_runtime_adapter` wires the SAME adapter into the session
+        // service (mirrors rpc_gateway.rs). This branch already shared via the
+        // runtime_store handed to PersistentSessionService, so this is defensive;
+        // the default ephemeral branch below is the one that was actually broken.
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+            .with_session_runtime_adapter(adapter.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -698,7 +705,15 @@ async fn run() -> anyhow::Result<()> {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
-        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service);
+        // THE FIX: share the explicit adapter's persistence authority with the
+        // session service. Without this, EphemeralSessionService keeps its own
+        // (store-less) adapter, meerkat 0.7's canonical_runtime_adapter check sees
+        // a mismatch and fails closed with "failed to bootstrap local runtime" —
+        // which is what broke every shipped 0.7.x mobkit_gateway binary on the
+        // first mobkit/init (persistent_sessions defaults off, so this is the path
+        // every launch hits). rpc_gateway.rs already had this call.
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_session_runtime_adapter(adapter.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec

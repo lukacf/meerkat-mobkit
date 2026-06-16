@@ -182,6 +182,38 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
   assert.equal(text, "Status is stable.");
 });
 
+test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answer text", () => {
+  // Regression: reasoning frames frequently arrive without a timestamp. The
+  // transcript sort used to send timestamp-less frames to MAX_SAFE_INTEGER, so
+  // reasoning sorted AFTER the answer text and rendered "thinking" at the end of
+  // the turn. Here the reasoning frame has no timestampMs and is listed after the
+  // text frames; it must still render before the answer.
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      { id: "evt-1", event: "interaction_started", interactionId: "int-1", timestampMs: 1000, data: {} },
+      { id: "evt-3", event: "text_delta", interactionId: "int-1", timestampMs: 1200, data: { delta: "The answer." } },
+      { id: "evt-4", event: "text_complete", interactionId: "int-1", timestampMs: 1200, data: { content: "The answer." } },
+      { id: "evt-2", event: "reasoning_delta", interactionId: "int-1", data: { delta: "Thinking first." } },
+      { id: "evt-5", event: "interaction_complete", interactionId: "int-1", timestampMs: 1300, data: {} },
+    ],
+  );
+  const thinkingIdx = entries.findIndex(
+    (e) => "blocks" in e && Array.isArray(e.blocks) && e.blocks.some((b) => b.type === "thinking"),
+  );
+  const answerIdx = entries.findIndex((e) => {
+    const t = "text" in e
+      ? e.text
+      : "blocks" in e && Array.isArray(e.blocks) && e.blocks[0]?.type === "paragraph"
+        ? e.blocks[0].text
+        : "";
+    return typeof t === "string" && t.includes("The answer.");
+  });
+  assert.ok(thinkingIdx >= 0, "thinking entry present");
+  assert.ok(answerIdx >= 0, "answer entry present");
+  assert.ok(thinkingIdx < answerIdx, `thinking (${thinkingIdx}) should precede answer (${answerIdx})`);
+});
+
 test("mapFramesToTimelineEntries keeps incomplete streamed markdown tails conservative", () => {
   const entries = mapFramesToTimelineEntries(
     {

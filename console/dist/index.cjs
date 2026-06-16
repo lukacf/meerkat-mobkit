@@ -3244,6 +3244,12 @@ function eventSortRank(event) {
     case "assistant_image":
     case "assistant_image_appended":
       return 35;
+    // Reasoning ("thinking") precedes the answer text it leads to; rank it before
+    // text so equal-timestamp (or timestamp-less) reasoning frames don't sort
+    // after the answer.
+    case "reasoning_delta":
+    case "reasoning_complete":
+      return 38;
     case "text_delta":
       return 40;
     case "text_complete":
@@ -3299,8 +3305,8 @@ function sortFramesForTranscript(frames) {
         return leftStarts ? -1 : 1;
       }
     }
-    const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : leftGroupTs;
+    const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : rightGroupTs;
     if (leftTs !== rightTs) {
       return leftTs - rightTs;
     }
@@ -12300,6 +12306,7 @@ function ChatPane({
   sendLabel = "Send",
   hasOlderHistory = false,
   loadingOlderHistory = false,
+  isLoadingHistory = false,
   onLoadOlder,
   stackSlot
 }) {
@@ -12310,6 +12317,12 @@ function ChatPane({
   const messages = import_react25.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
+  const lastAgentMessageId = import_react25.default.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].kind === "agent") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
   const scrollSignature = import_react25.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
@@ -12521,7 +12534,27 @@ function ChatPane({
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
-          messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg msg--origin", children: [
+          messages.length === 0 && isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
+            "div",
+            {
+              className: "msg msg--origin",
+              "data-testid": `chat-loading-history:${identity}`,
+              "aria-live": "polite",
+              "aria-busy": "true",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", {})
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "msg__typing-label", children: "Loading conversation\u2026" })
+                ] }) })
+              ]
+            }
+          ),
+          messages.length === 0 && !isLoadingHistory && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg msg--origin", children: [
             /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__time" }),
             /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { className: "msg__text", children: [
               "No messages yet. Say hello to ",
@@ -12534,7 +12567,7 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg__bubble", children: [
               (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
               m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "msg__text", children: m.text }),
-              m.workedFor && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg__worked", children: [
+              m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("div", { className: "msg__worked", children: [
                 /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("span", { children: [
                   "Worked for ",
                   m.workedFor
@@ -13655,6 +13688,7 @@ function ConsoleApp({ baseUrl }) {
   const [activeActivityPresetId, setActiveActivityPresetId] = import_react28.default.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react28.default.useState("");
   const [loading, setLoading] = import_react28.default.useState(true);
+  const [loadingHistory, setLoadingHistory] = import_react28.default.useState({});
   const [error, setError] = import_react28.default.useState("");
   const [actionError, setActionError] = import_react28.default.useState("");
   const [theme, setTheme] = import_react28.default.useState(() => {
@@ -14140,6 +14174,9 @@ function ConsoleApp({ baseUrl }) {
         }
       });
     }
+    setLoadingHistory(
+      (current) => current[normalized] ? current : { ...current, [normalized]: true }
+    );
     const request = (async () => {
       const { page } = await queryIdentityTimelinePage(normalized, {
         mode: "recent",
@@ -14150,6 +14187,12 @@ function ConsoleApp({ baseUrl }) {
       forceRender();
     })().finally(() => {
       delete timelineFetchInFlightRef.current[normalized];
+      setLoadingHistory((current) => {
+        if (!current[normalized]) return current;
+        const next = { ...current };
+        delete next[normalized];
+        return next;
+      });
     });
     timelineFetchInFlightRef.current[normalized] = request;
     return request;
@@ -15335,7 +15378,29 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointercancel", cleanup);
   }
   if (loading)
-    return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
+    return /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)(
+      "div",
+      {
+        "data-testid": "console-loading",
+        "aria-live": "polite",
+        "aria-busy": "true",
+        style: {
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "0.6rem",
+          minHeight: "100vh"
+        },
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", {})
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("span", { children: "Loading console\u2026" })
+        ]
+      }
+    );
   if (error) return /* @__PURE__ */ (0, import_jsx_runtime37.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState2({
@@ -15442,6 +15507,7 @@ function ConsoleApp({ baseUrl }) {
         identity,
         entries,
         phase,
+        isLoadingHistory: Boolean(loadingHistory[identity]),
         draft,
         sending: isSending,
         readOnly: consoleReadOnly,
