@@ -223,4 +223,230 @@ mod tests {
             );
         }
     }
+
+    // --- Defensive suite: map the whole id codec + reconciliation aliases ---
+
+    /// The exact identities + runtime-id forms from the HomeCore deployment
+    /// that surfaced the meerkat 0.7 comms-name regression, plus the escape
+    /// productions. Every entry must encode to a comms-safe id and round-trip.
+    fn defensive_corpus() -> Vec<String> {
+        let mut v: Vec<String> = [
+            // Plain definition-mob names (pass through unchanged).
+            "worker",
+            "worker-one",
+            "_internal",
+            "Agent7",
+            "a",
+            // HomeCore durable identities (colon-bearing).
+            "identity:parent-1",
+            "identity:parent-2",
+            "identity:child-1",
+            "identity:child-2",
+            "domain:calendar",
+            "domain:school",
+            "domain:health",
+            "domain:home",
+            "domain:home-automation",
+            "domain:finance",
+            "domain:discovery",
+            "family-group:main",
+            "triage:main",
+            "gate:main",
+            // Runtime-id shaped aliases (`rt:{identity}:{generation}`).
+            "rt:identity:parent-1:0",
+            "rt:domain:home-automation:3",
+            "rt:channel:C0SMOKEOB3:0",
+            "rt:review:singleton:12",
+            // Mixed punctuation / boundary shapes.
+            "a:b_c",
+            "with_underscore:and:colons",
+            "user@host",
+            "a.b:c",
+            "9starts-with-digit",
+            "::",
+            ":",
+            "-",
+            "mk--collision",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        // Non-ASCII, multi-byte, and control characters.
+        v.push("ünïcode:1".to_string());
+        v.push("emoji-😀:2".to_string());
+        v.push("Ω≈ç:3".to_string());
+        v.push("tab\tnl\n".to_string());
+        v.push("\u{0}\u{1f}x".to_string());
+        v.push("a b".to_string());
+        v.push(String::new());
+        v
+    }
+
+    #[test]
+    fn homecore_corpus_round_trips_and_is_comms_safe() {
+        for alias in defensive_corpus() {
+            let encoded = mob_member_id_str(&alias).into_owned();
+            assert!(
+                is_valid_comms_component(&encoded),
+                "encoded {encoded:?} (from {alias:?}) is not a valid comms component"
+            );
+            assert!(
+                !encoded.contains([':', '/']),
+                "encoded {encoded:?} leaks a routing separator"
+            );
+            assert_eq!(
+                runtime_alias_str(&encoded),
+                alias,
+                "round trip of {alias:?}"
+            );
+        }
+    }
+
+    /// The load-bearing guard: the codec's output must be accepted by meerkat
+    /// 0.7's own fail-closed comms-name validator — the exact check that
+    /// rejected `rt:identity:parent-1:0` before this codec existed. If meerkat
+    /// tightens `MemberCommsName` again, this test fails instead of HomeCore.
+    #[test]
+    fn encoded_ids_satisfy_meerkat_member_comms_name_validator() {
+        use meerkat_core::connection::MemberCommsName;
+        for alias in defensive_corpus() {
+            let encoded = mob_member_id_str(&alias).into_owned();
+            assert!(
+                MemberCommsName::new("homecore-mob", "worker", encoded.clone()).is_ok(),
+                "MemberCommsName::new rejected encoded id {encoded:?} (from alias {alias:?})"
+            );
+        }
+    }
+
+    /// Pin the on-the-wire encoding so an accidental codec change is caught.
+    #[test]
+    fn exact_wire_format_for_known_aliases() {
+        let cases = [
+            ("worker-one", "worker-one"), // already comms-safe -> pass through
+            ("identity:parent-1", "mk--identity_cparent-1"),
+            ("domain:home-automation", "mk--domain_chome-automation"),
+            ("family-group:main", "mk--family-group_cmain"),
+            ("rt:identity:parent-1:0", "mk--rt_cidentity_cparent-1_c0"),
+            ("triage:main", "mk--triage_cmain"),
+            ("a:b_c", "mk--a_cb__c"),
+            ("a b", "mk--a_x20_b"),
+            ("", "mk--"),
+        ];
+        for (alias, expected) in cases {
+            assert_eq!(mob_member_id_str(alias), expected, "encode {alias:?}");
+            assert_eq!(runtime_alias_str(expected), alias, "decode {expected:?}");
+        }
+    }
+
+    /// Ids that begin with the marker but are not well-formed escape productions
+    /// must decode to themselves (literal fallback) and never panic.
+    #[test]
+    fn malformed_encoded_bodies_decode_to_literal_without_panic() {
+        for bad in [
+            "mk--_",           // dangling underscore (no escape selector)
+            "mk--_z",          // invalid escape selector
+            "mk--_x",          // truncated hex escape (no terminator)
+            "mk--_x_",         // empty hex body
+            "mk--_xZZ_",       // non-hex digits
+            "mk--_x110000_",   // code point above the Unicode max
+            "mk--_xffffffff_", // parses as u32 but is not a valid char
+            "mk--abc_",        // trailing dangling underscore after a valid run
+        ] {
+            assert_eq!(runtime_alias_str(bad), bad, "literal fallback for {bad:?}");
+        }
+    }
+
+    /// Empty, single-character, and marker-adjacent inputs all round-trip.
+    #[test]
+    fn empty_and_boundary_strings_round_trip() {
+        // Empty alias is not a valid comms component, so it becomes the bare
+        // marker and decodes back to empty.
+        assert_eq!(mob_member_id_str(""), "mk--");
+        assert_eq!(runtime_alias_str("mk--"), "");
+        for alias in [":", "_", "-", "::", "_x", "mk", "mk-", "mk--"] {
+            let encoded = mob_member_id_str(alias).into_owned();
+            assert!(
+                is_valid_comms_component(&encoded),
+                "{encoded:?} not comms-safe"
+            );
+            assert_eq!(runtime_alias_str(&encoded), alias, "round trip {alias:?}");
+        }
+    }
+
+    /// Decode only applies inside the reserved marker namespace; a raw id that
+    /// merely *looks* like an escape body must pass through untouched.
+    #[test]
+    fn decode_is_identity_on_unencoded_ids() {
+        for id in [
+            "worker",
+            "worker-one",
+            "_internal",
+            "Agent7",
+            "rt-review-singleton-0",
+            "a_cb", // not marker-prefixed -> NOT decoded to "a:b"
+        ] {
+            assert_eq!(runtime_alias_str(id), id);
+        }
+    }
+
+    #[test]
+    fn runtime_event_alias_across_generations_and_forms() {
+        use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, Generation};
+
+        let encoded = mob_member_id_str("rt:identity:parent-1:0").into_owned();
+        let rid = AgentRuntimeId::new(AgentIdentity::from(encoded.as_str()), Generation::new(7));
+        assert_eq!(runtime_event_alias(&rid), "rt:identity:parent-1:0:7");
+
+        let encoded = mob_member_id_str("domain:home-automation").into_owned();
+        let rid = AgentRuntimeId::new(AgentIdentity::from(encoded.as_str()), Generation::new(1));
+        assert_eq!(runtime_event_alias(&rid), "domain:home-automation:1");
+
+        // Plain member name keeps its initial generation.
+        let rid = AgentRuntimeId::initial(AgentIdentity::from("triage-main"));
+        assert_eq!(runtime_event_alias(&rid), "triage-main:0");
+    }
+
+    /// Exhaustive total round-trip + comms-safety + injectivity over every
+    /// string of length 0..=3 from a charset that exercises every escape branch.
+    #[test]
+    fn round_trip_is_total_and_injective_over_generated_corpus() {
+        use meerkat_core::connection::MemberCommsName;
+        use std::collections::BTreeMap;
+
+        let charset = ['a', 'Z', '0', '-', '_', ':', '.', '@', ' ', 'ü', '😀'];
+        let mut aliases: Vec<String> = vec![String::new()];
+        let mut frontier = vec![String::new()];
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            for prefix in &frontier {
+                for c in charset {
+                    let mut s = prefix.clone();
+                    s.push(c);
+                    aliases.push(s.clone());
+                    next.push(s);
+                }
+            }
+            frontier = next;
+        }
+
+        let mut encoded_to_alias: BTreeMap<String, String> = BTreeMap::new();
+        for alias in &aliases {
+            let encoded = mob_member_id_str(alias).into_owned();
+            assert!(
+                MemberCommsName::new("m", "r", encoded.clone()).is_ok(),
+                "encoded {encoded:?} (from {alias:?}) is not comms-safe"
+            );
+            assert_eq!(
+                &runtime_alias_str(&encoded).into_owned(),
+                alias,
+                "round trip of {alias:?}"
+            );
+            if let Some(prev) = encoded_to_alias.insert(encoded.clone(), alias.clone()) {
+                assert_eq!(
+                    &prev, alias,
+                    "collision: {prev:?} and {alias:?} both encode to {encoded:?}"
+                );
+            }
+        }
+    }
 }

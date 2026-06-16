@@ -537,6 +537,16 @@ fn init_error(request_id: Value, code: i64, message: String) -> Value {
 }
 
 fn main() {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        println!(
+            "mobkit_gateway {} (meerkat-mobkit console/HTTP gateway)",
+            env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
     // Meerkat 0.7's generated machine-authority apply path needs deep worker
     // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -817,12 +827,56 @@ async fn run() -> anyhow::Result<()> {
     ));
 
     let decisions = runtime_decision_state(&runtime_id, console_ui, console_read_only);
-    axum::serve(listener, runtime.build_reference_app_router(decisions))
-        .with_graceful_shutdown(async {
+    let app = runtime.build_reference_app_router(decisions);
+
+    // `mobkit_gateway` serves the console/admin API over HTTP. It is NOT the
+    // SDK's stdin JSON-RPC gateway — that is the separate `rpc_gateway` binary.
+    // The SDK's PersistentTransport drives a gateway by sending JSON-RPC lines
+    // (init, then reconcile_identity, send, ...) over stdin; we already consumed
+    // the single init line above. If more JSON-RPC arrives on stdin, this binary
+    // was misconfigured as the SDK gateway (a common mix-up, since the SDK env
+    // var is named MOBKIT_RPC_GATEWAY_BIN and the release ships this binary).
+    // Answer each such line with a clear JSON-RPC error instead of silently
+    // ignoring it, so the SDK surfaces an actionable failure immediately rather
+    // than blocking forever waiting for a response that never comes.
+    let stdin_guard = async move {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break, // launching parent closed stdin
+                Ok(_) => {}
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let id = serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .and_then(|value| value.get("id").cloned())
+                .unwrap_or(Value::Null);
+            print_json_line(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": "mobkit_gateway serves the console/admin API over HTTP and does not handle SDK stdin JSON-RPC after init. Point your SDK gateway path (MOBKIT_RPC_GATEWAY_BIN) at the 'rpc_gateway' binary instead."
+                }
+            }));
+        }
+        // stdin ended: keep serving HTTP until ctrl-c rather than tearing down
+        // the console out from under any live HTTP clients.
+        std::future::pending::<()>().await;
+    };
+
+    tokio::select! {
+        result = axum::serve(listener, app).with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .context("gateway HTTP server failed")?;
+        }) => {
+            result.context("gateway HTTP server failed")?;
+        }
+        () = stdin_guard => {}
+    }
 
     let mut registry = load_registry(&registry_file);
     registry.entries.retain(|entry| entry.key != key);

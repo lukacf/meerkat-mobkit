@@ -3068,7 +3068,23 @@ async fn backfill_one_session_history(
                 append_and_emit(&inner, frame).await?;
             }
         }
-        offset = base_offset + messages.len();
+        let Some(next_offset) = advance_backfill_offset(offset, base_offset, messages.len()) else {
+            // Forward-progress guard: a session store that returns a page whose
+            // (base_offset + len) does not advance past the offset we requested
+            // — e.g. a cursor that resets to 0 while still reporting has_more —
+            // would make this loop re-read the same page forever, re-recording
+            // the same watermark (a livelock observed on an orphaned gateway).
+            // Stop instead of spinning; the last good watermark stands.
+            tracing::warn!(
+                session_id = %session_id,
+                requested_offset = offset,
+                page_base_offset = base_offset,
+                page_len = messages.len(),
+                "session history backfill made no forward progress; stopping to avoid a livelock"
+            );
+            break;
+        };
+        offset = next_offset;
         record_session_history_watermark(&inner, &watermark_runtime_key, &session_id, offset)
             .await?;
         let has_more = page_value
@@ -3080,6 +3096,19 @@ async fn backfill_one_session_history(
         }
     }
     Ok(())
+}
+
+/// Compute the next session-history backfill offset, enforcing strict forward
+/// progress. Returns `None` when the page (`base_offset + page_len`) does not
+/// advance past `requested_offset` — a non-advancing/looping cursor — which
+/// signals the caller to stop rather than re-read the same page forever.
+fn advance_backfill_offset(
+    requested_offset: usize,
+    base_offset: usize,
+    page_len: usize,
+) -> Option<usize> {
+    let next = base_offset.saturating_add(page_len);
+    (next > requested_offset).then_some(next)
 }
 
 async fn record_session_history_watermark(
@@ -8780,6 +8809,28 @@ comms = true
             session_history_watermark_runtime_key("runtime-a", "session-1"),
             session_history_watermark_runtime_key("runtime-a", "session-2")
         );
+    }
+
+    #[test]
+    fn backfill_offset_advances_only_on_strict_forward_progress() {
+        // Normal full-page advance from the start.
+        assert_eq!(advance_backfill_offset(0, 0, 500), Some(500));
+        // Subsequent full page from a correct cursor advances.
+        assert_eq!(advance_backfill_offset(500, 500, 500), Some(1000));
+        // A partial page that still moves forward advances.
+        assert_eq!(advance_backfill_offset(500, 500, 3), Some(503));
+        // One element past the requested offset still counts as progress.
+        assert_eq!(advance_backfill_offset(499, 0, 500), Some(500));
+
+        // Livelock shapes: the store re-serves a page whose (base + len) does
+        // NOT advance past what we asked for. These must stop the loop.
+        assert_eq!(advance_backfill_offset(500, 0, 500), None); // cursor reset to 0, full page
+        assert_eq!(advance_backfill_offset(500, 0, 400), None); // strictly behind
+        assert_eq!(advance_backfill_offset(1000, 500, 500), None); // lands exactly on offset
+        assert_eq!(advance_backfill_offset(10, 10, 0), None); // empty page at same offset
+
+        // Saturating add: a pathological base near usize::MAX cannot panic.
+        assert_eq!(advance_backfill_offset(0, usize::MAX, 5), Some(usize::MAX));
     }
 
     #[test]

@@ -42,4 +42,13 @@ fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
     echo "  TypeScript SDK: $VERSION"
 fi
 
+# Bazel build rules embed the crate version via rustc_env, which feeds
+# env!("CARGO_PKG_VERSION") in the bazel-built RELEASE binaries (e.g. their
+# `--version` output). Keep it in lockstep so released gateways don't report a
+# stale version (this drifted to 0.7.4 across 0.7.5–0.7.7 before being caught).
+if [ -f "$ROOT/meerkat-mobkit/BUILD.bazel" ]; then
+    sedi -E "s/\"CARGO_PKG_VERSION\": \"[^\"]*\"/\"CARGO_PKG_VERSION\": \"$VERSION\"/g" "$ROOT/meerkat-mobkit/BUILD.bazel"
+    echo "  Bazel BUILD.bazel CARGO_PKG_VERSION: $VERSION"
+fi
+
 echo "Done"

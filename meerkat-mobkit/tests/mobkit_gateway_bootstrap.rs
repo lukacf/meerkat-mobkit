@@ -121,3 +121,110 @@ fn mobkit_gateway_bootstraps_ephemeral_runtime() {
 fn mobkit_gateway_bootstraps_persistent_runtime() {
     assert_bootstraps(true);
 }
+
+/// Both gateway binaries must self-identify via `--version` (name + version),
+/// so operators can tell which of the two they have without hashing the file —
+/// the gap that turned a mislabeled binary into a multi-day investigation.
+#[test]
+fn gateways_report_name_and_version() {
+    for (bin, needle) in [
+        (env!("CARGO_BIN_EXE_mobkit_gateway"), "mobkit_gateway"),
+        (env!("CARGO_BIN_EXE_rpc_gateway"), "rpc_gateway"),
+    ] {
+        let out = Command::new(bin)
+            .arg("--version")
+            .output()
+            .expect("run --version");
+        assert!(out.status.success(), "{needle} --version exited non-zero");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(needle) && stdout.chars().any(|c| c.is_ascii_digit()),
+            "{needle} --version did not print name + version: {stdout:?}"
+        );
+    }
+}
+
+/// `mobkit_gateway` is the console/HTTP gateway, not the SDK's stdin-RPC gateway
+/// (that is `rpc_gateway`). If the SDK — which drives a gateway by sending
+/// JSON-RPC over stdin — is misconfigured to spawn `mobkit_gateway`, init still
+/// succeeds (one stdin line), but the *next* RPC must get a clear error instead
+/// of an infinite hang. This is the regression test for the HomeCore reconcile
+/// "deadlock": before the fail-loud guard, `mobkit_gateway` read only the init
+/// line and then served HTTP forever, silently ignoring `reconcile_identity`.
+#[test]
+fn mobkit_gateway_rejects_post_init_stdin_rpc_loudly() {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "mobkit/init",
+        "params": {
+            "workspace_root": workspace.path().to_string_lossy(),
+            "store_path": store.path().join("store").to_string_lossy(),
+        }
+    });
+    let reconcile =
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "mobkit/reconcile_identity", "params": {} });
+
+    let mut child = Command::new(bin)
+        .current_dir(workspace.path())
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mobkit_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush init");
+    let init_resp = rx
+        .recv_timeout(Duration::from_secs(45))
+        .expect("no init response within 45s");
+    let init_v: Value = serde_json::from_str(init_resp.trim())
+        .unwrap_or_else(|e| panic!("non-JSON init response {init_resp:?}: {e}"));
+    assert!(
+        init_v.get("result").is_some(),
+        "init did not return a result (cannot exercise the post-init guard): {init_resp}"
+    );
+
+    writeln!(stdin, "{}", serde_json::to_string(&reconcile).unwrap()).expect("write reconcile");
+    stdin.flush().expect("flush reconcile");
+    let reconcile_resp = rx.recv_timeout(Duration::from_secs(20)).expect(
+        "mobkit_gateway did not answer a post-init stdin RPC within 20s — the silent-hang regressed",
+    );
+
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let v: Value = serde_json::from_str(reconcile_resp.trim())
+        .unwrap_or_else(|e| panic!("non-JSON reconcile response {reconcile_resp:?}: {e}"));
+    let msg = v
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("rpc_gateway"),
+        "post-init stdin RPC must fail loudly and point at rpc_gateway, got: {reconcile_resp}"
+    );
+}

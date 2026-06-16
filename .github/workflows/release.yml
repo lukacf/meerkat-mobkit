@@ -134,35 +134,48 @@ jobs:
             # Retry the whole invocation: hosted RBE occasionally drops a task
             # ("stream closed with task still claimed") and fails after bazel's own
             # per-action retries; re-invoking resumes from cache and usually succeeds.
+            # Build BOTH gateways in one invocation so they share the (expensive)
+            # meerkat-mobkit lib compile; linking the second bin is cheap.
             until bb --output_base="${ob}" build --config="${cfg}" --compilation_mode=opt \
                 --jobs=200 "${hdr[@]}" --remote_download_outputs=toplevel \
-                //meerkat-mobkit:mobkit_gateway_bin >"${log}" 2>&1; do
+                //meerkat-mobkit:mobkit_gateway_bin //meerkat-mobkit:rpc_gateway_bin >"${log}" 2>&1; do
               n=$((n+1))
               if [ "${n}" -ge 3 ]; then
                 echo "::error::build ${target} failed after ${n} attempts"; tail -40 "${log}"; return 1
               fi
               echo "::warning::transient RBE failure on ${target}; retry ${n}/3"; sleep 20
             done
-            # cquery returns a path relative to the execution root; with
-            # --symlink_prefix=/ there is NO bazel-out convenience symlink in the
-            # workspace, so the relative path doesn't resolve from cwd. Prepend the
-            # execution root to get the real file (this was the v0.7.5 attach bug).
-            local relbin execroot bin
-            relbin=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
-                "${hdr[@]}" --output=files //meerkat-mobkit:mobkit_gateway_bin 2>/dev/null | tail -1)
+            local execroot
             execroot=$(bb --output_base="${ob}" info execution_root 2>/dev/null)
-            bin="${execroot}/${relbin}"
-            if [ -z "${relbin}" ] || [ ! -f "${bin}" ]; then
-              echo "::error::missing binary for ${target}: '${bin}'"; tail -40 "${log}"; return 1
-            fi
-            local name="mobkit-gateway-${VERSION}-${target}.${ext}"
-            if [ "${ext}" = "zip" ]; then
-              # The self-hosted runner has no `zip`; build the archive with python.
-              python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${GITHUB_WORKSPACE}/dist/${name}"
-            else
-              tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
-            fi
-            echo "packaged dist/${name} ($(du -h "dist/${name}" | cut -f1))"
+            # Package one bazel binary target into its own archive. cquery returns a
+            # path relative to the execution root; with --symlink_prefix=/ there is NO
+            # bazel-out convenience symlink in the workspace, so prepend the execution
+            # root to get the real file (this was the v0.7.5 attach bug).
+            package_bin() {
+              local bazel_target="$1" archive_prefix="$2"
+              local relbin bin
+              relbin=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
+                  "${hdr[@]}" --output=files "${bazel_target}" 2>/dev/null | tail -1)
+              bin="${execroot}/${relbin}"
+              if [ -z "${relbin}" ] || [ ! -f "${bin}" ]; then
+                echo "::error::missing binary ${bazel_target} for ${target}: '${bin}'"; tail -40 "${log}"; return 1
+              fi
+              local name="${archive_prefix}-${VERSION}-${target}.${ext}"
+              if [ "${ext}" = "zip" ]; then
+                # The self-hosted runner has no `zip`; build the archive with python.
+                python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${GITHUB_WORKSPACE}/dist/${name}"
+              else
+                tar -czf "dist/${name}" -C "$(dirname "${bin}")" "$(basename "${bin}")"
+              fi
+              echo "packaged dist/${name} ($(du -h "dist/${name}" | cut -f1))"
+            }
+            # Ship BOTH: the console/HTTP gateway (mobkit_gateway) and the SDK
+            # stdin-RPC gateway (rpc_gateway). SDK users need rpc_gateway; before
+            # 0.7.8 only the console gateway was published, so SDK setups that
+            # grabbed the release binary ran the wrong one and hung on the first
+            # post-init RPC (the HomeCore reconcile "deadlock").
+            package_bin //meerkat-mobkit:mobkit_gateway_bin mobkit-gateway || return 1
+            package_bin //meerkat-mobkit:rpc_gateway_bin mobkit-rpc-gateway || return 1
           }
 
           pids=(); labels=()

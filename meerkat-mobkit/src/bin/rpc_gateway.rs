@@ -2341,6 +2341,13 @@ external_addressable = true
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "rpc_gateway {} (meerkat-mobkit SDK stdin-RPC gateway)",
+            env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
     if args.iter().any(|a| a == "--persistent") {
         run_persistent();
     } else {
