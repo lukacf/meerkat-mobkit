@@ -1761,6 +1761,13 @@ external_addressable = true
             }
             false => None,
         };
+    // The bundled local lease provider's monotonic fencing counter must resume
+    // ABOVE the persisted high-water on restart. Otherwise it resets to 1 and
+    // restore presents a stale token that the store's compare-and-set rejects
+    // ("stale fencing token: presented 1, current N"), aborting boot on every
+    // restart with existing history. Capture the local store's high-water here
+    // and seed the lease provider with it below.
+    let mut local_fencing_floor: u64 = 0;
     let identity_continuity_store: Option<
         Arc<dyn meerkat_mobkit::identity_first::ContinuityStore>,
     > = if has_roster_provider {
@@ -1768,33 +1775,22 @@ external_addressable = true
             Arc::new(meerkat_mobkit::identity_first::GatewayContinuityStore::new(
                 bridge.clone(),
             ))
-        } else if let Some(ref state_path) = persistent_state {
-            Arc::new(
-                meerkat_mobkit::identity_first::LocalContinuityStore::open(
-                    state_path.join("continuity.db"),
-                )
-                .unwrap_or_else(|e| {
-                    fail_init(
-                        &request_id,
-                        -32603,
-                        format!("failed to open continuity store: {e}"),
-                    );
-                }),
-            )
         } else {
-            Arc::new(
-                meerkat_mobkit::identity_first::LocalContinuityStore::open(
-                    std::env::temp_dir()
-                        .join(format!("mobkit-continuity-{}.db", std::process::id())),
-                )
+            let db_path = if let Some(ref state_path) = persistent_state {
+                state_path.join("continuity.db")
+            } else {
+                std::env::temp_dir().join(format!("mobkit-continuity-{}.db", std::process::id()))
+            };
+            let store = meerkat_mobkit::identity_first::LocalContinuityStore::open(&db_path)
                 .unwrap_or_else(|e| {
                     fail_init(
                         &request_id,
                         -32603,
                         format!("failed to open continuity store: {e}"),
                     );
-                }),
-            )
+                });
+            local_fencing_floor = store.max_fencing_token().unwrap_or(0);
+            Arc::new(store)
         })
     } else {
         None
@@ -1807,7 +1803,12 @@ external_addressable = true
                 bridge.clone(),
             ))
         } else {
-            Arc::new(meerkat_mobkit::identity_first::LocalLeaseProvider::new())
+            // Resume the fencing counter above the persisted high-water so a
+            // restart with existing continuity history never presents a stale
+            // token (see `local_fencing_floor` above).
+            Arc::new(
+                meerkat_mobkit::identity_first::LocalLeaseProvider::with_floor(local_fencing_floor),
+            )
         })
     } else {
         None

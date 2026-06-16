@@ -90,6 +90,36 @@ impl LocalContinuityStore {
             conn: Mutex::new(conn),
         })
     }
+
+    /// The highest fencing token ever committed to this store, across BOTH
+    /// `continuity_records` and `session_snapshots` (0 if the store is empty).
+    ///
+    /// The bundled [`LocalLeaseProvider`](super::local_lease::LocalLeaseProvider)
+    /// seeds its monotonic counter from this on startup so fencing tokens keep
+    /// advancing across process restarts. Without it the provider's in-memory
+    /// counter resets to 1 and restore presents a stale token that this store's
+    /// compare-and-set rejects — the v0.7.8 "stale fencing token: presented 1,
+    /// current N" restart abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContinuityStoreError::Io` on a query failure.
+    pub fn max_fencing_token(&self) -> Result<u64, ContinuityStoreError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| ContinuityStoreError::Io(format!("lock: {e}")))?;
+        conn.query_row(
+            "SELECT COALESCE(MAX(t), 0) FROM (
+                SELECT MAX(fencing_token) AS t FROM continuity_records
+                UNION ALL
+                SELECT MAX(fencing_token) AS t FROM session_snapshots
+            )",
+            [],
+            |row| row.get::<_, u64>(0),
+        )
+        .map_err(|e| ContinuityStoreError::Io(format!("max_fencing_token: {e}")))
+    }
 }
 
 #[async_trait]
@@ -461,7 +491,7 @@ impl ContinuityStore for LocalContinuityStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -566,6 +596,115 @@ mod tests {
         assert!(!matches!(
             resolved.get(&identity),
             Some(ContinuityResolveState::Uninitialized)
+        ));
+    }
+
+    #[tokio::test]
+    async fn max_fencing_token_recovers_high_water_across_tables_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("continuity.db");
+        let identity = AgentIdentity::parse("identity:parent-1").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        {
+            let store = LocalContinuityStore::open(&path).unwrap();
+            assert_eq!(store.max_fencing_token().unwrap(), 0, "empty store -> 0");
+            // First boot: continuity record + session snapshot both at token 1.
+            store
+                .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(1))
+                .await
+                .unwrap();
+            store
+                .save_session_snapshot(
+                    &identity,
+                    &session_id,
+                    ContinuityGeneration::new(0),
+                    CheckpointVersion::new(1),
+                    FencingToken::new(1),
+                    &SessionSnapshot {
+                        data: vec![1, 2, 3],
+                    },
+                )
+                .await
+                .unwrap();
+            // Reconcile re-bumps the continuity record to 15; the snapshot stays
+            // at 1 — the two-table divergence from the field report.
+            store
+                .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(15))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.max_fencing_token().unwrap(),
+                15,
+                "high-water = MAX over continuity_records (15) and session_snapshots (1)"
+            );
+        }
+        // Restart: the high-water must survive re-opening the same db file.
+        let store = LocalContinuityStore::open(&path).unwrap();
+        assert_eq!(
+            store.max_fencing_token().unwrap(),
+            15,
+            "high-water must persist across reopen"
+        );
+    }
+
+    /// The end-to-end restart regression: a lease provider seeded from the
+    /// persisted high-water issues a token that the store accepts on restore,
+    /// while a provider that reset to 1 (the v0.7.8 bug) is rejected as stale.
+    #[tokio::test]
+    async fn lease_fencing_resumes_above_high_water_on_restart() {
+        use super::super::contracts::LeaseProvider;
+        use super::super::local_lease::LocalLeaseProvider;
+        use super::super::types::LeaseAcquireResult;
+
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("identity:parent-1").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        // Pre-restart history: reconcile bumped the continuity record to 15.
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(15))
+            .await
+            .unwrap();
+
+        // Restart: seed a fresh lease provider from the persisted high-water.
+        let high_water = store.max_fencing_token().unwrap();
+        assert_eq!(high_water, 15);
+        let provider = LocalLeaseProvider::with_floor(high_water);
+        let acquired = provider
+            .acquire_leases(std::slice::from_ref(&identity), "rt-restart")
+            .await
+            .unwrap();
+        let token = match acquired.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.fencing_token,
+            _ => panic!("expected an acquired lease"),
+        };
+        assert!(
+            token.get() > high_water,
+            "resumed token {} must exceed the high-water {high_water}",
+            token.get()
+        );
+        // The restore upsert with the resumed token SUCCEEDS (not stale).
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), token)
+            .await
+            .expect("a token resumed above the high-water must be accepted");
+
+        // Prove the bug this fixes: a provider that reset to 1 IS rejected.
+        let reset_provider = LocalLeaseProvider::with_floor(0);
+        let reset_acquired = reset_provider
+            .acquire_leases(std::slice::from_ref(&identity), "rt-reset")
+            .await
+            .unwrap();
+        let reset_token = match reset_acquired.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.fencing_token,
+            _ => panic!("expected an acquired lease"),
+        };
+        let err = store
+            .upsert_continuity_record(&record(&identity, &session_id), reset_token)
+            .await
+            .expect_err("a reset-to-1 token must be rejected as stale");
+        assert!(matches!(
+            err,
+            ContinuityStoreError::StaleFencingToken { .. }
         ));
     }
 }
