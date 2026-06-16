@@ -53,6 +53,10 @@ class CallbackDispatcher:
         self._tool_handlers: dict[tuple[str, str], Any] = {}
         # Track scope_ids so we can clean up handlers when a scope is released
         self._scope_tools: dict[str, list[str]] = {}
+        # customize_build is re-invoked with a fresh scope on every restore; track
+        # the latest scope per identity so we can release the previous one (the
+        # gateway has no scope-release signal — newest-wins is the semantics).
+        self._customizer_scope_by_identity: dict[str, str] = {}
         # Identity-first providers (REQ-45)
         self._continuity_store: Any | None = None
         self._lease_provider: Any | None = None
@@ -153,6 +157,13 @@ class CallbackDispatcher:
             result = handler(arguments)
             if asyncio.iscoroutine(result):
                 result = await result
+            # Rich content is opt-in: only an explicit ToolResultContent is
+            # delivered as content blocks (images / multi-block). Any other
+            # return keeps the legacy single-text-block behavior.
+            from .tool_content import ToolResultContent
+
+            if isinstance(result, ToolResultContent):
+                return {"content_blocks": result.blocks}
             return {"content": result}
 
         # ----- Identity-first provider routing (REQ-45) -----
@@ -295,10 +306,30 @@ class CallbackDispatcher:
         op = method.rsplit("/", 1)[-1]
 
         if op == "customize_build":
+            scope_id = params.get("scope_id")
             context = AgentBuildContext.from_dict(params["context"])
             spec = DurableAgentSpec.from_dict(params["spec"])
             draft = AgentBuildDraft.from_dict(params["draft"])
             await customizer.customize_build(context, spec, draft)
+            # Capture any tool handlers the customizer registered via
+            # draft.register_tool(), keyed by this build's scope — the same
+            # (scope_id, tool) map build_agent uses, so callback/call_tool
+            # dispatches to them. Guard on scope_id for forward/backward compat
+            # with a gateway that does not yet send it.
+            handlers = draft.tool_handlers
+            if scope_id and handlers:
+                # Release the previous scope for this identity before registering
+                # the new one — customize_build is re-invoked per restore and the
+                # gateway never signals scope release, so this bounds growth to one
+                # live scope per identity (newest wins).
+                prior = self._customizer_scope_by_identity.get(context.identity)
+                if prior and prior != scope_id:
+                    self.release_scope(prior)
+                self._customizer_scope_by_identity[context.identity] = scope_id
+                tool_names = self._scope_tools.setdefault(scope_id, [])
+                for name, handler in handlers.items():
+                    self._tool_handlers[(scope_id, name)] = handler
+                    tool_names.append(name)
             return draft.to_dict()
 
         if op == "after_create":

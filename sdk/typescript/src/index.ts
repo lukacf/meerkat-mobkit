@@ -41,6 +41,10 @@ export type {
 
 // -- Data models ----------------------------------------------------------
 
+// Rich tool-result content blocks for callback tool handlers.
+export { textBlock, imageBlock, imageBlobBlock, toolContent, ToolResultContent } from "./tool-content.js";
+export type { ContentBlock } from "./tool-content.js";
+
 export { SessionBuildOptions } from "./models.js";
 export type {
   DiscoverySpec,

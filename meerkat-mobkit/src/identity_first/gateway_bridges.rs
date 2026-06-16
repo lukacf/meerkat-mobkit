@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use meerkat_core::agent::AgentToolDispatcher;
@@ -337,14 +338,56 @@ impl RosterProvider for GatewayRosterProvider {
 /// Gateway-side `AgentCustomizer` that delegates to Python/TypeScript via JSON-RPC.
 pub struct GatewayAgentCustomizer {
     bridge: Arc<dyn CallbackBridge>,
+    /// Monotonic counter for minting a per-build tool-handler scope, so the SDK
+    /// can register external-tool handlers in `customize_build` (parity with the
+    /// `build_agent` scope). A fresh scope per call is correct: `customize_build`
+    /// is re-invoked on every restore/reconcile and the host re-registers under
+    /// the new scope.
+    next_scope: AtomicU64,
 }
 
 impl GatewayAgentCustomizer {
     pub fn new(bridge: impl CallbackBridge + 'static) -> Self {
         Self {
             bridge: Arc::new(bridge),
+            next_scope: AtomicU64::new(1),
         }
     }
+}
+
+/// Convert a `callback/call_tool` result envelope into model-facing content
+/// blocks.
+///
+/// Rich content is **opt-in**. The SDK sends a `content_blocks` field (an array
+/// of runtime `ContentBlock`s, e.g. `{"type":"image",...}`) ONLY when a handler
+/// explicitly returned rich content via `tool_content(...)` / `ToolResultContent`.
+/// When present and a valid, non-empty list, those blocks are used verbatim — so
+/// a callback/bridge tool can hand the model an image (parity with native tools
+/// like `generate_image`).
+///
+/// Otherwise the legacy `content` value becomes a single text block (a string
+/// as-is, any other JSON compact-serialized). A plain handler return therefore
+/// keeps its prior text behavior, and a tool that returns a JSON array of *data*
+/// is never silently reinterpreted as content blocks.
+pub fn callback_result_to_content(result: &Value) -> Vec<ContentBlock> {
+    if let Some(blocks_val) = result.get("content_blocks") {
+        match serde_json::from_value::<Vec<ContentBlock>>(blocks_val.clone()) {
+            Ok(blocks) if !blocks.is_empty() => return blocks,
+            _ => tracing::warn!(
+                "callback/call_tool `content_blocks` was not a non-empty list of valid \
+                 content blocks; falling back to text"
+            ),
+        }
+    }
+    let text = result
+        .get("content")
+        .map(|v| {
+            v.as_str()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default())
+        })
+        .unwrap_or_else(|| serde_json::to_string(result).unwrap_or_default());
+    vec![ContentBlock::Text { text }]
 }
 
 struct GatewayCallbackToolDispatcher {
@@ -397,23 +440,12 @@ impl AgentToolDispatcher for GatewayCallbackToolDispatcher {
             "arguments": args,
         });
         match self.bridge.call("callback/call_tool", params).await {
-            Ok(result) => {
-                let text = result
-                    .get("content")
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_default())
-                    })
-                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default());
-                Ok(ToolResult {
-                    tool_use_id: call.id.to_string(),
-                    content: vec![ContentBlock::Text { text }],
-                    is_error: false,
-                }
-                .into())
+            Ok(result) => Ok(ToolResult {
+                tool_use_id: call.id.to_string(),
+                content: callback_result_to_content(&result),
+                is_error: false,
             }
+            .into()),
             Err(err) => Ok(ToolResult {
                 tool_use_id: call.id.to_string(),
                 content: vec![ContentBlock::Text {
@@ -434,7 +466,17 @@ impl AgentCustomizer for GatewayAgentCustomizer {
         spec: &DurableAgentSpec,
         draft: &mut AgentBuildDraft,
     ) -> Result<(), CustomizerError> {
+        // Mint a per-build scope so the SDK can register external-tool handlers
+        // in `customize_build` and have them dispatched back through
+        // `callback/call_tool` — the same mechanism `build_agent` uses. Keyed by
+        // identity for readability; the counter guarantees uniqueness per call.
+        let scope_id = format!(
+            "customize-{}-{}",
+            context.identity.as_str(),
+            self.next_scope.fetch_add(1, Ordering::Relaxed)
+        );
         let params = json!({
+            "scope_id": scope_id,
             "context": serde_json::to_value(context)
                 .map_err(|e| CustomizerError::Io(format!("serialize context: {e}")))?,
             "spec": serde_json::to_value(spec)
@@ -455,7 +497,7 @@ impl AgentCustomizer for GatewayAgentCustomizer {
             returned_draft.local_external_tools =
                 LocalExternalToolOverlay::new(Arc::new(GatewayCallbackToolDispatcher::new(
                     self.bridge.clone(),
-                    context.identity.as_str().to_string(),
+                    scope_id,
                     returned_draft.external_tools.clone(),
                 )));
         }
@@ -1219,6 +1261,201 @@ mod tests {
         assert_eq!(params["spec"]["identity"].as_str().unwrap(), "agent:alpha");
         // draft does NOT include resume_session
         assert!(params["draft"].get("resume_session").is_none());
+
+        // customize_build mints a per-build tool-handler scope and ships it to
+        // the SDK (parity with build_agent), so the SDK can register external-tool
+        // handlers keyed by (scope_id, tool). The scope is identity-prefixed.
+        let scope_id = params["scope_id"]
+            .as_str()
+            .expect("customize_build params must carry a scope_id")
+            .to_string();
+        assert!(
+            scope_id.starts_with("customize-agent:alpha-"),
+            "scope_id should be identity-prefixed, got {scope_id}"
+        );
+
+        // The installed dispatcher must route callback/call_tool to that SAME
+        // per-build scope — NOT the bare identity — so the SDK handler map hits.
+        let raw_args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+        let call = ToolCallView {
+            id: "call-1",
+            name: "my_tool",
+            args: &raw_args,
+        };
+        dispatcher.dispatch(call).await.unwrap();
+        let (call_method, call_params) = mock.last_call().await;
+        assert_eq!(call_method, "callback/call_tool");
+        assert_eq!(call_params["scope_id"].as_str().unwrap(), scope_id);
+        assert_eq!(call_params["tool"].as_str().unwrap(), "my_tool");
+    }
+
+    #[tokio::test]
+    async fn test_identity_first_gateway_customizer_scope_increments_per_build() {
+        // customize_build is re-invoked on every restore/reconcile; each call must
+        // mint a FRESH scope so the host re-registers handlers under the new scope.
+        let mock = Arc::new(MockBridge::new());
+        let returned_draft = AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: vec![],
+            labels: BTreeMap::new(),
+            app_context: None,
+            external_tools: vec![ExternalToolDef {
+                name: "my_tool".to_string(),
+                description: "A custom tool".to_string(),
+                input_schema: json!({"type": "object"}),
+            }],
+            local_external_tools: Default::default(),
+        };
+        mock.set_response(
+            "callback/agent_customizer/customize_build",
+            Ok(serde_json::to_value(&returned_draft).unwrap()),
+        )
+        .await;
+
+        let customizer = GatewayAgentCustomizer::new(mock.clone());
+        let id = AgentIdentity::parse("agent:alpha").unwrap();
+        let context = AgentBuildContext {
+            identity: id.clone(),
+            active_peers: vec![],
+            managed_edges: vec![],
+            runtime_services: Default::default(),
+        };
+        let spec = DurableAgentSpec {
+            identity: id,
+            profile: meerkat_mob::ProfileName::from("default"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: vec![],
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        };
+
+        let mut scopes = Vec::new();
+        for _ in 0..2 {
+            let mut draft = AgentBuildDraft {
+                model: None,
+                system_prompt: None,
+                additional_instructions: vec![],
+                labels: BTreeMap::new(),
+                app_context: None,
+                external_tools: vec![],
+                local_external_tools: Default::default(),
+            };
+            customizer
+                .customize_build(&context, &spec, &mut draft)
+                .await
+                .unwrap();
+            let (_, params) = mock.last_call().await;
+            scopes.push(params["scope_id"].as_str().unwrap().to_string());
+        }
+        assert_ne!(scopes[0], scopes[1], "each build must get a fresh scope");
+        assert!(scopes[0].starts_with("customize-agent:alpha-"));
+        assert!(scopes[1].starts_with("customize-agent:alpha-"));
+    }
+
+    #[test]
+    fn callback_result_string_becomes_single_text_block() {
+        let blocks = callback_result_to_content(&json!({"content": "hello"}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "hello");
+    }
+
+    #[test]
+    fn callback_result_content_blocks_preserves_image() {
+        // Opt-in rich content: a callback/bridge tool hands the model an image
+        // via `content_blocks` — the gateway must NOT flatten it to text.
+        let blocks = callback_result_to_content(&json!({"content_blocks": [
+            {"type": "text", "text": "see this"},
+            {"type": "image", "media_type": "image/png", "source": "inline", "data": "aGVsbG8="},
+        ]}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "see this");
+        assert_eq!(v[1]["type"], "image");
+        assert_eq!(v[1]["media_type"], "image/png");
+        assert_eq!(v[1]["source"], "inline");
+        assert_eq!(v[1]["data"], "aGVsbG8=");
+    }
+
+    #[test]
+    fn callback_result_plain_content_array_is_not_reinterpreted_as_blocks() {
+        // REGRESSION GUARD: a tool that returns a JSON array of *data* under the
+        // legacy `content` key — even one whose elements look like content blocks
+        // — must be serialized to a single text block, exactly as before 0.7.10.
+        // Rich content is only honored via the explicit `content_blocks` field.
+        let blocks = callback_result_to_content(&json!({
+            "content": [{"type": "text", "text": "data"}]
+        }));
+        let v = serde_json::to_value(&blocks).unwrap();
+        // Stays a SINGLE text block (NOT unwrapped into content blocks).
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        // The data array survives as the serialized text (key order is
+        // serializer-defined, so round-trip rather than compare the raw string).
+        let reparsed: serde_json::Value =
+            serde_json::from_str(v[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(reparsed, json!([{"type": "text", "text": "data"}]));
+    }
+
+    #[test]
+    fn callback_result_non_block_array_under_content_is_text() {
+        let blocks = callback_result_to_content(&json!({"content": [1, 2, 3]}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "[1,2,3]");
+    }
+
+    #[test]
+    fn callback_result_empty_content_blocks_falls_back_to_content() {
+        // An empty `content_blocks` list is not valid rich content; fall back to
+        // the legacy `content` text path.
+        let blocks =
+            callback_result_to_content(&json!({"content_blocks": [], "content": "fallback"}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "fallback");
+    }
+
+    #[test]
+    fn callback_result_malformed_content_blocks_falls_back_to_content() {
+        // A `content_blocks` value that is not a valid block list warns and falls
+        // back to the `content` text path (never panics, never drops the result).
+        let blocks = callback_result_to_content(&json!({
+            "content_blocks": [{"type": "bogus_variant"}],
+            "content": "fallback text",
+        }));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "fallback text");
+    }
+
+    #[test]
+    fn callback_result_object_becomes_text_block() {
+        let blocks = callback_result_to_content(&json!({"content": {"k": "v"}}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn callback_result_missing_content_serializes_whole_result() {
+        let blocks = callback_result_to_content(&json!({"other": 1}));
+        let v = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["type"], "text");
+        assert_eq!(v[0]["text"], "{\"other\":1}");
     }
 
     #[tokio::test]

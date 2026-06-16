@@ -1219,24 +1219,15 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
             "arguments": args,
         });
         match self.bridge.call("callback/call_tool", params).await {
-            Ok(result) => {
-                let text = result
-                    .get("content")
-                    .map(|v| {
-                        if let Some(s) = v.as_str() {
-                            s.to_string()
-                        } else {
-                            serde_json::to_string(v).unwrap_or_default()
-                        }
-                    })
-                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default());
-                Ok(ToolResult {
-                    tool_use_id: call.id.to_string(),
-                    content: vec![ContentBlock::Text { text }],
-                    is_error: false,
-                }
-                .into())
+            Ok(result) => Ok(ToolResult {
+                tool_use_id: call.id.to_string(),
+                content:
+                    meerkat_mobkit::identity_first::gateway_bridges::callback_result_to_content(
+                        &result,
+                    ),
+                is_error: false,
             }
+            .into()),
             Err(err) => Ok(ToolResult {
                 tool_use_id: call.id.to_string(),
                 content: vec![ContentBlock::Text {

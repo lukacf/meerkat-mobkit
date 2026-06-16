@@ -289,6 +289,49 @@ class AgentBuildDraft:
     labels: dict[str, str] = field(default_factory=dict)
     app_context: Any | None = None
     external_tools: list[ExternalToolDef] = field(default_factory=list)
+    _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    def register_tool(
+        self,
+        name: str,
+        handler: Any,
+        *,
+        description: str = "",
+        input_schema: dict[str, Any] | None = None,
+    ) -> None:
+        """Register a callable external tool on this build.
+
+        Parity with :meth:`SessionBuildOptions.register_tool`, but available in
+        ``AgentCustomizer.customize_build`` — which runs on BOTH fresh create and
+        restore/reconcile. The handler is dispatched in-process when the agent
+        invokes the tool; it receives a dict of arguments and returns a
+        JSON-serializable result. Use this to reattach identity-scoped tools
+        (MCP, comms, etc.) so resumed agents keep them.
+
+        Args:
+            name: Tool name (string).
+            handler: Async or sync callable ``(args: dict) -> Any``.
+            description: Human-readable tool description.
+            input_schema: JSON Schema for the tool arguments
+                (defaults to ``{"type": "object"}``).
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"tool name must be a string, got {type(name).__name__}: {name!r}")
+        if not callable(handler):
+            raise TypeError(f"handler must be callable, got {type(handler).__name__}: {handler!r}")
+        self.external_tools.append(
+            ExternalToolDef(
+                name=name,
+                description=description,
+                input_schema=input_schema if input_schema is not None else {"type": "object"},
+            )
+        )
+        self._tool_handlers[name] = handler
+
+    @property
+    def tool_handlers(self) -> dict[str, Any]:
+        """Handlers registered via :meth:`register_tool` (in-process only)."""
+        return dict(self._tool_handlers)
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
