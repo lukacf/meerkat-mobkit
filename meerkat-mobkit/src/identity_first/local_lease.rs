@@ -46,12 +46,26 @@ struct LocalLeaseState {
 }
 
 impl LocalLeaseProvider {
-    /// Create a new local lease provider.
+    /// Create a new local lease provider whose fencing counter starts at 1.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_floor(0)
+    }
+
+    /// Create a local lease provider whose monotonic fencing counter resumes
+    /// strictly above `floor` (the persisted high-water mark), so fencing tokens
+    /// keep advancing across process restarts instead of resetting to 1.
+    ///
+    /// Seed `floor` from
+    /// [`LocalContinuityStore::max_fencing_token`](super::local_store::LocalContinuityStore::max_fencing_token)
+    /// at startup. Without this, a restart re-issues token 1 and restore presents
+    /// a stale token that the store's compare-and-set rejects (the v0.7.8
+    /// "stale fencing token: presented 1, current N" restart abort).
+    #[must_use]
+    pub fn with_floor(floor: u64) -> Self {
         Self {
             state: Mutex::new(LocalLeaseState {
-                next_token: 1,
+                next_token: floor.saturating_add(1),
                 leases: BTreeMap::new(),
             }),
         }
@@ -157,5 +171,43 @@ impl LeaseProvider for LocalLeaseProvider {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    async fn first_token(provider: &LocalLeaseProvider, holder: &str) -> u64 {
+        let id = AgentIdentity::parse("identity:parent-1").unwrap();
+        let result = provider
+            .acquire_leases(std::slice::from_ref(&id), holder)
+            .await
+            .unwrap();
+        match result.get(&id) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.fencing_token.get(),
+            _ => panic!("expected an acquired lease"),
+        }
+    }
+
+    #[tokio::test]
+    async fn new_starts_the_fencing_counter_at_one() {
+        assert_eq!(first_token(&LocalLeaseProvider::new(), "rt").await, 1);
+    }
+
+    #[tokio::test]
+    async fn with_floor_resumes_strictly_above_the_persisted_high_water() {
+        // Restart regression: seeded from a high-water of 15, the first issued
+        // token must be 16 — never 1, which restore would present as stale.
+        assert_eq!(
+            first_token(&LocalLeaseProvider::with_floor(15), "rt").await,
+            16
+        );
+        // floor 0 is equivalent to new().
+        assert_eq!(
+            first_token(&LocalLeaseProvider::with_floor(0), "rt").await,
+            1
+        );
     }
 }
