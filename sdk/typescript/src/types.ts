@@ -5,6 +5,9 @@
  * convert from the wire protocol's snake_case representation.
  */
 
+// Type-only import (erased at runtime — no module cycle).
+import type { ToolHandler } from "./models.js";
+
 // -- Helpers (internal) ---------------------------------------------------
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -2049,19 +2052,67 @@ export interface AgentBuildDraft {
   labels: Record<string, string>;
   appContext: unknown | null;
   externalTools: ExternalToolDef[];
+  /**
+   * Register a callable external tool on this build. Parity with
+   * {@link SessionBuildOptions.registerTool}, but available inside
+   * {@link AgentCustomizer.customizeBuild} — which runs on BOTH fresh create
+   * and restore/reconcile — so resumed agents keep identity-scoped tools
+   * (MCP, comms, etc.). The handler is dispatched in-process when the agent
+   * invokes the tool.
+   *
+   * @example
+   * ```ts
+   * async customizeBuild(ctx, spec, draft) {
+   *   draft.registerTool("send_to_im", async (args) => sendIm(args), "Send an IM");
+   * }
+   * ```
+   */
+  registerTool(
+    name: string,
+    handler: ToolHandler,
+    description?: string,
+    inputSchema?: Record<string, unknown>,
+  ): void;
+  /** Handlers registered via {@link registerTool} (in-process only). */
+  readonly toolHandlers: ReadonlyMap<string, ToolHandler>;
 }
 
 export function parseAgentBuildDraft(raw: unknown): AgentBuildDraft {
   const d = asRecord(raw);
   const rawTools = Array.isArray(d.external_tools) ? d.external_tools : [];
-  return {
+  const externalTools = rawTools.map(parseExternalToolDef);
+  const toolHandlers = new Map<string, ToolHandler>();
+  const draft: AgentBuildDraft = {
     model: typeof d.model === "string" ? d.model : null,
     systemPrompt: typeof d.system_prompt === "string" ? d.system_prompt : null,
     additionalInstructions: asStringArray(d.additional_instructions),
     labels: asStringRecord(d.labels),
     appContext: d.app_context !== undefined && d.app_context !== null ? d.app_context : null,
-    externalTools: rawTools.map(parseExternalToolDef),
+    externalTools,
+    registerTool(
+      name: string,
+      handler: ToolHandler,
+      description = "",
+      inputSchema: Record<string, unknown> = { type: "object" },
+    ): void {
+      if (typeof name !== "string") {
+        throw new TypeError(
+          `tool name must be a string, got ${typeof name}: ${String(name)}`,
+        );
+      }
+      if (typeof handler !== "function") {
+        throw new TypeError(
+          `handler must be callable, got ${typeof handler}: ${String(handler)}`,
+        );
+      }
+      externalTools.push({ name, description, inputSchema });
+      toolHandlers.set(name, handler);
+    },
+    get toolHandlers(): ReadonlyMap<string, ToolHandler> {
+      return new Map(toolHandlers);
+    },
   };
+  return draft;
 }
 
 export function agentBuildDraftToDict(

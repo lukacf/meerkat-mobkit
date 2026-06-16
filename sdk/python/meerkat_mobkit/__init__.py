@@ -147,11 +147,26 @@ from .events import (
 # Config modules (importable as meerkat_mobkit.auth, etc.)
 from .config import auth, memory, session_store
 
+# Rich tool-result content blocks for callback tool handlers.
+from .tool_content import (
+    ToolResultContent,
+    image_block,
+    image_blob_block,
+    text_block,
+    tool_content,
+)
+
 __all__ = [
     # Builder + Runtime
     "MobKit",
     "MobKitBuilder",
     "MobKitRuntime",
+    # Tool-result content blocks
+    "text_block",
+    "image_block",
+    "image_blob_block",
+    "tool_content",
+    "ToolResultContent",
     # Data models
     "DiscoverySpec",
     "PreSpawnData",

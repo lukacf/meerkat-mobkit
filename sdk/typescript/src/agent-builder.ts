@@ -6,6 +6,7 @@
  */
 
 import { SessionBuildOptions, type ToolHandler } from "./models.js";
+import { ToolResultContent } from "./tool-content.js";
 import {
   parseErrorEvent,
   parseContinuityRecord,
@@ -70,6 +71,9 @@ export class CallbackDispatcher {
   private _errorCallback: ErrorCallback | null = null;
   private readonly _toolHandlers = new Map<string, ToolHandler>();
   private readonly _scopeTools = new Map<string, string[]>();
+  // Latest customizer scope per identity, so a restore can release the prior
+  // scope (the gateway has no scope-release signal — newest-wins semantics).
+  private readonly _customizerScopeByIdentity = new Map<string, string>();
   private _continuityStore: ContinuityStore | null = null;
   private _leaseProvider: LeaseProvider | null = null;
   private _rosterProvider: RosterProvider | null = null;
@@ -222,6 +226,12 @@ export class CallbackDispatcher {
       }
 
       const result = await handler(args);
+      // Rich content is opt-in: only an explicit ToolResultContent is delivered
+      // as content blocks (images / multi-block). Any other return keeps the
+      // legacy single-text-block behavior.
+      if (result instanceof ToolResultContent) {
+        return { content_blocks: result.blocks };
+      }
       return { content: result };
     }
 
@@ -374,10 +384,32 @@ export class CallbackDispatcher {
       if (this._agentCustomizer === null) {
         throw new Error("no AgentCustomizer registered");
       }
+      const scopeId = String(params.scope_id ?? "");
       const context = parseAgentBuildContext(params.context);
       const spec = parseDurableAgentSpec(params.spec);
       const draft = parseAgentBuildDraft(params.draft);
       await this._agentCustomizer.customizeBuild(context, spec, draft);
+      // Capture any tool handlers the customizer registered via
+      // draft.registerTool(), keyed by this build's scope — the same
+      // (scope, tool) map build_agent uses, so callback/call_tool dispatches
+      // to them. Guard on scopeId for compat with a gateway not yet sending it.
+      if (scopeId && draft.toolHandlers.size > 0) {
+        // Release the previous scope for this identity before registering the
+        // new one — customize_build is re-invoked per restore and the gateway
+        // never signals scope release, so this bounds growth to one live scope
+        // per identity (newest wins).
+        const prior = this._customizerScopeByIdentity.get(context.identity);
+        if (prior && prior !== scopeId) {
+          this.releaseScope(prior);
+        }
+        this._customizerScopeByIdentity.set(context.identity, scopeId);
+        const toolNames: string[] = [];
+        for (const [name, handler] of draft.toolHandlers) {
+          this._toolHandlers.set(`${scopeId}:${name}`, handler);
+          toolNames.push(name);
+        }
+        this._scopeTools.set(scopeId, toolNames);
+      }
       return agentBuildDraftToDict(draft);
     }
 

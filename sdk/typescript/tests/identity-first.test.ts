@@ -293,6 +293,208 @@ describe("AgentBuildContext + AgentBuildDraft (REQ-49a)", () => {
     assert.equal(wire.a, "lead:main");
     assert.equal(wire.b, "worker:1");
   });
+
+  it("AgentBuildDraft.registerTool appends a def and stores the handler in-process", async () => {
+    const { parseAgentBuildDraft, agentBuildDraftToDict } = await import("../src/types.js");
+    const draft = parseAgentBuildDraft({});
+    draft.registerTool("echo", async (args) => args, "echoes input", { type: "object" });
+    assert.equal(draft.externalTools.length, 1);
+    assert.equal(draft.externalTools[0].name, "echo");
+    assert.equal(draft.externalTools[0].description, "echoes input");
+    assert.equal(draft.toolHandlers.size, 1);
+
+    // The handler must NOT leak onto the wire — defs only.
+    const wire = agentBuildDraftToDict(draft);
+    const wireTools = wire.external_tools as Array<Record<string, unknown>>;
+    assert.equal(wireTools[0].name, "echo");
+    assert.equal(wireTools[0].handler, undefined);
+  });
+
+  it("AgentBuildDraft.registerTool defaults the schema", async () => {
+    const { parseAgentBuildDraft } = await import("../src/types.js");
+    const draft = parseAgentBuildDraft({});
+    draft.registerTool("t", async () => null);
+    assert.deepEqual(draft.externalTools[0].inputSchema, { type: "object" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AgentCustomizer external-tool handler registration (restore-path parity)
+// ---------------------------------------------------------------------------
+
+describe("AgentCustomizer customize_build handler registration", () => {
+  const CONTEXT = { identity: "agent:alpha", active_peers: [], managed_edges: [] };
+  const SPEC = { identity: "agent:alpha", profile: "default" };
+
+  async function makeDispatcher() {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerAgentCustomizer({
+      async customizeBuild(_ctx, _spec, draft) {
+        draft.registerTool("echo", (args) => ({ echo: args.input }), "echoes input");
+      },
+    });
+    return dispatcher;
+  }
+
+  it("captures handlers registered in customizeBuild and dispatches call_tool", async () => {
+    const dispatcher = await makeDispatcher();
+    const result = (await dispatcher.handleCallback(
+      "callback/agent_customizer/customize_build",
+      { scope_id: "c1", context: CONTEXT, spec: SPEC, draft: {} },
+    )) as Record<string, unknown>;
+    const tools = result.external_tools as Array<Record<string, unknown>>;
+    assert.equal(tools[0].name, "echo");
+    assert.equal(tools[0].handler, undefined);
+
+    const called = await dispatcher.handleCallback("callback/call_tool", {
+      scope_id: "c1",
+      tool: "echo",
+      arguments: { input: "hi" },
+    });
+    assert.deepEqual(called, { content: { echo: "hi" } });
+  });
+
+  it("isolates handlers by scope", async () => {
+    const dispatcher = await makeDispatcher();
+    await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
+      scope_id: "c1",
+      context: CONTEXT,
+      spec: SPEC,
+      draft: {},
+    });
+    await assert.rejects(
+      dispatcher.handleCallback("callback/call_tool", {
+        scope_id: "c2",
+        tool: "echo",
+        arguments: {},
+      }),
+      /no handler registered/,
+    );
+  });
+
+  it("re-registers under a fresh scope on restore; latest dispatches and stale releases cleanly", async () => {
+    const dispatcher = await makeDispatcher();
+    await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
+      scope_id: "customize-agent:alpha-1",
+      context: CONTEXT,
+      spec: SPEC,
+      draft: {},
+    });
+    await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
+      scope_id: "customize-agent:alpha-2",
+      context: CONTEXT,
+      spec: SPEC,
+      draft: {},
+    });
+    const r = await dispatcher.handleCallback("callback/call_tool", {
+      scope_id: "customize-agent:alpha-2",
+      tool: "echo",
+      arguments: { input: "yo" },
+    });
+    assert.deepEqual(r, { content: { echo: "yo" } });
+
+    dispatcher.releaseScope("customize-agent:alpha-1");
+    const r2 = await dispatcher.handleCallback("callback/call_tool", {
+      scope_id: "customize-agent:alpha-2",
+      tool: "echo",
+      arguments: { input: "ok" },
+    });
+    assert.deepEqual(r2, { content: { echo: "ok" } });
+  });
+
+  it("degrades gracefully when the gateway sends no scope_id", async () => {
+    const dispatcher = await makeDispatcher();
+    const result = (await dispatcher.handleCallback(
+      "callback/agent_customizer/customize_build",
+      { context: CONTEXT, spec: SPEC, draft: {} },
+    )) as Record<string, unknown>;
+    const tools = result.external_tools as Array<Record<string, unknown>>;
+    assert.equal(tools[0].name, "echo");
+  });
+
+  it("a customizer-registered tool returns image content via toolContent()", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const { textBlock, imageBlock, toolContent } = await import("../src/tool-content.js");
+    const blocks = [textBlock("see this:"), imageBlock("image/png", "aGVsbG8=")];
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerAgentCustomizer({
+      async customizeBuild(_ctx, _spec, draft) {
+        draft.registerTool("shot", () => toolContent(...blocks));
+      },
+    });
+    await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
+      scope_id: "c1",
+      context: CONTEXT,
+      spec: SPEC,
+      draft: {},
+    });
+    const result = await dispatcher.handleCallback("callback/call_tool", {
+      scope_id: "c1",
+      tool: "shot",
+      arguments: {},
+    });
+    assert.deepEqual(result, { content_blocks: blocks });
+  });
+
+  it("a plain array return is NOT reinterpreted as content blocks", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    const data = [{ type: "text", text: "this is data" }];
+    dispatcher.registerAgentCustomizer({
+      async customizeBuild(_ctx, _spec, draft) {
+        draft.registerTool("rows", () => data);
+      },
+    });
+    await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
+      scope_id: "c1",
+      context: CONTEXT,
+      spec: SPEC,
+      draft: {},
+    });
+    const result = (await dispatcher.handleCallback("callback/call_tool", {
+      scope_id: "c1",
+      tool: "rows",
+      arguments: {},
+    })) as Record<string, unknown>;
+    assert.deepEqual(result, { content: data });
+    assert.equal(result.content_blocks, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool-result content-block helpers
+// ---------------------------------------------------------------------------
+
+describe("tool-content helpers", () => {
+  it("textBlock / imageBlock / imageBlobBlock build the wire shapes", async () => {
+    const { textBlock, imageBlock, imageBlobBlock } = await import("../src/tool-content.js");
+    assert.deepEqual(textBlock("hi"), { type: "text", text: "hi" });
+    assert.deepEqual(imageBlock("image/png", "aGVsbG8="), {
+      type: "image",
+      media_type: "image/png",
+      source: "inline",
+      data: "aGVsbG8=",
+    });
+    assert.deepEqual(imageBlobBlock("image/jpeg", "blob-123"), {
+      type: "image",
+      media_type: "image/jpeg",
+      source: "blob",
+      blob_id: "blob-123",
+    });
+  });
+
+  it("toolContent wraps blocks into a ToolResultContent marker", async () => {
+    const { textBlock, imageBlock, toolContent, ToolResultContent } = await import(
+      "../src/tool-content.js"
+    );
+    const tc = toolContent(textBlock("a"), imageBlock("image/png", "aGVsbG8="));
+    assert.ok(tc instanceof ToolResultContent);
+    assert.deepEqual(tc.blocks, [
+      { type: "text", text: "a" },
+      { type: "image", media_type: "image/png", source: "inline", data: "aGVsbG8=" },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
