@@ -49,7 +49,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
     proc_macro_deps = all_crate_deps(
@@ -89,7 +89,7 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
     tags = [
@@ -136,7 +136,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "baseline_check",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -173,7 +173,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "governance_check",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -210,7 +210,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mcp_fixture",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -247,7 +247,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mobkit_flow_editor",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -284,7 +284,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mobkit_gateway",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -321,7 +321,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "rpc_gateway",
         "CARGO_MANIFEST_DIR": "meerkat-mobkit",
     },
@@ -369,7 +369,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "access_control",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -427,7 +427,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "agent_lifecycle",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -490,7 +490,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "bigquery_adapter",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -549,7 +549,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "bigquery_gc",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -607,7 +607,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "builder_api",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -665,7 +665,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "console_customization_fixtures",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -722,7 +722,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "console_experience",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -780,7 +780,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "console_route_auth",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -840,7 +840,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "core_types_and_rpc",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -898,7 +898,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "cross_mob_signed",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -956,7 +956,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "cross_mob_tcp",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1014,7 +1014,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "cross_mob_uds",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1072,7 +1072,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "discovery_bootstrap",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1130,7 +1130,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "e2e_sdk_wire",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1188,7 +1188,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "e2e_target_contracts",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1249,7 +1249,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "event_log_recovery",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1309,7 +1309,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "external_boundary",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1367,7 +1367,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "gateway_external",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1425,7 +1425,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "gateway_memory_config",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1485,7 +1485,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "gating_policy",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1547,7 +1547,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "governance_contracts",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1607,7 +1607,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "hooks",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1665,7 +1665,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "http_router",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1723,7 +1723,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_boundary",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1781,7 +1781,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_builder",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1839,7 +1839,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_choke",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1897,7 +1897,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_contracts",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -1955,7 +1955,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_e2e",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2012,7 +2012,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_kitchen_sink",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2073,7 +2073,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_ob3_smoke",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2134,7 +2134,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_runtime",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2192,7 +2192,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "identity_first_types",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2250,7 +2250,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "incident_command_center_pack",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2308,7 +2308,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "jwks_cache_and_auth",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2366,7 +2366,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "jwt_oidc_auth",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2424,7 +2424,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "jwt_rsa",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2482,7 +2482,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "legacy_session_resume",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2540,7 +2540,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "list_flows_run_flow",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2598,7 +2598,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "list_runs",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2656,7 +2656,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mcp_boundary",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2718,7 +2718,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "memory_store",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2776,7 +2776,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_events_cursor_persistence",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2834,7 +2834,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_events_ingestion",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2892,7 +2892,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_events_query",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -2950,7 +2950,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_events_query_ledger",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3008,7 +3008,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_events_streaming",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3066,7 +3066,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "mob_run_labels",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3124,7 +3124,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "module_restart",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3182,7 +3182,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "reference_app",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3243,7 +3243,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "routing_delivery",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3304,7 +3304,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "rpc_builtins",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3362,7 +3362,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "runtime_bootstrap",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3420,7 +3420,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "schedule_dispatch",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3478,7 +3478,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "sdk_parity",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3539,7 +3539,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "sdk_productization",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3601,7 +3601,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "session_store_jsonl",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3659,7 +3659,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "shutdown_drain",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3717,7 +3717,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "sse_auth_gate",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3775,7 +3775,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "swarm_integration",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3836,7 +3836,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "tool_event_stream_contracts",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3894,7 +3894,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "unified_console",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
@@ -3952,7 +3952,7 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.7.10",
+        "CARGO_PKG_VERSION": "0.7.11",
         "CARGO_BIN_NAME": "wildcard_routes",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
