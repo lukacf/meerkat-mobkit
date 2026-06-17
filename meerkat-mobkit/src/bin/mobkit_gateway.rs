@@ -26,10 +26,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 const FALLBACK_TEMPLATE_VERSION: &str = "tux-fallback-v2";
 
+/// Durable schedule service + the concrete persistent session service it shares
+/// with the firing host (the `dyn MobSessionService` returned for the spec can't
+/// drive the runtime-backed schedule host, which needs the concrete type).
+type ScheduleHostInputs = (
+    meerkat::ScheduleService,
+    Arc<PersistentSessionService<FactoryAgentBuilder>>,
+);
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
     Arc<meerkat_runtime::MeerkatMachine>,
     Arc<dyn BinaryBlobStore>,
+    Option<ScheduleHostInputs>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -431,6 +439,15 @@ fn build_persistent_session_service(
     let config = Config::default();
     let mut builder = FactoryAgentBuilder::new(factory, config);
     builder.default_blob_store = Some(blob_store.clone());
+    // Attach meerkat's per-session schedule tools so members whose profile sets
+    // tools.schedule=true get the meerkat_schedule_* surface; the returned
+    // service backs the firing host spawned once the runtime has booted.
+    let schedule_service = meerkat_mobkit::schedule_wiring::attach_schedule_tools(
+        &builder,
+        runtime_db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -438,7 +455,8 @@ fn build_persistent_session_service(
         Some(Arc::clone(&runtime_store)),
         blob_store,
     ));
-    Ok((service, adapter, binary_blob_store))
+    let schedule_host_inputs = schedule_service.map(|sched| (sched, Arc::clone(&service)));
+    Ok((service, adapter, binary_blob_store, schedule_host_inputs))
 }
 
 fn runtime_decision_state(
@@ -666,14 +684,19 @@ async fn run() -> anyhow::Result<()> {
     let runtime_id = definition.id.to_string();
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
-    let session_spec = if persistent_sessions {
-        let (service, adapter, binary_blob_store) = build_persistent_session_service(
-            &store_path,
-            runtime_root.clone(),
-            project_root.clone(),
-            context_root.clone(),
-            image_generation,
-        )?;
+    let (session_spec, schedule_host_inputs) = if persistent_sessions {
+        let (service, adapter, binary_blob_store, schedule_host_inputs) =
+            build_persistent_session_service(
+                &store_path,
+                runtime_root.clone(),
+                project_root.clone(),
+                context_root.clone(),
+                image_generation,
+            )?;
+        // Pair the schedule wiring with a clone of the runtime adapter so the
+        // firing host can be spawned once the runtime has booted (below).
+        let schedule_host_inputs =
+            schedule_host_inputs.map(|(sched, svc)| (sched, svc, adapter.clone()));
         // The explicit runtime adapter must share the session service's runtime
         // persistence authority or meerkat 0.7 fails the bootstrap closed.
         // `with_session_runtime_adapter` wires the SAME adapter into the session
@@ -684,7 +707,7 @@ async fn run() -> anyhow::Result<()> {
             .with_session_runtime_adapter(adapter.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        spec
+        (spec, schedule_host_inputs)
     } else {
         // Build the ephemeral path manually to thread project/context roots
         // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
@@ -726,7 +749,9 @@ async fn run() -> anyhow::Result<()> {
             .with_session_runtime_adapter(adapter.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        spec
+        // Ephemeral sessions have no persistent service; the runtime-backed
+        // schedule firing host (and thus schedule tools) is persistent-only.
+        (spec, None)
     };
     let mob_spec = session_spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: !persistent_sessions,
@@ -748,6 +773,21 @@ async fn run() -> anyhow::Result<()> {
     ))
     .await
     .context("failed to bootstrap local runtime")?;
+
+    // Run the schedule driver so members' authored schedules actually fire: at
+    // due time it materializes a session and runs the prompt as a real agent
+    // turn (session targets via the runtime-backed host, mob targets via the
+    // mob runtime). Held for the gateway's lifetime — dropping the handle shuts
+    // the host down. Persistent sessions only.
+    let _schedule_host = schedule_host_inputs.and_then(|(schedule_service, service, adapter)| {
+        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+            service,
+            adapter,
+            schedule_service,
+            runtime.mob_runtime().agent_mob_mcp_state(),
+            runtime_id.clone(),
+        )
+    });
 
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
     // (lookup of known mob addresses) without requiring peer mob handles.

@@ -26,6 +26,7 @@ pub mod process;
 pub mod protocol;
 pub mod rpc;
 pub mod runtime;
+pub mod schedule_wiring;
 pub mod types;
 pub mod unified_runtime;
 

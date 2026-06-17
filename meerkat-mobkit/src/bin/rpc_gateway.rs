@@ -1885,6 +1885,15 @@ external_addressable = true
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
+        // Attach meerkat's per-session schedule tools so SDK-hosted members whose
+        // profile sets tools.schedule=true get the meerkat_schedule_* surface
+        // (the slot lives on the inner FactoryAgentBuilder and propagates through
+        // the callback wrapper). NOTE: the runtime-backed *firing* host is hard-
+        // typed to PersistentSessionService<FactoryAgentBuilder> and would bypass
+        // the SDK build callback (dropping identity tools, the 0.7.10 fix), so the
+        // SDK gateway authors schedules but does not yet fire them — that needs a
+        // meerkat host generic over the session builder.
+        let _ = meerkat_mobkit::schedule_wiring::attach_schedule_tools(&inner_builder, state_path);
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
