@@ -24,7 +24,7 @@ use meerkat::surface::{
 };
 use meerkat::{
     Config, FactoryAgentBuilder, PersistentSessionService, ScheduleService, ScheduleToolDispatcher,
-    SqliteScheduleStore,
+    SessionAgentBuilder, SqliteScheduleStore,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
@@ -79,9 +79,14 @@ pub fn attach_schedule_tools(
 /// driver is not available for ephemeral sessions). The returned handle MUST be
 /// kept alive for the gateway's lifetime — dropping it shuts the host down.
 /// Returns `None` if the store kind cannot host.
+///
+/// Generic over the session builder `B` so both gateways can drive firing: the
+/// console gateway with `FactoryAgentBuilder`, and the SDK gateway with its
+/// `StdioCallbackAgentBuilder` (so scheduled sessions are materialized through
+/// the SDK build callback and keep their identity-scoped tools).
 #[must_use]
-pub fn spawn_schedule_host(
-    service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
+    service: Arc<PersistentSessionService<B>>,
     adapter: Arc<MeerkatMachine>,
     schedule_service: ScheduleService,
     mob_state: Option<Arc<MobMcpState>>,

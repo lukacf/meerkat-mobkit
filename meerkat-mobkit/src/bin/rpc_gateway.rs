@@ -1817,7 +1817,11 @@ external_addressable = true
     });
 
     // 5. Build session service with callback bridge.
-    let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
+    // Stable owner id for the schedule driver, captured before `definition` is
+    // moved into the bootstrap spec.
+    let schedule_owner_id = definition.id.to_string();
+    let (mob_spec, _temp_dir, schedule_host_inputs) = if let Some(ref state_path) = persistent_state
+    {
         if let Err(e) = std::fs::create_dir_all(state_path) {
             fail_init(
                 &request_id,
@@ -1886,28 +1890,33 @@ external_addressable = true
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
         // Attach meerkat's per-session schedule tools so SDK-hosted members whose
-        // profile sets tools.schedule=true get the meerkat_schedule_* surface
-        // (the slot lives on the inner FactoryAgentBuilder and propagates through
-        // the callback wrapper). NOTE: the runtime-backed *firing* host is hard-
-        // typed to PersistentSessionService<FactoryAgentBuilder> and would bypass
-        // the SDK build callback (dropping identity tools, the 0.7.10 fix), so the
-        // SDK gateway authors schedules but does not yet fire them — that needs a
-        // meerkat host generic over the session builder.
-        let _ = meerkat_mobkit::schedule_wiring::attach_schedule_tools(&inner_builder, state_path);
+        // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
+        // slot lives on the inner FactoryAgentBuilder and propagates through the
+        // callback wrapper). The returned service backs the firing host spawned
+        // after the runtime boots — meerkat's runtime-backed host is now generic
+        // over the session builder, so scheduled sessions materialize through the
+        // SDK build callback and keep their identity-scoped tools.
+        let schedule_service =
+            meerkat_mobkit::schedule_wiring::attach_schedule_tools(&inner_builder, state_path);
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
             session_store: Some(session_store.clone()),
         };
-        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
-            Arc::new(meerkat_session::PersistentSessionService::new(
-                callback_builder,
-                gateway_options.max_sessions,
-                session_store,
-                Some(Arc::clone(&runtime_store)),
-                blob_store,
-            ));
+        // Keep the CONCRETE typed service for the firing host (the runtime-backed
+        // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
+        // erased Arc<dyn MobSessionService> the spec consumes).
+        let concrete_service = Arc::new(meerkat_session::PersistentSessionService::new(
+            callback_builder,
+            gateway_options.max_sessions,
+            session_store,
+            Some(Arc::clone(&runtime_store)),
+            blob_store,
+        ));
+        let schedule_host_inputs =
+            schedule_service.map(|sched| (sched, Arc::clone(&concrete_service), adapter.clone()));
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_runtime_adapter(adapter.clone())
             .with_options(MobBootstrapOptions {
@@ -1917,7 +1926,7 @@ external_addressable = true
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        (spec, None)
+        (spec, None, schedule_host_inputs)
     } else {
         // Ephemeral mode (original behavior).
         // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
@@ -2007,7 +2016,8 @@ external_addressable = true
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        (spec, temp_dir)
+        // Ephemeral sessions have no persistent service; firing is persistent-only.
+        (spec, temp_dir, None)
     };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
@@ -2076,6 +2086,22 @@ external_addressable = true
         let _ = stdout.flush();
         std::process::exit(1);
     });
+
+    // Run the schedule driver so SDK-hosted members' authored schedules fire: at
+    // due time the runtime-backed host materializes a session through the SDK
+    // build callback (keeping identity-scoped tools) and runs the prompt as a
+    // real agent turn. Held for the gateway's lifetime — dropping the handle
+    // shuts the host down. Persistent sessions only.
+    let _schedule_host = schedule_host_inputs.and_then(|(schedule_service, service, adapter)| {
+        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+            service,
+            adapter,
+            schedule_service,
+            runtime.mob_runtime().agent_mob_mcp_state(),
+            schedule_owner_id.clone(),
+        )
+    });
+
     if let Some(state_path) = persistent_state.as_ref() {
         let console_log_path = state_path.join("mobkit_console.sqlite");
         let console_log_store = Arc::new(
