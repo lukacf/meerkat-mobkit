@@ -16,6 +16,21 @@
         true
       ]
     },
+    "AnthropicCacheControlPolicy": {
+      "description": "Typed shape of Anthropic's prompt-cache breakpoint policy.",
+      "oneOf": [
+        {
+          "const": "disabled",
+          "description": "Do not request Anthropic prompt-cache breakpoints.",
+          "type": "string"
+        },
+        {
+          "const": "system_prefix",
+          "description": "Mark the stable top-level system prompt as an ephemeral cache prefix.",
+          "type": "string"
+        }
+      ]
+    },
     "AnthropicCompactionConfig": {
       "description": "Typed shape of Anthropic's automatic-compaction knob.",
       "oneOf": [
@@ -529,6 +544,21 @@
       "description": "Opaque provider-native JSON body carried verbatim from caller to\nprovider. Used for pass-through sub-shapes (web search config,\nprovider-native custom compaction edits, OpenAI-compatible\n`chat_template_kwargs`/`thinking`/`reasoning` forwards) where the\nexact wire shape varies across downstream providers (Anthropic /\nDeepSeek / OpenRouter / custom proxies) and the runtime deliberately\ndoes not parse the body — it simply forwards it.",
       "type": "string"
     },
+    "OpenAiPromptCacheRetention": {
+      "description": "Typed shape of OpenAI's prompt-cache retention hint.",
+      "oneOf": [
+        {
+          "const": "in_memory",
+          "description": "Retain only in memory.",
+          "type": "string"
+        },
+        {
+          "const": "24h",
+          "description": "Retain for 24 hours.",
+          "type": "string"
+        }
+      ]
+    },
     "OutputSchema": {
       "description": "Configuration for structured output extraction.\n\nWhen provided to an agent, the agent will perform an extraction turn after\ncompleting the agentic work, forcing the LLM to output validated JSON that\nconforms to the provided schema. [`RunResult::text`] remains the committed\nmain-turn output; extraction populates [`RunResult::structured_output`] on\nsuccess or [`RunResult::extraction_error`] on failure.",
       "properties": {
@@ -786,6 +816,17 @@
           "additionalProperties": false,
           "description": "Per-turn Anthropic-specific knobs carried in `ProviderTag::Anthropic`.",
           "properties": {
+            "cache_control": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnthropicCacheControlPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Prompt-cache breakpoint policy."
+            },
             "compaction": {
               "anyOf": [
                 {
@@ -929,6 +970,24 @@
                 "null"
               ]
             },
+            "prompt_cache_key": {
+              "description": "OpenAI prompt-cache affinity routing key.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt_cache_retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OpenAiPromptCacheRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "OpenAI prompt-cache retention hint."
+            },
             "provider": {
               "const": "open_ai",
               "type": "string"
@@ -960,6 +1019,13 @@
               "format": "int64",
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "store": {
+              "description": "Responses API persistence override. Absent means the client sends\n`store: false` by default; callers may explicitly opt in with\n`Some(true)`.",
+              "type": [
+                "boolean",
                 "null"
               ]
             },
@@ -1020,6 +1086,13 @@
           "additionalProperties": false,
           "description": "Per-turn Gemini-specific knobs carried in `ProviderTag::Gemini`.",
           "properties": {
+            "cached_content_name": {
+              "description": "Gemini explicit context-cache resource name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "candidate_count": {
               "description": "Number of candidate completions (runtime/persistence knob, not\nread by the Gemini client today — preserved for V3 round-trip).",
               "format": "uint32",

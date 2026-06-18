@@ -5880,11 +5880,17 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
         }
         "mobkit/wait_ready" => {
-            let timeout = request
-                .params
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .map(std::time::Duration::from_millis);
+            // Omit `timeout_ms` => mobkit's generous default ceiling (the SDK
+            // contract is "wait until ready"), not meerkat-mob 0.7.9's lowered
+            // 60s internal default that `None` would otherwise inherit.
+            let timeout = Some(
+                request
+                    .params
+                    .get("timeout_ms")
+                    .and_then(Value::as_u64)
+                    .map(std::time::Duration::from_millis)
+                    .unwrap_or(crate::unified_runtime::mob_ops::DEFAULT_WAIT_READY_TIMEOUT),
+            );
             match runtime.handle().wait_for_ready(timeout).await {
                 Ok(ready) => {
                     let entries: Vec<Value> = ready
@@ -5916,8 +5922,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     )
                 }
                 Err(err) => {
-                    let message = err.to_string();
-                    if message.to_lowercase().contains("timeout") {
+                    if crate::unified_runtime::mob_ops::is_ready_wait_timeout(&err) {
                         response_value(
                             response_id,
                             Some(serde_json::json!({
@@ -5927,7 +5932,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                             None,
                         )
                     } else {
-                        internal_error(response_id, format!("wait_for_ready failed: {message}"))
+                        internal_error(response_id, format!("wait_for_ready failed: {err}"))
                     }
                 }
             }

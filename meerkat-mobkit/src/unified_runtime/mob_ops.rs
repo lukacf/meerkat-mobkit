@@ -6,7 +6,7 @@
 //! operations — status, discover, reconcile, retire, helpers, etc. — are now
 //! on `MobHandle` directly; callers reach through `runtime.mob_handle()`.
 
-use meerkat_mob::{MobHandle, SpawnMemberSpec, SpawnResult};
+use meerkat_mob::{MobError, MobHandle, SpawnMemberSpec, SpawnResult};
 use std::future::Future;
 
 use crate::mob_handle_runtime::MobRuntimeError;
@@ -17,6 +17,32 @@ use super::UnifiedRuntime;
 // fail-fast enqueue in meerkat-mob 0.6.x. Keep bulk discovery bootstrap
 // serialized until the upstream signal path is backpressured.
 const MAX_CONCURRENT_SPAWN_MANY: usize = 1;
+
+/// Default ceiling for `mobkit/wait_ready` when the caller omits `timeout_ms`.
+///
+/// meerkat-mob 0.7.9 (#798, reactive-readiness redesign) lowered its own
+/// internal `DEFAULT_READY_WAIT_TIMEOUT` from 600s to 60s; that default is
+/// applied inside `MobHandle::wait_for_ready` whenever the caller passes
+/// `None`. mobkit's SDK contract for `wait_ready` is "wait until the mob is
+/// ready", so a caller that omits a timeout keeps the prior generous ceiling
+/// rather than silently inheriting meerkat's lowered 60s — the reactive wait
+/// still returns promptly when members converge, so this is only the safety
+/// wall for genuinely slow startups. Pass an explicit `timeout_ms` to override.
+pub(crate) const DEFAULT_WAIT_READY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_mins(10);
+
+/// Whether a `MobHandle::wait_for_ready` error is a readiness-deadline timeout
+/// (which maps to the documented `{ ready: [], timeout: true }` envelope) as
+/// opposed to a genuine failure (which surfaces as an RPC error).
+///
+/// Matches the typed variant rather than the Display string: meerkat-mob's
+/// [`MobError::ReadyWaitTimedOut`] renders as `"member ready wait timed out"`,
+/// which does NOT contain the substring `"timeout"` (only `"timed out"`), so
+/// the previous `message.to_lowercase().contains("timeout")` check always fell
+/// through to the error branch and returned `-32000` instead of the envelope.
+pub(crate) fn is_ready_wait_timeout(err: &MobError) -> bool {
+    matches!(err, MobError::ReadyWaitTimedOut { .. })
+}
 
 impl UnifiedRuntime {
     pub fn mob_handle(&self) -> MobHandle {
@@ -118,11 +144,39 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::try_join_in_batches;
+    use super::{is_ready_wait_timeout, try_join_in_batches};
+    use meerkat_mob::MobError;
 
     #[tokio::test]
     async fn spawn_many_batch_size_stays_serial_until_upstream_backpressure_exists() {
         assert_eq!(super::MAX_CONCURRENT_SPAWN_MANY, 1);
+    }
+
+    #[test]
+    fn ready_wait_timeout_is_classified_as_envelope_not_error() {
+        // Regression (meerkat-mob 0.7.9 #798): the default ready-wait dropped
+        // 600s -> 60s, so `wait_for_ready` hits this timeout far more often.
+        // The prior `message.to_lowercase().contains("timeout")` never matched
+        // the Display "member ready wait timed out", so timeouts wrongly
+        // surfaced as a -32000 RPC error instead of `{ ready: [], timeout:true }`.
+        let timed_out = MobError::ReadyWaitTimedOut {
+            pending_member_ids: vec![],
+        };
+        assert!(is_ready_wait_timeout(&timed_out));
+
+        // Pin the exact failure mode that motivated the typed match.
+        let display = timed_out.to_string().to_lowercase();
+        assert!(
+            !display.contains("timeout"),
+            "old substring check would have missed this timeout"
+        );
+        assert!(display.contains("timed out"));
+
+        // Precision: a *kickoff* timeout also Displays "...timed out" but is not
+        // a readiness timeout — it must NOT be folded into the ready envelope.
+        assert!(!is_ready_wait_timeout(&MobError::KickoffWaitTimedOut {
+            pending_member_ids: vec![],
+        }));
     }
 
     #[tokio::test]

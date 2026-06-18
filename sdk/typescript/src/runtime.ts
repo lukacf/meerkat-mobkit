@@ -1254,7 +1254,8 @@ export class MobHandle {
    * Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns
    * `{ ready: [...], timeout: false }` on full convergence; on timeout
    * returns `{ ready: [], timeout: true }`. Pass `timeoutSeconds` to bound
-   * the wait, or omit it to block indefinitely.
+   * the wait, or omit it to wait up to a generous server-side default ceiling
+   * (~10 minutes); the wait returns as soon as members converge.
    */
   async waitReady(
     timeoutSeconds?: number,

@@ -1889,7 +1889,10 @@ class MobHandle:
         ``timeout=True`` means partial readiness within the deadline; the
         ``ready`` list will be empty in that case.
 
-        :param timeout: optional seconds to wait. ``None`` blocks indefinitely.
+        :param timeout: optional seconds to wait. Omit/``None`` waits up to a
+            generous server-side default ceiling (~10 minutes); pass an explicit
+            value to override. The wait returns as soon as members converge — the
+            ceiling is only the wall before ``timeout=True`` is reported.
         """
         params: dict[str, Any] = {}
         if timeout is not None:
