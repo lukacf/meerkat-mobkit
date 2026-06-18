@@ -2053,10 +2053,16 @@ pub(super) async fn handle_wait_ready(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
-    let timeout = params
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .map(std::time::Duration::from_millis);
+    // Omit `timeout_ms` => mobkit's generous default ceiling (the SDK contract
+    // is "wait until ready"), not meerkat-mob 0.7.9's lowered 60s internal
+    // default that `None` would otherwise inherit.
+    let timeout = Some(
+        params
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(crate::unified_runtime::mob_ops::DEFAULT_WAIT_READY_TIMEOUT),
+    );
     match runtime.mob_handle().wait_for_ready(timeout).await {
         Ok(ready) => {
             let entries: Vec<Value> = ready
@@ -2079,9 +2085,7 @@ pub(super) async fn handle_wait_ready(
             }
         }
         Err(err) => {
-            let message = err.to_string();
-            let timed_out = message.to_lowercase().contains("timeout");
-            if timed_out {
+            if crate::unified_runtime::mob_ops::is_ready_wait_timeout(&err) {
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -2098,7 +2102,7 @@ pub(super) async fn handle_wait_ready(
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32000,
-                        message: format!("wait_for_ready failed: {message}"),
+                        message: format!("wait_for_ready failed: {err}"),
                         data: None,
                     }),
                 }
