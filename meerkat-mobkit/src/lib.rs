@@ -108,6 +108,11 @@ pub use http_sse::{
     agent_events_sse_router_with_access, mob_events_sse_router, mob_events_sse_router_with_access,
     mob_structural_events_sse_router, mob_structural_events_sse_router_with_access,
 };
+pub use identity_first::{
+    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryProvider,
+    AgentMemoryRecallRequest, AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection,
+    MarkdownAgentMemoryStore, NewAgentMemory,
+};
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
     MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,

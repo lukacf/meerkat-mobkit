@@ -1,6 +1,7 @@
 //! Identity-first continuity types and contracts for MobKit.
 
 pub mod adapters;
+pub mod agent_memory;
 pub mod bridge;
 pub mod contracts;
 pub mod gateway_bridges;
@@ -13,6 +14,11 @@ mod types;
 pub use adapters::{
     ContinuitySessionStoreAdapter, DiscoveryRosterAdapter, EdgeDiscoveryTopologyAdapter,
     SessionHookCustomizerAdapter, agent_discovery_to_durable,
+};
+pub use agent_memory::{
+    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryForgetResult,
+    AgentMemoryProvider, AgentMemoryRecallRequest, AgentMemoryRecord, AgentMemoryRuntimeInjector,
+    AgentMemorySelection, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
     BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeSessionOutcome,

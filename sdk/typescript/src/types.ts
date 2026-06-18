@@ -44,6 +44,30 @@ function asStringRecord(value: unknown): Record<string, string> {
   return result;
 }
 
+function requiredStringField(
+  record: Record<string, unknown>,
+  field: string,
+  label: string,
+): string {
+  const value = record[field];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label}.${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function requiredNumberField(
+  record: Record<string, unknown>,
+  field: string,
+  label: string,
+): number {
+  const value = record[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label}.${field} must be a finite number`);
+  }
+  return value;
+}
+
 function validateAgentIdentity(identity: string): string {
   if (
     identity.length === 0 ||
@@ -335,14 +359,108 @@ export function parseDeliveryHistoryResult(
 
 // -- MemoryQueryResult ----------------------------------------------------
 
+export interface MemoryAssertion {
+  readonly assertionId: string;
+  readonly entity: string;
+  readonly topic: string;
+  readonly store: string;
+  readonly fact: string;
+  readonly metadata: unknown | null;
+  readonly indexedAtMs: number;
+}
+
+export interface MemoryConflictSignal {
+  readonly entity: string;
+  readonly topic: string;
+  readonly store: string;
+  readonly reason: string | null;
+  readonly updatedAtMs: number;
+}
+
 export interface MemoryQueryResult {
+  readonly assertions: readonly MemoryAssertion[];
+  readonly conflicts: readonly MemoryConflictSignal[];
+  /** Legacy flattened alias retained for older callers. */
   readonly results: readonly Record<string, unknown>[];
 }
 
 export function parseMemoryQueryResult(raw: unknown): MemoryQueryResult {
   const d = asRecord(raw);
+  const assertions = asRecordArray(d.assertions).map((entry) => ({
+    assertionId: String(entry.assertion_id ?? ""),
+    entity: String(entry.entity ?? ""),
+    topic: String(entry.topic ?? ""),
+    store: String(entry.store ?? ""),
+    fact: String(entry.fact ?? ""),
+    metadata: entry.metadata ?? null,
+    indexedAtMs: Number(entry.indexed_at_ms ?? 0),
+  }));
+  const conflicts = asRecordArray(d.conflicts).map((entry) => ({
+    entity: String(entry.entity ?? ""),
+    topic: String(entry.topic ?? ""),
+    store: String(entry.store ?? ""),
+    reason: typeof entry.reason === "string" ? entry.reason : null,
+    updatedAtMs: Number(entry.updated_at_ms ?? 0),
+  }));
+  const legacyResults = asRecordArray(d.results);
   return {
-    results: asRecordArray(d.results),
+    assertions,
+    conflicts,
+    results: legacyResults.length > 0
+      ? legacyResults
+      : [
+          ...assertions.map((assertion) => ({ ...assertion })),
+          ...conflicts.map((conflict) => ({ ...conflict, conflict: true })),
+        ],
+  };
+}
+
+// -- AgentMemoryRecord -----------------------------------------------------
+
+export interface AgentMemoryRecord {
+  readonly memoryId: string;
+  readonly title: string;
+  readonly body: string;
+  readonly tags: readonly string[];
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface AgentMemoryForgetResult {
+  readonly memoryId: string;
+  readonly deleted: boolean;
+}
+
+export function parseAgentMemoryRecord(raw: unknown): AgentMemoryRecord {
+  const d = asRecord(raw);
+  const memoryId = requiredStringField(d, "memory_id", "agent_memory_record");
+  const title = requiredStringField(d, "title", "agent_memory_record");
+  const body = requiredStringField(d, "body", "agent_memory_record");
+  const createdAtMs = requiredNumberField(d, "created_at_ms", "agent_memory_record");
+  const updatedAtMs = requiredNumberField(d, "updated_at_ms", "agent_memory_record");
+  const tags = d.tags;
+  if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) {
+    throw new Error("agent_memory_record.tags must be an array of strings");
+  }
+  return {
+    memoryId,
+    title,
+    body,
+    tags: tags,
+    createdAtMs,
+    updatedAtMs,
+  };
+}
+
+export function parseAgentMemoryForgetResult(raw: unknown): AgentMemoryForgetResult {
+  const d = asRecord(raw);
+  const memoryId = requiredStringField(d, "memory_id", "agent_memory_forget_result");
+  if (typeof d.deleted !== "boolean") {
+    throw new Error("agent_memory_forget_result.deleted must be a boolean");
+  }
+  return {
+    memoryId,
+    deleted: d.deleted,
   };
 }
 

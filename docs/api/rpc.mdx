@@ -264,6 +264,53 @@ Query indexed content by semantic similarity.
 
 Return information about configured memory backends.
 
+### `mobkit/agent_memory/remember`
+
+Write an identity-scoped agent memory record for later build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `title` | `string` | yes | Short record title, max 200 bytes |
+| `body` | `string` | yes | Memory body to inject later as a quoted observation, max 64 KiB |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `tags` | `string[]` | no | Optional labels for provider-side retrieval, max 32 entries and 64 bytes each |
+</Accordion>
+
+### `mobkit/agent_memory/recall`
+
+Read identity-scoped agent memory records from the configured agent memory provider. This exposes the same durable record set used for build-context injection.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `selection` | `"always" \| "contextual"` | no | Retrieval mode, default `"contextual"` |
+| `query_terms` | `string[]` | no | Terms used by contextual providers |
+| `max_entries` | `integer` | no | Maximum records, default `8`, max `64` |
+</Accordion>
+
+### `mobkit/agent_memory/forget`
+
+Delete one identity-scoped agent memory record from the configured provider. Providers that do not support deletes do not advertise this method in `mobkit/capabilities`.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `memory_id` | `string` | yes | Durable memory record id returned by `remember` or `recall` |
+</Accordion>
+
+<Accordion title="Result">
+| Field | Type | Description |
+|-------|------|-------------|
+| `memory_id` | `string` | Requested memory id |
+| `deleted` | `boolean` | `true` when a record was removed, `false` when it was already absent |
+</Accordion>
+
 ---
 
 ## Routing methods

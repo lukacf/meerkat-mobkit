@@ -33,6 +33,38 @@ describe("MobKitBuilder.persistentState()", () => {
   });
 });
 
+describe("MobKitBuilder.agentMemory()", () => {
+  it("defaults to disabled", () => {
+    const builder = MobKit.builder();
+    assert.equal(builder._config.agentMemoryConfig, null);
+  });
+
+  it("stores true for default gateway configuration", () => {
+    const builder = MobKit.builder();
+    const result = builder.agentMemory();
+
+    assert.equal(result, builder);
+    assert.equal(builder._config.agentMemoryConfig, true);
+  });
+
+  it("serializes camelCase options to gateway wire keys", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({
+      realm: "family",
+      selection: "contextual",
+      maxEntries: 3,
+      instructionHeader: "Remember",
+    });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      realm: "family",
+      selection: "contextual",
+      max_entries: 3,
+      instruction_header: "Remember",
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // callback/after_create dispatch
 // ---------------------------------------------------------------------------

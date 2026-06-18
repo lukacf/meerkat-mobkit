@@ -15,6 +15,10 @@ use meerkat_core::types::{HandlingMode, SessionId};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio::task::JoinHandle;
 
+use super::agent_memory::{
+    AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
+    AgentMemoryRuntimeInjector, NewAgentMemory,
+};
 use super::bridge::SessionBridge;
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
@@ -356,6 +360,7 @@ pub struct IdentityRuntime {
     best_effort_materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
+    agent_memory: RwLock<Option<AgentMemoryRuntimeInjector>>,
     lease_renewal_notify: Notify,
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
@@ -388,6 +393,7 @@ impl IdentityRuntime {
             best_effort_materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
             customizer: RwLock::new(None),
+            agent_memory: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
             materialization_failure_backoff: RwLock::new(BTreeMap::new()),
@@ -406,6 +412,71 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    pub async fn set_agent_memory(&self, injector: Option<AgentMemoryRuntimeInjector>) {
+        *self.agent_memory.write().await = injector;
+    }
+
+    pub async fn remember_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory: NewAgentMemory,
+    ) -> Result<AgentMemoryRecord, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        provider.remember(realm, identity, memory).await
+    }
+
+    pub async fn forget_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory_id: &str,
+    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        provider.forget(realm, identity, memory_id).await
+    }
+
+    pub async fn recall_agent_memory(
+        &self,
+        request: AgentMemoryRecallRequest,
+    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+        self.status(&request.identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        provider.recall(request).await
     }
 
     /// Attach a best-effort operational error hook used for alerting.
@@ -2207,11 +2278,20 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.agent_runtime_id.clone())
         };
+        let content_to_deliver = match self.agent_memory.read().await.clone() {
+            Some(injector) => injector
+                .inject_for_turn(identity, content)
+                .await
+                .map_err(|err| {
+                    IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
+                })?,
+            None => content.clone(),
+        };
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
             let delivered_session_id = bridge
-                .deliver_with_mode(rid, content, handling_mode)
+                .deliver_with_mode(rid, &content_to_deliver, handling_mode)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
             if let Some(rebound_token) = self
@@ -2525,7 +2605,7 @@ impl IdentityRuntime {
         {
             Ok(resolved) => resolved,
             Err(err) => {
-                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                self.restore_entry_with_grant(identity, registered_entry.clone(), &grant)
                     .await;
                 return Err(IdentityRuntimeError::Store(err));
             }
@@ -2890,6 +2970,37 @@ impl IdentityRuntime {
             generation: new_gen,
             checkpoint_version: CheckpointVersion::new(0),
         };
+        let spec = registered_entry.spec.clone();
+        let mut draft = super::types::AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: spec.additional_instructions.clone(),
+            labels: spec.labels.clone(),
+            app_context: spec.context.clone(),
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+        if self.bridge.is_some() {
+            let active_peers = self.entries.read().await.keys().cloned().collect();
+            let managed_edges = self.desired_peer_edges.read().await.clone();
+            let build_context = AgentBuildContext {
+                identity: identity.clone(),
+                active_peers,
+                managed_edges,
+                runtime_services: self.runtime_services(),
+            };
+            if let Some(customizer) = self.customizer.read().await.clone()
+                && let Err(err) = customizer
+                    .customize_build(&build_context, &spec, &mut draft)
+                    .await
+            {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "customizer after reset: {err}"
+                )));
+            }
+        }
 
         // Bridge: retire old mob member and create fresh session for the new identity.
         if let Some(bridge) = &self.bridge {
@@ -2912,16 +3023,6 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.session_id.clone());
 
-            let spec = registered_entry.spec.clone();
-            let draft = super::types::AgentBuildDraft {
-                model: None,
-                system_prompt: None,
-                additional_instructions: spec.additional_instructions.clone(),
-                labels: spec.labels.clone(),
-                app_context: spec.context.clone(),
-                external_tools: Vec::new(),
-                local_external_tools: Default::default(),
-            };
             let session_id = bridge
                 .create_session(
                     identity,

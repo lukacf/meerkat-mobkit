@@ -40,7 +40,8 @@ use gating_methods::{
     parse_gating_evaluate_params, parse_gating_pending_params,
 };
 use memory_methods::{
-    MemoryParamsError, parse_memory_index_params, parse_memory_query_params,
+    MemoryParamsError, parse_agent_memory_forget_params, parse_agent_memory_recall_params,
+    parse_agent_memory_remember_params, parse_memory_index_params, parse_memory_query_params,
     parse_memory_stores_params,
 };
 use routing_delivery_methods::{
@@ -1204,6 +1205,8 @@ pub struct IdentityFirstContext {
     pub topology_provider:
         Option<std::sync::Arc<dyn crate::identity_first::contracts::TopologyProvider>>,
     pub customizer: Option<std::sync::Arc<dyn crate::identity_first::contracts::AgentCustomizer>>,
+    pub agent_memory_provider:
+        Option<std::sync::Arc<dyn crate::identity_first::AgentMemoryProvider>>,
 }
 
 pub fn handle_unified_rpc_json<'a>(
@@ -1385,6 +1388,24 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/inspect_identity",
                     "mobkit/reconcile_identity",
                 ]);
+            }
+            if identity_ctx
+                .and_then(|ctx| ctx.agent_memory_provider.as_ref())
+                .is_some()
+            {
+                methods.push("mobkit/agent_memory/recall");
+                if identity_ctx
+                    .and_then(|ctx| ctx.agent_memory_provider.as_ref())
+                    .is_some_and(|provider| provider.supports_remember())
+                {
+                    methods.push("mobkit/agent_memory/remember");
+                }
+                if identity_ctx
+                    .and_then(|ctx| ctx.agent_memory_provider.as_ref())
+                    .is_some_and(|provider| provider.supports_forget())
+                {
+                    methods.push("mobkit/agent_memory/forget");
+                }
             }
             // Cross-mob directory always advertised when configured
             if runtime.has_contact_directory() {
@@ -1940,6 +1961,139 @@ async fn handle_unified_rpc_json_inner(
                 }),
             },
         },
+        "mobkit/agent_memory/remember" => {
+            let runtime = match identity_ctx.map(|ctx| ctx.runtime.as_ref()) {
+                Some(runtime) => runtime,
+                None => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32601,
+                        "agent memory is not configured".to_string(),
+                    );
+                }
+            };
+            match parse_agent_memory_remember_params(&request.params) {
+                Ok(remember_request) => match runtime
+                    .remember_agent_memory(
+                        &remember_request.realm,
+                        &remember_request.identity,
+                        remember_request.memory,
+                    )
+                    .await
+                {
+                    Ok(record) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::to_value(record).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(agent_memory_rpc_error("write", err)),
+                    },
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {}", err.message()),
+                        data: None,
+                    }),
+                },
+            }
+        }
+        "mobkit/agent_memory/forget" => {
+            let runtime = match identity_ctx.map(|ctx| ctx.runtime.as_ref()) {
+                Some(runtime) => runtime,
+                None => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32601,
+                        "agent memory is not configured".to_string(),
+                    );
+                }
+            };
+            match parse_agent_memory_forget_params(&request.params) {
+                Ok(forget_request) => match runtime
+                    .forget_agent_memory(
+                        &forget_request.realm,
+                        &forget_request.identity,
+                        &forget_request.memory_id,
+                    )
+                    .await
+                {
+                    Ok(result) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(agent_memory_rpc_error("forget", err)),
+                    },
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {}", err.message()),
+                        data: None,
+                    }),
+                },
+            }
+        }
+        "mobkit/agent_memory/recall" => {
+            let runtime = match identity_ctx.map(|ctx| ctx.runtime.as_ref()) {
+                Some(runtime) => runtime,
+                None => {
+                    return maybe_error_response(
+                        is_notification,
+                        response_id,
+                        -32601,
+                        "agent memory is not configured".to_string(),
+                    );
+                }
+            };
+            match parse_agent_memory_recall_params(&request.params) {
+                Ok(recall_request) => {
+                    match runtime.recall_agent_memory(recall_request.request).await {
+                        Ok(records) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: Some(serde_json::json!({ "records": records })),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: None,
+                            error: Some(agent_memory_rpc_error("recall", err)),
+                        },
+                    }
+                }
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {}", err.message()),
+                        data: None,
+                    }),
+                },
+            }
+        }
         "mobkit/session_store/bigquery" => {
             match parse_bigquery_session_store_params(&request.params)
                 .and_then(run_bigquery_session_store_request)
@@ -4352,6 +4506,24 @@ fn maybe_error_response(
     }
 }
 
+fn agent_memory_rpc_error(
+    operation: &str,
+    err: crate::identity_first::AgentMemoryError,
+) -> JsonRpcError {
+    let code = match &err {
+        crate::identity_first::AgentMemoryError::InvalidConfig(_)
+        | crate::identity_first::AgentMemoryError::InvalidRecord(_) => -32602,
+        crate::identity_first::AgentMemoryError::Unsupported(_) => -32601,
+        crate::identity_first::AgentMemoryError::Io(_)
+        | crate::identity_first::AgentMemoryError::Parse(_) => -32603,
+    };
+    JsonRpcError {
+        code,
+        message: format!("agent memory {operation} failed: {err}"),
+        data: None,
+    }
+}
+
 fn serialize_response(response: &JsonRpcResponse) -> String {
     serde_json::to_string(response).unwrap_or_else(|_| {
         r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}"#
@@ -4372,7 +4544,8 @@ mod tests {
         AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion,
         ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
         IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseGrant,
-        LocalContinuityStore, LocalLeaseProvider, RosterContext, RosterError,
+        LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
+        RosterError,
     };
     use crate::{
         DiscoverySpec, IdentityFirstContext, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
@@ -4396,6 +4569,21 @@ mod tests {
             &self,
             _context: &RosterContext,
         ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct ReadOnlyAgentMemoryProvider;
+
+    #[async_trait]
+    impl crate::identity_first::AgentMemoryProvider for ReadOnlyAgentMemoryProvider {
+        async fn recall(
+            &self,
+            _request: crate::identity_first::AgentMemoryRecallRequest,
+        ) -> Result<
+            Vec<crate::identity_first::AgentMemoryRecord>,
+            crate::identity_first::AgentMemoryError,
+        > {
             Ok(Vec::new())
         }
     }
@@ -4620,6 +4808,361 @@ comms = true
             "{catalogs:#?}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_agent_memory_remember_writes_identity_scoped_record()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-agent-memory-remember-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-agent-memory-remember-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let store = Arc::new(MarkdownAgentMemoryStore::open(
+            temp_dir.path().join("agent-memory"),
+        )?);
+        let provider: Arc<dyn crate::identity_first::AgentMemoryProvider> = store.clone();
+        identity_rt
+            .set_agent_memory(Some(
+                crate::identity_first::AgentMemoryRuntimeInjector::new(
+                    provider.clone(),
+                    crate::identity_first::AgentMemoryConfig::default(),
+                ),
+            ))
+            .await;
+        let memory_identity = AgentIdentity::parse("identity:luka")?;
+        identity_rt
+            .register(
+                DurableAgentSpec {
+                    identity: memory_identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: Default::default(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                None,
+                None,
+            )
+            .await;
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: Some(provider),
+        };
+
+        let capabilities: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/capabilities",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        assert!(
+            capabilities["result"]["methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/remember"))),
+            "{capabilities:#?}"
+        );
+        assert!(
+            capabilities["result"]["methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/recall"))),
+            "{capabilities:#?}"
+        );
+        assert!(
+            capabilities["result"]["methods"]
+                .as_array()
+                .is_some_and(|methods| methods.contains(&json!("mobkit/agent_memory/forget"))),
+            "{capabilities:#?}"
+        );
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "mobkit/agent_memory/remember",
+                    "params": {
+                        "identity": "identity:luka",
+                        "realm": "family",
+                        "title": "School pickup",
+                        "body": "Pickup is before calendar planning.",
+                        "tags": ["family", "calendar"]
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        let memory_id = response["result"]["memory_id"]
+            .as_str()
+            .ok_or("memory_id should be present")?
+            .to_string();
+        assert_eq!(response["result"]["title"], json!("School pickup"));
+        assert_eq!(
+            response["result"]["body"],
+            json!("Pickup is before calendar planning.")
+        );
+        assert_eq!(response["result"]["tags"], json!(["calendar", "family"]));
+
+        let records = store.read_records("family", &memory_identity)?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].title, "School pickup");
+        assert_eq!(records[0].tags, vec!["calendar", "family"]);
+
+        let recall_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "mobkit/agent_memory/recall",
+                    "params": {
+                        "identity": "identity:luka",
+                        "realm": "family",
+                        "selection": "contextual",
+                        "query_terms": ["pickup"],
+                        "max_entries": 4
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+
+        assert!(recall_response["error"].is_null(), "{recall_response:#?}");
+        assert_eq!(
+            recall_response["result"]["records"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            recall_response["result"]["records"][0]["body"],
+            json!("Pickup is before calendar planning.")
+        );
+
+        let forget_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "mobkit/agent_memory/forget",
+                    "params": {
+                        "identity": "identity:luka",
+                        "realm": "family",
+                        "memory_id": memory_id.clone()
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        assert!(forget_response["error"].is_null(), "{forget_response:#?}");
+        assert_eq!(forget_response["result"]["memory_id"], json!(memory_id));
+        assert_eq!(forget_response["result"]["deleted"], json!(true));
+        assert!(store.read_records("family", &memory_identity)?.is_empty());
+
+        let recall_after_forget_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "mobkit/agent_memory/recall",
+                    "params": {
+                        "identity": "identity:luka",
+                        "realm": "family",
+                        "selection": "always"
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        assert!(
+            recall_after_forget_response["error"].is_null(),
+            "{recall_after_forget_response:#?}"
+        );
+        assert_eq!(
+            recall_after_forget_response["result"]["records"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let unknown_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "mobkit/agent_memory/remember",
+                    "params": {
+                        "identity": "identity:unknown",
+                        "title": "Orphan",
+                        "body": "This should not be written."
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        assert_eq!(unknown_response["error"]["code"], json!(-32602));
+        assert!(
+            unknown_response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown identity")),
+            "{unknown_response:#?}"
+        );
+
+        let unknown_forget_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "mobkit/agent_memory/forget",
+                    "params": {
+                        "identity": "identity:unknown",
+                        "memory_id": "mem-missing"
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        assert_eq!(unknown_forget_response["error"]["code"], json!(-32602));
+        assert!(
+            unknown_forget_response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("unknown identity")),
+            "{unknown_forget_response:#?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_agent_memory_capabilities_do_not_advertise_read_only_writes()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-agent-memory-read-only-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-agent-memory-read-only-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let provider: Arc<dyn crate::identity_first::AgentMemoryProvider> =
+            Arc::new(ReadOnlyAgentMemoryProvider);
+        let identity_ctx = IdentityFirstContext {
+            runtime: Arc::new(identity_rt),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: Some(provider),
+        };
+
+        let capabilities: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/capabilities",
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+        let methods = capabilities["result"]["methods"]
+            .as_array()
+            .ok_or("methods should be an array")?;
+
+        assert!(methods.contains(&json!("mobkit/agent_memory/recall")));
+        assert!(!methods.contains(&json!("mobkit/agent_memory/remember")));
+        assert!(!methods.contains(&json!("mobkit/agent_memory/forget")));
         Ok(())
     }
 
@@ -5268,6 +5811,7 @@ comms = true
             roster_provider: Arc::new(EmptyRosterProvider),
             topology_provider: None,
             customizer: None,
+            agent_memory_provider: None,
         };
         for requested_identity in ["review:singleton", "rt:review:singleton:0"] {
             let response: Value = serde_json::from_str(
@@ -5514,6 +6058,7 @@ comms = true
             roster_provider: Arc::new(EmptyRosterProvider),
             topology_provider: None,
             customizer: None,
+            agent_memory_provider: None,
         };
 
         let send = |id: u64, params: Value| {
@@ -5732,6 +6277,7 @@ comms = true
             roster_provider: Arc::new(EmptyRosterProvider),
             topology_provider: None,
             customizer: None,
+            agent_memory_provider: None,
         };
         let raw = handle_unified_rpc_json(
             &runtime,
@@ -5844,6 +6390,7 @@ comms = true
             roster_provider: Arc::new(EmptyRosterProvider),
             topology_provider: None,
             customizer: None,
+            agent_memory_provider: None,
         };
 
         // The raw roster member is part of the declared baseline ...

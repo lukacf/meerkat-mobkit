@@ -1,10 +1,13 @@
 ---
 title: "Memory"
-description: "Elephant-backed semantic memory with indexing, querying, and conflict detection."
+description: "Operational memory assertions plus optional identity-first agent memory injection."
 icon: "brain"
 ---
 
-MobKit's memory subsystem integrates with [Elephant](https://github.com/lukacf/elephant) to provide persistent semantic memory for agents. Content is indexed as assertions in Elephant's knowledge graph, enabling similarity search, relationship traversal, and truth-maintained conflict detection.
+MobKit has two memory-adjacent surfaces:
+
+- `mobkit/memory/*` is an operational assertion and conflict ledger used by routing/gating flows. The current gateway adapter health-checks an Elephant endpoint and persists local JSON state, but query semantics are exact filters over stored assertions.
+- `agent_memory` is optional identity-first agent memory injection. It is keyed by stable `AgentIdentity`, stored by realm, and injected into `AgentBuildDraft.additional_instructions` during create/resume/materialize.
 
 ## Architecture
 
@@ -38,7 +41,7 @@ MemoryIndexRequest {
 }
 ```
 
-The memory module processes the request through Elephant's ingestion pipeline: text chunking, embedding generation, entity extraction, and assertion creation. The result includes the indexed document ID and any extracted entities.
+The current MobKit runtime stores a canonical assertion locally and persists it when the memory backend is configured.
 
 ## Querying
 
@@ -46,13 +49,34 @@ Query memory with a `MemoryQueryRequest`:
 
 ```rust
 MemoryQueryRequest {
-    query: "What was the revenue growth last quarter?",
-    limit: 5,
-    filters: json!({ "domain": "finance" }),
+    entity: Some("identity:ops".to_string()),
+    topic: Some("deployment".to_string()),
+    store: Some("knowledge_graph".to_string()),
 }
 ```
 
-The query is embedded and matched against indexed content using vector similarity search. Results include relevance scores and the original assertion evidence.
+The current MobKit runtime filters stored assertions and conflict signals by `entity`, `topic`, and `store`. Semantic/vector search should be supplied by a provider or upstream Meerkat memory surface rather than assumed from this RPC.
+
+## Agent memory injection
+
+Gateway users can enable identity-first injection with:
+
+```typescript
+MobKit.builder()
+  .persistentState(".mobkit/state")
+  .rosterProvider(appRosterProvider)
+  .agentMemory({
+    realm: "default",
+    selection: "contextual",
+    maxEntries: 8,
+  })
+```
+
+By default, the bundled provider writes markdown under `<persistent_state>/agent-memory/<realm>/<identity>.md`. Records are inspectable and are injected as a quoted observation block for the matching durable identity. Reads are bounded to recent file tails, writes are capped, contextual recall ignores common stopwords and scores matching records, and injected records are size-capped; malformed records are skipped rather than promoted into runtime context. This keeps MobKit as a build-time and per-turn injector/projector; durable memory authority can be replaced by a custom `AgentMemoryProvider`.
+
+Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/remember` or the TypeScript `handle.rememberAgentMemory(...)` helper, read it through `mobkit/agent_memory/recall` or `handle.recallAgentMemory(...)`, and delete individual records through `mobkit/agent_memory/forget` or `handle.forgetAgentMemory(...)`. A newly written record is available to the next identity-first send for that identity, and is also injected when the identity is materialized, resumed, respawned, or reset.
+
+Agent memory is identity-scoped rather than session-scoped. A session respawn or identity reset does not delete stored memory; apps that need privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use a provider that clears memory as part of the app's identity lifecycle.
 
 ## Conflict detection
 

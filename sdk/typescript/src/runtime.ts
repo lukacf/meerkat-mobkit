@@ -59,6 +59,8 @@ import {
   parseDeliveryResult,
   parseDeliveryHistoryResult,
   parseMemoryQueryResult,
+  parseAgentMemoryRecord,
+  parseAgentMemoryForgetResult,
   parseMemoryStoreInfo,
   parseMemoryIndexResult,
   parseCallToolResult,
@@ -111,6 +113,8 @@ import {
   type DeliveryResult,
   type DeliveryHistoryResult,
   type MemoryQueryResult,
+  type AgentMemoryRecord,
+  type AgentMemoryForgetResult,
   type MemoryStoreInfo,
   type MemoryIndexResult,
   type CallToolResult,
@@ -224,6 +228,24 @@ export type BlobUploadSource = Blob | BlobUploadInput;
 export interface SendMessageOptions {
   readonly attachments?: readonly BlobUploadSource[];
   readonly handlingMode?: "queue" | "steer";
+}
+
+export interface RememberAgentMemoryOptions {
+  readonly title: string;
+  readonly body: string;
+  readonly tags?: readonly string[];
+  readonly realm?: string;
+}
+
+export interface RecallAgentMemoryOptions {
+  readonly realm?: string;
+  readonly selection?: "always" | "contextual";
+  readonly queryTerms?: readonly string[];
+  readonly maxEntries?: number;
+}
+
+export interface ForgetAgentMemoryOptions {
+  readonly realm?: string;
 }
 
 /** Input alternatives for {@link MobHandle.mobpackImport}. */
@@ -432,6 +454,9 @@ export class MobKitRuntime {
     }
     if (this._config.memoryConfig) {
       runtimeOptions.memory_config = serializeConfig(this._config.memoryConfig);
+    }
+    if (this._config.agentMemoryConfig) {
+      runtimeOptions.agent_memory = serializeConfig(this._config.agentMemoryConfig);
     }
     if (this._config.authConfig) {
       runtimeOptions.auth_config = serializeConfig(this._config.authConfig);
@@ -1490,15 +1515,28 @@ export class MobHandle {
 
   // -- Memory -------------------------------------------------------------
 
+  /**
+   * Query the operational memory assertion ledger.
+   *
+   * Pass `{ entity, topic, store }` for the Rust gateway's exact-filter
+   * contract. The string overload is retained only for older callers and is
+   * forwarded as `query`; current Rust gateways do not perform semantic search
+   * on that field.
+   */
   async memoryQuery(
-    query: string,
+    queryOrOptions?: string | {
+      entity?: string;
+      topic?: string;
+      store?: string;
+    },
     options?: Record<string, unknown>,
   ): Promise<MemoryQueryResult> {
+    const params: Record<string, unknown> =
+      typeof queryOrOptions === "string"
+        ? { query: queryOrOptions, ...(options ?? {}) }
+        : { ...(queryOrOptions ?? {}) };
     return parseMemoryQueryResult(
-      await this._runtime._rpc("mobkit/memory/query", {
-        query,
-        ...(options ?? {}),
-      }),
+      await this._runtime._rpc("mobkit/memory/query", params),
     );
   }
 
@@ -1524,6 +1562,51 @@ export class MobHandle {
         store,
         ...(options ?? {}),
       }),
+    );
+  }
+
+  async rememberAgentMemory(
+    identity: string,
+    memory: RememberAgentMemoryOptions,
+  ): Promise<AgentMemoryRecord> {
+    const params: Record<string, unknown> = {
+      identity,
+      title: memory.title,
+      body: memory.body,
+    };
+    if (memory.realm !== undefined) params.realm = memory.realm;
+    if (memory.tags !== undefined) params.tags = [...memory.tags];
+    return parseAgentMemoryRecord(
+      await this._runtime._rpc("mobkit/agent_memory/remember", params),
+    );
+  }
+
+  async recallAgentMemory(
+    identity: string,
+    options: RecallAgentMemoryOptions = {},
+  ): Promise<AgentMemoryRecord[]> {
+    const params: Record<string, unknown> = { identity };
+    if (options.realm !== undefined) params.realm = options.realm;
+    if (options.selection !== undefined) params.selection = options.selection;
+    if (options.queryTerms !== undefined) params.query_terms = [...options.queryTerms];
+    if (options.maxEntries !== undefined) params.max_entries = options.maxEntries;
+    const raw = await this._runtime._rpc("mobkit/agent_memory/recall", params);
+    const records =
+      typeof raw === "object" && raw !== null
+        ? (((raw as Record<string, unknown>).records as unknown[]) ?? [])
+        : [];
+    return records.map(parseAgentMemoryRecord);
+  }
+
+  async forgetAgentMemory(
+    identity: string,
+    memoryId: string,
+    options: ForgetAgentMemoryOptions = {},
+  ): Promise<AgentMemoryForgetResult> {
+    const params: Record<string, unknown> = { identity, memory_id: memoryId };
+    if (options.realm !== undefined) params.realm = options.realm;
+    return parseAgentMemoryForgetResult(
+      await this._runtime._rpc("mobkit/agent_memory/forget", params),
     );
   }
 
