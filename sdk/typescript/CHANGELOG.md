@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Identity-first agent memory
+
+- Added `MobKit.builder().agentMemory(...)` for gateway-backed
+  identity-first runtimes with persistent state.
+- Added `MobHandle.rememberAgentMemory(...)`,
+  `MobHandle.recallAgentMemory(...)`, and
+  `MobHandle.forgetAgentMemory(...)` for durable per-identity memory
+  records backed by `mobkit/agent_memory/*`.
+- Added strict exported types/parsers for `AgentMemoryRecord`,
+  `AgentMemoryRecallResult`, and `AgentMemoryForgetResult`.
+
 ### Console fetch policy
 
 - Added `MobKit.builder().consoleFetchTimeoutMs(ms)` for gateway-backed

@@ -4,6 +4,18 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+### Identity-first agent memory
+
+- Added `.agent_memory(...)` on `MobKit.builder()` for gateway-backed
+  identity-first runtimes with persistent state.
+- Added `MobHandle.remember_agent_memory(...)`,
+  `MobHandle.recall_agent_memory(...)`, and
+  `MobHandle.forget_agent_memory(...)` for durable per-identity memory
+  records backed by `mobkit/agent_memory/*`.
+- Added strict typed results `AgentMemoryRecord`,
+  `AgentMemoryRecallResult`, and `AgentMemoryForgetResult`, exported
+  from `meerkat_mobkit`.
+
 ### Console fetch policy
 
 - Added `MobKit.builder().console_fetch_timeout_ms(ms)` for gateway-backed
