@@ -52,6 +52,10 @@ use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
 use crate::mob_handle_runtime::{
     MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime, member_status_state_string,
 };
+use crate::rpc::memory_methods::{
+    parse_agent_memory_forget_params, parse_agent_memory_recall_params,
+    parse_agent_memory_remember_params,
+};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
@@ -1346,6 +1350,8 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/respawn"
             | "mobkit/reset"
             | "mobkit/delete_identity"
+            | "mobkit/agent_memory/remember"
+            | "mobkit/agent_memory/forget"
             | "mobkit/gating/decide"
             | "mobkit/mob_labels/set"
             | "mobkit/mob_labels/delete"
@@ -1559,6 +1565,10 @@ fn console_rpc_access_requirement<'a>(
         .or_else(|| params.get("agent_id").and_then(Value::as_str));
     match method {
         "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
+        "mobkit/agent_memory/remember" | "mobkit/agent_memory/forget" => {
+            Some((ACTION_AGENT_SEND, identity))
+        }
+        "mobkit/agent_memory/recall" => Some((ACTION_AGENT_VIEW, identity)),
         "mobkit/retire"
         | "mobkit/retire_member"
         | "mobkit/force_cancel_member"
@@ -4110,6 +4120,17 @@ async fn handle_console_runtime_rpc_with_visibility(
             ];
             if identity_runtime.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
+                if let Some(identity_runtime) = &identity_runtime
+                    && identity_runtime.agent_memory_supports_recall().await
+                {
+                    methods.push("mobkit/agent_memory/recall");
+                    if can_mutate && identity_runtime.agent_memory_supports_remember().await {
+                        methods.push("mobkit/agent_memory/remember");
+                    }
+                    if can_mutate && identity_runtime.agent_memory_supports_forget().await {
+                        methods.push("mobkit/agent_memory/forget");
+                    }
+                }
                 if can_mutate {
                     methods.push("mobkit/delete_identity");
                 }
@@ -4224,6 +4245,111 @@ async fn handle_console_runtime_rpc_with_visibility(
                 })),
                 None,
             )
+        }
+        "mobkit/agent_memory/remember" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_remember_params(&request.params) {
+                Ok(remember_request) => match identity_runtime
+                    .remember_agent_memory(
+                        &remember_request.realm,
+                        &remember_request.identity,
+                        remember_request.memory,
+                    )
+                    .await
+                {
+                    Ok(record) => response_value(
+                        response_id,
+                        Some(serde_json::to_value(record).unwrap_or(Value::Null)),
+                        None,
+                    ),
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("write", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        "mobkit/agent_memory/forget" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_forget_params(&request.params) {
+                Ok(forget_request) => match identity_runtime
+                    .forget_agent_memory(
+                        &forget_request.realm,
+                        &forget_request.identity,
+                        &forget_request.memory_id,
+                    )
+                    .await
+                {
+                    Ok(result) => response_value(
+                        response_id,
+                        Some(serde_json::to_value(result).unwrap_or(Value::Null)),
+                        None,
+                    ),
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("forget", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        "mobkit/agent_memory/recall" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_recall_params(&request.params) {
+                Ok(recall_request) => match identity_runtime
+                    .recall_agent_memory(recall_request.request)
+                    .await
+                {
+                    Ok(records) => {
+                        response_value(response_id, Some(json!({ "records": records })), None)
+                    }
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("recall", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
         }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
@@ -7913,6 +8039,7 @@ mod tests {
         handle_console_runtime_rpc_with_visibility, member_id_matches_durable_identity,
         project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
     };
+    use crate::access::{ACTION_AGENT_VIEW, AccessController};
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
         AllowAllConsoleVisibilityPolicy, ConsoleIdentityRecord,
@@ -7925,11 +8052,12 @@ mod tests {
     };
     use crate::identity_first::contracts::{ContinuityStore, LeaseProvider};
     use crate::identity_first::{
-        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
-        CheckpointVersion, ContinuityGeneration, ContinuityRecord, DurabilityPolicy,
-        DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
-        IdentityRuntimeConfig, LeaseAcquireResult, LeaseGrant, LocalContinuityStore,
-        LocalLeaseProvider, ManagedPeerEdge, ResumeSessionOutcome, SessionBridge, SessionSnapshot,
+        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
+        AgentMemoryRuntimeInjector, AgentRuntimeId, BridgeError, CheckpointVersion,
+        ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
+        IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseAcquireResult,
+        LeaseGrant, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
+        MarkdownAgentMemoryStore, ResumeSessionOutcome, SessionBridge, SessionSnapshot,
     };
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
     use crate::rpc::{JSONRPC_VERSION, JsonRpcRequest};
@@ -9654,6 +9782,329 @@ comms = true
             mobpack_response["error"]["code"],
             json!(-32601),
             "console runtime RPC must not handle flow-editor authoring methods: {mobpack_response:#?}"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_runtime_capabilities_advertise_agent_memory_with_read_only_gating()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-agent-memory-capabilities").await?;
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-agent-memory-capabilities".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let memory_dir = tempfile::tempdir()?;
+        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        identity_runtime
+            .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
+                memory_store,
+                AgentMemoryConfig::default(),
+            )))
+            .await;
+
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/capabilities"),
+            true,
+        ))
+        .await;
+        assert_eq!(response["error"], Value::Null, "{response:#?}");
+        let methods = response["result"]["methods"]
+            .as_array()
+            .ok_or("capabilities methods should be an array")?;
+        for method in [
+            "mobkit/agent_memory/recall",
+            "mobkit/agent_memory/remember",
+            "mobkit/agent_memory/forget",
+        ] {
+            assert!(
+                methods.iter().any(|candidate| candidate == method),
+                "authenticated capabilities should advertise {method}: {methods:#?}"
+            );
+        }
+
+        let read_only_response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime),
+            None,
+            None,
+            rpc_request("mobkit/capabilities"),
+            false,
+        ))
+        .await;
+        assert_eq!(
+            read_only_response["error"],
+            Value::Null,
+            "{read_only_response:#?}"
+        );
+        let read_only_methods = read_only_response["result"]["methods"]
+            .as_array()
+            .ok_or("read-only capabilities methods should be an array")?;
+        assert!(
+            read_only_methods
+                .iter()
+                .any(|candidate| candidate == "mobkit/agent_memory/recall"),
+            "read-only capabilities should keep recall: {read_only_methods:#?}"
+        );
+        for method in ["mobkit/agent_memory/remember", "mobkit/agent_memory/forget"] {
+            assert!(
+                !read_only_methods
+                    .iter()
+                    .any(|candidate| candidate == method),
+                "read-only capabilities must omit {method}: {read_only_methods:#?}"
+            );
+        }
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_runtime_agent_memory_methods_round_trip()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-agent-memory-round-trip").await?;
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-agent-memory-round-trip".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("identity:memory-console")?;
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                None,
+                None,
+            )
+            .await;
+        let memory_dir = tempfile::tempdir()?;
+        let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path())?);
+        identity_runtime
+            .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
+                memory_store,
+                AgentMemoryConfig::default(),
+            )))
+            .await;
+
+        let remember = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/agent_memory/remember",
+                json!({
+                    "identity": "identity:memory-console",
+                    "title": "Console memory token",
+                    "body": "The console memory token is CONSOLE-MEM-17.",
+                    "tags": ["console", "memory"]
+                }),
+            ),
+            true,
+        ))
+        .await;
+        assert_eq!(remember["error"], Value::Null, "{remember:#?}");
+        let memory_id = remember["result"]["memory_id"]
+            .as_str()
+            .ok_or("remember result should include memory_id")?
+            .to_string();
+
+        let recall = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/agent_memory/recall",
+                json!({
+                    "identity": "identity:memory-console",
+                    "selection": "contextual",
+                    "query_text": "Where is CONSOLE-MEM-17?",
+                    "query_terms": ["CONSOLE-MEM-17"]
+                }),
+            ),
+            false,
+        ))
+        .await;
+        assert_eq!(recall["error"], Value::Null, "{recall:#?}");
+        assert_eq!(
+            recall["result"]["records"]
+                .as_array()
+                .map(std::vec::Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            recall["result"]["records"][0]["memory_id"],
+            json!(memory_id)
+        );
+
+        let read_only_remember = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/agent_memory/remember",
+                json!({
+                    "identity": "identity:memory-console",
+                    "title": "Denied",
+                    "body": "Denied"
+                }),
+            ),
+            false,
+        ))
+        .await;
+        assert_eq!(
+            read_only_remember["error"]["data"]["kind"],
+            json!("read_only"),
+            "{read_only_remember:#?}"
+        );
+
+        let access_controller = AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["admin@example.test".to_string()],
+            ..crate::access::AccessControlConfig::default()
+        })?;
+        let denied_view = access_controller.view_for_subject(Some("viewer@example.test"));
+        let denied_recall = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/recall",
+                json!({
+                    "identity": "identity:memory-console",
+                    "selection": "always"
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&access_controller),
+            Some(&denied_view),
+        ))
+        .await;
+        assert_eq!(
+            denied_recall["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{denied_recall:#?}"
+        );
+        assert_eq!(
+            denied_recall["error"]["data"]["action"],
+            json!(ACTION_AGENT_VIEW),
+            "{denied_recall:#?}"
+        );
+
+        let forget = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/agent_memory/forget",
+                json!({
+                    "identity": "identity:memory-console",
+                    "memory_id": memory_id
+                }),
+            ),
+            true,
+        ))
+        .await;
+        assert_eq!(forget["error"], Value::Null, "{forget:#?}");
+        assert_eq!(forget["result"]["deleted"], json!(true));
+
+        let after_forget = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/agent_memory/recall",
+                json!({
+                    "identity": "identity:memory-console",
+                    "selection": "always"
+                }),
+            ),
+            false,
+        ))
+        .await;
+        assert_eq!(after_forget["error"], Value::Null, "{after_forget:#?}");
+        assert_eq!(
+            after_forget["result"]["records"]
+                .as_array()
+                .map(std::vec::Vec::len),
+            Some(0)
         );
 
         let _ = runtime.handle().stop().await;

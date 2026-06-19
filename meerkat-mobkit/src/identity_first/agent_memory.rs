@@ -30,7 +30,6 @@ const MAX_MEMORY_BODY_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_TAGS: usize = 32;
 const MAX_MEMORY_TAG_BYTES: usize = 64;
 const MAX_RENDERED_RECORD_BYTES: usize = 80 * 1024;
-const MAX_MEMORY_FILE_READ_BYTES: u64 = 1_048_576;
 const MAX_INJECTED_TITLE_BYTES: usize = 160;
 const MAX_INJECTED_BODY_BYTES: usize = 2_048;
 const METADATA_PREFIX: &str = "<!-- mobkit-agent-memory ";
@@ -549,7 +548,12 @@ fn read_markdown_records(path: &Path) -> Result<Vec<AgentMemoryRecord>, AgentMem
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let content = read_markdown_file_tail(path)?;
+    let mut file = File::open(path).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    file.lock_shared()
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     Ok(parse_markdown_records(&content))
 }
 
@@ -629,29 +633,6 @@ fn render_markdown_record(record: &AgentMemoryRecord) -> Result<String, AgentMem
         )));
     }
     Ok(rendered)
-}
-
-fn read_markdown_file_tail(path: &Path) -> Result<String, AgentMemoryError> {
-    let metadata = fs::metadata(path).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let file_len = metadata.len();
-    if file_len <= MAX_MEMORY_FILE_READ_BYTES {
-        return fs::read_to_string(path).map_err(|err| AgentMemoryError::Io(err.to_string()));
-    }
-
-    let mut file = File::open(path).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    file.seek(SeekFrom::Start(file_len - MAX_MEMORY_FILE_READ_BYTES))
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let mut bytes = Vec::with_capacity(MAX_MEMORY_FILE_READ_BYTES as usize);
-    file.read_to_end(&mut bytes)
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let tail = String::from_utf8_lossy(&bytes).into_owned();
-    if tail.starts_with("## ") {
-        return Ok(tail);
-    }
-    let Some(start) = tail.find("\n## ") else {
-        return Ok(String::new());
-    };
-    Ok(tail[start + 1..].to_string())
 }
 
 fn parse_metadata_line(line: &str) -> Option<AgentMemoryRecordMetadata> {
@@ -1095,6 +1076,61 @@ mod tests {
             store
                 .path_for("family", &id)
                 .ends_with("identity%3Aluka.md")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn markdown_store_recalls_records_before_one_megabyte_horizon()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = MarkdownAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let old = store.remember(
+            "default",
+            &id,
+            NewAgentMemory {
+                title: "Ancient passport marker".to_string(),
+                body: format!(
+                    "The old passport marker is durable.\n{}",
+                    "A".repeat(60 * 1024)
+                ),
+                tags: vec!["passport".to_string()],
+            },
+        )?;
+        for idx in 0..20 {
+            store.remember(
+                "default",
+                &id,
+                NewAgentMemory {
+                    title: format!("Later filler {idx}"),
+                    body: format!("Later filler body {idx}.\n{}", "B".repeat(60 * 1024)),
+                    tags: Vec::new(),
+                },
+            )?;
+        }
+        let path = store.path_for("default", &id);
+        assert!(
+            fs::metadata(&path)?.len() > 1_048_576,
+            "test must exceed the former tail-only recall horizon"
+        );
+
+        let matches = store
+            .recall(AgentMemoryRecallRequest {
+                identity: id,
+                realm: "default".to_string(),
+                query_text: Some("Where is the old passport marker?".to_string()),
+                query_terms: vec!["passport".to_string()],
+                selection: AgentMemorySelection::Contextual,
+                max_entries: 8,
+            })
+            .await?;
+
+        assert!(
+            matches
+                .iter()
+                .any(|record| record.memory_id == old.memory_id),
+            "old durable record should remain recallable after later writes: {matches:#?}"
         );
         Ok(())
     }

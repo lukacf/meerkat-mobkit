@@ -25,7 +25,7 @@ use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 
 mod console_ingress;
 mod gating_methods;
-mod memory_methods;
+pub(crate) mod memory_methods;
 pub(crate) mod mob_methods;
 pub(crate) mod params;
 mod routing_delivery_methods;
@@ -4506,7 +4506,7 @@ fn maybe_error_response(
     }
 }
 
-fn agent_memory_rpc_error(
+pub(crate) fn agent_memory_rpc_error(
     operation: &str,
     err: crate::identity_first::AgentMemoryError,
 ) -> JsonRpcError {

@@ -418,6 +418,26 @@ impl IdentityRuntime {
         *self.agent_memory.write().await = injector;
     }
 
+    pub async fn agent_memory_supports_recall(&self) -> bool {
+        self.agent_memory.read().await.is_some()
+    }
+
+    pub async fn agent_memory_supports_remember(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_remember())
+    }
+
+    pub async fn agent_memory_supports_forget(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_forget())
+    }
+
     pub async fn remember_agent_memory(
         &self,
         realm: &str,
@@ -2278,14 +2298,20 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.agent_runtime_id.clone())
         };
-        let content_to_deliver = match self.agent_memory.read().await.clone() {
-            Some(injector) => injector
-                .inject_for_turn(identity, content)
-                .await
-                .map_err(|err| {
-                    IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                })?,
-            None => content.clone(),
+        let content_to_deliver = if handling_mode == HandlingMode::Steer {
+            content.clone()
+        } else {
+            match self.agent_memory.read().await.clone() {
+                Some(injector) => {
+                    injector
+                        .inject_for_turn(identity, content)
+                        .await
+                        .map_err(|err| {
+                            IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
+                        })?
+                }
+                None => content.clone(),
+            }
         };
 
         // Deliver through the session bridge when available.

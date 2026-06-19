@@ -21,7 +21,7 @@ const MAX_AGENT_MEMORY_TAG_BYTES: usize = 64;
 const MAX_AGENT_MEMORY_QUERY_TEXT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum MemoryParamsError {
+pub(crate) enum MemoryParamsError {
     ParamsMustBeObject,
     EntityRequired,
     TopicRequired,
@@ -66,7 +66,7 @@ impl MemoryParamsError {
         }
     }
 
-    pub(super) fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         match self {
             MemoryParamsError::ParamsMustBeObject => "params must be a JSON object".to_string(),
             MemoryParamsError::EntityRequired => "entity must be a non-empty string".to_string(),
@@ -157,22 +157,22 @@ impl MemoryParamsError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AgentMemoryRememberRpcRequest {
-    pub(super) identity: AgentIdentity,
-    pub(super) realm: String,
-    pub(super) memory: NewAgentMemory,
+pub(crate) struct AgentMemoryRememberRpcRequest {
+    pub(crate) identity: AgentIdentity,
+    pub(crate) realm: String,
+    pub(crate) memory: NewAgentMemory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AgentMemoryForgetRpcRequest {
-    pub(super) identity: AgentIdentity,
-    pub(super) realm: String,
-    pub(super) memory_id: String,
+pub(crate) struct AgentMemoryForgetRpcRequest {
+    pub(crate) identity: AgentIdentity,
+    pub(crate) realm: String,
+    pub(crate) memory_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AgentMemoryRecallRpcRequest {
-    pub(super) request: AgentMemoryRecallRequest,
+pub(crate) struct AgentMemoryRecallRpcRequest {
+    pub(crate) request: AgentMemoryRecallRequest,
 }
 
 pub(super) fn parse_memory_stores_params(params: &Value) -> Result<(), MemoryParamsError> {
@@ -182,7 +182,7 @@ pub(super) fn parse_memory_stores_params(params: &Value) -> Result<(), MemoryPar
     Err(MemoryParamsError::ParamsMustBeObject)
 }
 
-pub(super) fn parse_agent_memory_remember_params(
+pub(crate) fn parse_agent_memory_remember_params(
     params: &Value,
 ) -> Result<AgentMemoryRememberRpcRequest, MemoryParamsError> {
     let object = params
@@ -241,7 +241,7 @@ pub(super) fn parse_agent_memory_remember_params(
     })
 }
 
-pub(super) fn parse_agent_memory_forget_params(
+pub(crate) fn parse_agent_memory_forget_params(
     params: &Value,
 ) -> Result<AgentMemoryForgetRpcRequest, MemoryParamsError> {
     let object = params
@@ -263,7 +263,7 @@ pub(super) fn parse_agent_memory_forget_params(
     })
 }
 
-pub(super) fn parse_agent_memory_recall_params(
+pub(crate) fn parse_agent_memory_recall_params(
     params: &Value,
 ) -> Result<AgentMemoryRecallRpcRequest, MemoryParamsError> {
     let object = params

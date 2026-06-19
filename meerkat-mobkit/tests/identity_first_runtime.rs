@@ -27,13 +27,15 @@ use meerkat_mobkit::identity_first::orchestrator::{
 };
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
-    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
+    AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId, BridgeError,
+    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
     ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
     DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    ManagedPeerEdge, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
+    ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, SessionBridge, SessionSnapshot,
+    TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
 use meerkat_mobkit::{ErrorEvent, ErrorHook};
@@ -849,6 +851,7 @@ struct CountingBridge {
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     deliver_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
+    delivered_content: tokio::sync::Mutex<Vec<String>>,
     created_drafts: tokio::sync::Mutex<Vec<AgentBuildDraft>>,
     unregistered_session_ids: tokio::sync::Mutex<Vec<String>>,
     wires: tokio::sync::Mutex<Vec<(String, String)>>,
@@ -974,9 +977,13 @@ impl SessionBridge for CountingBridge {
     async fn deliver(
         &self,
         _runtime_id: &AgentRuntimeId,
-        _content: &meerkat_core::ContentInput,
+        content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.deliver_calls.fetch_add(1, Ordering::SeqCst);
+        self.delivered_content
+            .lock()
+            .await
+            .push(content.text_content());
         Ok(self
             .deliver_session_id
             .lock()
@@ -3711,21 +3718,45 @@ async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_mate
         .materialize(&make_identity("deep-investigator:singleton"))
         .await
         .unwrap();
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let identity = make_identity("deep-investigator:singleton");
+    memory_store
+        .remember(
+            "default",
+            &identity,
+            NewAgentMemory {
+                title: "Steer should not see this".to_string(),
+                body: "This prior memory must not be prepended to live steer.".to_string(),
+                tags: vec!["hello".to_string()],
+            },
+        )
+        .unwrap();
+    runtime
+        .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
+            memory_store,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                ..AgentMemoryConfig::default()
+            },
+        )))
+        .await;
     bridge.set_resume_delay(Duration::from_secs(5)).await;
 
     tokio::time::timeout(
         Duration::from_millis(250),
-        runtime.send_with_mode(
-            &make_identity("deep-investigator:singleton"),
-            &make_content(),
-            HandlingMode::Steer,
-        ),
+        runtime.send_with_mode(&identity, &make_content(), HandlingMode::Steer),
     )
     .await
     .expect("steer send must not wait for reachable peer materialization")
     .unwrap();
 
     assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        bridge.delivered_content.lock().await.as_slice(),
+        &["hello".to_string()],
+        "steer delivery must not prepend agent memory observations"
+    );
     assert_eq!(
         bridge.resume_calls.load(Ordering::SeqCst),
         0,

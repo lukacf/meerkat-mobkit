@@ -264,6 +264,11 @@ Query indexed content by semantic similarity.
 
 Return information about configured memory backends.
 
+Agent-memory methods are available over the SDK JSON-RPC gateway and over
+console `POST /console/rpc` when the identity runtime has an agent-memory
+provider configured. Console callers can recall only identities they may view;
+`remember` and `forget` also require mutating console access.
+
 ### `mobkit/agent_memory/remember`
 
 Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger.
