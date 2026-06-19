@@ -462,6 +462,25 @@ impl UnifiedRuntime {
         runtime.recall_agent_memory(request).await
     }
 
+    pub async fn forget_agent_memory(
+        &self,
+        realm: &str,
+        identity: &crate::identity_first::AgentIdentity,
+        memory_id: &str,
+    ) -> Result<
+        crate::identity_first::AgentMemoryForgetResult,
+        crate::identity_first::AgentMemoryError,
+    > {
+        let runtime = self.identity_runtime().ok_or_else(|| {
+            crate::identity_first::AgentMemoryError::InvalidConfig(
+                "identity-first runtime is not configured".to_string(),
+            )
+        })?;
+        runtime
+            .forget_agent_memory(realm, identity, memory_id)
+            .await
+    }
+
     pub fn attach_identity_first_context(
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,

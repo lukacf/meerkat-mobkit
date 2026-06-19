@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Identity-first agent memory injection for Rust, JSON-RPC, Python, and
+  TypeScript users, including bundled markdown persistence, contextual recall,
+  explicit remember/recall/forget APIs, and next-turn injection for live
+  identity sends.
+
 ## [0.6.39] - 2026-05-21
 
 ### Fixed

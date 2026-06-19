@@ -561,7 +561,7 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
 
     let recalled = runtime
         .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
-            identity,
+            identity: identity.clone(),
             realm: "default".to_string(),
             query_text: Some("where is my passport?".to_string()),
             query_terms: vec!["passport".to_string()],
@@ -573,6 +573,26 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
 
     assert_eq!(recalled.len(), 1);
     assert_eq!(recalled[0].body, "Passport is in the blue travel folder.");
+
+    let forgotten = runtime
+        .forget_agent_memory("default", &identity, &written.memory_id)
+        .await
+        .expect("runtime should expose bundled persistent memory deletes");
+    assert_eq!(forgotten.memory_id, written.memory_id);
+    assert!(forgotten.deleted);
+
+    let after_forget = runtime
+        .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
+            identity,
+            realm: "default".to_string(),
+            query_text: Some("where is my passport?".to_string()),
+            query_terms: vec!["passport".to_string()],
+            selection: meerkat_mobkit::AgentMemorySelection::Contextual,
+            max_entries: 8,
+        })
+        .await
+        .expect("runtime should expose empty reads after deleting bundled persistent memory");
+    assert!(after_forget.is_empty());
 }
 
 #[tokio::test]
