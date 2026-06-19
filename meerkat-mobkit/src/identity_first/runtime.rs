@@ -1645,6 +1645,48 @@ impl IdentityRuntime {
         Ok(())
     }
 
+    /// Adopt the roster's CURRENT spec for `identity` into the in-memory entry,
+    /// so a subsequent [`reset`](Self::reset) rebuilds the regenerated session
+    /// on the current profile instead of carrying the stored one forward.
+    ///
+    /// Best-effort: logs and leaves the stored spec in place if the roster
+    /// can't be resolved or no longer lists the identity (reset's primary job —
+    /// the destructive continuity reset — must not fail because the roster
+    /// provider hiccuped). The runtime stays roster-agnostic; the provider is
+    /// supplied by the caller (the reset RPC handler), which owns it.
+    pub async fn adopt_roster_spec(
+        &self,
+        roster_provider: &Arc<dyn RosterProvider>,
+        identity: &AgentIdentity,
+    ) {
+        match roster_provider
+            .roster(&RosterContext {
+                mob_definition: None,
+                previous_identities: Vec::new(),
+            })
+            .await
+        {
+            Ok(specs) => {
+                if let Some(spec) = specs.into_iter().find(|s| &s.identity == identity)
+                    && let Err(err) = self.update_spec(spec).await
+                {
+                    tracing::warn!(
+                        identity = %identity,
+                        error = %err,
+                        "reset: failed to adopt current roster spec; rebuilding on stored spec",
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    identity = %identity,
+                    error = %err,
+                    "reset: roster provider failed; rebuilding on stored spec",
+                );
+            }
+        }
+    }
+
     /// Update the lease for an identity.
     pub async fn update_lease(
         &self,
