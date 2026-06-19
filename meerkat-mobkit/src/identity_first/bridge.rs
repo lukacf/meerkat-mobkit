@@ -15,8 +15,8 @@ use meerkat_mob::{
 
 use crate::mob_handle_runtime::{
     content_input_has_images, is_previous_member_cleanup_ambiguous_error,
-    is_recoverable_lifecycle_cleanup_error, model_capabilities_for_member,
-    topology_restore_failed_peer_ids,
+    is_recoverable_lifecycle_cleanup_error, is_recoverable_session_owned_retire_cleanup_error,
+    model_capabilities_for_member, topology_restore_failed_peer_ids,
 };
 
 use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
@@ -1031,7 +1031,19 @@ impl SessionBridge for MobSessionBridge {
                 self.forget_runtime_member(runtime_id).await;
                 Ok(())
             }
-            Err(err) if is_recoverable_lifecycle_cleanup_error(&err.to_string()) => Ok(()),
+            // All callers of `retire_member` are identity-first session-owned
+            // agents, so a mob-archive miss (NotFound for a registered runtime
+            // session) is the expected outcome of disposing one — not an
+            // orphan. Tolerate it so reset/delete_identity complete instead of
+            // bricking the identity until a process restart.
+            Err(err) if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {
+                // Disposal completed and the member left the roster, so the
+                // runtime-member mapping is stale — forget it (matching the
+                // success path) instead of leaking one entry per tolerated
+                // retire across the process lifetime.
+                self.forget_runtime_member(runtime_id).await;
+                Ok(())
+            }
             Err(err) => Err(BridgeError::Mob(err.to_string())),
         }
     }
