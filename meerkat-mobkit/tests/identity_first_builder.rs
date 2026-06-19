@@ -563,6 +563,7 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
         .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
             identity,
             realm: "default".to_string(),
+            query_text: Some("where is my passport?".to_string()),
             query_terms: vec!["passport".to_string()],
             selection: meerkat_mobkit::AgentMemorySelection::Contextual,
             max_entries: 8,

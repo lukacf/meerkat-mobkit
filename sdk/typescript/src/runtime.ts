@@ -60,6 +60,7 @@ import {
   parseDeliveryHistoryResult,
   parseMemoryQueryResult,
   parseAgentMemoryRecord,
+  parseAgentMemoryRecallResult,
   parseAgentMemoryForgetResult,
   parseMemoryStoreInfo,
   parseMemoryIndexResult,
@@ -240,6 +241,7 @@ export interface RememberAgentMemoryOptions {
 export interface RecallAgentMemoryOptions {
   readonly realm?: string;
   readonly selection?: "always" | "contextual";
+  readonly queryText?: string;
   readonly queryTerms?: readonly string[];
   readonly maxEntries?: number;
 }
@@ -1588,14 +1590,13 @@ export class MobHandle {
     const params: Record<string, unknown> = { identity };
     if (options.realm !== undefined) params.realm = options.realm;
     if (options.selection !== undefined) params.selection = options.selection;
+    if (options.queryText !== undefined) params.query_text = options.queryText;
     if (options.queryTerms !== undefined) params.query_terms = [...options.queryTerms];
     if (options.maxEntries !== undefined) params.max_entries = options.maxEntries;
-    const raw = await this._runtime._rpc("mobkit/agent_memory/recall", params);
-    const records =
-      typeof raw === "object" && raw !== null
-        ? (((raw as Record<string, unknown>).records as unknown[]) ?? [])
-        : [];
-    return records.map(parseAgentMemoryRecord);
+    const result = parseAgentMemoryRecallResult(
+      await this._runtime._rpc("mobkit/agent_memory/recall", params),
+    );
+    return [...result.records];
   }
 
   async forgetAgentMemory(

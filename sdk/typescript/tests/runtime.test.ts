@@ -1495,6 +1495,7 @@ describe("MobHandle.recallAgentMemory()", () => {
     const result = await handle.recallAgentMemory("identity:luka", {
       realm: "family",
       selection: "contextual",
+      queryText: "Where is pickup?",
       queryTerms: ["pickup"],
       maxEntries: 4,
     });
@@ -1504,6 +1505,7 @@ describe("MobHandle.recallAgentMemory()", () => {
       identity: "identity:luka",
       realm: "family",
       selection: "contextual",
+      query_text: "Where is pickup?",
       query_terms: ["pickup"],
       max_entries: 4,
     });

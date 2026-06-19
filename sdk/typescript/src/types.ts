@@ -431,6 +431,10 @@ export interface AgentMemoryForgetResult {
   readonly deleted: boolean;
 }
 
+export interface AgentMemoryRecallResult {
+  readonly records: readonly AgentMemoryRecord[];
+}
+
 export function parseAgentMemoryRecord(raw: unknown): AgentMemoryRecord {
   const d = asRecord(raw);
   const memoryId = requiredStringField(d, "memory_id", "agent_memory_record");
@@ -449,6 +453,16 @@ export function parseAgentMemoryRecord(raw: unknown): AgentMemoryRecord {
     tags: tags,
     createdAtMs,
     updatedAtMs,
+  };
+}
+
+export function parseAgentMemoryRecallResult(raw: unknown): AgentMemoryRecallResult {
+  const d = asRecord(raw);
+  if (!Array.isArray(d.records)) {
+    throw new Error("agent_memory_recall_result.records must be an array");
+  }
+  return {
+    records: d.records.map(parseAgentMemoryRecord),
   };
 }
 

@@ -46,7 +46,7 @@ const evaluation = await handle.schedulingEvaluate([
 ], Date.now());
 ```
 
-For identity-first builds with a `rosterProvider`, `.agentMemory()` enables optional identity-scoped memory injection from `<persistentState>/agent-memory` with contextual recall by default. Write records with `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, read them with `handle.recallAgentMemory(identity, { realm, selection, queryTerms, maxEntries })`, and delete them with `handle.forgetAgentMemory(identity, memoryId, { realm })`; new records are available on the next identity-first send and during later materialize/resume/respawn/reset flows.
+For identity-first builds with a `rosterProvider`, `.agentMemory()` enables optional identity-scoped memory injection from `<persistentState>/agent-memory` with contextual recall by default. Write records with `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, read them with `handle.recallAgentMemory(identity, { realm, selection, queryText, queryTerms, maxEntries })`, and delete them with `handle.forgetAgentMemory(identity, memoryId, { realm })`; new records are available on the next identity-first send and during later materialize/resume/respawn/reset flows.
 
 ## Type definitions
 

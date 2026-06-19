@@ -26,6 +26,7 @@ import {
   parseDeliveryHistoryResult,
   parseMemoryQueryResult,
   parseAgentMemoryRecord,
+  parseAgentMemoryRecallResult,
   parseAgentMemoryForgetResult,
   parseMemoryStoreInfo,
   parseMemoryIndexResult,
@@ -531,6 +532,42 @@ describe("parseAgentMemoryRecord", () => {
           updated_at_ms: 1,
         }),
       /agent_memory_record\.tags must be an array of strings/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAgentMemoryRecallResult
+// ---------------------------------------------------------------------------
+
+describe("parseAgentMemoryRecallResult", () => {
+  it("parses valid recall envelopes", () => {
+    const result = parseAgentMemoryRecallResult({
+      records: [{
+        memory_id: "mem-1",
+        title: "School pickup",
+        body: "Pickup is before calendar planning.",
+        tags: ["calendar", "family"],
+        created_at_ms: 10,
+        updated_at_ms: 20,
+      }],
+    });
+
+    assert.equal(result.records.length, 1);
+    assert.equal(result.records[0]!.memoryId, "mem-1");
+  });
+
+  it("rejects malformed recall envelopes", () => {
+    assert.throws(
+      () => parseAgentMemoryRecallResult({}),
+      /agent_memory_recall_result\.records must be an array/,
+    );
+    assert.throws(
+      () =>
+        parseAgentMemoryRecallResult({
+          records: [{ memory_id: "mem-1" }],
+        }),
+      /agent_memory_record\.title must be a non-empty string/,
     );
   });
 });

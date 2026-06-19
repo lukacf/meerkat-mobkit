@@ -104,6 +104,7 @@ pub struct AgentMemoryForgetResult {
 pub struct AgentMemoryRecallRequest {
     pub identity: AgentIdentity,
     pub realm: String,
+    pub query_text: Option<String>,
     pub query_terms: Vec<String>,
     pub selection: AgentMemorySelection,
     pub max_entries: usize,
@@ -292,7 +293,7 @@ impl AgentMemoryProvider for MarkdownAgentMemoryStore {
     ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
         let mut records = self.read_records(&request.realm, &request.identity)?;
         if request.selection == AgentMemorySelection::Contextual {
-            let terms = normalize_terms(request.query_terms);
+            let terms = recall_query_terms(&request);
             if terms.is_empty() {
                 return Ok(Vec::new());
             }
@@ -355,8 +356,11 @@ impl AgentMemoryRuntimeInjector {
         identity: &AgentIdentity,
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::ContentInput, AgentMemoryError> {
-        let query_terms = turn_query_terms(content);
-        if self.config.selection == AgentMemorySelection::Contextual && query_terms.is_empty() {
+        let query_text = compact_whitespace(&content.text_content());
+        let query_terms = terms_from_value(&query_text)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if self.config.selection == AgentMemorySelection::Contextual && query_text.is_empty() {
             return Ok(content.clone());
         }
         let records = self
@@ -364,6 +368,7 @@ impl AgentMemoryRuntimeInjector {
             .recall(AgentMemoryRecallRequest {
                 identity: identity.clone(),
                 realm: self.config.realm.clone(),
+                query_text: (!query_text.is_empty()).then_some(query_text),
                 query_terms,
                 selection: self.config.selection.clone(),
                 max_entries: self.config.max_entries,
@@ -418,6 +423,7 @@ impl AgentCustomizer for AgentMemoryCustomizer {
             .recall(AgentMemoryRecallRequest {
                 identity: context.identity.clone(),
                 realm: self.config.realm.clone(),
+                query_text: build_query_text(context, spec),
                 query_terms: build_query_terms(context, spec),
                 selection: self.config.selection.clone(),
                 max_entries: self.config.max_entries,
@@ -731,10 +737,26 @@ fn build_query_terms(context: &AgentBuildContext, spec: &DurableAgentSpec) -> Ve
     terms.into_iter().collect()
 }
 
-fn turn_query_terms(content: &meerkat_core::ContentInput) -> Vec<String> {
-    let mut terms = BTreeSet::new();
-    insert_terms(&mut terms, &content.text_content());
-    terms.into_iter().collect()
+fn build_query_text(context: &AgentBuildContext, spec: &DurableAgentSpec) -> Option<String> {
+    let mut parts = vec![
+        format!("identity {}", context.identity.as_str()),
+        format!("profile {}", spec.profile),
+    ];
+    for peer in &context.active_peers {
+        parts.push(format!("active peer {}", peer.as_str()));
+    }
+    for edge in &context.managed_edges {
+        parts.push(format!(
+            "managed edge {} {}",
+            edge.a().as_str(),
+            edge.b().as_str()
+        ));
+    }
+    for (key, value) in &spec.labels {
+        parts.push(format!("label {key} {value}"));
+    }
+    let text = compact_whitespace(&parts.join(" "));
+    (!text.is_empty()).then_some(text)
 }
 
 fn prepend_memory_injection(
@@ -822,6 +844,14 @@ fn normalize_terms(terms: Vec<String>) -> BTreeSet<String> {
     let mut normalized = BTreeSet::new();
     for term in terms {
         insert_terms(&mut normalized, &term);
+    }
+    normalized
+}
+
+fn recall_query_terms(request: &AgentMemoryRecallRequest) -> BTreeSet<String> {
+    let mut normalized = normalize_terms(request.query_terms.clone());
+    if let Some(query_text) = request.query_text.as_deref() {
+        insert_terms(&mut normalized, query_text);
     }
     normalized
 }
@@ -1516,6 +1546,7 @@ mod tests {
             .recall(AgentMemoryRecallRequest {
                 identity: id.clone(),
                 realm: "default".to_string(),
+                query_text: Some("where did I put the passport".to_string()),
                 query_terms: vec!["where did I put the passport".to_string()],
                 selection: AgentMemorySelection::Contextual,
                 max_entries: 8,
@@ -1525,10 +1556,24 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].title, "Passport location");
 
+        let query_text_only = store
+            .recall(AgentMemoryRecallRequest {
+                identity: id.clone(),
+                realm: "default".to_string(),
+                query_text: Some("I need the passport for travel".to_string()),
+                query_terms: Vec::new(),
+                selection: AgentMemorySelection::Contextual,
+                max_entries: 8,
+            })
+            .await?;
+        assert_eq!(query_text_only.len(), 1);
+        assert_eq!(query_text_only[0].title, "Passport location");
+
         let stopword_only = store
             .recall(AgentMemoryRecallRequest {
                 identity: id,
                 realm: "default".to_string(),
+                query_text: Some("where did I put the".to_string()),
                 query_terms: vec!["where did I put the".to_string()],
                 selection: AgentMemorySelection::Contextual,
                 max_entries: 8,
@@ -1720,6 +1765,10 @@ mod tests {
         };
         assert!(request.query_terms.contains(&"passport".to_string()));
         assert!(!request.query_terms.contains(&"identity".to_string()));
+        assert_eq!(
+            request.query_text.as_deref(),
+            Some("Where did I put my passport?")
+        );
         let injected_text = injected.text_content();
         assert!(injected_text.contains("Passport location"));
         assert!(injected_text.contains("Current user message"));

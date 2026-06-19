@@ -288,7 +288,8 @@ Read identity-scoped agent memory records from the configured agent memory provi
 | `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
 | `realm` | `string` | no | Memory realm, default `"default"` |
 | `selection` | `"always" \| "contextual"` | no | Retrieval mode, default `"contextual"` |
-| `query_terms` | `string[]` | no | Terms used by contextual providers |
+| `query_text` | `string` | no | Raw query text for contextual providers, max 16 KiB |
+| `query_terms` | `string[]` | no | Additional deterministic terms for contextual providers |
 | `max_entries` | `integer` | no | Maximum records, default `8`, max `64` |
 </Accordion>
 

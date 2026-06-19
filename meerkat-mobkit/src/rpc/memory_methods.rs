@@ -18,6 +18,7 @@ const MAX_AGENT_MEMORY_TITLE_BYTES: usize = 200;
 const MAX_AGENT_MEMORY_BODY_BYTES: usize = 64 * 1024;
 const MAX_AGENT_MEMORY_TAGS: usize = 32;
 const MAX_AGENT_MEMORY_TAG_BYTES: usize = 64;
+const MAX_AGENT_MEMORY_QUERY_TEXT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MemoryParamsError {
@@ -45,6 +46,8 @@ pub(super) enum MemoryParamsError {
     TagTooLong,
     SelectionMustBeString,
     UnsupportedSelection(String),
+    QueryTextMustBeString,
+    QueryTextTooLong,
     QueryTermsMustBeArray,
     QueryTermMustBeString,
     MaxEntriesMustBePositiveInteger,
@@ -112,6 +115,12 @@ impl MemoryParamsError {
             }
             MemoryParamsError::UnsupportedSelection(selection) => {
                 format!("selection must be 'always' or 'contextual' (got '{selection}')")
+            }
+            MemoryParamsError::QueryTextMustBeString => {
+                "query_text must be a non-empty string when provided".to_string()
+            }
+            MemoryParamsError::QueryTextTooLong => {
+                "query_text must be at most 16384 bytes".to_string()
             }
             MemoryParamsError::QueryTermsMustBeArray => {
                 "query_terms must be an array when provided".to_string()
@@ -312,11 +321,28 @@ pub(super) fn parse_agent_memory_recall_params(
             })
             .collect::<Result<Vec<_>, _>>()?,
     };
+    let query_text = match object.get("query_text") {
+        None => None,
+        Some(value) => {
+            let query_text = value
+                .as_str()
+                .ok_or(MemoryParamsError::QueryTextMustBeString)?
+                .trim();
+            if query_text.is_empty() {
+                return Err(MemoryParamsError::QueryTextMustBeString);
+            }
+            if query_text.len() > MAX_AGENT_MEMORY_QUERY_TEXT_BYTES {
+                return Err(MemoryParamsError::QueryTextTooLong);
+            }
+            Some(query_text.to_string())
+        }
+    };
 
     Ok(AgentMemoryRecallRpcRequest {
         request: AgentMemoryRecallRequest {
             identity,
             realm,
+            query_text,
             query_terms,
             selection,
             max_entries,
@@ -494,14 +520,30 @@ mod tests {
     fn agent_memory_recall_defaults_to_contextual_selection() -> Result<(), Box<dyn Error>> {
         let parsed = parse_agent_memory_recall_params(&json!({
             "identity": "identity:luka",
+            "query_text": "Where is my passport?",
             "query_terms": ["passport"]
         }))
         .map_err(|err| std::io::Error::other(err.message()))?;
 
         assert_eq!(parsed.request.selection, AgentMemorySelection::Contextual);
         assert_eq!(parsed.request.realm, "default");
+        assert_eq!(
+            parsed.request.query_text,
+            Some("Where is my passport?".to_string())
+        );
         assert_eq!(parsed.request.query_terms, vec!["passport".to_string()]);
         Ok(())
+    }
+
+    #[test]
+    fn agent_memory_recall_rejects_empty_query_text() {
+        let err = parse_agent_memory_recall_params(&json!({
+            "identity": "identity:luka",
+            "query_text": "   "
+        }))
+        .err();
+
+        assert_eq!(err, Some(MemoryParamsError::QueryTextMustBeString));
     }
 
     #[test]
