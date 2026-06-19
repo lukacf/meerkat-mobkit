@@ -71,6 +71,89 @@ async def test_attach_session_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_agent_memory_rpc_names_and_params():
+    """Agent memory helpers must hit the first-class durable memory RPCs."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/agent_memory/remember": {
+            "memory_id": "mem-1",
+            "title": "School pickup",
+            "body": "Pickup is before calendar planning.",
+            "tags": ["calendar", "family"],
+            "created_at_ms": 10,
+            "updated_at_ms": 20,
+        },
+        "mobkit/agent_memory/recall": {
+            "records": [{
+                "memory_id": "mem-1",
+                "title": "School pickup",
+                "body": "Pickup is before calendar planning.",
+                "tags": ["calendar", "family"],
+                "created_at_ms": 10,
+                "updated_at_ms": 20,
+            }],
+        },
+        "mobkit/agent_memory/forget": {
+            "memory_id": "mem-1",
+            "deleted": True,
+        },
+    })
+
+    remembered = await handle.remember_agent_memory(
+        "identity:luka",
+        realm="family",
+        title="School pickup",
+        body="Pickup is before calendar planning.",
+        tags=["family", "calendar"],
+    )
+    recalled = await handle.recall_agent_memory(
+        "identity:luka",
+        realm="family",
+        selection="contextual",
+        query_text="Where is pickup?",
+        query_terms=["pickup"],
+        max_entries=4,
+    )
+    forgotten = await handle.forget_agent_memory(
+        "identity:luka", "mem-1", realm="family"
+    )
+
+    assert calls == [
+        (
+            "mobkit/agent_memory/remember",
+            {
+                "identity": "identity:luka",
+                "realm": "family",
+                "title": "School pickup",
+                "body": "Pickup is before calendar planning.",
+                "tags": ["family", "calendar"],
+            },
+        ),
+        (
+            "mobkit/agent_memory/recall",
+            {
+                "identity": "identity:luka",
+                "realm": "family",
+                "selection": "contextual",
+                "query_text": "Where is pickup?",
+                "query_terms": ["pickup"],
+                "max_entries": 4,
+            },
+        ),
+        (
+            "mobkit/agent_memory/forget",
+            {
+                "identity": "identity:luka",
+                "memory_id": "mem-1",
+                "realm": "family",
+            },
+        ),
+    ]
+    assert remembered.memory_id == "mem-1"
+    assert recalled[0].memory_id == "mem-1"
+    assert forgotten.deleted is True
+
+
+@pytest.mark.asyncio
 async def test_mobpack_editor_catalog_rpc_names():
     handle, calls = make_mock_mob_handle({
         "mobkit/tools/catalog": {

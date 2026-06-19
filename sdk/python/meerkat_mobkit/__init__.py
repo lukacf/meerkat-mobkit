@@ -46,6 +46,9 @@ from .errors import (
 
 # Typed return models
 from .types import (
+    AgentMemoryForgetResult,
+    AgentMemoryRecallResult,
+    AgentMemoryRecord,
     CallToolResult,
     CapabilitiesResult,
     CatalogEntry,
@@ -204,6 +207,9 @@ __all__ = [
     "RoutingResolution",
     "DeliveryResult",
     "DeliveryHistoryResult",
+    "AgentMemoryRecord",
+    "AgentMemoryRecallResult",
+    "AgentMemoryForgetResult",
     "MemoryQueryResult",
     "MemoryStoreInfo",
     "MemoryIndexResult",

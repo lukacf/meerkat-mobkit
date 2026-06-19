@@ -1,6 +1,9 @@
 """Tests for typed return models (from_dict)."""
 import pytest
 from meerkat_mobkit.types import (
+    AgentMemoryForgetResult,
+    AgentMemoryRecallResult,
+    AgentMemoryRecord,
     CallToolResult,
     CapabilitiesResult,
     DeliveryHistoryResult,
@@ -803,6 +806,84 @@ class TestMemoryIndexResult:
         assert r.topic == "prefs"
         assert r.store == "knowledge_graph"
         assert r.assertion_id == "mem-001"
+
+
+class TestAgentMemoryRecord:
+    def test_from_dict(self):
+        r = AgentMemoryRecord.from_dict(
+            {
+                "memory_id": "mem-1",
+                "title": "School pickup",
+                "body": "Pickup is before calendar planning.",
+                "tags": ["calendar", "family"],
+                "created_at_ms": 10,
+                "updated_at_ms": 20,
+            }
+        )
+        assert r.memory_id == "mem-1"
+        assert r.title == "School pickup"
+        assert r.body == "Pickup is before calendar planning."
+        assert r.tags == ["calendar", "family"]
+        assert r.created_at_ms == 10
+        assert r.updated_at_ms == 20
+
+    def test_rejects_malformed_durable_records(self):
+        with pytest.raises(ValueError, match="memory_id must be a non-empty string"):
+            AgentMemoryRecord.from_dict({})
+        with pytest.raises(ValueError, match="tags must be an array of strings"):
+            AgentMemoryRecord.from_dict(
+                {
+                    "memory_id": "mem-1",
+                    "title": "Title",
+                    "body": "Body",
+                    "tags": [42],
+                    "created_at_ms": 1,
+                    "updated_at_ms": 1,
+                }
+            )
+
+
+class TestAgentMemoryRecallResult:
+    def test_from_dict(self):
+        r = AgentMemoryRecallResult.from_dict(
+            {
+                "records": [{
+                    "memory_id": "mem-1",
+                    "title": "School pickup",
+                    "body": "Pickup is before calendar planning.",
+                    "tags": ["calendar", "family"],
+                    "created_at_ms": 10,
+                    "updated_at_ms": 20,
+                }],
+            }
+        )
+        assert len(r.records) == 1
+        assert r.records[0].memory_id == "mem-1"
+
+    def test_rejects_malformed_envelopes(self):
+        with pytest.raises(ValueError, match="records must be an array"):
+            AgentMemoryRecallResult.from_dict({})
+        with pytest.raises(ValueError, match="title must be a non-empty string"):
+            AgentMemoryRecallResult.from_dict(
+                {"records": [{"memory_id": "mem-1"}]}
+            )
+
+
+class TestAgentMemoryForgetResult:
+    def test_from_dict(self):
+        r = AgentMemoryForgetResult.from_dict(
+            {"memory_id": "mem-1", "deleted": True}
+        )
+        assert r.memory_id == "mem-1"
+        assert r.deleted is True
+
+    def test_rejects_malformed_results(self):
+        with pytest.raises(ValueError, match="memory_id must be a non-empty string"):
+            AgentMemoryForgetResult.from_dict({})
+        with pytest.raises(ValueError, match="deleted must be a boolean"):
+            AgentMemoryForgetResult.from_dict(
+                {"memory_id": "mem-1", "deleted": "yes"}
+            )
 
 
 class TestReconcileEdgesReport:
