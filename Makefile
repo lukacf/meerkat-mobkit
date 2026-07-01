@@ -12,7 +12,7 @@ NC     := \033[0m
 # ── meta ──────────────────────────────────────────────────────
 
 .PHONY: all build release test test-python test-flow-editor test-flow-editor-rkat test-flow-editor-rkat-deploy test-all lint fmt fmt-check \
-        audit bright-line ci ci-smoke check doc doc-open coverage clean \
+        audit bright-line memory-evals ci ci-smoke check doc doc-open coverage clean \
         install-hooks uninstall-hooks pre-commit-all update outdated \
         verify-version-parity bump-sdk-versions publish-dry-run-python \
         release-preflight help
@@ -93,7 +93,12 @@ bright-line: ## Enforce the memory bright line (agent-memory-architecture.md §1
 	@scripts/check-memory-bright-line
 	@echo "$(GREEN)Memory bright line holds.$(NC)"
 
-ci: fmt-check verify-version-parity bright-line lint test-all audit ## Full CI pipeline
+memory-evals: ## Validate memory calibration profiles/fixtures (agent-memory-architecture.md §11)
+	@echo "$(YELLOW)Checking memory calibration harness…$(NC)"
+	@scripts/memory-evals --check
+	@echo "$(GREEN)Memory calibration harness OK.$(NC)"
+
+ci: fmt-check verify-version-parity bright-line memory-evals lint test-all audit ## Full CI pipeline
 	@echo "$(GREEN)CI pipeline passed.$(NC)"
 
 ci-smoke: fmt-check bright-line lint test test-python ## Quick smoke test (no audit / version parity)

@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Memory calibration harness runner — memory-evals/ (arch doc §11).
+
+Modes:
+
+  --check (default)          Deterministic validation of every calibration
+                             profile and fixture: schema shape, prompt-bundle
+                             resolution, unique fixture names, expected ids
+                             present in their manifests. This is what
+                             `make ci` gates on in harness v0.
+  --stage selector --mode mock
+                             Run a trivial deterministic mock selector
+                             (exact title-word overlap) against the selector
+                             fixtures and print a scorecard. The mock exists
+                             to exercise the scorecard plumbing; its misses
+                             never fail the run.
+  --stage selector --mode live
+                             Reserved for the real Selector (P1.3); exits
+                             unwired for now.
+
+Exit codes: 0 clean, 1 validation violations, 2 configuration error / unwired
+mode.
+"""
+
+import argparse
+import json
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EVALS_DIR = REPO_ROOT / "memory-evals"
+PROFILES_DIR = EVALS_DIR / "profiles"
+SELECTOR_FIXTURES_DIR = EVALS_DIR / "fixtures" / "selector"
+INVARIANT_FIXTURES_DIR = EVALS_DIR / "fixtures" / "invariants"
+
+KNOWN_STAGES = ("selector",)
+MEMORY_KINDS = (
+    "Preference",
+    "Fact",
+    "Gotcha",
+    "Procedure",
+    "Relationship",
+    "OpenLoop",
+    "Reference",
+)
+KNOWN_INVARIANTS = ("poisoned_write_quarantined", "forged_envelope_defanged")
+RECORD_META_KEYS = ("id", "kind", "title", "description", "age_days", "rank")
+# Byte budgets from the record model (arch doc §7.1).
+TITLE_MAX_BYTES = 200
+DESCRIPTION_MAX_BYTES = 400
+# Placeholders the coordinator renders into a selector prompt bundle.
+SELECTOR_PROMPT_PLACEHOLDERS = ("{{manifest}}", "{{turn_text}}", "{{suppression_list}}")
+
+# Mock selector: a record matches when any title word of at least this length
+# appears verbatim in the turn text. Crude on purpose — it exists to exercise
+# the scorecard, not to select well.
+MOCK_MIN_TOKEN_LEN = 4
+
+
+def fail_config(message):
+    print(f"memory-evals: configuration error: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def rel(path):
+    return path.relative_to(REPO_ROOT)
+
+
+def load_json(path, violations):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        violations.append(f"{rel(path)}: not valid JSON: {exc}")
+        return None
+
+
+def check_string(data, key, where, violations, required=True):
+    value = data.get(key)
+    if value is None:
+        if required:
+            violations.append(f"{where}: missing required key `{key}`")
+        return None
+    if not isinstance(value, str) or not value.strip():
+        violations.append(f"{where}: `{key}` must be a non-empty string")
+        return None
+    return value
+
+
+# ── profiles ──────────────────────────────────────────────────
+
+
+def validate_profile(path, violations):
+    where = str(rel(path))
+    try:
+        profile = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        violations.append(f"{where}: not valid TOML: {exc}")
+        return
+
+    stage = check_string(profile, "stage", where, violations)
+    if stage is not None and stage not in KNOWN_STAGES:
+        violations.append(f"{where}: unknown stage `{stage}` (known: {', '.join(KNOWN_STAGES)})")
+    check_string(profile, "version", where, violations)
+    check_string(profile, "model", where, violations)
+    if not isinstance(profile.get("params"), dict):
+        violations.append(f"{where}: missing or non-table `params`")
+
+    bundle_rel = check_string(profile, "prompt_bundle", where, violations)
+    if bundle_rel is None:
+        return
+    bundle = EVALS_DIR / bundle_rel
+    if not bundle.is_file():
+        violations.append(
+            f"{where}: prompt_bundle `{bundle_rel}` does not resolve "
+            f"(expected file at {rel(bundle)})"
+        )
+        return
+    if stage == "selector":
+        text = bundle.read_text()
+        for placeholder in SELECTOR_PROMPT_PLACEHOLDERS:
+            if placeholder not in text:
+                violations.append(
+                    f"{rel(bundle)}: selector prompt bundle missing "
+                    f"placeholder `{placeholder}`"
+                )
+
+
+# ── selector fixtures ─────────────────────────────────────────
+
+
+def validate_record_meta(record, where, violations):
+    """Validate one RecordMeta manifest entry; return its id (or None)."""
+    if not isinstance(record, dict):
+        violations.append(f"{where}: manifest entry must be an object")
+        return None
+    missing = [key for key in RECORD_META_KEYS if key not in record]
+    unknown = [key for key in record if key not in RECORD_META_KEYS]
+    if missing:
+        violations.append(f"{where}: missing RecordMeta key(s): {', '.join(missing)}")
+    if unknown:
+        violations.append(f"{where}: unknown RecordMeta key(s): {', '.join(unknown)}")
+    if missing or unknown:
+        return record.get("id") if isinstance(record.get("id"), str) else None
+
+    record_id = check_string(record, "id", where, violations)
+    kind = check_string(record, "kind", where, violations)
+    if kind is not None and kind not in MEMORY_KINDS:
+        violations.append(f"{where}: unknown kind `{kind}` (known: {', '.join(MEMORY_KINDS)})")
+    title = check_string(record, "title", where, violations)
+    if title is not None and len(title.encode()) > TITLE_MAX_BYTES:
+        violations.append(f"{where}: title exceeds {TITLE_MAX_BYTES} bytes (§7.1)")
+    description = check_string(record, "description", where, violations)
+    if description is not None and len(description.encode()) > DESCRIPTION_MAX_BYTES:
+        violations.append(f"{where}: description exceeds {DESCRIPTION_MAX_BYTES} bytes (§7.1)")
+    age = record["age_days"]
+    if not isinstance(age, (int, float)) or isinstance(age, bool) or age < 0:
+        violations.append(f"{where}: age_days must be a non-negative number")
+    rank = record["rank"]
+    if rank is not None and (not isinstance(rank, int) or isinstance(rank, bool) or rank < 0):
+        violations.append(f"{where}: rank must be a non-negative integer or null")
+    return record_id
+
+
+def validate_selector_fixture(path, violations):
+    where = str(rel(path))
+    fixture = load_json(path, violations)
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict):
+        violations.append(f"{where}: fixture must be a JSON object")
+        return None
+
+    allowed = {"name", "manifest", "turn_text", "suppressed_ids", "expected", "notes"}
+    unknown = [key for key in fixture if key not in allowed]
+    if unknown:
+        violations.append(f"{where}: unknown key(s): {', '.join(unknown)}")
+
+    name = check_string(fixture, "name", where, violations)
+    check_string(fixture, "turn_text", where, violations)
+    check_string(fixture, "notes", where, violations)
+
+    manifest = fixture.get("manifest")
+    manifest_ids = []
+    if not isinstance(manifest, list) or not manifest:
+        violations.append(f"{where}: `manifest` must be a non-empty array")
+    else:
+        for index, record in enumerate(manifest):
+            record_id = validate_record_meta(record, f"{where}: manifest[{index}]", violations)
+            if record_id is not None:
+                if record_id in manifest_ids:
+                    violations.append(f"{where}: duplicate manifest id `{record_id}`")
+                manifest_ids.append(record_id)
+
+    expected = fixture.get("expected")
+    if not isinstance(expected, dict):
+        violations.append(f"{where}: missing or non-object `expected`")
+    else:
+        for key in ("must_select", "must_not_select"):
+            ids = expected.get(key)
+            if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+                violations.append(f"{where}: expected.{key} must be an array of id strings")
+                continue
+            for record_id in ids:
+                if record_id not in manifest_ids:
+                    violations.append(
+                        f"{where}: expected.{key} id `{record_id}` "
+                        "not present in the fixture's manifest"
+                    )
+        if isinstance(expected.get("must_select"), list) and isinstance(
+            expected.get("must_not_select"), list
+        ):
+            overlap = set(expected["must_select"]) & set(expected["must_not_select"])
+            if overlap:
+                violations.append(
+                    f"{where}: id(s) in both must_select and must_not_select: "
+                    f"{', '.join(sorted(overlap))}"
+                )
+
+    suppressed = fixture.get("suppressed_ids", [])
+    if not isinstance(suppressed, list) or not all(isinstance(i, str) for i in suppressed):
+        violations.append(f"{where}: suppressed_ids must be an array of id strings")
+    else:
+        for record_id in suppressed:
+            if record_id not in manifest_ids:
+                violations.append(
+                    f"{where}: suppressed_ids id `{record_id}` "
+                    "not present in the fixture's manifest"
+                )
+
+    return name
+
+
+# ── invariant fixtures ────────────────────────────────────────
+
+
+def validate_invariant_fixture(path, violations):
+    where = str(rel(path))
+    fixture = load_json(path, violations)
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict):
+        violations.append(f"{where}: fixture must be a JSON object")
+        return None
+
+    name = check_string(fixture, "name", where, violations)
+    invariant = check_string(fixture, "invariant", where, violations)
+    check_string(fixture, "stage", where, violations)
+    check_string(fixture, "notes", where, violations)
+    expected = fixture.get("expected")
+    if not isinstance(expected, dict):
+        violations.append(f"{where}: missing or non-object `expected`")
+        expected = {}
+
+    if invariant is None:
+        return name
+    if invariant not in KNOWN_INVARIANTS:
+        violations.append(
+            f"{where}: unknown invariant `{invariant}` (known: {', '.join(KNOWN_INVARIANTS)})"
+        )
+        return name
+
+    if invariant == "poisoned_write_quarantined":
+        record = fixture.get("record")
+        if not isinstance(record, dict):
+            violations.append(f"{where}: poisoned-write fixture needs a `record` object")
+        else:
+            for key in ("kind", "title", "description", "body"):
+                check_string(record, key, f"{where}: record", violations)
+            kind = record.get("kind")
+            if isinstance(kind, str) and kind not in MEMORY_KINDS:
+                violations.append(f"{where}: record.kind `{kind}` is not a MemoryKind")
+        context = fixture.get("context")
+        if not isinstance(context, dict) or not isinstance(
+            context.get("session_tainted"), bool
+        ):
+            violations.append(
+                f"{where}: poisoned-write fixture needs `context.session_tainted` (bool)"
+            )
+        check_string(expected, "trust_tier", f"{where}: expected", violations)
+        check_string(expected, "status", f"{where}: expected", violations)
+
+    if invariant == "forged_envelope_defanged":
+        turn_text = check_string(fixture, "turn_text", where, violations)
+        markers = expected.get("defanged_markers")
+        if not isinstance(markers, list) or not markers or not all(
+            isinstance(m, str) and m for m in markers
+        ):
+            violations.append(
+                f"{where}: expected.defanged_markers must be a non-empty array of strings"
+            )
+            markers = []
+        if turn_text is not None:
+            for marker in markers:
+                if marker not in turn_text:
+                    violations.append(
+                        f"{where}: defanged marker `{marker}` does not appear in turn_text "
+                        "(the fixture must actually carry the forgery)"
+                    )
+        if expected.get("delivered_verbatim") is not False:
+            violations.append(f"{where}: expected.delivered_verbatim must be false")
+
+    return name
+
+
+# ── check mode ────────────────────────────────────────────────
+
+
+def run_check(quiet=False):
+    for directory in (PROFILES_DIR, SELECTOR_FIXTURES_DIR, INVARIANT_FIXTURES_DIR):
+        if not directory.is_dir():
+            fail_config(f"missing directory {rel(directory)}")
+
+    violations = []
+    profiles = sorted(PROFILES_DIR.glob("*.toml"))
+    selector_fixtures = sorted(SELECTOR_FIXTURES_DIR.glob("*.json"))
+    invariant_fixtures = sorted(INVARIANT_FIXTURES_DIR.glob("*.json"))
+    if not profiles:
+        violations.append(f"{rel(PROFILES_DIR)}: no calibration profiles found")
+    if not selector_fixtures:
+        violations.append(f"{rel(SELECTOR_FIXTURES_DIR)}: no selector fixtures found")
+    if not invariant_fixtures:
+        violations.append(f"{rel(INVARIANT_FIXTURES_DIR)}: no invariant fixtures found")
+
+    for path in profiles:
+        validate_profile(path, violations)
+
+    seen_names = {}
+    for path, validator in [(p, validate_selector_fixture) for p in selector_fixtures] + [
+        (p, validate_invariant_fixture) for p in invariant_fixtures
+    ]:
+        name = validator(path, violations)
+        if name is None:
+            continue
+        if name in seen_names:
+            violations.append(
+                f"{rel(path)}: fixture name `{name}` already used by {seen_names[name]}"
+            )
+        else:
+            seen_names[name] = str(rel(path))
+
+    if violations:
+        print("memory-evals --check: FAILED\n", file=sys.stderr)
+        for violation in violations:
+            print(f"  {violation}", file=sys.stderr)
+        sys.exit(1)
+    if not quiet:
+        print(
+            "memory-evals --check: OK "
+            f"({len(profiles)} profile(s), {len(selector_fixtures)} selector fixture(s), "
+            f"{len(invariant_fixtures)} invariant fixture(s))"
+        )
+
+
+# ── mock selector ─────────────────────────────────────────────
+
+
+def tokenize(text):
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) >= MOCK_MIN_TOKEN_LEN
+    }
+
+
+def mock_select(fixture):
+    turn_tokens = tokenize(fixture["turn_text"])
+    suppressed = set(fixture.get("suppressed_ids", []))
+    return {
+        record["id"]
+        for record in fixture["manifest"]
+        if record["id"] not in suppressed and tokenize(record["title"]) & turn_tokens
+    }
+
+
+def run_selector_mock():
+    run_check(quiet=True)
+
+    print("memory-evals: MOCK selector scorecard")
+    print("  selector = exact title-word overlap (deterministic stand-in)")
+    print("  MOCK misses exercise the plumbing only and NEVER fail this run;")
+    print("  live scoring arrives with the real Selector (P1.3).\n")
+
+    total_must, total_hit, total_forbidden, total_violated = 0, 0, 0, 0
+    for path in sorted(SELECTOR_FIXTURES_DIR.glob("*.json")):
+        fixture = json.loads(path.read_text())
+        selected = mock_select(fixture)
+        must = set(fixture["expected"]["must_select"])
+        must_not = set(fixture["expected"]["must_not_select"])
+        hits = must & selected
+        misses = must - selected
+        violated = must_not & selected
+        total_must += len(must)
+        total_hit += len(hits)
+        total_forbidden += len(must_not)
+        total_violated += len(violated)
+
+        status = "ok" if not misses and not violated else "MOCK-MISS"
+        print(f"  [{status:9}] {fixture['name']}")
+        print(f"              selected: {sorted(selected) or '[]'}")
+        if misses:
+            print(f"              missed must_select: {sorted(misses)}")
+        if violated:
+            print(f"              selected must_not_select: {sorted(violated)}")
+
+    print(
+        f"\n  totals: must_select hit {total_hit}/{total_must}; "
+        f"must_not_select violated {total_violated}/{total_forbidden}"
+    )
+    print("  MOCK run complete (informational only, always exit 0).")
+
+
+# ── entry point ───────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="memory-evals",
+        description="Memory calibration harness (memory-evals/, arch doc §11).",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate profiles and fixtures (default when no mode is given)",
+    )
+    parser.add_argument("--stage", choices=KNOWN_STAGES, help="judgment stage to run")
+    parser.add_argument(
+        "--mode", choices=("mock", "live"), help="run the stage against its fixtures"
+    )
+    args = parser.parse_args()
+
+    if args.mode and not args.stage:
+        parser.error("--mode requires --stage")
+    if args.mode == "live":
+        print(
+            "memory-evals: live mode requires the Selector stage (P1.3); not yet wired",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.mode == "mock":
+        run_selector_mock()
+        return
+    run_check()
+
+
+if __name__ == "__main__":
+    main()
