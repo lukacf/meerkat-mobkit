@@ -1040,6 +1040,22 @@ class MobpackToolsCatalogResult:
 
 
 @dataclass(frozen=True)
+class IdentityResolvedToolsResult:
+    """Resolved per-identity tool surface from mobkit/identity/resolved_tools."""
+    identity: str
+    session_id: str
+    tools: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityResolvedToolsResult:
+        return cls(
+            identity=str(data.get("identity", "")),
+            session_id=str(data.get("session_id", "")),
+            tools=[str(tool) for tool in data.get("tools", [])],
+        )
+
+
+@dataclass(frozen=True)
 class MobpackSkillsCatalogResult:
     """Result of a mobkit/skills/catalog RPC call."""
     schema_version: str

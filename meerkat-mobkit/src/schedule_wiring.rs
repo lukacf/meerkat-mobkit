@@ -15,24 +15,335 @@
 //! This is distinct from the static cron oracle (`MobKitBuilder::scheduling`),
 //! which drives module-dispatch ticks, not per-agent schedule tools.
 
+use std::future::Future;
 use std::path::Path;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 
+use async_trait::async_trait;
 use meerkat::surface::{
     NoopScheduleMobHost, ScheduleHostHandle, SurfaceScheduleMobHost,
     spawn_runtime_backed_schedule_host_with_mobs,
 };
 use meerkat::{
-    Config, FactoryAgentBuilder, PersistentSessionService, ScheduleService, ScheduleToolDispatcher,
-    SessionAgentBuilder, SqliteScheduleStore,
+    Config, FactoryAgentBuilder, MobTargetBinding, PersistentSessionService, ScheduleService,
+    ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction, SessionAgentBuilder,
+    SessionTargetBinding, SqliteScheduleStore, TargetBinding, UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
 use meerkat_runtime::MeerkatMachine;
+use serde_json::{Map, Value};
 
 /// File name for the durable schedule store, kept beside the runtime DB so a
 /// gateway and a library-mode runtime pointed at the same dir share state.
 pub const SCHEDULE_STORE_FILE: &str = "schedule.sqlite";
+
+#[derive(Clone, Default)]
+pub struct ScheduleMobTargetRegistry {
+    state: Arc<RwLock<Option<Arc<MobMcpState>>>>,
+}
+
+impl ScheduleMobTargetRegistry {
+    pub fn set_mob_state(&self, state: Option<Arc<MobMcpState>>) {
+        if let Ok(mut guard) = self.state.write() {
+            *guard = state;
+        }
+    }
+
+    async fn resolve_bridge_session(&self, session_id: &str) -> Option<(String, String)> {
+        let state = self.state.read().ok().and_then(|guard| guard.clone())?;
+        let parsed_session_id = meerkat::SessionId::parse(session_id).ok()?;
+        let handles = state.mob_handles_snapshot().await.ok()?;
+        for (mob_id, handle) in handles {
+            let roster = handle.roster().await;
+            if let Some(entry) = roster.find_by_bridge_session_id(&parsed_session_id) {
+                return Some((mob_id.to_string(), entry.agent_identity.to_string()));
+            }
+        }
+        None
+    }
+}
+
+pub struct AttachedScheduleTools {
+    pub service: ScheduleService,
+    pub mob_target_registry: ScheduleMobTargetRegistry,
+}
+
+type MobSessionResolver = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<(String, String)>> + Send>> + Send + Sync,
+>;
+
+struct MobIdentityScheduleToolDispatcher {
+    inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    resolve_mob_session: MobSessionResolver,
+}
+
+impl MobIdentityScheduleToolDispatcher {
+    fn new(
+        inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
+        mob_target_registry: ScheduleMobTargetRegistry,
+    ) -> Self {
+        let resolve_mob_session = Arc::new(move |session_id: String| {
+            let mob_target_registry = mob_target_registry.clone();
+            Box::pin(async move {
+                mob_target_registry
+                    .resolve_bridge_session(&session_id)
+                    .await
+            }) as Pin<Box<dyn Future<Output = Option<(String, String)>> + Send>>
+        });
+        Self {
+            inner,
+            resolve_mob_session,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test<F, Fut>(inner: Arc<dyn meerkat_core::AgentToolDispatcher>, resolve: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<(String, String)>> + Send + 'static,
+    {
+        let resolve = Arc::new(resolve);
+        let resolve_mob_session = Arc::new(move |session_id: String| {
+            let resolve = resolve.clone();
+            Box::pin(async move { resolve(session_id).await })
+                as Pin<Box<dyn Future<Output = Option<(String, String)>> + Send>>
+        });
+        Self {
+            inner,
+            resolve_mob_session,
+        }
+    }
+
+    async fn rewrite_args(&self, call_name: &str, args: Value) -> Value {
+        if call_name != "meerkat_schedule_create" && call_name != "meerkat_schedule_update" {
+            return args;
+        }
+        rewrite_resumable_session_target_to_mob_member(args, |session_id| async move {
+            (self.resolve_mob_session)(session_id).await
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::AgentToolDispatcher for MobIdentityScheduleToolDispatcher {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if call.name != "meerkat_schedule_create" && call.name != "meerkat_schedule_update" {
+            return self.inner.dispatch(call).await;
+        }
+
+        let args: Value = serde_json::from_str(call.args.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(
+                call.name,
+                format!("invalid schedule tool-call arguments JSON: {error}"),
+            )
+        })?;
+        let rewritten = self.rewrite_args(call.name, args).await;
+        let rewritten_raw = serde_json::value::RawValue::from_string(rewritten.to_string())
+            .map_err(|error| {
+                meerkat_core::ToolError::invalid_arguments(
+                    call.name,
+                    format!("failed to encode rewritten schedule arguments: {error}"),
+                )
+            })?;
+        self.inner
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: call.id,
+                name: call.name,
+                args: &rewritten_raw,
+            })
+            .await
+    }
+}
+
+async fn rewrite_resumable_session_target_to_mob_member<F, Fut>(
+    mut args: Value,
+    mut resolve: F,
+) -> Value
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Option<(String, String)>>,
+{
+    let Some(target) = args
+        .as_object_mut()
+        .and_then(|object| object.get_mut("target"))
+        .and_then(Value::as_object_mut)
+    else {
+        return args;
+    };
+
+    let is_resumable_session_target = target
+        .get("target_kind")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value == "session")
+        && target
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "resumable_session");
+    if !is_resumable_session_target {
+        return args;
+    }
+    let Some(session_id) = target
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return args;
+    };
+    let Some(action) = target.get("action").and_then(Value::as_object) else {
+        return args;
+    };
+    if action
+        .get("type")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value != "prompt")
+    {
+        return args;
+    }
+    if action_value_is_non_empty(action.get("system_prompt"))
+        || action_value_is_non_empty(action.get("skill_refs"))
+        || action_value_is_non_empty(action.get("additional_instructions"))
+    {
+        return args;
+    }
+    let Some(prompt) = action.get("prompt").cloned() else {
+        return args;
+    };
+    let Some((mob_id, member_id)) = resolve(session_id).await else {
+        return args;
+    };
+
+    let mut mob_action = Map::new();
+    mob_action.insert("type".to_string(), Value::String("send".to_string()));
+    mob_action.insert("content".to_string(), prompt);
+    if let Some(render_metadata) = action.get("render_metadata").cloned() {
+        mob_action.insert("render_metadata".to_string(), render_metadata);
+    }
+
+    let mut rewritten = Map::new();
+    rewritten.insert("target_kind".to_string(), Value::String("mob".to_string()));
+    rewritten.insert("type".to_string(), Value::String("member".to_string()));
+    rewritten.insert("mob_id".to_string(), Value::String(mob_id));
+    rewritten.insert("member_id".to_string(), Value::String(member_id));
+    rewritten.insert("action".to_string(), Value::Object(mob_action));
+    *target = rewritten;
+    args
+}
+
+fn action_value_is_non_empty(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Object(values)) => !values.is_empty(),
+        Some(Value::Bool(_) | Value::Number(_)) => true,
+    }
+}
+
+async fn rewrite_target_binding_to_mob_member<F, Fut>(
+    target: &TargetBinding,
+    resolve: &mut F,
+) -> Option<TargetBinding>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Option<(String, String)>>,
+{
+    let TargetBinding::Session(binding) = target else {
+        return None;
+    };
+    let SessionTargetBinding::ResumableSession { session_id, action } = binding.as_ref() else {
+        return None;
+    };
+    let ScheduledSessionAction::Prompt {
+        prompt,
+        system_prompt,
+        render_metadata,
+        skill_refs,
+        additional_instructions,
+    } = action
+    else {
+        return None;
+    };
+    if system_prompt.is_some() || !skill_refs.is_empty() || !additional_instructions.is_empty() {
+        return None;
+    }
+    let (mob_id, member_id) = resolve(session_id.to_string()).await?;
+    Some(TargetBinding::Mob(Box::new(MobTargetBinding::Member {
+        mob_id,
+        member_id,
+        action: ScheduledMobAction::Send {
+            content: prompt.clone(),
+            render_metadata: render_metadata.clone(),
+        },
+    })))
+}
+
+async fn repair_resumable_session_targets_with_resolver<F, Fut>(
+    service: &ScheduleService,
+    mut resolve: F,
+) -> Result<usize, String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Option<(String, String)>>,
+{
+    let schedules = service
+        .list()
+        .await
+        .map_err(|error| format!("list schedules: {error}"))?;
+    let mut repaired = 0usize;
+    for schedule in schedules {
+        let Some(target) =
+            rewrite_target_binding_to_mob_member(&schedule.target, &mut resolve).await
+        else {
+            continue;
+        };
+        match service
+            .update(
+                &schedule.schedule_id,
+                UpdateScheduleRequest {
+                    target: Some(target),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(_) => repaired += 1,
+            Err(error) => {
+                tracing::warn!(
+                    schedule_id = %schedule.schedule_id,
+                    error = %error,
+                    "failed to repair legacy resumable_session schedule target; continuing",
+                );
+            }
+        }
+    }
+    Ok(repaired)
+}
+
+/// Best-effort migration for schedules authored before MobKit preserved the
+/// identity target. If the old session id still maps to a mob member, rewrite
+/// simple resumable-session prompts to durable mob/member delivery before the
+/// schedule host starts firing due occurrences.
+pub async fn repair_resumable_session_targets_to_mob_members(
+    service: &ScheduleService,
+    mob_target_registry: &ScheduleMobTargetRegistry,
+) -> Result<usize, String> {
+    repair_resumable_session_targets_with_resolver(service, |session_id| async move {
+        mob_target_registry
+            .resolve_bridge_session(&session_id)
+            .await
+    })
+    .await
+}
 
 /// Build a durable (Sqlite) [`ScheduleService`] under `state_dir` and attach its
 /// tool dispatcher to `builder`'s default schedule-tools slot.
@@ -50,6 +361,14 @@ pub fn attach_schedule_tools(
     builder: &FactoryAgentBuilder,
     state_dir: &Path,
 ) -> Option<ScheduleService> {
+    attach_schedule_tools_with_identity_targets(builder, state_dir).map(|attached| attached.service)
+}
+
+#[must_use]
+pub fn attach_schedule_tools_with_identity_targets(
+    builder: &FactoryAgentBuilder,
+    state_dir: &Path,
+) -> Option<AttachedScheduleTools> {
     let path = state_dir.join(SCHEDULE_STORE_FILE);
     let store = match SqliteScheduleStore::open(&path) {
         Ok(store) => store,
@@ -63,11 +382,16 @@ pub fn attach_schedule_tools(
         }
     };
     let service = ScheduleService::new(Arc::new(store));
-    meerkat::surface::set_default_schedule_tools(
-        builder,
-        Some(Arc::new(ScheduleToolDispatcher::new(service.clone()))),
+    let mob_target_registry = ScheduleMobTargetRegistry::default();
+    let dispatcher = MobIdentityScheduleToolDispatcher::new(
+        Arc::new(ScheduleToolDispatcher::new(service.clone())),
+        mob_target_registry.clone(),
     );
-    Some(service)
+    meerkat::surface::set_default_schedule_tools(builder, Some(Arc::new(dispatcher)));
+    Some(AttachedScheduleTools {
+        service,
+        mob_target_registry,
+    })
 }
 
 /// Spawn the runtime-backed schedule host so authored schedules fire: at due
@@ -113,7 +437,15 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use meerkat::AgentFactory;
+    use meerkat::{
+        AgentFactory, MemoryScheduleStore, MobTargetBinding,
+        ScheduleToolDispatcher as InnerScheduleToolDispatcher, ScheduledMobAction, TargetBinding,
+    };
+    use meerkat_core::AgentToolDispatcher;
+    use meerkat_core::types::{SessionId, ToolCallView};
+    use meerkat_schedule::CurrentSessionScheduleToolDispatcher;
+    use serde_json::json;
+    use serde_json::value::RawValue;
 
     #[test]
     fn attach_schedule_tools_populates_the_builder_slot_and_opens_the_store() {
@@ -138,6 +470,328 @@ mod tests {
         assert!(
             dir.path().join(SCHEDULE_STORE_FILE).exists(),
             "the durable store file is created",
+        );
+    }
+
+    #[tokio::test]
+    async fn current_session_resumable_prompt_rewrites_to_identity_mob_member_target() {
+        let args = json!({
+            "name": "daily-digest",
+            "trigger": {
+                "type": "calendar",
+                "timezone": "Europe/Stockholm",
+                "hour": { "kind": "values", "values": [7] },
+                "minute": { "kind": "values", "values": [0] }
+            },
+            "target": {
+                "target_kind": "session",
+                "type": "resumable_session",
+                "session_id": "019ee0a7-a594-7670-b530-97e7c9e263b7",
+                "action": {
+                    "type": "prompt",
+                    "prompt": "Send the morning digest.",
+                    "render_metadata": {
+                        "source": "daily-digest"
+                    }
+                }
+            }
+        });
+
+        let rewritten =
+            rewrite_resumable_session_target_to_mob_member(args, |session_id| async move {
+                assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
+                Some(("homecore".to_string(), "domain:security".to_string()))
+            })
+            .await;
+
+        assert_eq!(
+            rewritten["target"],
+            json!({
+                "target_kind": "mob",
+                "type": "member",
+                "mob_id": "homecore",
+                "member_id": "domain:security",
+                "action": {
+                    "type": "send",
+                    "content": "Send the morning digest.",
+                    "render_metadata": {
+                        "source": "daily-digest"
+                    }
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn resumable_session_target_stays_session_when_not_mob_owned() {
+        let args = json!({
+            "target": {
+                "target_kind": "session",
+                "type": "resumable_session",
+                "session_id": "019ee0a7-a594-7670-b530-97e7c9e263b7",
+                "action": {
+                    "type": "prompt",
+                    "prompt": "Keep this pinned."
+                }
+            }
+        });
+
+        let rewritten =
+            rewrite_resumable_session_target_to_mob_member(args.clone(), |_session_id| async {
+                None
+            })
+            .await;
+
+        assert_eq!(rewritten, args);
+    }
+
+    #[tokio::test]
+    async fn resumable_session_target_with_session_only_prompt_options_is_not_rewritten() {
+        let args = json!({
+            "target": {
+                "target_kind": "session",
+                "type": "resumable_session",
+                "session_id": "019ee0a7-a594-7670-b530-97e7c9e263b7",
+                "action": {
+                    "type": "prompt",
+                    "prompt": "Run with custom context.",
+                    "system_prompt": "Use a one-off persona."
+                }
+            }
+        });
+
+        let rewritten = rewrite_resumable_session_target_to_mob_member(args.clone(), |_| async {
+            Some(("homecore".to_string(), "domain:security".to_string()))
+        })
+        .await;
+
+        assert_eq!(rewritten, args);
+    }
+
+    #[tokio::test]
+    async fn empty_session_prompt_options_still_rewrite_to_identity_mob_member_target() {
+        let args = json!({
+            "target": {
+                "target_kind": "session",
+                "type": "resumable_session",
+                "session_id": "019ee0a7-a594-7670-b530-97e7c9e263b7",
+                "action": {
+                    "type": "prompt",
+                    "prompt": "Run with explicit defaults.",
+                    "system_prompt": null,
+                    "skill_refs": [],
+                    "additional_instructions": []
+                }
+            }
+        });
+
+        let rewritten = rewrite_resumable_session_target_to_mob_member(args, |_| async {
+            Some(("homecore".to_string(), "domain:security".to_string()))
+        })
+        .await;
+
+        assert_eq!(
+            rewritten["target"],
+            json!({
+                "target_kind": "mob",
+                "type": "member",
+                "mob_id": "homecore",
+                "member_id": "domain:security",
+                "action": {
+                    "type": "send",
+                    "content": "Run with explicit defaults."
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn current_session_dispatch_chain_creates_and_updates_identity_mob_targets() {
+        let service = ScheduleService::new(Arc::new(MemoryScheduleStore::default()));
+        let schedule_dispatcher = Arc::new(InnerScheduleToolDispatcher::new(service.clone()));
+        let mob_dispatcher = Arc::new(MobIdentityScheduleToolDispatcher::new_for_test(
+            schedule_dispatcher,
+            |session_id| async move {
+                assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
+                Some(("homecore".to_string(), "domain:security".to_string()))
+            },
+        ));
+        let session_id =
+            SessionId::parse("019ee0a7-a594-7670-b530-97e7c9e263b7").expect("session id");
+        let dispatcher = CurrentSessionScheduleToolDispatcher::new(mob_dispatcher, session_id);
+
+        let create_args = RawValue::from_string(
+            json!({
+                "name": "daily-digest",
+                "trigger": {
+                    "type": "interval",
+                    "start_at_utc": "2026-07-01T05:00:00Z",
+                    "every_seconds": 86400
+                },
+                "target": {
+                    "target_kind": "session",
+                    "type": "current_session",
+                    "action": {
+                        "type": "prompt",
+                        "prompt": "Send the morning digest.",
+                        "render_metadata": {
+                            "class": "external_event",
+                            "salience": "important"
+                        }
+                    }
+                },
+                "planning_horizon_occurrences": 1
+            })
+            .to_string(),
+        )
+        .expect("create args");
+        let create_call = ToolCallView {
+            id: "create-digest",
+            name: "meerkat_schedule_create",
+            args: &create_args,
+        };
+        dispatcher
+            .dispatch(create_call)
+            .await
+            .expect("create schedule through dispatch chain");
+
+        let schedules = service.list().await.expect("list schedules");
+        assert_eq!(schedules.len(), 1);
+        let schedule_id = schedules[0].schedule_id.to_string();
+        assert_mob_member_target(
+            &schedules[0].target,
+            "homecore",
+            "domain:security",
+            "Send the morning digest.",
+            "external_event",
+        );
+
+        let update_args = RawValue::from_string(
+            json!({
+                "schedule_id": schedule_id,
+                "target": {
+                    "target_kind": "session",
+                    "type": "current_session",
+                    "action": {
+                        "type": "prompt",
+                        "prompt": "Send the updated digest.",
+                        "render_metadata": {
+                            "class": "peer_request",
+                            "salience": "urgent"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("update args");
+        let update_call = ToolCallView {
+            id: "update-digest",
+            name: "meerkat_schedule_update",
+            args: &update_args,
+        };
+        dispatcher
+            .dispatch(update_call)
+            .await
+            .expect("update schedule through dispatch chain");
+
+        let updated = service.list().await.expect("list updated schedules");
+        assert_eq!(updated.len(), 1);
+        assert_mob_member_target(
+            &updated[0].target,
+            "homecore",
+            "domain:security",
+            "Send the updated digest.",
+            "peer_request",
+        );
+    }
+
+    fn assert_mob_member_target(
+        target: &TargetBinding,
+        expected_mob_id: &str,
+        expected_member_id: &str,
+        expected_content: &str,
+        expected_class: &str,
+    ) {
+        assert!(
+            matches!(target, TargetBinding::Mob(_)),
+            "expected mob target, got {target:?}"
+        );
+        let TargetBinding::Mob(binding) = target else {
+            return;
+        };
+        assert!(
+            matches!(binding.as_ref(), MobTargetBinding::Member { .. }),
+            "expected member mob target, got {binding:?}"
+        );
+        let MobTargetBinding::Member {
+            mob_id,
+            member_id,
+            action,
+        } = binding.as_ref()
+        else {
+            return;
+        };
+        assert_eq!(mob_id, expected_mob_id);
+        assert_eq!(member_id, expected_member_id);
+        let ScheduledMobAction::Send {
+            content,
+            render_metadata,
+        } = action;
+        assert_eq!(content.text_content(), expected_content);
+        let metadata = render_metadata.as_ref().expect("render metadata");
+        let metadata = serde_json::to_value(metadata).expect("metadata value");
+        assert_eq!(metadata["class"], expected_class);
+    }
+
+    #[tokio::test]
+    async fn repair_rewrites_persisted_resumable_session_prompt_targets() {
+        let service = ScheduleService::new(Arc::new(MemoryScheduleStore::default()));
+        let request = serde_json::from_value(json!({
+            "name": "legacy-digest",
+            "trigger": {
+                "type": "interval",
+                "start_at_utc": "2026-07-01T05:00:00Z",
+                "every_seconds": 86400
+            },
+            "target": {
+                "target_kind": "session",
+                "type": "resumable_session",
+                "session_id": "019ee0a7-a594-7670-b530-97e7c9e263b7",
+                "action": {
+                    "type": "prompt",
+                    "prompt": "Send the morning digest.",
+                    "render_metadata": {
+                        "class": "external_event",
+                        "salience": "important"
+                    }
+                }
+            },
+            "planning_horizon_occurrences": 1
+        }))
+        .expect("create request");
+        service
+            .create(request)
+            .await
+            .expect("create legacy schedule");
+
+        let repaired =
+            repair_resumable_session_targets_with_resolver(&service, |session_id| async move {
+                assert_eq!(session_id, "019ee0a7-a594-7670-b530-97e7c9e263b7");
+                Some(("homecore".to_string(), "domain:security".to_string()))
+            })
+            .await
+            .expect("repair");
+
+        assert_eq!(repaired, 1);
+        let schedules = service.list().await.expect("list schedules");
+        assert_eq!(schedules.len(), 1);
+        assert_mob_member_target(
+            &schedules[0].target,
+            "homecore",
+            "domain:security",
+            "Send the morning digest.",
+            "external_event",
         );
     }
 }

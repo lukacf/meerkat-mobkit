@@ -1153,6 +1153,21 @@ export interface RichMemberSnapshot {
   readonly peerConnectivity: PeerConnectivitySnapshot | null;
 }
 
+export interface IdentityResolvedToolsResult {
+  readonly identity: string;
+  readonly sessionId: string;
+  readonly tools: readonly string[];
+}
+
+export function parseIdentityResolvedToolsResult(raw: unknown): IdentityResolvedToolsResult {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    sessionId: String(d.session_id ?? ""),
+    tools: asStringArray(d.tools),
+  };
+}
+
 export function parseRichMemberSnapshot(raw: unknown): RichMemberSnapshot {
   const d = asRecord(raw);
   return {

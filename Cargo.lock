@@ -2161,6 +2161,7 @@ dependencies = [
  "meerkat-mob-mcp",
  "meerkat-models",
  "meerkat-runtime",
+ "meerkat-schedule",
  "meerkat-session",
  "meerkat-store",
  "meerkat-tools",

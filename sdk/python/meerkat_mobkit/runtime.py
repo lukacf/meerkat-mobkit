@@ -1737,6 +1737,23 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/member_status", {"member_id": member_id})
         return RichMemberSnapshot.from_dict(raw)
 
+    async def identity_resolved_tools(self, identity: str) -> list[str]:
+        """Return the tools currently visible to an identity's live session."""
+        raw = await self._runtime._rpc(
+            "mobkit/identity/resolved_tools",
+            {"identity": identity},
+        )
+        return [str(tool) for tool in raw.get("tools", [])]
+
+    async def identity_resolved_tools_detail(self, identity: str):
+        """Return the full resolved-tools diagnostic payload for an identity."""
+        from .types import IdentityResolvedToolsResult
+        raw = await self._runtime._rpc(
+            "mobkit/identity/resolved_tools",
+            {"identity": identity},
+        )
+        return IdentityResolvedToolsResult.from_dict(raw)
+
     async def force_cancel_member(self, member_id: str) -> None:
         """Force-cancel a running member immediately."""
         await self._runtime._rpc("mobkit/force_cancel_member", {"member_id": member_id})

@@ -1356,6 +1356,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/cross_mob/unwire_local",
                 "mobkit/peer_pubkey",
                 "mobkit/member_status",
+                "mobkit/identity/resolved_tools",
                 "mobkit/force_cancel_member",
                 "mobkit/spawn_helper",
                 "mobkit/fork_helper",
@@ -2316,7 +2317,13 @@ async fn handle_unified_rpc_json_inner(
             .await
         }
         "mobkit/find_members" => {
-            mob_methods::handle_find_members(runtime, response_id, &request.params).await
+            mob_methods::handle_find_members(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
         }
         "mobkit/ensure_member" => {
             Box::pin(mob_methods::handle_ensure_member(
@@ -2326,16 +2333,36 @@ async fn handle_unified_rpc_json_inner(
             ))
             .await
         }
-        "mobkit/list_members" => mob_methods::handle_list_members(runtime, response_id).await,
+        "mobkit/list_members" => {
+            mob_methods::handle_list_members(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+            )
+            .await
+        }
         "mobkit/get_member" => {
-            mob_methods::handle_get_member(runtime, response_id, &request.params).await
+            mob_methods::handle_get_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
         }
         "mobkit/retire_member" => {
-            mob_methods::handle_retire_member(runtime, response_id, &request.params).await
+            mob_methods::handle_retire_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
         }
         "mobkit/respawn_member" => {
             Box::pin(mob_methods::handle_respawn_member(
                 runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
                 response_id,
                 &request.params,
             ))
@@ -2382,10 +2409,31 @@ async fn handle_unified_rpc_json_inner(
         }
         "mobkit/peer_pubkey" => mob_methods::handle_peer_pubkey(runtime, response_id).await,
         "mobkit/member_status" => {
-            mob_methods::handle_member_status(runtime, response_id, &request.params).await
+            mob_methods::handle_member_status(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
+        }
+        "mobkit/identity/resolved_tools" => {
+            mob_methods::handle_identity_resolved_tools(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
         }
         "mobkit/force_cancel_member" => {
-            mob_methods::handle_force_cancel_member(runtime, response_id, &request.params).await
+            mob_methods::handle_force_cancel_member(
+                runtime,
+                identity_ctx.map(|ctx| &ctx.runtime),
+                response_id,
+                &request.params,
+            )
+            .await
         }
         "mobkit/spawn_helper" => {
             Box::pin(mob_methods::handle_spawn_helper(
@@ -3252,22 +3300,12 @@ async fn handle_unified_rpc_json_inner(
             );
             match identity_rt.reset(&identity).await {
                 Ok(record) => {
-                    let cleanup_warning = if let Err(err) = retire_stale_rpc_members_for_identity(
-                        runtime,
-                        identity.as_str(),
-                        Some(record.agent_runtime_id.as_str()),
-                    )
-                    .await
-                    {
-                        Some(serde_json::json!({
-                            "kind": "stale_member_cleanup_failed_after_identity_reset",
-                            "message": err,
-                            "identity": identity.as_str(),
-                            "agent_runtime_id": record.agent_runtime_id.as_str(),
-                        }))
-                    } else {
-                        None
-                    };
+                    let cleanup_warning = Some(serde_json::json!({
+                        "kind": "stale_member_cleanup_skipped_after_identity_reset",
+                        "message": "reset published the new generation without retiring stale live mob members; identity control calls reject stale runtime ids",
+                        "identity": identity.as_str(),
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                    }));
                     runtime
                         .record_console_lifecycle(
                             identity.as_str(),
@@ -3948,6 +3986,14 @@ async fn resolve_rpc_identity_control_target(
         }
         let live = resolve_rpc_live_identity_alias(runtime, requested_identity).await?;
         if let Some(live_alias) = live {
+            if let Ok(status) = identity_rt.status(&live_alias.identity).await
+                && !rpc_live_alias_matches_status_runtime(Some(&live_alias), &status)
+            {
+                return Ok(RpcIdentityControlTarget {
+                    identity: live_alias.identity.clone(),
+                    live: Some(live_alias),
+                });
+            }
             let live_identity_candidates =
                 resolve_rpc_live_identity_alias_candidates(runtime, live_alias.identity.as_str())
                     .await?;
@@ -6038,6 +6084,45 @@ shell = true
                 .as_ref()
                 .map(|alias| alias.runtime_member_id.as_str()),
             Some("rt:review:singleton:1")
+        );
+
+        let stale_target =
+            resolve_rpc_identity_control_target(&runtime, &identity_rt, "rt:review:singleton:0")
+                .await?;
+        assert_eq!(
+            stale_target
+                .live
+                .as_ref()
+                .map(|alias| alias.runtime_member_id.as_str()),
+            Some("rt:review:singleton:0")
+        );
+        let stale_response =
+            super::rpc_stale_live_alias_error_response(&identity_rt, &stale_target, json!(99))
+                .await
+                .expect("old reset generation should be rejected as stale");
+        assert_eq!(
+            stale_response
+                .error
+                .as_ref()
+                .and_then(|error| error.data.as_ref())
+                .and_then(|data| data.get("kind")),
+            Some(&json!("stale_identity_runtime_binding"))
+        );
+        assert_eq!(
+            stale_response
+                .error
+                .as_ref()
+                .and_then(|error| error.data.as_ref())
+                .and_then(|data| data.get("registered_runtime_member_id")),
+            Some(&json!("rt:review:singleton:1"))
+        );
+        assert_eq!(
+            stale_response
+                .error
+                .as_ref()
+                .and_then(|error| error.data.as_ref())
+                .and_then(|data| data.get("live_runtime_member_id")),
+            Some(&json!("rt:review:singleton:0"))
         );
 
         Ok(())
