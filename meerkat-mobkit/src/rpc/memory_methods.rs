@@ -33,6 +33,7 @@ pub(crate) enum MemoryParamsError {
     ConflictReasonMustBeString,
     EntityMustBeString,
     TopicMustBeString,
+    QueryMustBeString,
     IdentityRequired,
     RealmMustBeString,
     MemoryIdRequired,
@@ -56,13 +57,13 @@ pub(crate) enum MemoryParamsError {
 }
 
 impl MemoryParamsError {
-    pub(super) fn backend_message(error: &ElephantMemoryStoreError) -> String {
+    pub(super) fn backend_message(error: &LocalJsonMemoryStoreError) -> String {
         match error {
-            ElephantMemoryStoreError::InvalidConfig(reason)
-            | ElephantMemoryStoreError::Io(reason)
-            | ElephantMemoryStoreError::Serialize(reason)
-            | ElephantMemoryStoreError::InvalidStoreData(reason)
-            | ElephantMemoryStoreError::ExternalCallFailed(reason) => reason.clone(),
+            LocalJsonMemoryStoreError::InvalidConfig(reason)
+            | LocalJsonMemoryStoreError::Io(reason)
+            | LocalJsonMemoryStoreError::Serialize(reason)
+            | LocalJsonMemoryStoreError::InvalidStoreData(reason)
+            | LocalJsonMemoryStoreError::ExternalCallFailed(reason) => reason.clone(),
         }
     }
 
@@ -91,6 +92,7 @@ impl MemoryParamsError {
             }
             MemoryParamsError::EntityMustBeString => "entity filter must be a string".to_string(),
             MemoryParamsError::TopicMustBeString => "topic filter must be a string".to_string(),
+            MemoryParamsError::QueryMustBeString => "query filter must be a string".to_string(),
             MemoryParamsError::IdentityRequired => {
                 "identity must be a valid non-empty string".to_string()
             }
@@ -476,6 +478,7 @@ pub(super) fn parse_memory_query_params(
             entity: None,
             topic: None,
             store: None,
+            query: None,
         });
     }
     let object = params
@@ -503,10 +506,20 @@ pub(super) fn parse_memory_query_params(
         None => None,
         Some(value) => Some(parse_memory_store_field(value)?),
     };
+    let query = match object.get("query") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or(MemoryParamsError::QueryMustBeString)?
+                .to_string(),
+        ),
+    };
     Ok(MemoryQueryRequest {
         entity,
         topic,
         store,
+        query,
     })
 }
 
@@ -556,6 +569,27 @@ mod tests {
 
         assert_eq!(parsed.request.selection, AgentMemorySelection::Always);
         Ok(())
+    }
+
+    #[test]
+    fn memory_query_params_accept_legacy_query_string() -> Result<(), Box<dyn Error>> {
+        let parsed = parse_memory_query_params(&json!({
+            "query": "recipient consent",
+            "store": "todo"
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+
+        assert_eq!(parsed.query, Some("recipient consent".to_string()));
+        assert_eq!(parsed.store, Some("todo".to_string()));
+        assert_eq!(parsed.entity, None);
+        assert_eq!(parsed.topic, None);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_query_params_reject_non_string_query() {
+        let err = parse_memory_query_params(&json!({ "query": 42 })).err();
+        assert_eq!(err, Some(MemoryParamsError::QueryMustBeString));
     }
 
     #[test]

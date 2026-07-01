@@ -6,7 +6,7 @@
  * import { auth, memory, sessionStore } from "@rkat/mobkit-sdk";
  *
  * const authConfig = auth.google("my-client-id");
- * const memConfig = memory.elephant("http://elephant:8080");
+ * const memConfig = memory.localJson();
  * const storeConfig = sessionStore.json("./sessions.json");
  * ```
  */

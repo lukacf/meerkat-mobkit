@@ -737,9 +737,10 @@ class MobHandle:
     ) -> MemoryQueryResult:
         """Query the assertion ledger by entity/topic/store filters.
 
-        Passing a string preserves the legacy wire shape by sending it as
-        ``query``; the stock runtime filters by ``entity``, ``topic``, and
-        ``store``.
+        Passing a string sends it as ``query``; the stock runtime applies it
+        as a case-insensitive substring filter across entity, topic, and fact
+        (reason for conflict signals), after the exact ``entity``/``topic``/
+        ``store`` filters.
         """
         if isinstance(query, dict):
             params = {**query, **kwargs}

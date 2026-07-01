@@ -28,8 +28,8 @@ use meerkat_mobkit::identity_first::orchestrator::{
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
-    AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId, BridgeError,
-    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    AgentMemoryPerTurnInjection, AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId,
+    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
     ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
     DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
@@ -3883,6 +3883,9 @@ async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_mate
             memory_store,
             AgentMemoryConfig {
                 selection: AgentMemorySelection::Always,
+                // Budgeted keeps this test meaningful: with injection enabled,
+                // the steer path specifically must still skip it.
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         )))

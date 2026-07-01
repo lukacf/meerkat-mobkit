@@ -649,11 +649,23 @@ describe("parseMemoryIndexResult", () => {
       topic: "preferences",
       store: "long_term",
       assertion_id: "a-1",
+      conflict_active: false,
     });
     assert.equal(result.entity, "user-1");
     assert.equal(result.topic, "preferences");
     assert.equal(result.store, "long_term");
     assert.equal(result.assertionId, "a-1");
+    assert.equal(result.conflictActive, false);
+  });
+
+  it("parses conflict_active true", () => {
+    const result = parseMemoryIndexResult({
+      entity: "e",
+      topic: "t",
+      store: "s",
+      conflict_active: true,
+    });
+    assert.equal(result.conflictActive, true);
   });
 
   it("nullable assertionId defaults to null", () => {
@@ -671,6 +683,7 @@ describe("parseMemoryIndexResult", () => {
     assert.equal(result.topic, "");
     assert.equal(result.store, "");
     assert.equal(result.assertionId, null);
+    assert.equal(result.conflictActive, false);
   });
 });
 

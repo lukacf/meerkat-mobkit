@@ -365,7 +365,7 @@ impl std::error::Error for BaselineRuntimeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MobkitRuntimeError {
     Config(ConfigResolutionError),
-    MemoryBackend(ElephantMemoryStoreError),
+    MemoryBackend(LocalJsonMemoryStoreError),
 }
 
 impl std::fmt::Display for MobkitRuntimeError {
@@ -437,7 +437,7 @@ pub struct TrustedOidcRuntimeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ElephantMemoryStoreError {
+pub enum LocalJsonMemoryStoreError {
     InvalidConfig(String),
     Io(String),
     Serialize(String),
@@ -445,7 +445,7 @@ pub enum ElephantMemoryStoreError {
     ExternalCallFailed(String),
 }
 
-impl std::fmt::Display for ElephantMemoryStoreError {
+impl std::fmt::Display for LocalJsonMemoryStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
@@ -457,23 +457,54 @@ impl std::fmt::Display for ElephantMemoryStoreError {
     }
 }
 
-impl std::error::Error for ElephantMemoryStoreError {}
+impl std::error::Error for LocalJsonMemoryStoreError {}
 
+/// Deprecated: kept as an alias for the pre-rename error type. The backend
+/// never sent data to Elephant, so the type is now named for what it does.
+pub type ElephantMemoryStoreError = LocalJsonMemoryStoreError;
+
+/// Operational-ledger backend that persists assertions/conflicts as local
+/// JSON, with an optional HTTP health gate applied before every read/write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalJsonMemoryBackendConfig {
+    pub state_path: String,
+    #[serde(default)]
+    pub health_check_endpoint: Option<String>,
+}
+
+/// Deprecated legacy config shape. Despite the name, this backend never
+/// wrote to Elephant: `endpoint` is only health-checked and the ledger is
+/// persisted as local JSON at `state_path`. Use
+/// [`LocalJsonMemoryBackendConfig`]; this shape is still accepted for wire
+/// and config compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElephantMemoryBackendConfig {
     pub endpoint: String,
     pub state_path: String,
 }
 
+impl From<ElephantMemoryBackendConfig> for LocalJsonMemoryBackendConfig {
+    fn from(legacy: ElephantMemoryBackendConfig) -> Self {
+        Self {
+            state_path: legacy.state_path,
+            health_check_endpoint: Some(legacy.endpoint),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryBackendConfig {
+    LocalJson(LocalJsonMemoryBackendConfig),
+    /// Deprecated: legacy `kind = "elephant"` shape. Accepted and mapped to
+    /// the local-JSON backend (endpoint becomes the health-check endpoint);
+    /// a deprecation warning is logged at runtime start.
     Elephant(ElephantMemoryBackendConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ElephantMemoryStoreAdapter {
-    endpoint: String,
+struct LocalJsonMemoryStoreAdapter {
+    health_check_endpoint: Option<String>,
     state_path: PathBuf,
 }
 
@@ -773,6 +804,10 @@ pub struct MemoryQueryRequest {
     pub topic: Option<String>,
     #[serde(default)]
     pub store: Option<String>,
+    /// Case-insensitive substring filter applied across entity, topic, and
+    /// fact (reason for conflict signals), after the exact filters above.
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,7 +830,7 @@ pub enum MemoryIndexError {
     TopicRequired,
     UnsupportedStore(String),
     FactRequiredWhenConflictUnset,
-    BackendPersistFailed(ElephantMemoryStoreError),
+    BackendPersistFailed(LocalJsonMemoryStoreError),
 }
 
 impl std::fmt::Display for MemoryIndexError {
@@ -1030,7 +1065,7 @@ pub struct MobkitRuntimeHandle {
     memory_sequence: u64,
     memory_assertions: Vec<MemoryAssertion>,
     memory_conflicts: BTreeMap<MemoryConflictKey, MemoryConflictSignal>,
-    memory_backend: Option<ElephantMemoryStoreAdapter>,
+    memory_backend: Option<LocalJsonMemoryStoreAdapter>,
     running: bool,
 }
 
@@ -1424,7 +1459,7 @@ const MEMORY_SUPPORTED_STORES: [&str; 5] = [
     "todo",
     "top_of_mind",
 ];
-const ELEPHANT_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const MEMORY_LEDGER_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
 // Multi-year bounded lookback so sparse valid cron schedules (for example leap-day)
 // are not silently skipped when polling cadence is coarse.
 const CRON_LOOKBACK_MINUTES: u64 = 5_270_400;

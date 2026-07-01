@@ -85,10 +85,23 @@ pub fn start_mobkit_runtime_with_options(
     });
 
     let memory_backend = match options.memory_backend.as_ref() {
-        Some(MemoryBackendConfig::Elephant(config)) => Some(
-            ElephantMemoryStoreAdapter::from_config(config)
+        Some(MemoryBackendConfig::LocalJson(config)) => Some(
+            LocalJsonMemoryStoreAdapter::from_config(config)
                 .map_err(MobkitRuntimeError::MemoryBackend)?,
         ),
+        Some(MemoryBackendConfig::Elephant(legacy)) => {
+            tracing::warn!(
+                "memory backend kind 'elephant' is deprecated: it only health-checks the \
+                 endpoint and persists the ledger as local JSON; use kind 'local_json' with \
+                 an optional health_check_endpoint"
+            );
+            Some(
+                LocalJsonMemoryStoreAdapter::from_config(&LocalJsonMemoryBackendConfig::from(
+                    legacy.clone(),
+                ))
+                .map_err(MobkitRuntimeError::MemoryBackend)?,
+            )
+        }
         None => None,
     };
     let persisted_memory = match memory_backend.as_ref() {

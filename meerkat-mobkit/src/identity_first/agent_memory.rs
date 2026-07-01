@@ -36,6 +36,16 @@ const MAX_MARKDOWN_MEMORY_RECORDS: usize = 512;
 const MAX_MARKDOWN_MEMORY_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INJECTED_TITLE_BYTES: usize = 160;
 const MAX_INJECTED_BODY_BYTES: usize = 2_048;
+// Injection budget ladder (docs/design/agent-memory-architecture.md §9.1):
+// per-record rendered cap, per-assembly aggregate cap, cumulative per-session
+// cap. All measured on RENDERED bytes (post-escaping), because XML escaping can
+// expand a body well past MAX_INJECTED_BODY_BYTES.
+const MAX_RENDERED_INJECTION_RECORD_BYTES: usize = 4 * 1024;
+const MAX_INJECTED_ASSEMBLY_BYTES: usize = 20 * 1024;
+const MAX_INJECTED_SESSION_BYTES: usize = 60 * 1024;
+// Below this remaining budget an injection is header-only noise; skip instead.
+const MIN_INJECTION_BUDGET_BYTES: usize = 512;
+const MAX_TRACKED_INJECTION_SESSIONS: usize = 1024;
 const METADATA_PREFIX: &str = "<!-- mobkit-agent-memory ";
 const METADATA_SUFFIX: &str = " -->";
 const RECORD_END: &str = "<!-- /mobkit-agent-memory -->";
@@ -56,6 +66,22 @@ pub enum AgentMemoryRecallFailurePolicy {
     Skip,
 }
 
+/// Ambient per-turn memory injection mode.
+///
+/// `Off` is the default: per-turn injection prepends memory into the delivered
+/// user message, which persists in the transcript and is re-indexed into
+/// meerkat's session semantic memory at compaction (the D1 echo loop). Until an
+/// indexing-excluded delivery class exists, the echo-safe surfaces — build-time
+/// instructions and explicit recall tool results — are the defaults, and
+/// ambient push is an explicit opt-in bounded by the injection budget ladder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMemoryPerTurnInjection {
+    #[default]
+    Off,
+    Budgeted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMemoryConfig {
     #[serde(default = "default_realm")]
@@ -70,6 +96,8 @@ pub struct AgentMemoryConfig {
     pub recall_failure_policy: AgentMemoryRecallFailurePolicy,
     #[serde(default)]
     pub instruction_header: Option<String>,
+    #[serde(default)]
+    pub per_turn_injection: AgentMemoryPerTurnInjection,
 }
 
 impl Default for AgentMemoryConfig {
@@ -81,6 +109,7 @@ impl Default for AgentMemoryConfig {
             recall_timeout_ms: DEFAULT_RECALL_TIMEOUT_MS,
             recall_failure_policy: AgentMemoryRecallFailurePolicy::Skip,
             instruction_header: None,
+            per_turn_injection: AgentMemoryPerTurnInjection::Off,
         }
     }
 }
@@ -364,10 +393,22 @@ pub struct AgentMemoryCustomizer {
     config: AgentMemoryConfig,
 }
 
+#[derive(Default)]
+struct SessionInjectionState {
+    injected_ids: std::collections::HashSet<String>,
+    injected_bytes: usize,
+}
+
 #[derive(Clone)]
 pub struct AgentMemoryRuntimeInjector {
     provider: Arc<dyn AgentMemoryProvider>,
     config: AgentMemoryConfig,
+    // Cross-turn injection accounting keyed by delivered session id, shared
+    // across injector clones on purpose (budgets are per session, not per
+    // clone). When the map outgrows MAX_TRACKED_INJECTION_SESSIONS it is
+    // cleared wholesale: session rotation orphans keys, and after a clear the
+    // worst case is one re-injection per live session, not unbounded growth.
+    session_state: Arc<std::sync::Mutex<std::collections::HashMap<String, SessionInjectionState>>>,
 }
 
 impl AgentMemoryRuntimeInjector {
@@ -375,6 +416,7 @@ impl AgentMemoryRuntimeInjector {
         Self {
             provider,
             config: normalize_config(config),
+            session_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -386,16 +428,42 @@ impl AgentMemoryRuntimeInjector {
         self.config.clone()
     }
 
+    /// Ambient per-turn injection. `session_key` scopes the cross-turn dedup
+    /// and cumulative byte budget; without it only the per-assembly cap holds.
     pub async fn inject_for_turn(
         &self,
         identity: &AgentIdentity,
+        session_key: Option<&str>,
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::ContentInput, AgentMemoryError> {
+        if self.config.per_turn_injection == AgentMemoryPerTurnInjection::Off {
+            return Ok(content.clone());
+        }
         let query_text = compact_whitespace(&content.text_content());
         let query_terms = terms_from_value(&query_text)
             .into_iter()
             .collect::<Vec<_>>();
         if self.config.selection == AgentMemorySelection::Contextual && query_text.is_empty() {
+            return Ok(content.clone());
+        }
+        let (skip_ids, budget) = match session_key {
+            Some(key) => {
+                let guard = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                let state = guard.get(key);
+                let used = state.map(|s| s.injected_bytes).unwrap_or(0);
+                let skip = state.map(|s| s.injected_ids.clone()).unwrap_or_default();
+                (
+                    Some(skip),
+                    MAX_INJECTED_ASSEMBLY_BYTES
+                        .min(MAX_INJECTED_SESSION_BYTES.saturating_sub(used)),
+                )
+            }
+            None => (None, MAX_INJECTED_ASSEMBLY_BYTES),
+        };
+        if budget < MIN_INJECTION_BUDGET_BYTES {
             return Ok(content.clone());
         }
         let records = recall_for_injection(
@@ -414,10 +482,26 @@ impl AgentMemoryRuntimeInjector {
         if records.is_empty() {
             return Ok(content.clone());
         }
-        Ok(prepend_memory_injection(
-            content,
-            format_memory_injection(&self.config, identity, &records),
-        ))
+        let Some(rendered) =
+            render_memory_injection(&self.config, identity, &records, skip_ids.as_ref(), budget)
+        else {
+            return Ok(content.clone());
+        };
+        if let Some(key) = session_key {
+            let mut guard = self
+                .session_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if !guard.contains_key(key) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
+                guard.clear();
+            }
+            let state = guard.entry(key.to_string()).or_default();
+            state.injected_bytes = state.injected_bytes.saturating_add(rendered.rendered_bytes);
+            state
+                .injected_ids
+                .extend(rendered.included_ids.iter().cloned());
+        }
+        Ok(prepend_memory_injection(content, rendered.text))
     }
 }
 
@@ -471,11 +555,10 @@ impl AgentCustomizer for AgentMemoryCustomizer {
         .map_err(|err| CustomizerError::Io(err.to_string()))?;
 
         if !records.is_empty() {
-            draft.additional_instructions.push(format_memory_injection(
-                &self.config,
-                &context.identity,
-                &records,
-            ));
+            let injection = format_memory_injection(&self.config, &context.identity, &records);
+            if !injection.is_empty() {
+                draft.additional_instructions.push(injection);
+            }
         }
         Ok(())
     }
@@ -781,11 +864,19 @@ fn flush_record(
     });
 }
 
-fn format_memory_injection(
+struct RenderedInjection {
+    text: String,
+    included_ids: Vec<String>,
+    rendered_bytes: usize,
+}
+
+fn render_memory_injection(
     config: &AgentMemoryConfig,
     identity: &AgentIdentity,
     records: &[AgentMemoryRecord],
-) -> String {
+    skip_ids: Option<&std::collections::HashSet<String>>,
+    budget: usize,
+) -> Option<RenderedInjection> {
     let header = config
         .instruction_header
         .as_deref()
@@ -795,19 +886,55 @@ fn format_memory_injection(
         identity.as_str(),
         config.realm
     );
-    for (idx, record) in records.iter().enumerate() {
+    let mut included_ids = Vec::new();
+    for record in records {
+        if skip_ids.is_some_and(|skip| skip.contains(&record.memory_id)) {
+            continue;
+        }
         let title =
             truncate_utf8_boundary(&compact_whitespace(&record.title), MAX_INJECTED_TITLE_BYTES);
         let body =
             truncate_utf8_boundary(&compact_whitespace(&record.body), MAX_INJECTED_BODY_BYTES);
-        out.push_str(&format!(
+        let mut escaped_body = escape_xml_text(&body);
+        // The per-record cap is on rendered bytes: escaping can expand well
+        // past MAX_INJECTED_BODY_BYTES (a body of `<` grows ~4x). Cutting an
+        // entity mid-way is harmless — this block is quoted model-facing text,
+        // not parsed XML.
+        if escaped_body.len() > MAX_RENDERED_INJECTION_RECORD_BYTES {
+            escaped_body =
+                truncate_utf8_boundary(&escaped_body, MAX_RENDERED_INJECTION_RECORD_BYTES);
+        }
+        let block = format!(
             "\n<mobkit_memory_observation index=\"{}\" title=\"{}\">{}</mobkit_memory_observation>",
-            idx + 1,
+            included_ids.len() + 1,
             escape_attr(&title),
-            escape_xml_text(&body)
-        ));
+            escaped_body
+        );
+        if out.len() + block.len() > budget {
+            break;
+        }
+        out.push_str(&block);
+        included_ids.push(record.memory_id.clone());
     }
-    out
+    if included_ids.is_empty() {
+        return None;
+    }
+    let rendered_bytes = out.len();
+    Some(RenderedInjection {
+        text: out,
+        included_ids,
+        rendered_bytes,
+    })
+}
+
+fn format_memory_injection(
+    config: &AgentMemoryConfig,
+    identity: &AgentIdentity,
+    records: &[AgentMemoryRecord],
+) -> String {
+    render_memory_injection(config, identity, records, None, MAX_INJECTED_ASSEMBLY_BYTES)
+        .map(|rendered| rendered.text)
+        .unwrap_or_default()
 }
 
 fn build_query_terms(context: &AgentBuildContext, spec: &DurableAgentSpec) -> Vec<String> {
@@ -1674,6 +1801,7 @@ mod tests {
             store,
             AgentMemoryConfig {
                 selection: AgentMemorySelection::Contextual,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
@@ -1815,6 +1943,30 @@ mod tests {
         }
     }
 
+    struct RotatingProvider {
+        batch: AtomicU64,
+    }
+
+    #[async_trait]
+    impl AgentMemoryProvider for RotatingProvider {
+        async fn recall(
+            &self,
+            request: AgentMemoryRecallRequest,
+        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+            let batch = self.batch.fetch_add(1, Ordering::SeqCst);
+            Ok((0..request.max_entries as u64)
+                .map(|i| AgentMemoryRecord {
+                    memory_id: format!("mem-{batch}-{i}"),
+                    title: format!("Fact {batch}-{i}"),
+                    body: "B".repeat(MAX_INJECTED_BODY_BYTES),
+                    tags: Vec::new(),
+                    created_at_ms: 1,
+                    updated_at_ms: 1,
+                })
+                .collect())
+        }
+    }
+
     struct SecretAddingCustomizer {
         after_create_called: AtomicBool,
     }
@@ -1873,6 +2025,7 @@ mod tests {
             provider.clone(),
             AgentMemoryConfig {
                 selection: AgentMemorySelection::Contextual,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
@@ -1958,12 +2111,15 @@ mod tests {
             provider.clone(),
             AgentMemoryConfig {
                 selection: AgentMemorySelection::Contextual,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
         let content = meerkat_core::ContentInput::Text("Where did I put my passport?".to_string());
 
-        let injected = injector.inject_for_turn(&identity()?, &content).await?;
+        let injected = injector
+            .inject_for_turn(&identity()?, None, &content)
+            .await?;
 
         let request = {
             let guard = provider
@@ -1992,11 +2148,16 @@ mod tests {
     async fn runtime_injector_skips_recall_failures_by_default() -> Result<(), Box<dyn Error>> {
         let injector = AgentMemoryRuntimeInjector::new(
             Arc::new(FailingProvider),
-            AgentMemoryConfig::default(),
+            AgentMemoryConfig {
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
         );
         let content = meerkat_core::ContentInput::Text("hello".to_string());
 
-        let injected = injector.inject_for_turn(&identity()?, &content).await?;
+        let injected = injector
+            .inject_for_turn(&identity()?, None, &content)
+            .await?;
 
         assert_eq!(injected.text_content(), "hello");
         Ok(())
@@ -2008,12 +2169,13 @@ mod tests {
             Arc::new(FailingProvider),
             AgentMemoryConfig {
                 recall_failure_policy: AgentMemoryRecallFailurePolicy::Fail,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
         let content = meerkat_core::ContentInput::Text("hello".to_string());
 
-        let err = match injector.inject_for_turn(&identity()?, &content).await {
+        let err = match injector.inject_for_turn(&identity()?, None, &content).await {
             Ok(_) => return Err("fail policy should return provider error".into()),
             Err(err) => err,
         };
@@ -2028,12 +2190,15 @@ mod tests {
             Arc::new(SlowProvider),
             AgentMemoryConfig {
                 recall_timeout_ms: 1,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
         let content = meerkat_core::ContentInput::Text("hello".to_string());
 
-        let injected = injector.inject_for_turn(&identity()?, &content).await?;
+        let injected = injector
+            .inject_for_turn(&identity()?, None, &content)
+            .await?;
 
         assert_eq!(injected.text_content(), "hello");
         Ok(())
@@ -2064,6 +2229,7 @@ mod tests {
             AgentMemoryConfig {
                 selection: AgentMemorySelection::Always,
                 recall_timeout_ms: 25,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
                 ..AgentMemoryConfig::default()
             },
         );
@@ -2071,7 +2237,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             Duration::from_millis(500),
-            injector.inject_for_turn(&id, &content),
+            injector.inject_for_turn(&id, None, &content),
         )
         .await;
         locked.unlock()?;
@@ -2102,6 +2268,149 @@ mod tests {
 
         assert!(injected.contains("[truncated]"));
         assert!(injected.len() < MAX_INJECTED_TITLE_BYTES + MAX_INJECTED_BODY_BYTES + 512);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn per_turn_injection_defaults_off() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(CapturingProvider {
+            request: Mutex::new(None),
+            records: vec![AgentMemoryRecord {
+                memory_id: "mem-1".to_string(),
+                title: "Fact".to_string(),
+                body: "Body".to_string(),
+                tags: Vec::new(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            }],
+        });
+        let injector =
+            AgentMemoryRuntimeInjector::new(provider.clone(), AgentMemoryConfig::default());
+        let content = meerkat_core::ContentInput::Text("where is the fact?".to_string());
+
+        let injected = injector
+            .inject_for_turn(&identity()?, Some("session-1"), &content)
+            .await?;
+
+        assert_eq!(injected.text_content(), content.text_content());
+        let captured = provider
+            .request
+            .lock()
+            .map_err(|err| format!("capture mutex poisoned: {err}"))?
+            .clone();
+        assert!(captured.is_none(), "off mode must not recall at all");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn budgeted_injection_dedups_within_session() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(CapturingProvider {
+            request: Mutex::new(None),
+            records: vec![AgentMemoryRecord {
+                memory_id: "mem-stable".to_string(),
+                title: "Stable fact".to_string(),
+                body: "The same record every turn.".to_string(),
+                tags: Vec::new(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            }],
+        });
+        let injector = AgentMemoryRuntimeInjector::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let first = injector
+            .inject_for_turn(&identity()?, Some("session-a"), &content)
+            .await?;
+        assert!(first.text_content().contains("Stable fact"));
+
+        let second = injector
+            .inject_for_turn(&identity()?, Some("session-a"), &content)
+            .await?;
+        assert_eq!(
+            second.text_content(),
+            "hello",
+            "already-injected record must not re-inject in the same session"
+        );
+
+        let other_session = injector
+            .inject_for_turn(&identity()?, Some("session-b"), &content)
+            .await?;
+        assert!(other_session.text_content().contains("Stable fact"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn budgeted_injection_enforces_assembly_budget() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(RotatingProvider {
+            batch: AtomicU64::new(0),
+        });
+        let injector = AgentMemoryRuntimeInjector::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                max_entries: 12,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = injector
+            .inject_for_turn(&identity()?, None, &content)
+            .await?;
+        let text = injected.text_content();
+        let blocks = text.matches("<mobkit_memory_observation ").count();
+        assert!(blocks > 0, "budget should admit at least one record");
+        assert!(
+            blocks < 12,
+            "assembly budget must exclude some of 12 x 2KB records (got {blocks})"
+        );
+        let overhead = text.len() - content.text_content().len();
+        assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn budgeted_injection_exhausts_session_budget() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(RotatingProvider {
+            batch: AtomicU64::new(0),
+        });
+        let injector = AgentMemoryRuntimeInjector::new(
+            provider,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                max_entries: 12,
+                per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let mut saw_passthrough_at = None;
+        for turn in 0..8 {
+            let injected = injector
+                .inject_for_turn(&identity()?, Some("session-x"), &content)
+                .await?;
+            let overhead = injected.text_content().len() - content.text_content().len();
+            assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
+            if overhead == 0 {
+                saw_passthrough_at = Some(turn);
+                break;
+            }
+        }
+        let exhausted = saw_passthrough_at
+            .ok_or("session budget should exhaust within 8 turns of ~20KB injections")?;
+        assert!(
+            exhausted >= 3,
+            "should sustain at least 3 full assemblies before exhaustion (got {exhausted})"
+        );
         Ok(())
     }
 }

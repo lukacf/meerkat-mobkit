@@ -1,0 +1,14 @@
+# Allowlist for scripts/check-memory-bright-line (the §12 memory bright-line
+# ratchet — see docs/design/agent-memory-architecture.md §12).
+#
+# Entry formats (one per line, justification comment REQUIRED on the line):
+#
+#   <crate-name>                       # why this dependency is not retrieval-index/embedding machinery
+#   src:<repo-relative-path>:<pattern-name>  # why this source hit is a false positive
+#
+# Pattern names: fts, virtual-table, sql-match, embedding, vector_
+#
+# Keep this file empty unless a hit is a genuine false positive. Adding an
+# entry to smuggle in actual retrieval-index or embedding machinery defeats
+# the ratchet — that work belongs in the memory hub
+# (docs/design/memory-hub-roadmap.md).

@@ -2412,28 +2412,30 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
-        let runtime_id = {
+        let (runtime_id, memory_session_key) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            entry
-                .continuity
-                .as_ref()
-                .map(|c| c.agent_runtime_id.clone())
+            (
+                entry
+                    .continuity
+                    .as_ref()
+                    .map(|c| c.agent_runtime_id.clone()),
+                // Scopes the injector's cross-turn dedup + cumulative budget.
+                entry.continuity.as_ref().map(|c| c.session_id.to_string()),
+            )
         };
         let content_to_deliver = if handling_mode == HandlingMode::Steer {
             content.clone()
         } else {
             match self.agent_memory.read().await.clone() {
-                Some(injector) => {
-                    injector
-                        .inject_for_turn(identity, content)
-                        .await
-                        .map_err(|err| {
-                            IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                        })?
-                }
+                Some(injector) => injector
+                    .inject_for_turn(identity, memory_session_key.as_deref(), content)
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
+                    })?,
                 None => content.clone(),
             }
         };

@@ -210,7 +210,7 @@ export class MobKitBuilder {
   memory(config?: unknown, options?: { stores?: string[] }): this {
     if (config === undefined && options?.stores !== undefined) {
       throw new Error(
-        "memory(stores=...) is not supported by the Rust gateway; pass memory.elephant(endpoint)",
+        "memory(stores=...) is not supported by the Rust gateway; pass memory.localJson()",
       );
     }
     this._config.memoryConfig = config ?? null;

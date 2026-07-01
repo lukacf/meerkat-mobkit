@@ -500,6 +500,7 @@ export interface MemoryIndexResult {
   readonly topic: string;
   readonly store: string;
   readonly assertionId: string | null;
+  readonly conflictActive: boolean;
 }
 
 export function parseMemoryIndexResult(raw: unknown): MemoryIndexResult {
@@ -509,6 +510,7 @@ export function parseMemoryIndexResult(raw: unknown): MemoryIndexResult {
     topic: String(d.topic ?? ""),
     store: String(d.store ?? ""),
     assertionId: typeof d.assertion_id === "string" ? d.assertion_id : null,
+    conflictActive: d.conflict_active === true,
   };
 }
 

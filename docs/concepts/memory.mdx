@@ -11,9 +11,10 @@ classes:
   stable `AgentIdentity`, stored by realm, and injected during
   create/resume/materialize and ordinary identity-first turns.
 - `mobkit/memory/*` is an operational assertion and conflict ledger used by
-  routing/gating flows. The current gateway adapter health-checks an Elephant
-  endpoint and persists local JSON state, but query semantics are exact filters
-  over stored assertions.
+  routing/gating flows. It is persisted as a local JSON file under
+  `persistent_state`, optionally gated by an HTTP health check. Query
+  semantics are exact filters over stored assertions plus an optional
+  substring `query` filter.
 
 ## Architecture
 
@@ -23,39 +24,41 @@ explicit `remember` write is available to the next turn without requiring an
 external service or LLM-powered extraction pipeline. This store is the default
 gateway implementation, not the long-term knowledge authority.
 
-Elephant remains the optional deep-memory backend for applications that need a
-knowledge graph, document/vector retrieval, truth maintenance, provenance, and
-ABAC/redaction. Elephant ingestion and entity extraction can be slower because
-they are LLM-powered, so MobKit does not put Elephant enrichment on the
-synchronous turn path. A future custom `AgentMemoryProvider` can write to the
-hot store immediately, enqueue Elephant enrichment in the background, and recall
-from Elephant once data has been indexed.
+Elephant is not integrated today. A real Elephant integration — a deep-memory
+hub with a knowledge graph, document/vector retrieval, truth maintenance,
+provenance, and ABAC/redaction — is the wire-boundary provider described in the
+memory hub roadmap (`docs/design/memory-hub-roadmap.md` in the repository).
+Nothing in the current runtime sends data to Elephant.
 
 Meerkat's session semantic memory is a separate layer again: it indexes
 compacted session content and exposes semantic recall through Meerkat's
 `memory_search` tool. MobKit's `agent_memory` injector can be backed by a
-provider that consults session memory, Elephant, or both, but the MobKit runtime
+provider that consults session memory or other stores, but the MobKit runtime
 does not assume semantic/vector search from `mobkit/memory/*`.
 
-When configured, the Elephant operational-memory adapter connects to a running
-Elephant instance via HTTP. Configuration is provided through
-`ElephantMemoryBackendConfig`:
+The operational ledger backend persists assertions and conflict signals as a
+local JSON file, optionally gated by an HTTP health check before every ledger
+read/write. Configuration is provided through `LocalJsonMemoryBackendConfig`:
 
 ```rust
-ElephantMemoryBackendConfig {
-    endpoint: "http://localhost:3000",
-    state_path: "/var/mobkit/memory",
+LocalJsonMemoryBackendConfig {
+    state_path: "/var/mobkit/state/memory-ledger-state.json",
+    health_check_endpoint: Some("http://localhost:3000"),
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `endpoint` | `String` | Elephant HTTP API base URL |
-| `state_path` | `String` | Local JSON state file used by the Elephant-backed adapter |
+| `state_path` | `String` | Local JSON file the ledger is persisted to |
+| `health_check_endpoint` | `Option<String>` | Optional HTTP base URL; when set, `GET <endpoint>/v1/health` must return 2xx before each ledger read/write |
 
-The `ElephantMemoryStoreAdapter` handles connection health checks, request serialization, and error mapping.
+The legacy `ElephantMemoryBackendConfig` shape (`kind = "elephant"` with an
+`endpoint`) is still accepted for config compatibility and logs a deprecation
+warning: despite its name it never sent data to Elephant — the `endpoint` was
+only ever health-checked and the ledger persisted locally. It maps to the
+local-JSON backend with `endpoint` as the health-check endpoint.
 
-When using the Python or TypeScript SDK through the stock `rpc_gateway`, configure Elephant with `memory.elephant(endpoint)` and enable `.persistent_state(path)`. The gateway derives the adapter state file as `<persistent_state>/elephant-memory-state.json`. Gateway `memory_config` currently supports only `backend: "elephant"` and `endpoint`; fields such as `stores`, `space_id`, and `collection` are rejected at init so unsupported configuration does not become a silent no-op.
+When using the Python or TypeScript SDK through the stock `rpc_gateway`, configure the ledger with `memory.local_json()` (Python) / `memory.localJson()` (TypeScript), optionally passing a health-check endpoint, and enable `.persistent_state(path)`. The gateway derives the state file as `<persistent_state>/memory-ledger-state.json` (an existing legacy `<persistent_state>/elephant-memory-state.json` is adopted automatically so restarts keep their data). The deprecated `memory.elephant(endpoint)` helpers still work and emit the legacy `backend: "elephant"` wire shape; fields such as `stores`, `space_id`, and `collection` are rejected at init so unsupported configuration does not become a silent no-op.
 
 ## Indexing
 
@@ -84,10 +87,11 @@ MemoryQueryRequest {
     entity: Some("identity:ops".to_string()),
     topic: Some("deployment".to_string()),
     store: Some("knowledge_graph".to_string()),
+    query: None,
 }
 ```
 
-The current MobKit runtime filters stored assertions and conflict signals by `entity`, `topic`, and `store`. Semantic/vector search should be supplied by a provider or upstream Meerkat memory surface rather than assumed from this RPC.
+The current MobKit runtime filters stored assertions and conflict signals by `entity`, `topic`, and `store` (exact matches). The optional `query` parameter is applied afterwards as a case-insensitive substring filter across entity, topic, and fact (reason for conflict signals). Semantic/vector search should be supplied by a provider or upstream Meerkat memory surface rather than assumed from this RPC.
 
 ## Agent memory injection
 
@@ -114,42 +118,44 @@ Agent memory is identity-scoped rather than session-scoped. A session respawn or
 
 ## Conflict detection
 
-Elephant's truth maintenance system tracks conflicting assertions. When multiple sources make competing claims about the same fact, MobKit's gating subsystem can check for conflicts before approving an action via the `memory.conflict_read` MCP tool.
+Conflict signals are recorded through `mobkit/memory/index` with
+`conflict: true` and an optional `conflict_reason`. When competing claims exist
+about the same entity/topic, MobKit's gating subsystem checks for an active
+conflict before approving an action.
 
-A `MemoryConflictSignal` indicates:
-- Which assertions conflict
-- The source of each competing claim
-- The current truth slot resolution
+A `MemoryConflictSignal` carries:
+- The `entity`, `topic`, and `store` the conflict is scoped to
+- An optional free-form `reason`
+- The `updated_at_ms` timestamp of the most recent signal
 
-This integrates with [gating](/concepts/gating) to prevent agents from acting on contested information.
+This integrates with [gating](/concepts/gating) to prevent agents from acting on contested information. There is no automatic truth maintenance today; a truth layer is part of the memory hub roadmap.
 
 ## Health checks
 
-The memory adapter performs TCP-level health checks against the Elephant endpoint before dispatching requests. The health check:
+When `health_check_endpoint` is configured, the ledger adapter performs a TCP-level health check against it before every ledger read/write. The health check:
 
 1. Resolves the endpoint hostname
-2. Opens a TCP connection with `ELEPHANT_HEALTHCHECK_TIMEOUT`
+2. Opens a TCP connection with `MEMORY_LEDGER_HEALTHCHECK_TIMEOUT` (2s)
 3. Sends an HTTP GET to `/v1/health`
 4. Verifies a 2xx status response
 
-Failed health checks produce `ElephantMemoryStoreError::ExternalCallFailed` with diagnostic details.
+Failed health checks produce `LocalJsonMemoryStoreError::ExternalCallFailed` with diagnostic details. Without a configured endpoint, no health check is performed.
 
 ## Memory store info
 
-The `MemoryStoreInfo` struct provides introspection into the memory backend:
+`mobkit/memory/stores` returns a `MemoryStoreInfo` entry per supported store:
 
 ```rust
 MemoryStoreInfo {
-    endpoint: "http://localhost:3000",
-    state_path: "/var/mobkit/memory",
-    healthy: true,
+    store: "knowledge_graph",
+    record_count: 42,
 }
 ```
 
-This is available through the RPC API for monitoring and diagnostics.
+`record_count` counts stored assertions plus active conflict signals for the store. This is available through the RPC API for monitoring and diagnostics.
 
 ## See also
 
 - [Gating](/concepts/gating) -- conflict-aware approval gates
-- [Elephant documentation](https://github.com/lukacf/elephant) -- the underlying knowledge system
+- `docs/design/memory-hub-roadmap.md` (in the repository) -- the roadmap for a real Elephant-backed memory hub
 - [RPC API](/api/rpc) -- `memory.*` methods

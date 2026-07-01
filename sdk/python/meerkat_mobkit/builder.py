@@ -136,7 +136,7 @@ class MobKitBuilder:
         if config is None and stores is not None:
             raise ValueError(
                 "memory(stores=...) is not supported by the Rust gateway; "
-                "pass memory.elephant(endpoint)"
+                "pass memory.local_json()"
             )
         self._config.memory_config = config
         return self

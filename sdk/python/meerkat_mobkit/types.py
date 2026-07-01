@@ -851,6 +851,7 @@ class MemoryIndexResult:
     topic: str
     store: str
     assertion_id: str | None
+    conflict_active: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryIndexResult:
@@ -859,6 +860,7 @@ class MemoryIndexResult:
             topic=data["topic"],
             store=data["store"],
             assertion_id=data.get("assertion_id"),
+            conflict_active=data.get("conflict_active", False),
         )
 
 

@@ -1534,9 +1534,9 @@ export class MobHandle {
    * Query the operational memory assertion ledger.
    *
    * Pass `{ entity, topic, store }` for the Rust gateway's exact-filter
-   * contract. The string overload is retained only for older callers and is
-   * forwarded as `query`; current Rust gateways do not perform semantic search
-   * on that field.
+   * contract. The string overload is forwarded as `query`, which the gateway
+   * applies as a case-insensitive substring filter across entity, topic, and
+   * fact (reason for conflict signals), after the exact filters.
    */
   async memoryQuery(
     queryOrOptions?: string | {

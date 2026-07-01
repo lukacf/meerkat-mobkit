@@ -12,7 +12,7 @@ NC     := \033[0m
 # ── meta ──────────────────────────────────────────────────────
 
 .PHONY: all build release test test-python test-flow-editor test-flow-editor-rkat test-flow-editor-rkat-deploy test-all lint fmt fmt-check \
-        audit ci ci-smoke check doc doc-open coverage clean \
+        audit bright-line ci ci-smoke check doc doc-open coverage clean \
         install-hooks uninstall-hooks pre-commit-all update outdated \
         verify-version-parity bump-sdk-versions publish-dry-run-python \
         release-preflight help
@@ -88,10 +88,15 @@ audit: ## Run cargo-deny licence / advisory checks
 	$(CARGO) deny check
 	@echo "$(GREEN)Audit passed.$(NC)"
 
-ci: fmt-check verify-version-parity lint test-all audit ## Full CI pipeline
+bright-line: ## Enforce the memory bright line (agent-memory-architecture.md §12)
+	@echo "$(YELLOW)Checking memory bright line…$(NC)"
+	@scripts/check-memory-bright-line
+	@echo "$(GREEN)Memory bright line holds.$(NC)"
+
+ci: fmt-check verify-version-parity bright-line lint test-all audit ## Full CI pipeline
 	@echo "$(GREEN)CI pipeline passed.$(NC)"
 
-ci-smoke: fmt-check lint test test-python ## Quick smoke test (no audit / version parity)
+ci-smoke: fmt-check bright-line lint test test-python ## Quick smoke test (no audit / version parity)
 	@echo "$(GREEN)CI smoke passed.$(NC)"
 
 # ── misc cargo ────────────────────────────────────────────────

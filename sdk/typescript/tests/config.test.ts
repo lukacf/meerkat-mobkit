@@ -131,7 +131,30 @@ describe("auth.jwtAuthConfigToDict", () => {
 });
 
 // ---------------------------------------------------------------------------
-// memory.elephant()
+// memory.localJson()
+// ---------------------------------------------------------------------------
+
+describe("memory.localJson", () => {
+  it("produces minimal dict without a health endpoint", () => {
+    const config = memory.localJson();
+    assert.equal(config.healthCheckEndpoint, null);
+    assert.deepEqual(config.toDict(), { backend: "local_json" });
+  });
+
+  it("includes health_check_endpoint when provided", () => {
+    const config = memory.localJson({
+      healthCheckEndpoint: "http://localhost:3000",
+    });
+    assert.equal(config.healthCheckEndpoint, "http://localhost:3000");
+    assert.deepEqual(config.toDict(), {
+      backend: "local_json",
+      health_check_endpoint: "http://localhost:3000",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory.elephant() — deprecated alias, keeps the legacy wire shape
 // ---------------------------------------------------------------------------
 
 describe("memory.elephant", () => {

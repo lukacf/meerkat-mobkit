@@ -13,13 +13,13 @@ use crate::mob_handle_runtime::{topology_restore_failed_peer_ids, topology_resto
 use crate::runtime::{
     BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
-    ElephantMemoryStoreError, GatingDecideError, GatingDecideRequest, GatingDecision,
-    GatingEvaluateRequest, GatingRiskTier, MemoryIndexError, MemoryIndexRequest,
-    MemoryQueryRequest, MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest,
-    ROUTING_RETRY_MAX_CAP, RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState,
-    RuntimeRoute, RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError,
-    SessionPersistenceRow, SubscribeError, SubscribeRequest, SubscribeScope,
-    handle_console_rest_json_route, route_module_call, validate_schedules,
+    GatingDecideError, GatingDecideRequest, GatingDecision, GatingEvaluateRequest, GatingRiskTier,
+    LocalJsonMemoryStoreError, MemoryIndexError, MemoryIndexRequest, MemoryQueryRequest,
+    MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest, ROUTING_RETRY_MAX_CAP,
+    RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeRoute,
+    RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError, SessionPersistenceRow,
+    SubscribeError, SubscribeRequest, SubscribeScope, handle_console_rest_json_route,
+    route_module_call, validate_schedules,
 };
 use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 

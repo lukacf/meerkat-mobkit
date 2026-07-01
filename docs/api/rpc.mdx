@@ -240,8 +240,9 @@ Return the gating audit log (most recent entries, bounded by retention limit).
 
 Record an operational memory assertion or conflict signal. This surface is the
 MobKit assertion ledger used by routing/gating flows; it is not semantic/vector
-document search. Elephant may be configured as the backing health-checked
-adapter, but the stock RPC contract stores and filters canonical assertions.
+document search. The ledger persists to local JSON (optionally health-gated by
+an external endpoint); the stock RPC contract stores and filters canonical
+assertions.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |

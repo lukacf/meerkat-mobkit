@@ -1,60 +1,70 @@
-//! Memory subsystem — Elephant-backed store adapter and query execution.
+//! Memory subsystem — local-JSON ledger store adapter and query execution.
 
 use super::*;
 
-impl ElephantMemoryStoreAdapter {
+impl LocalJsonMemoryStoreAdapter {
     pub(super) fn from_config(
-        config: &ElephantMemoryBackendConfig,
-    ) -> Result<Self, ElephantMemoryStoreError> {
-        let endpoint = config.endpoint.trim();
-        if endpoint.is_empty() {
-            return Err(ElephantMemoryStoreError::InvalidConfig(
-                "memory backend endpoint must not be empty".to_string(),
-            ));
-        }
+        config: &LocalJsonMemoryBackendConfig,
+    ) -> Result<Self, LocalJsonMemoryStoreError> {
+        let health_check_endpoint = match config.health_check_endpoint.as_deref() {
+            None => None,
+            Some(raw) => {
+                let endpoint = raw.trim();
+                if endpoint.is_empty() {
+                    return Err(LocalJsonMemoryStoreError::InvalidConfig(
+                        "memory backend health_check_endpoint must not be empty when provided"
+                            .to_string(),
+                    ));
+                }
+                Some(endpoint.to_string())
+            }
+        };
         let state_path = config.state_path.trim();
         if state_path.is_empty() {
-            return Err(ElephantMemoryStoreError::InvalidConfig(
+            return Err(LocalJsonMemoryStoreError::InvalidConfig(
                 "memory backend state_path must not be empty".to_string(),
             ));
         }
         Ok(Self {
-            endpoint: endpoint.to_string(),
+            health_check_endpoint,
             state_path: PathBuf::from(state_path),
         })
     }
 
-    fn ensure_remote_health(&self) -> Result<(), ElephantMemoryStoreError> {
-        let health_url = format!("{}/v1/health", self.endpoint.trim_end_matches('/'));
+    fn ensure_remote_health(&self) -> Result<(), LocalJsonMemoryStoreError> {
+        let Some(endpoint) = self.health_check_endpoint.as_deref() else {
+            return Ok(());
+        };
+        let health_url = format!("{}/v1/health", endpoint.trim_end_matches('/'));
         let parsed = parse_http_url(&health_url)?;
         let authority = format!("{}:{}", parsed.host, parsed.port);
         let mut addrs = authority.to_socket_addrs().map_err(|err| {
-            ElephantMemoryStoreError::ExternalCallFailed(format!(
+            LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck resolve failed for '{health_url}': {err}"
             ))
         })?;
         let addr = addrs.next().ok_or_else(|| {
-            ElephantMemoryStoreError::ExternalCallFailed(format!(
+            LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck resolve failed for '{health_url}': no socket addresses"
             ))
         })?;
-        let mut stream =
-            TcpStream::connect_timeout(&addr, ELEPHANT_HEALTHCHECK_TIMEOUT).map_err(|err| {
-                ElephantMemoryStoreError::ExternalCallFailed(format!(
+        let mut stream = TcpStream::connect_timeout(&addr, MEMORY_LEDGER_HEALTHCHECK_TIMEOUT)
+            .map_err(|err| {
+                LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                     "healthcheck connect failed for '{health_url}': {err}"
                 ))
             })?;
         stream
-            .set_read_timeout(Some(ELEPHANT_HEALTHCHECK_TIMEOUT))
+            .set_read_timeout(Some(MEMORY_LEDGER_HEALTHCHECK_TIMEOUT))
             .map_err(|err| {
-                ElephantMemoryStoreError::ExternalCallFailed(format!(
+                LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                     "healthcheck timeout setup failed for '{health_url}': {err}"
                 ))
             })?;
         stream
-            .set_write_timeout(Some(ELEPHANT_HEALTHCHECK_TIMEOUT))
+            .set_write_timeout(Some(MEMORY_LEDGER_HEALTHCHECK_TIMEOUT))
             .map_err(|err| {
-                ElephantMemoryStoreError::ExternalCallFailed(format!(
+                LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                     "healthcheck timeout setup failed for '{health_url}': {err}"
                 ))
             })?;
@@ -63,19 +73,19 @@ impl ElephantMemoryStoreAdapter {
             parsed.path, parsed.host
         );
         stream.write_all(request.as_bytes()).map_err(|err| {
-            ElephantMemoryStoreError::ExternalCallFailed(format!(
+            LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck write failed for '{health_url}': {err}"
             ))
         })?;
         let mut reader = BufReader::new(stream);
         let mut status_line = String::new();
         let bytes_read = reader.read_line(&mut status_line).map_err(|err| {
-            ElephantMemoryStoreError::ExternalCallFailed(format!(
+            LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck read failed for '{health_url}': {err}"
             ))
         })?;
         if bytes_read == 0 {
-            return Err(ElephantMemoryStoreError::ExternalCallFailed(format!(
+            return Err(LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck read failed for '{health_url}': empty response"
             )));
         }
@@ -84,7 +94,7 @@ impl ElephantMemoryStoreAdapter {
             .nth(1)
             .and_then(|value| value.parse::<u16>().ok())
             .ok_or_else(|| {
-                ElephantMemoryStoreError::ExternalCallFailed(format!(
+                LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                     "healthcheck parse failed for '{health_url}': invalid status line '{}'",
                     status_line.trim()
                 ))
@@ -92,35 +102,35 @@ impl ElephantMemoryStoreAdapter {
         if (200..300).contains(&status_code) {
             Ok(())
         } else {
-            Err(ElephantMemoryStoreError::ExternalCallFailed(format!(
+            Err(LocalJsonMemoryStoreError::ExternalCallFailed(format!(
                 "healthcheck status failed for '{health_url}': HTTP {status_code}"
             )))
         }
     }
 
-    pub(super) fn read_state(&self) -> Result<PersistedMemoryState, ElephantMemoryStoreError> {
+    pub(super) fn read_state(&self) -> Result<PersistedMemoryState, LocalJsonMemoryStoreError> {
         self.ensure_remote_health()?;
         if !self.state_path.exists() {
             return Ok(PersistedMemoryState::default());
         }
         let bytes = fs::read(&self.state_path)
-            .map_err(|err| ElephantMemoryStoreError::Io(err.to_string()))?;
+            .map_err(|err| LocalJsonMemoryStoreError::Io(err.to_string()))?;
         serde_json::from_slice::<PersistedMemoryState>(&bytes)
-            .map_err(|err| ElephantMemoryStoreError::InvalidStoreData(err.to_string()))
+            .map_err(|err| LocalJsonMemoryStoreError::InvalidStoreData(err.to_string()))
     }
 
-    fn write_state(&self, state: &PersistedMemoryState) -> Result<(), ElephantMemoryStoreError> {
+    fn write_state(&self, state: &PersistedMemoryState) -> Result<(), LocalJsonMemoryStoreError> {
         self.ensure_remote_health()?;
         if let Some(parent) = self.state_path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|err| ElephantMemoryStoreError::Io(err.to_string()))?;
+                .map_err(|err| LocalJsonMemoryStoreError::Io(err.to_string()))?;
         }
         let tmp_path = self.state_path.with_extension("tmp");
         let json = serde_json::to_vec_pretty(state)
-            .map_err(|err| ElephantMemoryStoreError::Serialize(err.to_string()))?;
-        fs::write(&tmp_path, json).map_err(|err| ElephantMemoryStoreError::Io(err.to_string()))?;
+            .map_err(|err| LocalJsonMemoryStoreError::Serialize(err.to_string()))?;
+        fs::write(&tmp_path, json).map_err(|err| LocalJsonMemoryStoreError::Io(err.to_string()))?;
         fs::rename(&tmp_path, &self.state_path)
-            .map_err(|err| ElephantMemoryStoreError::Io(err.to_string()))?;
+            .map_err(|err| LocalJsonMemoryStoreError::Io(err.to_string()))?;
         Ok(())
     }
 }
@@ -132,15 +142,15 @@ struct ParsedHttpUrl {
     path: String,
 }
 
-fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, ElephantMemoryStoreError> {
+fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, LocalJsonMemoryStoreError> {
     let trimmed = url.trim();
     let without_scheme = trimmed.strip_prefix("http://").ok_or_else(|| {
-        ElephantMemoryStoreError::InvalidConfig(format!(
+        LocalJsonMemoryStoreError::InvalidConfig(format!(
             "memory backend endpoint must start with http:// (got '{trimmed}')"
         ))
     })?;
     if without_scheme.is_empty() {
-        return Err(ElephantMemoryStoreError::InvalidConfig(
+        return Err(LocalJsonMemoryStoreError::InvalidConfig(
             "memory backend endpoint host must not be empty".to_string(),
         ));
     }
@@ -149,7 +159,7 @@ fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, ElephantMemoryStoreError> 
         .map(|(left, right)| (left, format!("/{right}")))
         .unwrap_or((without_scheme, "/".to_string()));
     if authority.is_empty() {
-        return Err(ElephantMemoryStoreError::InvalidConfig(
+        return Err(LocalJsonMemoryStoreError::InvalidConfig(
             "memory backend endpoint host must not be empty".to_string(),
         ));
     }
@@ -158,7 +168,7 @@ fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, ElephantMemoryStoreError> 
             if !host.is_empty() && raw_port.chars().all(|c| c.is_ascii_digit()) =>
         {
             let parsed = raw_port.parse::<u16>().map_err(|_| {
-                ElephantMemoryStoreError::InvalidConfig(format!(
+                LocalJsonMemoryStoreError::InvalidConfig(format!(
                     "memory backend endpoint port is invalid in '{trimmed}'"
                 ))
             })?;
@@ -167,7 +177,7 @@ fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, ElephantMemoryStoreError> 
         _ => (authority.to_string(), 80_u16),
     };
     if host.is_empty() {
-        return Err(ElephantMemoryStoreError::InvalidConfig(
+        return Err(LocalJsonMemoryStoreError::InvalidConfig(
             "memory backend endpoint host must not be empty".to_string(),
         ));
     }
@@ -360,6 +370,30 @@ impl MobkitRuntimeHandle {
             .store
             .as_deref()
             .and_then(Self::canonical_memory_store);
+        let query = request
+            .query
+            .as_deref()
+            .and_then(Self::canonical_memory_token);
+        let assertion_matches_query = |assertion: &MemoryAssertion| {
+            query.as_ref().is_none_or(|needle| {
+                assertion.entity.contains(needle.as_str())
+                    || assertion.topic.contains(needle.as_str())
+                    || assertion
+                        .fact
+                        .to_ascii_lowercase()
+                        .contains(needle.as_str())
+            })
+        };
+        let conflict_matches_query = |signal: &MemoryConflictSignal| {
+            query.as_ref().is_none_or(|needle| {
+                signal.entity.contains(needle.as_str())
+                    || signal.topic.contains(needle.as_str())
+                    || signal
+                        .reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.to_ascii_lowercase().contains(needle.as_str()))
+            })
+        };
         let assertions = self
             .memory_assertions
             .iter()
@@ -378,6 +412,7 @@ impl MobkitRuntimeHandle {
                     .as_ref()
                     .is_none_or(|value| assertion.store.as_str() == value.as_str())
             })
+            .filter(|assertion| assertion_matches_query(assertion))
             .cloned()
             .collect::<Vec<_>>();
         let conflicts = self
@@ -398,11 +433,98 @@ impl MobkitRuntimeHandle {
                     .as_ref()
                     .is_none_or(|value| signal.store.as_str() == value.as_str())
             })
+            .filter(|signal| conflict_matches_query(signal))
             .cloned()
             .collect::<Vec<_>>();
         MemoryQueryResult {
             assertions,
             conflicts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_json_adapter_roundtrips_state_without_health_endpoint() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let state_path = temp.path().join("memory-ledger-state.json");
+        let adapter = LocalJsonMemoryStoreAdapter::from_config(&LocalJsonMemoryBackendConfig {
+            state_path: state_path.to_string_lossy().to_string(),
+            health_check_endpoint: None,
+        })
+        .expect("adapter from config");
+
+        let state = PersistedMemoryState {
+            assertions: vec![MemoryAssertion {
+                assertion_id: "memory-assert-000001".to_string(),
+                entity: "delivery".to_string(),
+                topic: "email_send".to_string(),
+                store: "todo".to_string(),
+                fact: "double-check recipient consent".to_string(),
+                metadata: None,
+                indexed_at_ms: 1,
+            }],
+            conflicts: vec![],
+        };
+        adapter.write_state(&state).expect("write state");
+        let reloaded = adapter.read_state().expect("read state");
+        assert_eq!(reloaded, state);
+    }
+
+    #[test]
+    fn local_json_adapter_rejects_empty_health_endpoint() {
+        let error = LocalJsonMemoryStoreAdapter::from_config(&LocalJsonMemoryBackendConfig {
+            state_path: "/tmp/state.json".to_string(),
+            health_check_endpoint: Some("   ".to_string()),
+        })
+        .expect_err("empty health endpoint must be rejected");
+        assert!(matches!(error, LocalJsonMemoryStoreError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn legacy_elephant_config_maps_endpoint_to_health_check() {
+        let legacy = ElephantMemoryBackendConfig {
+            endpoint: "http://localhost:3000".to_string(),
+            state_path: "/tmp/state.json".to_string(),
+        };
+        let config = LocalJsonMemoryBackendConfig::from(legacy);
+        assert_eq!(
+            config.health_check_endpoint.as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(config.state_path, "/tmp/state.json");
+    }
+
+    #[test]
+    fn memory_backend_config_accepts_legacy_elephant_wire_shape() {
+        let parsed: MemoryBackendConfig = serde_json::from_value(serde_json::json!({
+            "kind": "elephant",
+            "endpoint": "http://localhost:3000",
+            "state_path": "/tmp/state.json"
+        }))
+        .expect("legacy wire shape deserializes");
+        assert_eq!(
+            parsed,
+            MemoryBackendConfig::Elephant(ElephantMemoryBackendConfig {
+                endpoint: "http://localhost:3000".to_string(),
+                state_path: "/tmp/state.json".to_string(),
+            })
+        );
+
+        let parsed: MemoryBackendConfig = serde_json::from_value(serde_json::json!({
+            "kind": "local_json",
+            "state_path": "/tmp/state.json"
+        }))
+        .expect("local_json wire shape deserializes");
+        assert_eq!(
+            parsed,
+            MemoryBackendConfig::LocalJson(LocalJsonMemoryBackendConfig {
+                state_path: "/tmp/state.json".to_string(),
+                health_check_endpoint: None,
+            })
+        );
     }
 }

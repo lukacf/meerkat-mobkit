@@ -27,13 +27,14 @@ use base64::Engine;
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
-    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig,
-    EventLogStore, EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
-    PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata, RestartPolicy,
-    RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
-    SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    handle_mobkit_rpc_json, handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
+    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
+    InMemoryMetadataStore, LocalJsonMemoryBackendConfig, MOBKIT_CONTRACT_VERSION,
+    MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
+    ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
+    RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
+    ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
         mob_definition_may_use_shell,
@@ -1157,6 +1158,12 @@ fn apply_gateway_runtime_config_to_request(
     serde_json::to_string(&request).unwrap_or_else(|_| request_line.to_string())
 }
 
+// Legacy state file name written by the misleadingly-named "elephant" backend
+// (which always persisted local JSON). Kept so existing deployments keep their
+// ledger across the rename.
+const LEGACY_MEMORY_LEDGER_STATE_FILE: &str = "elephant-memory-state.json";
+const MEMORY_LEDGER_STATE_FILE: &str = "memory-ledger-state.json";
+
 fn parse_gateway_memory_config(
     memory_config: &Value,
     persistent_state: Option<&std::path::Path>,
@@ -1164,44 +1171,94 @@ fn parse_gateway_memory_config(
     let object = memory_config
         .as_object()
         .ok_or_else(|| "runtime_options.memory_config must be a JSON object".to_string())?;
-    let backend = object
-        .get("backend")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "runtime_options.memory_config.backend must be 'elephant'".to_string())?;
-    if backend != "elephant" {
-        return Err(format!(
-            "unsupported runtime_options.memory_config.backend '{backend}'"
-        ));
+    let backend = object.get("backend").and_then(Value::as_str).ok_or_else(|| {
+        "runtime_options.memory_config.backend must be 'local_json' (or the deprecated 'elephant')"
+            .to_string()
+    })?;
+    let persistent_state = persistent_state.ok_or_else(|| {
+        "runtime_options.memory_config requires persistent_state so the memory ledger has a stable path"
+            .to_string()
+    })?;
+    match backend {
+        "local_json" => {
+            let health_check_endpoint = match object.get("health_check_endpoint") {
+                None => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            "runtime_options.memory_config.health_check_endpoint must be a non-empty string when provided"
+                                .to_string()
+                        })?
+                        .to_string(),
+                ),
+            };
+            let unsupported = object
+                .keys()
+                .filter(|key| key.as_str() != "backend" && key.as_str() != "health_check_endpoint")
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !unsupported.is_empty() {
+                return Err(format!(
+                    "unsupported runtime_options.memory_config fields: {}",
+                    unsupported.join(", ")
+                ));
+            }
+            // Adopt the legacy ledger file when it is the only one present so
+            // switching backend shape does not lose persisted state.
+            let new_path = persistent_state.join(MEMORY_LEDGER_STATE_FILE);
+            let legacy_path = persistent_state.join(LEGACY_MEMORY_LEDGER_STATE_FILE);
+            let state_path = if !new_path.exists() && legacy_path.exists() {
+                legacy_path
+            } else {
+                new_path
+            };
+            Ok(MemoryBackendConfig::LocalJson(
+                LocalJsonMemoryBackendConfig {
+                    state_path: state_path.to_string_lossy().to_string(),
+                    health_check_endpoint,
+                },
+            ))
+        }
+        "elephant" => {
+            let endpoint = object
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "runtime_options.memory_config.endpoint must be a non-empty string".to_string()
+                })?;
+            let unsupported = object
+                .keys()
+                .filter(|key| key.as_str() != "backend" && key.as_str() != "endpoint")
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !unsupported.is_empty() {
+                return Err(format!(
+                    "unsupported runtime_options.memory_config fields: {}",
+                    unsupported.join(", ")
+                ));
+            }
+            eprintln!(
+                "[mobkit-gateway] runtime_options.memory_config.backend 'elephant' is deprecated: \
+                 it only health-checks the endpoint and persists the ledger as local JSON; use \
+                 backend 'local_json' with an optional health_check_endpoint"
+            );
+            let state_path = persistent_state.join(LEGACY_MEMORY_LEDGER_STATE_FILE);
+            Ok(MemoryBackendConfig::LocalJson(
+                LocalJsonMemoryBackendConfig {
+                    state_path: state_path.to_string_lossy().to_string(),
+                    health_check_endpoint: Some(endpoint.to_string()),
+                },
+            ))
+        }
+        other => Err(format!(
+            "unsupported runtime_options.memory_config.backend '{other}'"
+        )),
     }
-    let endpoint = object
-        .get("endpoint")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "runtime_options.memory_config.endpoint must be a non-empty string".to_string()
-        })?;
-    let unsupported = object
-        .keys()
-        .filter(|key| key.as_str() != "backend" && key.as_str() != "endpoint")
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "unsupported runtime_options.memory_config fields: {}",
-            unsupported.join(", ")
-        ));
-    }
-    let state_path = persistent_state
-        .ok_or_else(|| {
-            "runtime_options.memory_config requires persistent_state so Elephant memory state has a stable path"
-                .to_string()
-        })?
-        .join("elephant-memory-state.json");
-    Ok(MemoryBackendConfig::Elephant(ElephantMemoryBackendConfig {
-        endpoint: endpoint.to_string(),
-        state_path: state_path.to_string_lossy().to_string(),
-    }))
 }
 
 fn parse_gateway_agent_memory_config(
@@ -1234,6 +1291,7 @@ fn parse_gateway_agent_memory_config(
         "recall_timeout_ms",
         "recall_failure_policy",
         "instruction_header",
+        "per_turn_injection",
     ];
     let unsupported = object
         .keys()
@@ -1339,6 +1397,20 @@ fn parse_gateway_agent_memory_config(
                 .to_string(),
         ),
     };
+    let per_turn_injection = match object
+        .get("per_turn_injection")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("off")
+    {
+        "off" => meerkat_mobkit::AgentMemoryPerTurnInjection::Off,
+        "budgeted" => meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.per_turn_injection must be 'off' or 'budgeted' (got '{other}')"
+            ));
+        }
+    };
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
         .join("agent-memory");
@@ -1351,6 +1423,7 @@ fn parse_gateway_agent_memory_config(
             recall_timeout_ms,
             recall_failure_policy,
             instruction_header,
+            per_turn_injection,
         },
         path,
     }))
