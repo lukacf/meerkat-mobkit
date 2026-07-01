@@ -59,17 +59,21 @@ When using the Python or TypeScript SDK through the stock `rpc_gateway`, configu
 
 ## Indexing
 
-Index content into Elephant with a `MemoryIndexRequest`:
+Index an operational assertion with a `MemoryIndexRequest`:
 
 ```rust
 MemoryIndexRequest {
-    content: "The quarterly report shows 15% revenue growth.",
-    source_id: "report-q4-2024",
-    metadata: json!({ "domain": "finance", "quarter": "Q4" }),
+    entity: "identity:ops".to_string(),
+    topic: "deployment".to_string(),
+    store: Some("knowledge_graph".to_string()),
+    fact: Some("Production deploys require approval.".to_string()),
+    metadata: Some(json!({ "source": "runbook" })),
+    conflict: None,
+    conflict_reason: None,
 }
 ```
 
-The current MobKit runtime stores a canonical assertion locally and persists it when the memory backend is configured.
+The current MobKit runtime stores a canonical assertion locally and persists it when the memory backend is configured. Set `conflict: Some(true)` with `conflict_reason` to record a conflict signal instead of a normal assertion.
 
 ## Querying
 
@@ -106,7 +110,7 @@ By default, the bundled provider writes markdown under `<persistent_state>/agent
 
 Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/remember`, TypeScript `handle.rememberAgentMemory(...)`, or Python `handle.remember_agent_memory(...)`; read it through `mobkit/agent_memory/recall`, `handle.recallAgentMemory(...)`, or `handle.recall_agent_memory(...)`; and delete individual records through `mobkit/agent_memory/forget`, `handle.forgetAgentMemory(...)`, or `handle.forget_agent_memory(...)`. A successful `remember` means the configured hot identity-memory provider durably accepted the record and it is available to the next identity-first send for that identity, plus build context on materialization/resume/respawn/reset. It does not imply Elephant entity extraction, truth maintenance, or document/vector indexing has completed. Custom providers receive both raw `query_text` and normalized `query_terms` so they can implement stronger retrieval without changing MobKit runtime authority.
 
-Agent memory is identity-scoped rather than session-scoped. A session respawn or identity reset does not delete stored memory; apps that need privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use a provider that clears memory as part of the app's identity lifecycle.
+Agent memory is identity-scoped rather than session-scoped. A session respawn or identity reset does not delete stored memory; apps that need privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use a provider that clears memory as part of the app's identity lifecycle. `forget` removes records from future recall and injection, but it cannot remove text already delivered into an active model context; reset or respawn the identity after deletion when immediate context revocation matters.
 
 ## Conflict detection
 

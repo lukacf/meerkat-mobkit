@@ -1,13 +1,41 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { MobKit } from "../dist/index.js";
 
 const shouldRun =
   process.env.MOBKIT_AGENT_MEMORY_REAL_API_SMOKE === "1";
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+function resolveGatewayBin(): string {
+  if (process.env.MOBKIT_RPC_GATEWAY_BIN) {
+    return process.env.MOBKIT_RPC_GATEWAY_BIN;
+  }
+  try {
+    const output = execFileSync(
+      join(repoRoot, "scripts", "repo-cargo"),
+      ["--print-env", "CARGO_TARGET_DIR"],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    const targetDir = output
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("CARGO_TARGET_DIR="))
+      ?.slice("CARGO_TARGET_DIR=".length)
+      .trim();
+    if (targetDir) {
+      return join(targetDir, "debug", "rpc_gateway");
+    }
+  } catch {
+    // Fall back to Cargo's default target dir below; the build step will
+    // produce a clearer failure if neither path contains the gateway binary.
+  }
+  return join(repoRoot, "target", "debug", "rpc_gateway");
+}
 
 async function consoleRpc(
   baseUrl: string,
@@ -80,6 +108,7 @@ describe("agent memory real API smoke", { skip: !shouldRun }, () => {
     mkdirSync(configDir, { recursive: true });
     mkdirSync(stateWriteDir, { recursive: true });
     mkdirSync(stateRunDir, { recursive: true });
+    const gatewayBin = resolveGatewayBin();
 
     const mobToml = join(configDir, "mob.toml");
     writeFileSync(
@@ -125,7 +154,7 @@ memory = false
     try {
       runtime = await MobKit.builder()
         .mob(mobToml)
-        .gateway(process.env.MOBKIT_RPC_GATEWAY_BIN ?? "./target/debug/rpc_gateway")
+        .gateway(gatewayBin)
         .persistentState(stateWriteDir)
         .consoleAuthRequired(false)
         .rosterProvider(new SmokeRosterProvider())
@@ -180,7 +209,7 @@ memory = false
 
       runtime = await MobKit.builder()
         .mob(mobToml)
-        .gateway(process.env.MOBKIT_RPC_GATEWAY_BIN ?? "./target/debug/rpc_gateway")
+        .gateway(gatewayBin)
         .persistentState(stateRunDir)
         .consoleAuthRequired(false)
         .rosterProvider(new SmokeRosterProvider())

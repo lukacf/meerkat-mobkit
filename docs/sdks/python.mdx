@@ -362,12 +362,12 @@ Most apps should use `send`, `subscribe_agent`/`subscribe_mob`, and `status`/`re
 | `gating_pending()` | `list[GatingPendingEntry]` | List pending gating decisions |
 | `gating_decide(...)` | `GatingDecisionResult` | Submit a gating decision |
 | `gating_audit(limit)` | `list[GatingAuditEntry]` | Retrieve gating audit log |
-| `memory_query(query)` | `MemoryQueryResult` | Query semantic memory |
+| `memory_query(filters)` | `MemoryQueryResult` | Query the assertion ledger by `entity`, `topic`, and `store` filters |
 | `remember_agent_memory(identity, ...)` | `AgentMemoryRecord` | Persist durable memory for an identity |
 | `recall_agent_memory(identity, ...)` | `list[AgentMemoryRecord]` | Recall identity-scoped durable memory |
 | `forget_agent_memory(identity, memory_id)` | `AgentMemoryForgetResult` | Delete identity-scoped durable memory |
 | `memory_stores()` | `list[MemoryStoreInfo]` | List available memory stores |
-| `memory_index(...)` | `MemoryIndexResult` | Index content into memory |
+| `memory_index(...)` | `MemoryIndexResult` | Index an operational memory assertion |
 
 ## Mobpack authoring
 

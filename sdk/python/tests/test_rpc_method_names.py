@@ -560,6 +560,47 @@ async def test_send_with_attachments_uses_multipart(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_memory_query_uses_assertion_filter_params():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/memory/query": {
+            "assertions": [],
+            "conflicts": [],
+        }
+    })
+
+    await handle.memory_query({
+        "entity": "identity:ops",
+        "topic": "deployment",
+        "store": "knowledge_graph",
+    })
+
+    assert calls[0][0] == "mobkit/memory/query"
+    assert calls[0][1] == {
+        "entity": "identity:ops",
+        "topic": "deployment",
+        "store": "knowledge_graph",
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_query_keeps_legacy_string_wire_shape():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/memory/query": {
+            "assertions": [],
+            "conflicts": [],
+        }
+    })
+
+    await handle.memory_query("legacy search text", store="knowledge_graph")
+
+    assert calls[0][0] == "mobkit/memory/query"
+    assert calls[0][1] == {
+        "query": "legacy search text",
+        "store": "knowledge_graph",
+    }
+
+
+@pytest.mark.asyncio
 async def test_send_with_structured_content_and_attachment_forwards_mode(monkeypatch):
     from meerkat_mobkit import runtime as runtime_module
 

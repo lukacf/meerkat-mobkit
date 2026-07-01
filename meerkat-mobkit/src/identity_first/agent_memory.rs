@@ -267,6 +267,41 @@ impl MarkdownAgentMemoryStore {
         read_markdown_records(&self.path_for(realm, identity))
     }
 
+    fn recall_blocking(
+        &self,
+        request: AgentMemoryRecallRequest,
+    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+        let mut records = self.read_records(&request.realm, &request.identity)?;
+        if request.selection == AgentMemorySelection::Contextual {
+            let terms = recall_query_terms(&request);
+            if terms.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut scored = records
+                .into_iter()
+                .filter_map(|record| {
+                    let score = record_relevance_score(&record, &terms);
+                    (score >= MIN_CONTEXTUAL_RELEVANCE_SCORE).then_some((score, record))
+                })
+                .collect::<Vec<_>>();
+            scored.sort_by(|(a_score, a), (b_score, b)| {
+                b_score
+                    .cmp(a_score)
+                    .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
+                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+            });
+            records = scored.into_iter().map(|(_, record)| record).collect();
+        } else {
+            records.sort_by(|a, b| {
+                b.updated_at_ms
+                    .cmp(&a.updated_at_ms)
+                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+            });
+        }
+        records.truncate(request.max_entries);
+        Ok(records)
+    }
+
     pub fn forget(
         &self,
         realm: &str,
@@ -314,35 +349,12 @@ impl AgentMemoryProvider for MarkdownAgentMemoryStore {
         &self,
         request: AgentMemoryRecallRequest,
     ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-        let mut records = self.read_records(&request.realm, &request.identity)?;
-        if request.selection == AgentMemorySelection::Contextual {
-            let terms = recall_query_terms(&request);
-            if terms.is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut scored = records
-                .into_iter()
-                .filter_map(|record| {
-                    let score = record_relevance_score(&record, &terms);
-                    (score >= MIN_CONTEXTUAL_RELEVANCE_SCORE).then_some((score, record))
-                })
-                .collect::<Vec<_>>();
-            scored.sort_by(|(a_score, a), (b_score, b)| {
-                b_score
-                    .cmp(a_score)
-                    .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
-                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-            });
-            records = scored.into_iter().map(|(_, record)| record).collect();
-        } else {
-            records.sort_by(|a, b| {
-                b.updated_at_ms
-                    .cmp(&a.updated_at_ms)
-                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-            });
-        }
-        records.truncate(request.max_entries);
-        Ok(records)
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.recall_blocking(request))
+            .await
+            .map_err(|err| {
+                AgentMemoryError::Io(format!("agent memory recall task failed: {err}"))
+            })?
     }
 }
 
@@ -2022,6 +2034,53 @@ mod tests {
         let content = meerkat_core::ContentInput::Text("hello".to_string());
 
         let injected = injector.inject_for_turn(&identity()?, &content).await?;
+
+        assert_eq!(injected.text_content(), "hello");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_injector_timeout_can_preempt_locked_markdown_recall()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = MarkdownAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        store.remember(
+            "default",
+            &id,
+            NewAgentMemory {
+                title: "Locked memory".to_string(),
+                body: "This record should not block the live turn forever.".to_string(),
+                tags: vec!["locked".to_string()],
+            },
+        )?;
+        let locked = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(store.path_for("default", &id))?;
+        locked.lock_exclusive()?;
+        let injector = AgentMemoryRuntimeInjector::new(
+            Arc::new(store),
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                recall_timeout_ms: 25,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            injector.inject_for_turn(&id, &content),
+        )
+        .await;
+        locked.unlock()?;
+        drop(locked);
+        let injected = match result {
+            Ok(Ok(injected)) => injected,
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => return Err("locked markdown recall should respect timeout".into()),
+        };
 
         assert_eq!(injected.text_content(), "hello");
         Ok(())

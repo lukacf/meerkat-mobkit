@@ -1556,14 +1556,15 @@ fn retain_visible_identity_records(
 /// targeted agent (when the method is agent-scoped). Methods not listed are
 /// either pure read surfaces whose *results* are filtered per caller, or
 /// non-sensitive metadata.
-fn console_rpc_access_requirement<'a>(
+fn console_rpc_access_requirement(
     method: &str,
-    params: &'a Value,
-) -> Option<(&'static str, Option<&'a str>)> {
-    let identity = params.get("identity").and_then(Value::as_str);
+    params: &Value,
+) -> Option<(&'static str, Option<String>)> {
+    let identity = normalized_console_rpc_string_param(params, "identity");
     let target = identity
-        .or_else(|| params.get("member_id").and_then(Value::as_str))
-        .or_else(|| params.get("agent_id").and_then(Value::as_str));
+        .clone()
+        .or_else(|| normalized_console_rpc_string_param(params, "member_id"))
+        .or_else(|| normalized_console_rpc_string_param(params, "agent_id"));
     match method {
         "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
         "mobkit/agent_memory/remember" => Some((ACTION_AGENT_MEMORY_WRITE, identity)),
@@ -1618,6 +1619,14 @@ fn console_rpc_access_requirement<'a>(
     }
 }
 
+fn normalized_console_rpc_string_param(params: &Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+}
+
 /// Returns the denial error when the caller's view forbids the method.
 fn console_rpc_access_violation(
     view: Option<&AccessView>,
@@ -1627,7 +1636,7 @@ fn console_rpc_access_violation(
     let view = view.filter(|view| view.enforced())?;
     let (action, target) = console_rpc_access_requirement(method, params)?;
     let allowed = match target {
-        Some(identity) => view.allows_agent(action, identity),
+        Some(ref identity) => view.allows_agent(action, identity),
         None => view.allows(action),
     };
     if allowed {
@@ -10143,6 +10152,149 @@ comms = true
             send_only_forget["error"]["data"]["action"],
             json!(ACTION_AGENT_MEMORY_DELETE),
             "{send_only_forget:#?}"
+        );
+
+        let wildcard_allow_exact_deny_controller =
+            AccessController::new(crate::access::AccessControlConfig {
+                enabled: true,
+                admins: vec!["admin@example.test".to_string()],
+                rules: vec![
+                    crate::access::AccessRule {
+                        id: "deny-canonical-memory-console".to_string(),
+                        effect: crate::access::AccessEffect::Deny,
+                        subjects: vec!["wildcard@example.test".to_string()],
+                        actions: vec![
+                            ACTION_AGENT_VIEW.to_string(),
+                            ACTION_AGENT_MEMORY_WRITE.to_string(),
+                            ACTION_AGENT_MEMORY_DELETE.to_string(),
+                        ],
+                        agents: vec!["identity:memory-console".to_string()],
+                        ..crate::access::AccessRule::default()
+                    },
+                    crate::access::AccessRule {
+                        id: "allow-wildcard-memory-console".to_string(),
+                        subjects: vec!["wildcard@example.test".to_string()],
+                        actions: vec![
+                            ACTION_AGENT_VIEW.to_string(),
+                            ACTION_AGENT_MEMORY_WRITE.to_string(),
+                            ACTION_AGENT_MEMORY_DELETE.to_string(),
+                        ],
+                        agents: vec!["*".to_string()],
+                        ..crate::access::AccessRule::default()
+                    },
+                ],
+                ..crate::access::AccessControlConfig::default()
+            })?;
+        let wildcard_allow_exact_deny_view =
+            wildcard_allow_exact_deny_controller.view_for_subject(Some("wildcard@example.test"));
+
+        let whitespace_denied_remember = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/remember",
+                json!({
+                    "identity": " identity:memory-console ",
+                    "title": "Whitespace denied",
+                    "body": "Whitespace-wrapped identities must be authorized canonically."
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&wildcard_allow_exact_deny_controller),
+            Some(&wildcard_allow_exact_deny_view),
+        ))
+        .await;
+        assert_eq!(
+            whitespace_denied_remember["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{whitespace_denied_remember:#?}"
+        );
+        assert_eq!(
+            whitespace_denied_remember["error"]["data"]["action"],
+            json!(ACTION_AGENT_MEMORY_WRITE),
+            "{whitespace_denied_remember:#?}"
+        );
+
+        let whitespace_denied_recall = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/recall",
+                json!({
+                    "identity": " identity:memory-console ",
+                    "selection": "always"
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&wildcard_allow_exact_deny_controller),
+            Some(&wildcard_allow_exact_deny_view),
+        ))
+        .await;
+        assert_eq!(
+            whitespace_denied_recall["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{whitespace_denied_recall:#?}"
+        );
+        assert_eq!(
+            whitespace_denied_recall["error"]["data"]["action"],
+            json!(ACTION_AGENT_VIEW),
+            "{whitespace_denied_recall:#?}"
+        );
+
+        let whitespace_denied_forget = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/forget",
+                json!({
+                    "identity": " identity:memory-console ",
+                    "memory_id": memory_id.clone()
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&wildcard_allow_exact_deny_controller),
+            Some(&wildcard_allow_exact_deny_view),
+        ))
+        .await;
+        assert_eq!(
+            whitespace_denied_forget["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{whitespace_denied_forget:#?}"
+        );
+        assert_eq!(
+            whitespace_denied_forget["error"]["data"]["action"],
+            json!(ACTION_AGENT_MEMORY_DELETE),
+            "{whitespace_denied_forget:#?}"
         );
 
         let forget = Box::pin(handle_console_runtime_rpc(

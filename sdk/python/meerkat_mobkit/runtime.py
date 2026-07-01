@@ -730,9 +730,26 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/delivery/send", kwargs)
         return DeliveryResult.from_dict(raw)
 
-    async def memory_query(self, query: str, **kwargs: Any) -> MemoryQueryResult:
-        """Query a memory store by natural-language assertion."""
-        raw = await self._runtime._rpc("mobkit/memory/query", {"query": query, **kwargs})
+    async def memory_query(
+        self,
+        query: str | dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> MemoryQueryResult:
+        """Query the assertion ledger by entity/topic/store filters.
+
+        Passing a string preserves the legacy wire shape by sending it as
+        ``query``; the stock runtime filters by ``entity``, ``topic``, and
+        ``store``.
+        """
+        if isinstance(query, dict):
+            params = {**query, **kwargs}
+        elif query is None:
+            params = {**kwargs}
+        elif isinstance(query, str):
+            params = {"query": query, **kwargs}
+        else:
+            raise TypeError("memory_query query must be a string, dict, or None")
+        raw = await self._runtime._rpc("mobkit/memory/query", params)
         return MemoryQueryResult.from_dict(raw)
 
     async def remember_agent_memory(

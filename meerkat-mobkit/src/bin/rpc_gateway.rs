@@ -601,6 +601,25 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_reject_non_boolean_agent_memory_enabled() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "enabled": "false"
+                }
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("non-boolean agent memory enabled should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("enabled"), "{err}");
+    }
+
+    #[test]
     fn gateway_runtime_options_reject_agent_memory_without_state_path() {
         let params = json!({
             "runtime_options": {
@@ -1158,12 +1177,13 @@ fn parse_gateway_agent_memory_config(
             unsupported.join(", ")
         ));
     }
-    if object
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .is_some_and(|enabled| !enabled)
-    {
-        return Ok(None);
+    if let Some(enabled) = object.get("enabled") {
+        let enabled = enabled
+            .as_bool()
+            .ok_or_else(|| "runtime_options.agent_memory.enabled must be a boolean".to_string())?;
+        if !enabled {
+            return Ok(None);
+        }
     }
 
     let realm = object

@@ -312,7 +312,7 @@ When `selection = "always"`, the latest memories for the identity are injected. 
 
 Automatic build/turn injection uses `recall_timeout_ms` (default `500`, max `30000`) and `recall_failure_policy` (default `"skip"`, or `"fail"`). With the default skip policy, provider errors and timeouts omit the memory block and allow delivery to continue. Explicit `mobkit/agent_memory/recall` requests still return provider errors.
 
-Agent memory is identity-scoped and is not automatically cleared by session respawn or identity reset. Apps that require privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use an `AgentMemoryProvider` whose lifecycle policy clears memory alongside the app's identity lifecycle.
+Agent memory is identity-scoped and is not automatically cleared by session respawn or identity reset. Apps that require privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use an `AgentMemoryProvider` whose lifecycle policy clears memory alongside the app's identity lifecycle. `forget` removes records from future recall and injection; it does not erase text already delivered into an active model context, so reset or respawn the identity after deletion when immediate context revocation matters.
 
 ---
 
