@@ -154,6 +154,94 @@ async def test_agent_memory_rpc_names_and_params():
 
 
 @pytest.mark.asyncio
+async def test_agent_memory_update_and_manifest_rpc_names_and_params():
+    """update/manifest must hit the v2 durable-memory RPCs with exact params."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/agent_memory/update": {
+            "memory_id": "mem-2",
+            "supersedes": "mem-1",
+        },
+        "mobkit/agent_memory/manifest": {
+            "records": [{
+                "id": "mem-2",
+                "kind": "fact",
+                "title": "School pickup",
+                "description": "When planning the family calendar",
+                "age_days": 3,
+                "rank": 1,
+            }],
+        },
+    })
+
+    updated = await handle.update_agent_memory(
+        "identity:luka",
+        "mem-1",
+        realm="family",
+        title="School pickup",
+        body="Pickup moved to 15:30.",
+        tags=["family"],
+    )
+    manifest = await handle.manifest_agent_memory(
+        "identity:luka",
+        realm="family",
+        tier="working_set",
+        k=4,
+    )
+
+    assert calls == [
+        (
+            "mobkit/agent_memory/update",
+            {
+                "identity": "identity:luka",
+                "memory_id": "mem-1",
+                "title": "School pickup",
+                "body": "Pickup moved to 15:30.",
+                "realm": "family",
+                "tags": ["family"],
+            },
+        ),
+        (
+            "mobkit/agent_memory/manifest",
+            {
+                "identity": "identity:luka",
+                "realm": "family",
+                "tier": "working_set",
+                "k": 4,
+            },
+        ),
+    ]
+    assert updated.memory_id == "mem-2"
+    assert updated.supersedes == "mem-1"
+    assert manifest[0].id == "mem-2"
+    assert manifest[0].kind == "fact"
+    assert manifest[0].rank == 1
+    assert manifest[0].age_days == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_memory_manifest_optional_params_omitted():
+    """Optional tier/k/realm must not leak into params when not provided,
+    and a rank-less manifest row parses with rank=None."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/agent_memory/manifest": {
+            "records": [{
+                "id": "mem-3",
+                "kind": "gotcha",
+                "title": "Unranked",
+                "age_days": 0,
+            }],
+        },
+    })
+
+    manifest = await handle.manifest_agent_memory("identity:luka")
+
+    assert calls[0][0] == "mobkit/agent_memory/manifest"
+    assert calls[0][1] == {"identity": "identity:luka"}
+    assert manifest[0].rank is None
+    assert manifest[0].description == ""
+
+
+@pytest.mark.asyncio
 async def test_mobpack_editor_catalog_rpc_names():
     handle, calls = make_mock_mob_handle({
         "mobkit/tools/catalog": {

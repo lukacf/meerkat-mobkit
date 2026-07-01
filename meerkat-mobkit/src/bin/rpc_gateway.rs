@@ -83,6 +83,17 @@ struct GatewayRuntimeOptions {
 struct GatewayAgentMemoryOptions {
     config: meerkat_mobkit::AgentMemoryConfig,
     path: std::path::PathBuf,
+    store: GatewayAgentMemoryStoreKind,
+}
+
+/// Which bundled store backs agent memory. Markdown stays the default in
+/// P0; the flip to sqlite-by-default comes after the P1 recall coordinator
+/// lands (docs/design/agent-memory-architecture.md §15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GatewayAgentMemoryStoreKind {
+    #[default]
+    Markdown,
+    Sqlite,
 }
 
 impl Default for GatewayRuntimeOptions {
@@ -725,6 +736,64 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_agent_memory_store_defaults_to_markdown() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": true
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("boolean agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
+
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "enabled": true }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("object agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_store_accepts_sqlite() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "sqlite" }
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("sqlite store config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
+        assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_store_rejects_unknown_backend() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "postgres" }
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("unknown store backend should fail loudly"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("'markdown' or 'sqlite'"), "{err}");
+    }
+
+    #[test]
     fn gateway_runtime_options_reject_zero_max_sessions() {
         let params = json!({
             "runtime_options": {
@@ -1277,6 +1346,7 @@ fn parse_gateway_agent_memory_config(
         return Ok(Some(GatewayAgentMemoryOptions {
             config: meerkat_mobkit::AgentMemoryConfig::default(),
             path,
+            store: GatewayAgentMemoryStoreKind::default(),
         }));
     }
 
@@ -1292,6 +1362,7 @@ fn parse_gateway_agent_memory_config(
         "recall_failure_policy",
         "instruction_header",
         "per_turn_injection",
+        "store",
     ];
     let unsupported = object
         .keys()
@@ -1411,6 +1482,20 @@ fn parse_gateway_agent_memory_config(
             ));
         }
     };
+    let store = match object
+        .get("store")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("markdown")
+    {
+        "markdown" => GatewayAgentMemoryStoreKind::Markdown,
+        "sqlite" => GatewayAgentMemoryStoreKind::Sqlite,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.store must be 'markdown' or 'sqlite' (got '{other}')"
+            ));
+        }
+    };
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
         .join("agent-memory");
@@ -1426,6 +1511,7 @@ fn parse_gateway_agent_memory_config(
             per_turn_injection,
         },
         path,
+        store,
     }))
 }
 
@@ -2688,17 +2774,29 @@ external_addressable = true
         };
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
-                let store = Arc::new(
-                    meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
-                        .unwrap_or_else(|e| {
-                            fail_init(
-                                &request_id,
-                                -32603,
-                                format!("failed to open agent memory store: {e}"),
-                            );
-                        }),
-                );
-                Some(store)
+                match agent_memory.store {
+                    GatewayAgentMemoryStoreKind::Markdown => Some(Arc::new(
+                        meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
+                            .unwrap_or_else(|e| {
+                                fail_init(
+                                    &request_id,
+                                    -32603,
+                                    format!("failed to open agent memory store: {e}"),
+                                );
+                            }),
+                    )
+                        as Arc<dyn meerkat_mobkit::AgentMemoryProvider>),
+                    GatewayAgentMemoryStoreKind::Sqlite => Some(Arc::new(
+                        meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                            .unwrap_or_else(|e| {
+                                fail_init(
+                                    &request_id,
+                                    -32603,
+                                    format!("failed to open agent memory store: {e}"),
+                                );
+                            }),
+                    )),
+                }
             } else {
                 None
             };

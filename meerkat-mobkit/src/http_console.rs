@@ -54,8 +54,9 @@ use crate::mob_handle_runtime::{
     MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime, member_status_state_string,
 };
 use crate::rpc::memory_methods::{
-    parse_agent_memory_forget_params, parse_agent_memory_recall_params,
-    parse_agent_memory_remember_params,
+    parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
+    parse_agent_memory_recall_params, parse_agent_memory_remember_params,
+    parse_agent_memory_update_params,
 };
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
@@ -1352,6 +1353,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/reset"
             | "mobkit/delete_identity"
             | "mobkit/agent_memory/remember"
+            | "mobkit/agent_memory/update"
             | "mobkit/agent_memory/forget"
             | "mobkit/gating/decide"
             | "mobkit/mob_labels/set"
@@ -1568,8 +1570,14 @@ fn console_rpc_access_requirement(
     match method {
         "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
         "mobkit/agent_memory/remember" => Some((ACTION_AGENT_MEMORY_WRITE, identity)),
+        // Update is a supersede — a write within the record's lineage.
+        "mobkit/agent_memory/update" => Some((ACTION_AGENT_MEMORY_WRITE, identity)),
         "mobkit/agent_memory/forget" => Some((ACTION_AGENT_MEMORY_DELETE, identity)),
+        // Reads (recall/manifest) gate on agent.view for now, matching the
+        // shipped recall mapping. The per-scope read-action split
+        // (agent.memory.read etc., design doc §10.3) is a later phase.
         "mobkit/agent_memory/recall" => Some((ACTION_AGENT_VIEW, identity)),
+        "mobkit/agent_memory/manifest" => Some((ACTION_AGENT_VIEW, identity)),
         "mobkit/retire"
         | "mobkit/retire_member"
         | "mobkit/force_cancel_member"
@@ -4189,6 +4197,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                     if can_mutate && identity_runtime.agent_memory_supports_forget().await {
                         methods.push("mobkit/agent_memory/forget");
                     }
+                    if can_mutate && identity_runtime.agent_memory_supports_update().await {
+                        methods.push("mobkit/agent_memory/update");
+                    }
+                    if identity_runtime.agent_memory_supports_manifest().await {
+                        methods.push("mobkit/agent_memory/manifest");
+                    }
                 }
                 if can_mutate {
                     methods.push("mobkit/delete_identity");
@@ -4403,6 +4417,82 @@ async fn handle_console_runtime_rpc_with_visibility(
                         response_id,
                         None,
                         Some(crate::rpc::agent_memory_rpc_error("recall", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        "mobkit/agent_memory/update" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_update_params(&request.params) {
+                Ok(update_request) => match identity_runtime
+                    .update_agent_memory(
+                        &update_request.realm,
+                        &update_request.identity,
+                        &update_request.memory_id,
+                        update_request.memory,
+                    )
+                    .await
+                {
+                    Ok(new_id) => response_value(
+                        response_id,
+                        Some(json!({
+                            "memory_id": new_id,
+                            "supersedes": update_request.memory_id,
+                        })),
+                        None,
+                    ),
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("update", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        "mobkit/agent_memory/manifest" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_manifest_params(&request.params) {
+                Ok(manifest_request) => match identity_runtime
+                    .manifest_agent_memory(
+                        &manifest_request.realm,
+                        &manifest_request.identity,
+                        manifest_request.tier,
+                    )
+                    .await
+                {
+                    Ok(records) => {
+                        response_value(response_id, Some(json!({ "records": records })), None)
+                    }
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("manifest", err)),
                     ),
                 },
                 Err(err) => {

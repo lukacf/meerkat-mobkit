@@ -30,6 +30,9 @@ use super::types::{
     IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
     RosterContext, SessionSnapshot,
 };
+use crate::memory::records::{
+    ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta,
+};
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
@@ -463,6 +466,22 @@ impl IdentityRuntime {
             .is_some_and(|injector| injector.provider().supports_forget())
     }
 
+    pub async fn agent_memory_supports_update(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_supersede())
+    }
+
+    pub async fn agent_memory_supports_manifest(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_manifest())
+    }
+
     pub async fn remember_agent_memory(
         &self,
         realm: &str,
@@ -503,6 +522,70 @@ impl IdentityRuntime {
                 AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
             })?;
         provider.forget(realm, identity, memory_id).await
+    }
+
+    /// Supersede `memory_id` within its lineage (the D4 fix): the new
+    /// title/body/tags become the active record; the prior stays
+    /// retrievable with provenance.
+    pub async fn update_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory_id: &str,
+        memory: NewAgentMemory,
+    ) -> Result<MemoryId, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        let scope = MemoryScope::Identity {
+            realm: realm.to_string(),
+            identity: identity.as_str().to_string(),
+        };
+        let record = NewMemoryRecord {
+            kind: MemoryKind::Fact,
+            title: memory.title,
+            description: String::new(),
+            body: memory.body,
+            tags: memory.tags,
+            evidence: Vec::new(),
+            verification: None,
+        };
+        provider.supersede(&scope, memory_id, record).await
+    }
+
+    /// Tiered metadata manifest for the identity's own scope (§8.3).
+    pub async fn manifest_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        tier: ManifestTier,
+    ) -> Result<Vec<RecordMeta>, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        let scope = MemoryScope::Identity {
+            realm: realm.to_string(),
+            identity: identity.as_str().to_string(),
+        };
+        provider.manifest(&[scope], tier).await
     }
 
     pub async fn recall_agent_memory(

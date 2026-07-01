@@ -940,6 +940,76 @@ class AgentMemoryForgetResult:
 
 
 @dataclass(frozen=True)
+class AgentMemoryUpdateResult:
+    """Result of mobkit/agent_memory/update: the superseding record's id."""
+    memory_id: str
+    supersedes: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryUpdateResult:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_update_result must be an object")
+        memory_id = _require_non_empty_string(
+            data, "memory_id", "agent_memory_update_result"
+        )
+        supersedes = _require_non_empty_string(
+            data, "supersedes", "agent_memory_update_result"
+        )
+        return cls(memory_id=memory_id, supersedes=supersedes)
+
+
+@dataclass(frozen=True)
+class AgentMemoryRecordMeta:
+    """Manifest row: record metadata without the body (an index, not a dump)."""
+    id: str
+    kind: str
+    title: str
+    description: str
+    age_days: int | float
+    rank: int | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryRecordMeta:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_record_meta must be an object")
+        record_id = _require_non_empty_string(data, "id", "agent_memory_record_meta")
+        kind = _require_non_empty_string(data, "kind", "agent_memory_record_meta")
+        title = _require_non_empty_string(data, "title", "agent_memory_record_meta")
+        description = data.get("description", "")
+        if not isinstance(description, str):
+            raise ValueError("agent_memory_record_meta.description must be a string")
+        age_days = _require_number(data, "age_days", "agent_memory_record_meta")
+        rank = data.get("rank")
+        if rank is not None and not isinstance(rank, int):
+            raise ValueError("agent_memory_record_meta.rank must be an integer")
+        return cls(
+            id=record_id,
+            kind=kind,
+            title=title,
+            description=description,
+            age_days=age_days,
+            rank=rank,
+        )
+
+
+@dataclass(frozen=True)
+class AgentMemoryManifestResult:
+    """Envelope returned by mobkit/agent_memory/manifest."""
+    records: list[AgentMemoryRecordMeta]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryManifestResult:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_manifest_result must be an object")
+        records = data.get("records")
+        if not isinstance(records, list):
+            raise ValueError("agent_memory_manifest_result.records must be an array")
+        return cls(
+            records=[AgentMemoryRecordMeta.from_dict(record) for record in records]
+        )
+
+
+@dataclass(frozen=True)
 class CrossMobContactEntry:
     """An entry in the cross-mob contact directory."""
     mob_id: str

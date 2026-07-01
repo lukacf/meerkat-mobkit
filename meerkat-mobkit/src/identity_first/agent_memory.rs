@@ -16,6 +16,9 @@ use super::contracts::AgentCustomizer;
 use super::types::{
     AgentBuildContext, AgentBuildDraft, AgentIdentity, CustomizerError, DurableAgentSpec,
 };
+use crate::memory::records::{
+    ManifestTier, MemoryId, MemoryScope, NewMemoryRecord, ProposalId, RecordMeta, UsageEvent,
+};
 use crate::mob_handle_runtime::SessionCreatedContext;
 use async_trait::async_trait;
 use fs2::FileExt;
@@ -221,6 +224,74 @@ pub trait AgentMemoryProvider: Send + Sync {
     fn supports_forget(&self) -> bool {
         false
     }
+
+    // ---- v2 surface (docs/design/agent-memory-architecture.md §7.3) ----
+    //
+    // Default-Unsupported so existing providers (including the markdown
+    // store) stay valid implementations; capability advertisement gates on
+    // the `supports_*` flags exactly like remember/forget.
+
+    /// Metadata manifest over the composed scopes (§8.3). `WorkingSet(k)` is
+    /// the union of the top-K ranked records and the recent/unranked slice;
+    /// `Full` is every active record's metadata.
+    async fn manifest(
+        &self,
+        _scopes: &[MemoryScope],
+        _tier: ManifestTier,
+    ) -> Result<Vec<RecordMeta>, AgentMemoryError> {
+        Err(AgentMemoryError::Unsupported(
+            "provider does not support manifests".to_string(),
+        ))
+    }
+
+    fn supports_manifest(&self) -> bool {
+        false
+    }
+
+    /// Update-in-place with history (fixes D4): the new record supersedes
+    /// `prior` within its lineage and inherits its working-set rank.
+    async fn supersede(
+        &self,
+        _scope: &MemoryScope,
+        _prior: &str,
+        _record: NewMemoryRecord,
+    ) -> Result<MemoryId, AgentMemoryError> {
+        Err(AgentMemoryError::Unsupported(
+            "provider does not support supersede".to_string(),
+        ))
+    }
+
+    fn supports_supersede(&self) -> bool {
+        false
+    }
+
+    /// Mechanical usage-ledger updates (§9.2). Deliberately flag-less: it is
+    /// an internal coordinator surface, not an advertised RPC capability.
+    async fn mark_usage(
+        &self,
+        _ids: &[MemoryId],
+        _event: UsageEvent,
+    ) -> Result<(), AgentMemoryError> {
+        Err(AgentMemoryError::Unsupported(
+            "provider does not support usage marking".to_string(),
+        ))
+    }
+
+    /// Queue a record for steward-committed scopes (mob/operator — §7.2
+    /// write authority).
+    async fn propose(
+        &self,
+        _scope: &MemoryScope,
+        _record: NewMemoryRecord,
+    ) -> Result<ProposalId, AgentMemoryError> {
+        Err(AgentMemoryError::Unsupported(
+            "provider does not support proposals".to_string(),
+        ))
+    }
+
+    fn supports_propose(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -300,35 +371,8 @@ impl MarkdownAgentMemoryStore {
         &self,
         request: AgentMemoryRecallRequest,
     ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
-        let mut records = self.read_records(&request.realm, &request.identity)?;
-        if request.selection == AgentMemorySelection::Contextual {
-            let terms = recall_query_terms(&request);
-            if terms.is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut scored = records
-                .into_iter()
-                .filter_map(|record| {
-                    let score = record_relevance_score(&record, &terms);
-                    (score >= MIN_CONTEXTUAL_RELEVANCE_SCORE).then_some((score, record))
-                })
-                .collect::<Vec<_>>();
-            scored.sort_by(|(a_score, a), (b_score, b)| {
-                b_score
-                    .cmp(a_score)
-                    .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
-                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-            });
-            records = scored.into_iter().map(|(_, record)| record).collect();
-        } else {
-            records.sort_by(|a, b| {
-                b.updated_at_ms
-                    .cmp(&a.updated_at_ms)
-                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-            });
-        }
-        records.truncate(request.max_entries);
-        Ok(records)
+        let records = self.read_records(&request.realm, &request.identity)?;
+        Ok(select_recall_records(records, &request))
     }
 
     pub fn forget(
@@ -632,6 +676,44 @@ async fn recall_for_injection(
     }
 }
 
+/// Shared wire-compat recall selection: the contextual lexical scorer and
+/// the recency ordering, applied identically by the markdown store and the
+/// bundled SQLite store so `mobkit/agent_memory/recall` behaves the same
+/// regardless of backend.
+pub(crate) fn select_recall_records(
+    mut records: Vec<AgentMemoryRecord>,
+    request: &AgentMemoryRecallRequest,
+) -> Vec<AgentMemoryRecord> {
+    if request.selection == AgentMemorySelection::Contextual {
+        let terms = recall_query_terms(request);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let mut scored = records
+            .into_iter()
+            .filter_map(|record| {
+                let score = record_relevance_score(&record, &terms);
+                (score >= MIN_CONTEXTUAL_RELEVANCE_SCORE).then_some((score, record))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|(a_score, a), (b_score, b)| {
+            b_score
+                .cmp(a_score)
+                .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
+                .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+        });
+        records = scored.into_iter().map(|(_, record)| record).collect();
+    } else {
+        records.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+        });
+    }
+    records.truncate(request.max_entries);
+    records
+}
+
 fn append_markdown_record(path: &Path, record: &AgentMemoryRecord) -> Result<(), AgentMemoryError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
@@ -707,7 +789,9 @@ fn forget_markdown_record(
     })
 }
 
-fn read_markdown_records(path: &Path) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+pub(crate) fn read_markdown_records(
+    path: &Path,
+) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -1075,7 +1159,7 @@ fn recall_query_terms(request: &AgentMemoryRecallRequest) -> BTreeSet<String> {
     normalized
 }
 
-fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, AgentMemoryError> {
+pub(crate) fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, AgentMemoryError> {
     if tags.len() > MAX_MEMORY_TAGS {
         return Err(AgentMemoryError::InvalidRecord(format!(
             "tags must contain at most {MAX_MEMORY_TAGS} entries"
@@ -1131,7 +1215,7 @@ fn terms_from_value(value: &str) -> BTreeSet<String> {
     terms
 }
 
-fn compact_whitespace(value: &str) -> String {
+pub(crate) fn compact_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -1187,7 +1271,7 @@ fn escape_attr(value: &str) -> String {
     escape_xml_text(value).replace('"', "&quot;")
 }
 
-fn encode_path_segment(value: &str) -> String {
+pub(crate) fn encode_path_segment(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         let ch = byte as char;
@@ -1198,6 +1282,30 @@ fn encode_path_segment(value: &str) -> String {
         }
     }
     if out.is_empty() { "_".to_string() } else { out }
+}
+
+/// Inverse of [`encode_path_segment`] (best effort: malformed escapes pass
+/// through verbatim). Used by the SQLite store's markdown import to recover
+/// identities from per-identity markdown filenames.
+pub(crate) fn decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16)),
+                bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn now_ms() -> u64 {
@@ -1214,7 +1322,7 @@ fn now_ns() -> u128 {
         .unwrap_or(0)
 }
 
-fn new_memory_id(title: &str, body: &str) -> String {
+pub(crate) fn new_memory_id(title: &str, body: &str) -> String {
     static NEXT_MEMORY_ID_SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = NEXT_MEMORY_ID_SEQ.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();

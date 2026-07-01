@@ -19,6 +19,7 @@ pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
 pub mod member_comms_id;
+pub mod memory;
 pub mod mob_handle_runtime;
 pub mod mobpack;
 pub mod mocks;
@@ -113,6 +114,10 @@ pub use identity_first::{
     AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
     AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, MarkdownAgentMemoryStore,
     NewAgentMemory,
+};
+pub use memory::{
+    ManifestTier, MemoryKind, MemoryRecord, MemoryScope, NewMemoryRecord, RecordMeta,
+    SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp, TrustTier,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
