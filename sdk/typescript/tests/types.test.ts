@@ -25,6 +25,9 @@ import {
   parseDeliveryResult,
   parseDeliveryHistoryResult,
   parseMemoryQueryResult,
+  parseAgentMemoryRecord,
+  parseAgentMemoryRecallResult,
+  parseAgentMemoryForgetResult,
   parseMemoryStoreInfo,
   parseMemoryIndexResult,
   parseCallToolResult,
@@ -448,15 +451,155 @@ describe("parseDeliveryHistoryResult", () => {
 describe("parseMemoryQueryResult", () => {
   it("parses valid wire-format object", () => {
     const result = parseMemoryQueryResult({
+      assertions: [{
+        assertion_id: "a-1",
+        entity: "identity:luka",
+        topic: "preferences",
+        store: "knowledge_graph",
+        fact: "Prefers concise summaries.",
+        metadata: { source: "test" },
+        indexed_at_ms: 100,
+      }],
+      conflicts: [{
+        entity: "identity:luka",
+        topic: "preferences",
+        store: "knowledge_graph",
+        reason: "stale",
+        updated_at_ms: 200,
+      }],
+    });
+    assert.equal(result.assertions.length, 1);
+    assert.equal(result.assertions[0].assertionId, "a-1");
+    assert.equal(result.assertions[0].fact, "Prefers concise summaries.");
+    assert.equal(result.conflicts.length, 1);
+    assert.equal(result.conflicts[0].reason, "stale");
+    assert.equal(result.results.length, 2);
+  });
+
+  it("preserves legacy results when Rust fields are absent", () => {
+    const result = parseMemoryQueryResult({
       results: [{ key: "k1", value: "v1" }],
     });
+    assert.equal(result.assertions.length, 0);
+    assert.equal(result.conflicts.length, 0);
     assert.equal(result.results.length, 1);
     assert.deepEqual(result.results[0], { key: "k1", value: "v1" });
   });
 
   it("defaults missing fields", () => {
     const result = parseMemoryQueryResult({});
+    assert.deepEqual(result.assertions, []);
+    assert.deepEqual(result.conflicts, []);
     assert.deepEqual(result.results, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAgentMemoryRecord
+// ---------------------------------------------------------------------------
+
+describe("parseAgentMemoryRecord", () => {
+  it("parses valid wire-format object", () => {
+    const result = parseAgentMemoryRecord({
+      memory_id: "mem-1",
+      title: "School pickup",
+      body: "Pickup is before calendar planning.",
+      tags: ["calendar", "family"],
+      created_at_ms: 10,
+      updated_at_ms: 20,
+    });
+    assert.equal(result.memoryId, "mem-1");
+    assert.equal(result.title, "School pickup");
+    assert.equal(result.body, "Pickup is before calendar planning.");
+    assert.deepEqual(result.tags, ["calendar", "family"]);
+    assert.equal(result.createdAtMs, 10);
+    assert.equal(result.updatedAtMs, 20);
+  });
+
+  it("rejects malformed durable records", () => {
+    assert.throws(
+      () => parseAgentMemoryRecord({}),
+      /agent_memory_record\.memory_id must be a non-empty string/,
+    );
+    assert.throws(
+      () =>
+        parseAgentMemoryRecord({
+          memory_id: "mem-1",
+          title: "Title",
+          body: "Body",
+          tags: [42],
+          created_at_ms: 1,
+          updated_at_ms: 1,
+        }),
+      /agent_memory_record\.tags must be an array of strings/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAgentMemoryRecallResult
+// ---------------------------------------------------------------------------
+
+describe("parseAgentMemoryRecallResult", () => {
+  it("parses valid recall envelopes", () => {
+    const result = parseAgentMemoryRecallResult({
+      records: [{
+        memory_id: "mem-1",
+        title: "School pickup",
+        body: "Pickup is before calendar planning.",
+        tags: ["calendar", "family"],
+        created_at_ms: 10,
+        updated_at_ms: 20,
+      }],
+    });
+
+    assert.equal(result.records.length, 1);
+    assert.equal(result.records[0]!.memoryId, "mem-1");
+  });
+
+  it("rejects malformed recall envelopes", () => {
+    assert.throws(
+      () => parseAgentMemoryRecallResult({}),
+      /agent_memory_recall_result\.records must be an array/,
+    );
+    assert.throws(
+      () =>
+        parseAgentMemoryRecallResult({
+          records: [{ memory_id: "mem-1" }],
+        }),
+      /agent_memory_record\.title must be a non-empty string/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAgentMemoryForgetResult
+// ---------------------------------------------------------------------------
+
+describe("parseAgentMemoryForgetResult", () => {
+  it("parses valid wire-format object", () => {
+    const result = parseAgentMemoryForgetResult({
+      memory_id: "mem-1",
+      deleted: true,
+    });
+
+    assert.equal(result.memoryId, "mem-1");
+    assert.equal(result.deleted, true);
+  });
+
+  it("rejects malformed forget results", () => {
+    assert.throws(
+      () => parseAgentMemoryForgetResult({}),
+      /agent_memory_forget_result\.memory_id must be a non-empty string/,
+    );
+    assert.throws(
+      () =>
+        parseAgentMemoryForgetResult({
+          memory_id: "mem-1",
+          deleted: "yes",
+        }),
+      /agent_memory_forget_result\.deleted must be a boolean/,
+    );
   });
 });
 

@@ -27,14 +27,15 @@ use meerkat_mobkit::identity_first::orchestrator::{
 };
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
-    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
+    AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId, BridgeError,
+    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
     ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
     DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    ManagedPeerEdge, RosterContext, RosterError, RosterProvider, SessionBridge, SessionSnapshot,
-    TopologyContext, TopologyError,
+    ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, RosterContext, RosterError,
+    RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
 use meerkat_mobkit::{ErrorEvent, ErrorHook};
@@ -850,6 +851,8 @@ struct CountingBridge {
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
     deliver_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
+    delivered_content: tokio::sync::Mutex<Vec<String>>,
+    created_drafts: tokio::sync::Mutex<Vec<AgentBuildDraft>>,
     unregistered_session_ids: tokio::sync::Mutex<Vec<String>>,
     wires: tokio::sync::Mutex<Vec<(String, String)>>,
     current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
@@ -911,7 +914,7 @@ impl SessionBridge for CountingBridge {
         _identity: &AgentIdentity,
         _runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
-        _draft: &AgentBuildDraft,
+        draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.create_calls.fetch_add(1, Ordering::SeqCst);
@@ -925,6 +928,7 @@ impl SessionBridge for CountingBridge {
             .await
             .clone()
             .unwrap_or_else(|| session_id.clone());
+        self.created_drafts.lock().await.push(draft.clone());
         *self.deliver_session_id.lock().await = Some(created_session_id.clone());
         Ok(created_session_id)
     }
@@ -975,9 +979,13 @@ impl SessionBridge for CountingBridge {
     async fn deliver(
         &self,
         _runtime_id: &AgentRuntimeId,
-        _content: &meerkat_core::ContentInput,
+        content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.deliver_calls.fetch_add(1, Ordering::SeqCst);
+        self.delivered_content
+            .lock()
+            .await
+            .push(content.text_content());
         Ok(self
             .deliver_session_id
             .lock()
@@ -2238,6 +2246,74 @@ async fn identity_first_runtime_reset_unregisters_superseded_bridge_session() {
     assert!(
         unregistered.contains(&record.session_id.to_string()),
         "successful reset must unregister the superseded bridge session; unregistered={unregistered:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reset_applies_installed_customizer_to_fresh_session() {
+    struct ResetCustomizer;
+
+    #[async_trait]
+    impl AgentCustomizer for ResetCustomizer {
+        async fn customize_build(
+            &self,
+            context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            draft
+                .additional_instructions
+                .push(format!("reset memory for {}", context.identity.as_str()));
+            draft
+                .labels
+                .insert("customized".to_string(), "reset".to_string());
+            Ok(())
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
+    runtime
+        .set_agent_customizer(Some(Arc::new(ResetCustomizer)))
+        .await;
+
+    let id = make_identity("triage:main");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(g) => g.clone(),
+        _ => panic!("expected Acquired"),
+    };
+    let record = make_record("triage:main", 0, 5);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    runtime.reset(&id).await.unwrap();
+
+    let drafts = bridge.created_drafts.lock().await;
+    assert_eq!(drafts.len(), 1);
+    assert!(
+        drafts[0]
+            .additional_instructions
+            .contains(&"reset memory for triage:main".to_string())
+    );
+    assert_eq!(
+        drafts[0].labels.get("customized"),
+        Some(&"reset".to_string())
     );
 }
 
@@ -3782,21 +3858,45 @@ async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_mate
         .materialize(&make_identity("deep-investigator:singleton"))
         .await
         .unwrap();
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let identity = make_identity("deep-investigator:singleton");
+    memory_store
+        .remember(
+            "default",
+            &identity,
+            NewAgentMemory {
+                title: "Steer should not see this".to_string(),
+                body: "This prior memory must not be prepended to live steer.".to_string(),
+                tags: vec!["hello".to_string()],
+            },
+        )
+        .unwrap();
+    runtime
+        .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
+            memory_store,
+            AgentMemoryConfig {
+                selection: AgentMemorySelection::Always,
+                ..AgentMemoryConfig::default()
+            },
+        )))
+        .await;
     bridge.set_resume_delay(Duration::from_secs(5)).await;
 
     tokio::time::timeout(
         Duration::from_millis(250),
-        runtime.send_with_mode(
-            &make_identity("deep-investigator:singleton"),
-            &make_content(),
-            HandlingMode::Steer,
-        ),
+        runtime.send_with_mode(&identity, &make_content(), HandlingMode::Steer),
     )
     .await
     .expect("steer send must not wait for reachable peer materialization")
     .unwrap();
 
     assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        bridge.delivered_content.lock().await.as_slice(),
+        &["hello".to_string()],
+        "steer delivery must not prepend agent memory observations"
+    );
     assert_eq!(
         bridge.resume_calls.load(Ordering::SeqCst),
         0,

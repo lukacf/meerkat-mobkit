@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 pub const ACTION_AGENT_VIEW: &str = "agent.view";
 /// Send a message to an agent (console send / chat).
 pub const ACTION_AGENT_SEND: &str = "agent.send";
+/// Write durable identity-scoped memory records for future agent context.
+pub const ACTION_AGENT_MEMORY_WRITE: &str = "agent.memory.write";
+/// Delete durable identity-scoped memory records.
+pub const ACTION_AGENT_MEMORY_DELETE: &str = "agent.memory.delete";
 /// Create new members: ensure/spawn/fork helpers, run flows.
 pub const ACTION_AGENT_SPAWN: &str = "agent.spawn";
 /// Respawn an existing agent.
@@ -37,6 +41,8 @@ pub const ACTION_ACCESS_ADMIN: &str = "access.admin";
 pub const ACCESS_ACTIONS: &[&str] = &[
     ACTION_AGENT_VIEW,
     ACTION_AGENT_SEND,
+    ACTION_AGENT_MEMORY_WRITE,
+    ACTION_AGENT_MEMORY_DELETE,
     ACTION_AGENT_SPAWN,
     ACTION_AGENT_RESPAWN,
     ACTION_AGENT_RETIRE,
@@ -181,8 +187,8 @@ fn action_pattern_is_known(pattern: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix(".*") {
         return ACCESS_ACTIONS.iter().any(|action| {
             action
-                .rsplit_once('.')
-                .is_some_and(|(action_prefix, _)| action_prefix == prefix)
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
         });
     }
     ACCESS_ACTIONS.contains(&pattern)
@@ -264,7 +270,10 @@ mod tests {
     fn rules_require_known_actions() {
         let mut config = AccessControlConfig {
             admins: vec!["root@example.test".to_string()],
-            rules: vec![rule("r1", &["agent.view", "agent.*", "*"])],
+            rules: vec![rule(
+                "r1",
+                &["agent.view", "agent.memory.*", "agent.*", "*"],
+            )],
             ..AccessControlConfig::default()
         };
         assert!(validate_access_config(&config).is_ok());

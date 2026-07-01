@@ -11,8 +11,10 @@ use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore};
 use crate::contact_directory::ContactDirectory;
 use crate::identity_first::{
-    AgentCustomizer, AgentRuntimeServices, ContinuitySessionStoreAdapter, DurabilityPolicy,
-    IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, RosterContext,
+    AgentCustomizer, AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryProvider,
+    AgentMemoryRuntimeInjector, AgentRuntimeServices, ContinuitySessionStoreAdapter,
+    DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
+    LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
     RosterProvider, TopologyProvider, lazy_register_flow, restore_flow,
 };
 use crate::mob_handle_runtime::{
@@ -81,6 +83,9 @@ pub struct UnifiedRuntimeBuilder {
     roster_provider: Option<Arc<dyn RosterProvider>>,
     topology_provider: Option<Arc<dyn TopologyProvider>>,
     agent_customizer: Option<Arc<dyn AgentCustomizer>>,
+    agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
+    agent_memory_config: Option<AgentMemoryConfig>,
+    agent_memory_from_persistent_state: bool,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
@@ -212,6 +217,39 @@ impl UnifiedRuntimeBuilder {
     pub fn agent_customizer(mut self, customizer: Arc<dyn AgentCustomizer>) -> Self {
         self.agent_customizer = Some(customizer);
         self
+    }
+
+    /// Enable identity-first agent memory injection using the provided memory provider.
+    pub fn agent_memory(
+        mut self,
+        provider: Arc<dyn AgentMemoryProvider>,
+        config: AgentMemoryConfig,
+    ) -> Self {
+        self.agent_memory_provider = Some(provider);
+        self.agent_memory_config = Some(config);
+        self
+    }
+
+    /// Enable identity-first agent memory using the bundled markdown store
+    /// under `persistent_state()/agent-memory`.
+    pub fn persistent_agent_memory(mut self, config: AgentMemoryConfig) -> Self {
+        self.agent_memory_from_persistent_state = true;
+        self.agent_memory_config = Some(config);
+        self
+    }
+
+    fn composed_agent_customizer(
+        &self,
+        memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
+    ) -> Option<Arc<dyn AgentCustomizer>> {
+        match memory_provider {
+            Some(provider) => Some(Arc::new(AgentMemoryCustomizer::wrap(
+                self.agent_customizer.clone(),
+                provider,
+                self.agent_memory_config.clone().unwrap_or_default(),
+            ))),
+            None => self.agent_customizer.clone(),
+        }
     }
 
     /// Set how identity-first durable agents are materialized during build.
@@ -412,28 +450,50 @@ impl UnifiedRuntimeBuilder {
         let has_lease_provider = self.lease_provider.is_some();
         let has_roster_provider = self.roster_provider.is_some();
         let has_topology_provider = self.topology_provider.is_some();
-        let has_agent_customizer = self.agent_customizer.is_some();
+        let has_agent_memory =
+            self.agent_memory_provider.is_some() || self.agent_memory_from_persistent_state;
+        let has_agent_customizer = self.agent_customizer.is_some() || has_agent_memory;
         let has_identity_runtime_instance_id = self.identity_runtime_instance_id.is_some();
         let has_scratch_dir = self.scratch_dir.is_some();
-        let has_any_external = has_continuity_store
-            || has_lease_provider
+        let has_external_identity_storage =
+            has_continuity_store || has_lease_provider || has_scratch_dir;
+        let wants_identity_first = has_external_identity_storage
             || has_roster_provider
             || has_topology_provider
             || has_agent_customizer
-            || has_identity_runtime_instance_id
-            || has_scratch_dir;
-
-        // REQ-23: persistent_state and explicit providers are mutually exclusive
-        if has_persistent_state && has_any_external {
+            || has_identity_runtime_instance_id;
+        if self.agent_memory_provider.is_some() && self.agent_memory_from_persistent_state {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_state() and identity-first provider/customizer/scratch_dir setters \
-                 are mutually exclusive — use one path or the other"
+                "agent_memory() and persistent_agent_memory() are mutually exclusive".to_string(),
+            ));
+        }
+
+        if self.agent_memory_from_persistent_state && !has_persistent_state {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_agent_memory() requires persistent_state()".to_string(),
+            ));
+        }
+
+        // REQ-23: persistent_state and explicit continuity/lease/scratch
+        // providers are mutually exclusive. Roster/topology/customizers are
+        // identity inputs and can use the bundled persistent identity store.
+        if has_persistent_state && has_external_identity_storage {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_state() and identity-first continuity_store()/lease_provider()/scratch_dir() setters \
+                 are mutually exclusive — use one storage authority"
                     .to_string(),
             ));
         }
 
-        // REQ-24: external path requires all three
-        if has_any_external
+        if has_persistent_state && wants_identity_first && !has_roster_provider {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_state() identity-first path requires roster_provider()".to_string(),
+            ));
+        }
+
+        // REQ-24: external path requires all three storage inputs plus a roster.
+        if !has_persistent_state
+            && wants_identity_first
             && !(has_continuity_store
                 && has_lease_provider
                 && has_roster_provider
@@ -489,7 +549,7 @@ impl UnifiedRuntimeBuilder {
             None => self.resolve_mob_spec().await?,
         };
 
-        let module_config = self.module_config.unwrap_or_else(|| MobKitConfig {
+        let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
             modules: Vec::new(),
             discovery: crate::types::DiscoverySpec {
                 namespace: String::new(),
@@ -506,6 +566,36 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
         }
+        let persistent_agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>> =
+            if self.agent_memory_from_persistent_state {
+                let Some(state_path) = self.persistent_state_path.as_ref() else {
+                    return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                        "persistent_agent_memory() requires persistent_state()".to_string(),
+                    ));
+                };
+                let memory_path = state_path.join("agent-memory");
+                Some(Arc::new(
+                    MarkdownAgentMemoryStore::open(&memory_path).map_err(|e| {
+                        UnifiedRuntimeBuilderError::Io(format!(
+                            "failed to open agent memory store at {}: {e}",
+                            memory_path.display()
+                        ))
+                    })?,
+                ))
+            } else {
+                None
+            };
+        let agent_memory_provider = self
+            .agent_memory_provider
+            .clone()
+            .or(persistent_agent_memory_provider);
+        let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
+            AgentMemoryRuntimeInjector::new(
+                provider.clone(),
+                self.agent_memory_config.clone().unwrap_or_default(),
+            )
+        });
+        let agent_customizer = self.composed_agent_customizer(agent_memory_provider.clone());
 
         // The structural-events subscription cursor lives in the
         // persistent metadata adapter. For ephemeral builds this can be
@@ -543,7 +633,6 @@ impl UnifiedRuntimeBuilder {
             } else {
                 Arc::new(InMemoryConsoleLogStore::new())
             };
-
         let runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -597,20 +686,44 @@ impl UnifiedRuntimeBuilder {
             Some(bridge)
         };
 
-        let identity_first_context = if has_any_external {
-            let Some(continuity_store) = self.continuity_store.clone() else {
-                return Err(UnifiedRuntimeBuilderError::Bootstrap(
-                    UnifiedRuntimeBootstrapError::IdentityFirst(
-                        "identity-first validation requires continuity_store".to_string(),
-                    ),
-                ));
-            };
-            let Some(lease_provider) = self.lease_provider.clone() else {
-                return Err(UnifiedRuntimeBuilderError::Bootstrap(
-                    UnifiedRuntimeBootstrapError::IdentityFirst(
-                        "identity-first validation requires lease_provider".to_string(),
-                    ),
-                ));
+        let identity_first_context = if wants_identity_first {
+            let (continuity_store, lease_provider): (
+                Arc<dyn crate::identity_first::contracts::ContinuityStore>,
+                Arc<dyn crate::identity_first::contracts::LeaseProvider>,
+            ) = if let Some(state_path) = self.persistent_state_path.as_ref() {
+                let continuity_path = state_path.join("identity_continuity.sqlite");
+                let local_store = LocalContinuityStore::open(&continuity_path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to open identity_continuity.sqlite at {}: {e}",
+                        continuity_path.display()
+                    ))
+                })?;
+                let high_water = local_store.max_fencing_token().map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to read identity continuity fencing high-water at {}: {e}",
+                        continuity_path.display()
+                    ))
+                })?;
+                (
+                    Arc::new(local_store),
+                    Arc::new(LocalLeaseProvider::with_floor(high_water)),
+                )
+            } else {
+                let Some(continuity_store) = self.continuity_store.clone() else {
+                    return Err(UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::IdentityFirst(
+                            "identity-first validation requires continuity_store".to_string(),
+                        ),
+                    ));
+                };
+                let Some(lease_provider) = self.lease_provider.clone() else {
+                    return Err(UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::IdentityFirst(
+                            "identity-first validation requires lease_provider".to_string(),
+                        ),
+                    ));
+                };
+                (continuity_store, lease_provider)
             };
             let Some(roster_provider) = self.roster_provider.clone() else {
                 return Err(UnifiedRuntimeBuilderError::Bootstrap(
@@ -636,7 +749,10 @@ impl UnifiedRuntimeBuilder {
                 .with_runtime_services(AgentRuntimeServices::new(runtime.mob_runtime.handle())),
             );
             identity_runtime
-                .set_agent_customizer(self.agent_customizer.clone())
+                .set_agent_customizer(agent_customizer.clone())
+                .await;
+            identity_runtime
+                .set_agent_memory(agent_memory_injector.clone())
                 .await;
             identity_runtime.set_error_hook(self.error_hook.clone());
 
@@ -660,7 +776,7 @@ impl UnifiedRuntimeBuilder {
                         &identity_runtime,
                         &roster_specs,
                         self.topology_provider.as_deref(),
-                        self.agent_customizer.as_deref(),
+                        agent_customizer.as_deref(),
                     )
                     .await
                     .map_err(|err| {
@@ -729,7 +845,7 @@ impl UnifiedRuntimeBuilder {
                     identity_runtime,
                     roster_provider,
                     self.topology_provider.clone(),
-                    self.agent_customizer.clone(),
+                    agent_customizer.clone(),
                     Some(runtime.mob_runtime.handle().definition().clone()),
                     !matches!(
                         self.identity_bootstrap_mode,

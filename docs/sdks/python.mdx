@@ -48,6 +48,7 @@ rt = await (
     MobKit.builder()
     .mob_inline(MOB_TOML)                 # or .mob("mob.toml")
     .persistent_state(state_dir)
+    .agent_memory()                       # optional: durable per-agent memory
     .roster(my_roster)                    # provides DurableAgentSpec list
     .topology_provider(my_topology)       # optional: managed edges
     .agent_customizer(my_customizer)      # optional: per-identity prompts
@@ -267,6 +268,7 @@ rt = await (
 | `.routing(path)` | Routing config path |
 | `.scheduling(*files)` | Schedule config files |
 | `.memory(config)` | Memory configuration |
+| `.agent_memory(config=True, **options)` | Durable identity-scoped agent memory |
 | `.auth(config)` | Auth configuration |
 | `.gateway(bin_path)` | Path to rpc_gateway binary |
 | `.modules(specs)` | Module specifications |
@@ -285,6 +287,13 @@ Gateway memory config currently accepts Elephant as `{backend, endpoint}`.
 `memory(stores=...)` is intentionally rejected because the Rust gateway does not
 accept store lists in `mobkit/init`. JWT auth is the gateway-supported auth mode;
 Google/OIDC helpers are not accepted by gateway init today.
+
+Agent memory is configured with `.agent_memory()` and requires
+`.persistent_state(path)` plus an identity roster when using the bundled gateway
+store. Options include `realm`, `selection`, `max_entries`,
+`recall_timeout_ms`, `recall_failure_policy`, and `instruction_header`; the SDK
+serializes them to the gateway wire contract. Automatic injection defaults to a
+500 ms timeout and skips the memory block if recall fails.
 
 ## Runtime lifecycle
 
@@ -353,9 +362,12 @@ Most apps should use `send`, `subscribe_agent`/`subscribe_mob`, and `status`/`re
 | `gating_pending()` | `list[GatingPendingEntry]` | List pending gating decisions |
 | `gating_decide(...)` | `GatingDecisionResult` | Submit a gating decision |
 | `gating_audit(limit)` | `list[GatingAuditEntry]` | Retrieve gating audit log |
-| `memory_query(query)` | `MemoryQueryResult` | Query semantic memory |
+| `memory_query(filters)` | `MemoryQueryResult` | Query the assertion ledger by `entity`, `topic`, and `store` filters |
+| `remember_agent_memory(identity, ...)` | `AgentMemoryRecord` | Persist durable memory for an identity |
+| `recall_agent_memory(identity, ...)` | `list[AgentMemoryRecord]` | Recall identity-scoped durable memory |
+| `forget_agent_memory(identity, memory_id)` | `AgentMemoryForgetResult` | Delete identity-scoped durable memory |
 | `memory_stores()` | `list[MemoryStoreInfo]` | List available memory stores |
-| `memory_index(...)` | `MemoryIndexResult` | Index content into memory |
+| `memory_index(...)` | `MemoryIndexResult` | Index an operational memory assertion |
 
 ## Mobpack authoring
 
@@ -408,6 +420,7 @@ from meerkat_mobkit import (
     GatingAuditEntry, GatingPendingEntry,
     # Memory
     MemoryQueryResult, MemoryStoreInfo, MemoryIndexResult,
+    AgentMemoryRecord, AgentMemoryRecallResult, AgentMemoryForgetResult,
     # Events
     MobEvent, AgentEvent, EventStream,
     # Structural mob events + flow runs

@@ -432,6 +432,55 @@ impl UnifiedRuntime {
         self.identity_first_context.as_ref().map(|ctx| &ctx.runtime)
     }
 
+    pub async fn remember_agent_memory(
+        &self,
+        realm: &str,
+        identity: &crate::identity_first::AgentIdentity,
+        memory: crate::identity_first::NewAgentMemory,
+    ) -> Result<crate::identity_first::AgentMemoryRecord, crate::identity_first::AgentMemoryError>
+    {
+        let runtime = self.identity_runtime().ok_or_else(|| {
+            crate::identity_first::AgentMemoryError::InvalidConfig(
+                "identity-first runtime is not configured".to_string(),
+            )
+        })?;
+        runtime.remember_agent_memory(realm, identity, memory).await
+    }
+
+    pub async fn recall_agent_memory(
+        &self,
+        request: crate::identity_first::AgentMemoryRecallRequest,
+    ) -> Result<
+        Vec<crate::identity_first::AgentMemoryRecord>,
+        crate::identity_first::AgentMemoryError,
+    > {
+        let runtime = self.identity_runtime().ok_or_else(|| {
+            crate::identity_first::AgentMemoryError::InvalidConfig(
+                "identity-first runtime is not configured".to_string(),
+            )
+        })?;
+        runtime.recall_agent_memory(request).await
+    }
+
+    pub async fn forget_agent_memory(
+        &self,
+        realm: &str,
+        identity: &crate::identity_first::AgentIdentity,
+        memory_id: &str,
+    ) -> Result<
+        crate::identity_first::AgentMemoryForgetResult,
+        crate::identity_first::AgentMemoryError,
+    > {
+        let runtime = self.identity_runtime().ok_or_else(|| {
+            crate::identity_first::AgentMemoryError::InvalidConfig(
+                "identity-first runtime is not configured".to_string(),
+            )
+        })?;
+        runtime
+            .forget_agent_memory(realm, identity, memory_id)
+            .await
+    }
+
     pub fn attach_identity_first_context(
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,

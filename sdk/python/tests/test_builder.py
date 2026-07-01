@@ -56,6 +56,38 @@ class TestBuilderChain:
         with pytest.raises(ValueError, match="not supported by the Rust gateway"):
             MobKit.builder().memory(stores=["main"])
 
+    def test_agent_memory_default_reaches_runtime_options(self):
+        b = MobKit.builder().agent_memory()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] is True
+
+    def test_agent_memory_options_serialize_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            realm="family",
+            selection="contextual",
+            max_entries=3,
+            recall_timeout_ms=1200,
+            recall_failure_policy="fail",
+            instruction_header="Remember",
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "realm": "family",
+            "selection": "contextual",
+            "max_entries": 3,
+            "recall_timeout_ms": 1200,
+            "recall_failure_policy": "fail",
+            "instruction_header": "Remember",
+        }
+
+    def test_agent_memory_disable_reaches_runtime_options(self):
+        b = MobKit.builder().agent_memory(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {"enabled": False}
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

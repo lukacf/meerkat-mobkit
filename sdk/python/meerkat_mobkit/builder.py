@@ -23,6 +23,7 @@ class MobKitBuilderConfig:
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
     memory_config: Any | None = None
+    agent_memory_config: Any | None = None
     auth_config: Any | None = None
     implicit_delegate_idle_retire_secs: int | None = None
     implicit_delegate_idle_retire_configured: bool = False
@@ -138,6 +139,53 @@ class MobKitBuilder:
                 "pass memory.elephant(endpoint)"
             )
         self._config.memory_config = config
+        return self
+
+    def agent_memory(self, config: Any = True, **kwargs: Any) -> MobKitBuilder:
+        """Configure identity-scoped durable agent memory.
+
+        With no arguments this enables the gateway default. Keyword arguments
+        use Python names and serialize to the Rust gateway's snake_case wire
+        keys, for example ``agent_memory(selection="contextual", max_entries=3)``.
+        """
+        if kwargs:
+            if config is not True:
+                raise ValueError("agent_memory accepts either config or keyword options")
+            config = kwargs
+        if config is False or config is None:
+            self._config.agent_memory_config = {"enabled": False}
+            return self
+        if config is True:
+            self._config.agent_memory_config = True
+            return self
+        if not isinstance(config, dict):
+            self._config.agent_memory_config = config
+            return self
+
+        wire: dict[str, Any] = {}
+        if "enabled" in config:
+            wire["enabled"] = config["enabled"]
+        if "realm" in config:
+            wire["realm"] = config["realm"]
+        if "selection" in config:
+            wire["selection"] = config["selection"]
+        if "max_entries" in config:
+            wire["max_entries"] = config["max_entries"]
+        elif "maxEntries" in config:
+            wire["max_entries"] = config["maxEntries"]
+        if "recall_timeout_ms" in config:
+            wire["recall_timeout_ms"] = config["recall_timeout_ms"]
+        elif "recallTimeoutMs" in config:
+            wire["recall_timeout_ms"] = config["recallTimeoutMs"]
+        if "recall_failure_policy" in config:
+            wire["recall_failure_policy"] = config["recall_failure_policy"]
+        elif "recallFailurePolicy" in config:
+            wire["recall_failure_policy"] = config["recallFailurePolicy"]
+        if "instruction_header" in config:
+            wire["instruction_header"] = config["instruction_header"]
+        elif "instructionHeader" in config:
+            wire["instruction_header"] = config["instructionHeader"]
+        self._config.agent_memory_config = wire
         return self
 
     def auth(self, config: Any) -> MobKitBuilder:

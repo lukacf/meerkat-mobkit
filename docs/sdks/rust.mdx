@@ -140,6 +140,64 @@ UnifiedRuntime::builder()
     .await?
 ```
 
+For identity-first runtimes with a roster provider, the Rust builder can enable
+identity-scoped agent memory injection. Use the bundled markdown store with
+`persistent_state`:
+
+```rust
+use meerkat_mobkit::{AgentMemoryConfig, UnifiedRuntime};
+
+let runtime = UnifiedRuntime::builder()
+    .persistent_state(".mobkit/state")
+    .roster_provider(roster_provider)
+    .persistent_agent_memory(AgentMemoryConfig::default())
+    .build()
+    .await?;
+```
+
+The bundled provider stores records under
+`<persistent_state>/agent-memory/<realm>/<identity>.md`, recalls contextually by
+default, injects matching records into the next identity-first send, and also
+injects during materialize/resume/respawn/reset. To supply your own storage or
+retrieval authority, pass an `Arc<dyn AgentMemoryProvider>` with
+`.agent_memory(provider, config)`.
+
+Rust callers can write, read, and delete durable records through the unified
+runtime:
+
+```rust
+use meerkat_mobkit::{AgentMemoryRecallRequest, AgentMemorySelection, NewAgentMemory};
+
+let record = runtime
+    .remember_agent_memory(
+        "default",
+        &identity,
+        NewAgentMemory {
+            title: "Deployment preference".into(),
+            body: "Use the staging realm before production deploys.".into(),
+            tags: vec!["deploy".into()],
+        },
+    )
+    .await?;
+
+let records = runtime
+    .recall_agent_memory(AgentMemoryRecallRequest {
+        identity: identity.clone(),
+        realm: "default".into(),
+        selection: AgentMemorySelection::Contextual,
+        query_text: Some("What should I check before deploying?".into()),
+        query_terms: vec!["deploy".into()],
+        max_entries: 4,
+    })
+    .await?;
+
+if let Some(record) = records.first() {
+    runtime
+        .forget_agent_memory("default", &identity, &record.memory_id)
+        .await?;
+}
+```
+
 ## Module routing
 
 ### `route_module_call`

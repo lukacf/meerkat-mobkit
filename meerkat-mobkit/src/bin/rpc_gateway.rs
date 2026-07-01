@@ -72,6 +72,12 @@ struct GatewayRuntimeOptions {
     console_fetch_timeout_ms: Option<u64>,
     access: Option<meerkat_mobkit::AccessController>,
     demo_llm: bool,
+    agent_memory: Option<GatewayAgentMemoryOptions>,
+}
+
+struct GatewayAgentMemoryOptions {
+    config: meerkat_mobkit::AgentMemoryConfig,
+    path: std::path::PathBuf,
 }
 
 impl Default for GatewayRuntimeOptions {
@@ -90,6 +96,7 @@ impl Default for GatewayRuntimeOptions {
             console_fetch_timeout_ms: None,
             access: None,
             demo_llm: false,
+            agent_memory: None,
         }
     }
 }
@@ -545,6 +552,109 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_parse_agent_memory_defaults() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": true
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+
+        assert_eq!(agent_memory.config.realm, "default");
+        assert_eq!(
+            agent_memory.config.selection,
+            meerkat_mobkit::AgentMemorySelection::Contextual
+        );
+        assert_eq!(agent_memory.config.recall_timeout_ms, 500);
+        assert_eq!(
+            agent_memory.config.recall_failure_policy,
+            meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip
+        );
+        assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_recall_policy() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "recall_timeout_ms": 1200,
+                    "recall_failure_policy": "fail"
+                }
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+
+        assert_eq!(agent_memory.config.recall_timeout_ms, 1200);
+        assert_eq!(
+            agent_memory.config.recall_failure_policy,
+            meerkat_mobkit::AgentMemoryRecallFailurePolicy::Fail
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_non_boolean_agent_memory_enabled() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "enabled": "false"
+                }
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("non-boolean agent memory enabled should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("enabled"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_agent_memory_without_state_path() {
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": true
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, None) {
+            Ok(_) => panic!("agent memory without path should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("agent_memory"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_agent_memory_path_override() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "path": "/tmp/other-agent-memory"
+                }
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("agent memory path override should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("path"), "{err}");
+    }
+
+    #[test]
     fn gateway_runtime_options_reject_zero_max_sessions() {
         let params = json!({
             "runtime_options": {
@@ -585,6 +695,7 @@ fn parse_gateway_runtime_options(
         "demo_llm",
         "max_sessions",
         "event_log",
+        "agent_memory",
         "implicit_delegate_idle_retire_secs",
         "implicit_delegate_idle_sweep_interval_ms",
     ];
@@ -606,6 +717,9 @@ fn parse_gateway_runtime_options(
             memory_config,
             persistent_state,
         )?);
+    }
+    if let Some(agent_memory) = runtime_options.get("agent_memory") {
+        parsed.agent_memory = parse_gateway_agent_memory_config(agent_memory, persistent_state)?;
     }
     if let Some(path) = runtime_options
         .get("routing_config_path")
@@ -1018,6 +1132,158 @@ fn parse_gateway_memory_config(
     Ok(MemoryBackendConfig::Elephant(ElephantMemoryBackendConfig {
         endpoint: endpoint.to_string(),
         state_path: state_path.to_string_lossy().to_string(),
+    }))
+}
+
+fn parse_gateway_agent_memory_config(
+    agent_memory: &Value,
+    persistent_state: Option<&std::path::Path>,
+) -> Result<Option<GatewayAgentMemoryOptions>, String> {
+    if let Some(enabled) = agent_memory.as_bool() {
+        if !enabled {
+            return Ok(None);
+        }
+        let path = persistent_state
+            .ok_or_else(|| {
+                "runtime_options.agent_memory=true requires persistent_state".to_string()
+            })?
+            .join("agent-memory");
+        return Ok(Some(GatewayAgentMemoryOptions {
+            config: meerkat_mobkit::AgentMemoryConfig::default(),
+            path,
+        }));
+    }
+
+    let object = agent_memory
+        .as_object()
+        .ok_or_else(|| "runtime_options.agent_memory must be a boolean or object".to_string())?;
+    let supported = [
+        "enabled",
+        "realm",
+        "selection",
+        "max_entries",
+        "recall_timeout_ms",
+        "recall_failure_policy",
+        "instruction_header",
+    ];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        let enabled = enabled
+            .as_bool()
+            .ok_or_else(|| "runtime_options.agent_memory.enabled must be a boolean".to_string())?;
+        if !enabled {
+            return Ok(None);
+        }
+    }
+
+    let realm = object
+        .get("realm")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string();
+    let selection = match object
+        .get("selection")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("contextual")
+    {
+        "always" => meerkat_mobkit::AgentMemorySelection::Always,
+        "contextual" => meerkat_mobkit::AgentMemorySelection::Contextual,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.selection must be 'always' or 'contextual' (got '{other}')"
+            ));
+        }
+    };
+    let max_entries = match object.get("max_entries") {
+        None => 8,
+        Some(value) => {
+            let Some(value) = value.as_u64() else {
+                return Err(
+                    "runtime_options.agent_memory.max_entries must be a positive integer"
+                        .to_string(),
+                );
+            };
+            if value == 0 || value > 64 {
+                return Err(
+                    "runtime_options.agent_memory.max_entries must be between 1 and 64".to_string(),
+                );
+            }
+            value as usize
+        }
+    };
+    let recall_timeout_ms = match object.get("recall_timeout_ms") {
+        None => 500,
+        Some(value) => {
+            let Some(value) = value.as_u64() else {
+                return Err(
+                    "runtime_options.agent_memory.recall_timeout_ms must be a positive integer"
+                        .to_string(),
+                );
+            };
+            if value == 0 || value > 30_000 {
+                return Err(
+                    "runtime_options.agent_memory.recall_timeout_ms must be between 1 and 30000"
+                        .to_string(),
+                );
+            }
+            value
+        }
+    };
+    let recall_failure_policy = match object
+        .get("recall_failure_policy")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("skip")
+    {
+        "skip" => meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip,
+        "fail" => meerkat_mobkit::AgentMemoryRecallFailurePolicy::Fail,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.recall_failure_policy must be 'skip' or 'fail' (got '{other}')"
+            ));
+        }
+    };
+    let instruction_header = match object.get("instruction_header") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "runtime_options.agent_memory.instruction_header must be a non-empty string"
+                        .to_string()
+                })?
+                .to_string(),
+        ),
+    };
+    let path = persistent_state
+        .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
+        .join("agent-memory");
+
+    Ok(Some(GatewayAgentMemoryOptions {
+        config: meerkat_mobkit::AgentMemoryConfig {
+            realm,
+            selection,
+            max_entries,
+            recall_timeout_ms,
+            recall_failure_policy,
+            instruction_header,
+        },
+        path,
     }))
 }
 
@@ -1743,6 +2009,13 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
+    if gateway_options.agent_memory.is_some() && !has_roster_provider {
+        fail_init(
+            &request_id,
+            -32602,
+            "runtime_options.agent_memory requires an identity-first roster provider".to_string(),
+        );
+    }
     let default_llm_client: Option<Arc<dyn meerkat_client::LlmClient>> =
         match gateway_options.demo_llm {
             true => {
@@ -2216,13 +2489,55 @@ external_addressable = true
             } else {
                 None
             };
-        let customizer: Option<
+        let base_customizer: Option<
             Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
         > = if has_agent_customizer {
             Some(Arc::new(GatewayAgentCustomizer::new(bridge.clone())))
         } else {
             None
         };
+        let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
+            if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
+                let store = Arc::new(
+                    meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
+                        .unwrap_or_else(|e| {
+                            fail_init(
+                                &request_id,
+                                -32603,
+                                format!("failed to open agent memory store: {e}"),
+                            );
+                        }),
+                );
+                Some(store)
+            } else {
+                None
+            };
+        let customizer: Option<
+            Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
+        > = if let (Some(agent_memory), Some(provider)) = (
+            gateway_options.agent_memory.as_ref(),
+            agent_memory_provider.clone(),
+        ) {
+            Some(Arc::new(meerkat_mobkit::AgentMemoryCustomizer::wrap(
+                base_customizer,
+                provider,
+                agent_memory.config.clone(),
+            )))
+        } else {
+            base_customizer
+        };
+        let agent_memory_injector = if let (Some(agent_memory), Some(provider)) = (
+            gateway_options.agent_memory.as_ref(),
+            agent_memory_provider.clone(),
+        ) {
+            Some(meerkat_mobkit::AgentMemoryRuntimeInjector::new(
+                provider,
+                agent_memory.config.clone(),
+            ))
+        } else {
+            None
+        };
+        irt.set_agent_memory(agent_memory_injector).await;
 
         // Call restore_flow to bootstrap identities from the roster provider
         let roster_specs = roster
@@ -2264,6 +2579,7 @@ external_addressable = true
             roster_provider: roster,
             topology_provider: topology,
             customizer,
+            agent_memory_provider,
         })
     } else {
         None

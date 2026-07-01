@@ -238,31 +238,92 @@ Return the gating audit log (most recent entries, bounded by retention limit).
 
 ### `mobkit/memory/index`
 
-Index content into Elephant's knowledge store.
+Record an operational memory assertion or conflict signal. This surface is the
+MobKit assertion ledger used by routing/gating flows; it is not semantic/vector
+document search. Elephant may be configured as the backing health-checked
+adapter, but the stock RPC contract stores and filters canonical assertions.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `content` | `string` | yes | Text content to index |
-| `source_id` | `string` | yes | Identifier for the content source |
-| `metadata` | `object` | no | Additional metadata for filtering |
+| `entity` | `string` | yes | Entity the assertion is about |
+| `topic` | `string` | yes | Topic or slot within that entity |
+| `store` | `string` | no | One of `knowledge_graph`, `vector`, `timeline`, `todo`, or `top_of_mind` |
+| `fact` | `string` | yes unless `conflict=true` | Assertion text |
+| `metadata` | `object` | no | JSON metadata stored with the assertion |
+| `conflict` | `boolean` | no | Marks the write as a conflict signal instead of a normal assertion |
+| `conflict_reason` | `string` | no | Explanation for a conflict signal |
 </Accordion>
 
 ### `mobkit/memory/query`
 
-Query indexed content by semantic similarity.
+Query stored assertions and conflict signals by exact filters.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `query` | `string` | yes | Natural language query |
-| `limit` | `integer` | no | Maximum results (default: 10) |
-| `filters` | `object` | no | Metadata filters |
+| `entity` | `string` | no | Return only assertions/conflicts for this entity |
+| `topic` | `string` | no | Return only assertions/conflicts for this topic |
+| `store` | `string` | no | One of `knowledge_graph`, `vector`, `timeline`, `todo`, or `top_of_mind` |
 </Accordion>
 
 ### `mobkit/memory/stores`
 
 Return information about configured memory backends.
+
+Agent-memory methods are available over the SDK JSON-RPC gateway and over
+console `POST /console/rpc` when the identity runtime has an agent-memory
+provider configured. Console callers can recall only identities they may view;
+`remember` and `forget` also require mutating console access plus
+`agent.memory.write` and `agent.memory.delete` respectively.
+
+### `mobkit/agent_memory/remember`
+
+Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional Elephant enrichment or extraction, when supplied by a custom provider, is out of band.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `title` | `string` | yes | Short record title, max 200 bytes |
+| `body` | `string` | yes | Memory body to inject later as a quoted observation, max 64 KiB |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `tags` | `string[]` | no | Optional labels for provider-side retrieval, max 32 entries and 64 bytes each |
+</Accordion>
+
+### `mobkit/agent_memory/recall`
+
+Read identity-scoped agent memory records from the configured agent memory provider. This exposes the same durable record set used for per-turn and build-context injection. Unlike automatic injection, explicit recall reports provider errors to the caller.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `selection` | `"always" \| "contextual"` | no | Retrieval mode, default `"contextual"` |
+| `query_text` | `string` | no | Raw query text for contextual providers, max 16 KiB |
+| `query_terms` | `string[]` | no | Additional deterministic terms for contextual providers |
+| `max_entries` | `integer` | no | Maximum records, default `8`, max `64` |
+</Accordion>
+
+### `mobkit/agent_memory/forget`
+
+Delete one identity-scoped agent memory record from the configured provider. Providers that do not support deletes do not advertise this method in `mobkit/capabilities`. `forget` prevents future provider recall and future automatic injection; it cannot remove text that has already been delivered into an active model context.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | yes | Durable `AgentIdentity` that owns the memory |
+| `realm` | `string` | no | Memory realm, default `"default"` |
+| `memory_id` | `string` | yes | Durable memory record id returned by `remember` or `recall` |
+</Accordion>
+
+<Accordion title="Result">
+| Field | Type | Description |
+|-------|------|-------------|
+| `memory_id` | `string` | Requested memory id |
+| `deleted` | `boolean` | `true` when a record was removed, `false` when it was already absent |
+</Accordion>
 
 ---
 

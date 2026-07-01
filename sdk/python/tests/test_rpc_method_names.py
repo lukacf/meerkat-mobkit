@@ -71,6 +71,89 @@ async def test_attach_session_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_agent_memory_rpc_names_and_params():
+    """Agent memory helpers must hit the first-class durable memory RPCs."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/agent_memory/remember": {
+            "memory_id": "mem-1",
+            "title": "School pickup",
+            "body": "Pickup is before calendar planning.",
+            "tags": ["calendar", "family"],
+            "created_at_ms": 10,
+            "updated_at_ms": 20,
+        },
+        "mobkit/agent_memory/recall": {
+            "records": [{
+                "memory_id": "mem-1",
+                "title": "School pickup",
+                "body": "Pickup is before calendar planning.",
+                "tags": ["calendar", "family"],
+                "created_at_ms": 10,
+                "updated_at_ms": 20,
+            }],
+        },
+        "mobkit/agent_memory/forget": {
+            "memory_id": "mem-1",
+            "deleted": True,
+        },
+    })
+
+    remembered = await handle.remember_agent_memory(
+        "identity:luka",
+        realm="family",
+        title="School pickup",
+        body="Pickup is before calendar planning.",
+        tags=["family", "calendar"],
+    )
+    recalled = await handle.recall_agent_memory(
+        "identity:luka",
+        realm="family",
+        selection="contextual",
+        query_text="Where is pickup?",
+        query_terms=["pickup"],
+        max_entries=4,
+    )
+    forgotten = await handle.forget_agent_memory(
+        "identity:luka", "mem-1", realm="family"
+    )
+
+    assert calls == [
+        (
+            "mobkit/agent_memory/remember",
+            {
+                "identity": "identity:luka",
+                "realm": "family",
+                "title": "School pickup",
+                "body": "Pickup is before calendar planning.",
+                "tags": ["family", "calendar"],
+            },
+        ),
+        (
+            "mobkit/agent_memory/recall",
+            {
+                "identity": "identity:luka",
+                "realm": "family",
+                "selection": "contextual",
+                "query_text": "Where is pickup?",
+                "query_terms": ["pickup"],
+                "max_entries": 4,
+            },
+        ),
+        (
+            "mobkit/agent_memory/forget",
+            {
+                "identity": "identity:luka",
+                "memory_id": "mem-1",
+                "realm": "family",
+            },
+        ),
+    ]
+    assert remembered.memory_id == "mem-1"
+    assert recalled[0].memory_id == "mem-1"
+    assert forgotten.deleted is True
+
+
+@pytest.mark.asyncio
 async def test_mobpack_editor_catalog_rpc_names():
     handle, calls = make_mock_mob_handle({
         "mobkit/tools/catalog": {
@@ -474,6 +557,47 @@ async def test_send_with_attachments_uses_multipart(monkeypatch):
     assert captured["url"] == "http://127.0.0.1:8765/console/rpc/multipart"
     assert result.accepted is True
     assert result.session_id == "s-1"
+
+
+@pytest.mark.asyncio
+async def test_memory_query_uses_assertion_filter_params():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/memory/query": {
+            "assertions": [],
+            "conflicts": [],
+        }
+    })
+
+    await handle.memory_query({
+        "entity": "identity:ops",
+        "topic": "deployment",
+        "store": "knowledge_graph",
+    })
+
+    assert calls[0][0] == "mobkit/memory/query"
+    assert calls[0][1] == {
+        "entity": "identity:ops",
+        "topic": "deployment",
+        "store": "knowledge_graph",
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_query_keeps_legacy_string_wire_shape():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/memory/query": {
+            "assertions": [],
+            "conflicts": [],
+        }
+    })
+
+    await handle.memory_query("legacy search text", store="knowledge_graph")
+
+    assert calls[0][0] == "mobkit/memory/query"
+    assert calls[0][1] == {
+        "query": "legacy search text",
+        "store": "knowledge_graph",
+    }
 
 
 @pytest.mark.asyncio

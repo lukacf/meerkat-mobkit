@@ -39,6 +39,9 @@ from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
 from .types import (
+    AgentMemoryForgetResult,
+    AgentMemoryRecallResult,
+    AgentMemoryRecord,
     CallToolResult,
     CapabilitiesResult,
     DeliveryHistoryResult,
@@ -305,6 +308,10 @@ class MobKitRuntime:
             runtime_options["scheduling_files"] = self._config.scheduling_files
         if self._config.memory_config:
             runtime_options["memory_config"] = _serialize_config(self._config.memory_config)
+        if self._config.agent_memory_config is not None:
+            runtime_options["agent_memory"] = _serialize_config(
+                self._config.agent_memory_config
+            )
         if self._config.auth_config:
             runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
         if self._config.event_log:
@@ -723,10 +730,88 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/delivery/send", kwargs)
         return DeliveryResult.from_dict(raw)
 
-    async def memory_query(self, query: str, **kwargs: Any) -> MemoryQueryResult:
-        """Query a memory store by natural-language assertion."""
-        raw = await self._runtime._rpc("mobkit/memory/query", {"query": query, **kwargs})
+    async def memory_query(
+        self,
+        query: str | dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> MemoryQueryResult:
+        """Query the assertion ledger by entity/topic/store filters.
+
+        Passing a string preserves the legacy wire shape by sending it as
+        ``query``; the stock runtime filters by ``entity``, ``topic``, and
+        ``store``.
+        """
+        if isinstance(query, dict):
+            params = {**query, **kwargs}
+        elif query is None:
+            params = {**kwargs}
+        elif isinstance(query, str):
+            params = {"query": query, **kwargs}
+        else:
+            raise TypeError("memory_query query must be a string, dict, or None")
+        raw = await self._runtime._rpc("mobkit/memory/query", params)
         return MemoryQueryResult.from_dict(raw)
+
+    async def remember_agent_memory(
+        self,
+        identity: str,
+        *,
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        realm: str | None = None,
+    ) -> AgentMemoryRecord:
+        """Persist a durable memory record for an identity-scoped agent."""
+        params: dict[str, Any] = {
+            "identity": identity,
+            "title": title,
+            "body": body,
+        }
+        if realm is not None:
+            params["realm"] = realm
+        if tags is not None:
+            params["tags"] = list(tags)
+        raw = await self._runtime._rpc("mobkit/agent_memory/remember", params)
+        return AgentMemoryRecord.from_dict(raw)
+
+    async def recall_agent_memory(
+        self,
+        identity: str,
+        *,
+        realm: str | None = None,
+        selection: str | None = None,
+        query_text: str | None = None,
+        query_terms: list[str] | None = None,
+        max_entries: int | None = None,
+    ) -> list[AgentMemoryRecord]:
+        """Recall durable memory records for an identity-scoped agent."""
+        params: dict[str, Any] = {"identity": identity}
+        if realm is not None:
+            params["realm"] = realm
+        if selection is not None:
+            params["selection"] = selection
+        if query_text is not None:
+            params["query_text"] = query_text
+        if query_terms is not None:
+            params["query_terms"] = list(query_terms)
+        if max_entries is not None:
+            params["max_entries"] = max_entries
+        raw = await self._runtime._rpc("mobkit/agent_memory/recall", params)
+        return list(AgentMemoryRecallResult.from_dict(raw).records)
+
+    async def forget_agent_memory(
+        self,
+        identity: str,
+        memory_id: str,
+        *,
+        realm: str | None = None,
+    ) -> AgentMemoryForgetResult:
+        """Delete a durable memory record for an identity-scoped agent."""
+        params: dict[str, Any] = {"identity": identity, "memory_id": memory_id}
+        if realm is not None:
+            params["realm"] = realm
+        raw = await self._runtime._rpc("mobkit/agent_memory/forget", params)
+        return AgentMemoryForgetResult.from_dict(raw)
 
     async def call_tool(
         self, module_id: str, tool: str, arguments: dict[str, Any] | None = None

@@ -31,8 +31,9 @@ use meerkat_mobkit::identity_first::{
 };
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
-    AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration, ConsoleVisibility,
-    JsonRpcResponse, MobKitConsoleAggregator, handle_unified_rpc_json,
+    AgentMemoryConfig, AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration,
+    ConsoleVisibility, JsonRpcResponse, MobKitConsoleAggregator, NewAgentMemory,
+    handle_unified_rpc_json,
 };
 use serde_json::json;
 
@@ -510,6 +511,88 @@ async fn identity_first_builder_bootstraps_and_exposes_identity_runtime() {
         status.runtime_mode,
         Some(meerkat_mob::MobRuntimeMode::TurnDriven)
     );
+}
+
+#[tokio::test]
+async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_path = tmp.path().join("state");
+    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
+
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .persistent_state(&state_path)
+            .roster_provider(roster)
+            .persistent_agent_memory(AgentMemoryConfig::default())
+            .identity_runtime_instance_id("builder-persistent-memory-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("persistent_state identity-first runtime with agent memory should bootstrap");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed");
+    let status = identity_runtime
+        .status(&AgentIdentity::parse("agent:alpha").unwrap())
+        .await
+        .expect("identity should be active");
+
+    assert_eq!(status.profile.unwrap().as_str(), "default");
+    assert!(state_path.join("identity_continuity.sqlite").exists());
+    assert!(state_path.join("agent-memory").exists());
+
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let written = runtime
+        .remember_agent_memory(
+            "default",
+            &identity,
+            NewAgentMemory {
+                title: "Passport location".to_string(),
+                body: "Passport is in the blue travel folder.".to_string(),
+                tags: vec!["travel".to_string()],
+            },
+        )
+        .await
+        .expect("runtime should expose bundled persistent memory writes");
+    assert_eq!(written.title, "Passport location");
+
+    let recalled = runtime
+        .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
+            identity: identity.clone(),
+            realm: "default".to_string(),
+            query_text: Some("where is my passport?".to_string()),
+            query_terms: vec!["passport".to_string()],
+            selection: meerkat_mobkit::AgentMemorySelection::Contextual,
+            max_entries: 8,
+        })
+        .await
+        .expect("runtime should expose bundled persistent memory reads");
+
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(recalled[0].body, "Passport is in the blue travel folder.");
+
+    let forgotten = runtime
+        .forget_agent_memory("default", &identity, &written.memory_id)
+        .await
+        .expect("runtime should expose bundled persistent memory deletes");
+    assert_eq!(forgotten.memory_id, written.memory_id);
+    assert!(forgotten.deleted);
+
+    let after_forget = runtime
+        .recall_agent_memory(meerkat_mobkit::AgentMemoryRecallRequest {
+            identity,
+            realm: "default".to_string(),
+            query_text: Some("where is my passport?".to_string()),
+            query_terms: vec!["passport".to_string()],
+            selection: meerkat_mobkit::AgentMemorySelection::Contextual,
+            max_entries: 8,
+        })
+        .await
+        .expect("runtime should expose empty reads after deleting bundled persistent memory");
+    assert!(after_forget.is_empty());
 }
 
 #[tokio::test]

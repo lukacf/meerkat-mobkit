@@ -47,6 +47,7 @@ function createMockRuntime(): {
     routingConfigPath: null,
     schedulingFiles: [],
     memoryConfig: null,
+    agentMemoryConfig: null,
     authConfig: null,
     implicitDelegateIdleRetireSecs: undefined,
     maxSessions: null,
@@ -139,6 +140,25 @@ describe("MobKitRuntime", () => {
       params.runtime_options.access_config_path,
       "config/access.toml",
     );
+  });
+
+  it("builds agent_memory runtime option", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.agentMemoryConfig = {
+      selection: "contextual",
+      max_entries: 8,
+      recall_timeout_ms: 1200,
+      recall_failure_policy: "fail",
+    };
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.deepEqual(params.runtime_options.agent_memory, {
+      selection: "contextual",
+      max_entries: 8,
+      recall_timeout_ms: 1200,
+      recall_failure_policy: "fail",
+    });
   });
 });
 
@@ -1347,6 +1367,29 @@ describe("MobHandle.memoryQuery()", () => {
   it("sends mobkit/memory/query", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
+      assertions: [{
+        assertion_id: "a-1",
+        entity: "foo",
+        topic: "bar",
+        store: "knowledge_graph",
+        fact: "Fact",
+        indexed_at_ms: 10,
+      }],
+      conflicts: [],
+    }));
+
+    const result = await handle.memoryQuery({ entity: "foo", topic: "bar", store: "main" });
+    assert.equal(calls[0].method, "mobkit/memory/query");
+    assert.equal(calls[0].params!.entity, "foo");
+    assert.equal(calls[0].params!.topic, "bar");
+    assert.equal(calls[0].params!.store, "main");
+    assert.equal(result.assertions.length, 1);
+    assert.equal(result.results.length, 1);
+  });
+
+  it("keeps legacy free-form query callers wire-compatible", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
       results: [{ entity: "foo", topic: "bar" }],
     }));
 
@@ -1400,6 +1443,102 @@ describe("MobHandle.memoryIndex()", () => {
     assert.equal(result.topic, "preferences");
     assert.equal(result.store, "main");
     assert.equal(result.assertionId, "assert-1");
+  });
+});
+
+describe("MobHandle.rememberAgentMemory()", () => {
+  it("sends mobkit/agent_memory/remember and parses the record", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      memory_id: "mem-1",
+      title: "School pickup",
+      body: "Pickup is before calendar planning.",
+      tags: ["calendar", "family"],
+      created_at_ms: 10,
+      updated_at_ms: 20,
+    }));
+
+    const result = await handle.rememberAgentMemory("identity:luka", {
+      realm: "family",
+      title: "School pickup",
+      body: "Pickup is before calendar planning.",
+      tags: ["family", "calendar"],
+    });
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/remember");
+    assert.deepEqual(calls[0].params, {
+      identity: "identity:luka",
+      realm: "family",
+      title: "School pickup",
+      body: "Pickup is before calendar planning.",
+      tags: ["family", "calendar"],
+    });
+    assert.equal(result.memoryId, "mem-1");
+    assert.equal(result.title, "School pickup");
+    assert.equal(result.body, "Pickup is before calendar planning.");
+    assert.deepEqual(result.tags, ["calendar", "family"]);
+    assert.equal(result.createdAtMs, 10);
+    assert.equal(result.updatedAtMs, 20);
+  });
+});
+
+describe("MobHandle.recallAgentMemory()", () => {
+  it("sends mobkit/agent_memory/recall and parses records", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      records: [{
+        memory_id: "mem-1",
+        title: "School pickup",
+        body: "Pickup is before calendar planning.",
+        tags: ["calendar", "family"],
+        created_at_ms: 10,
+        updated_at_ms: 20,
+      }],
+    }));
+
+    const result = await handle.recallAgentMemory("identity:luka", {
+      realm: "family",
+      selection: "contextual",
+      queryText: "Where is pickup?",
+      queryTerms: ["pickup"],
+      maxEntries: 4,
+    });
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/recall");
+    assert.deepEqual(calls[0].params, {
+      identity: "identity:luka",
+      realm: "family",
+      selection: "contextual",
+      query_text: "Where is pickup?",
+      query_terms: ["pickup"],
+      max_entries: 4,
+    });
+    assert.equal(result.length, 1);
+    assert.equal(result[0]!.memoryId, "mem-1");
+    assert.equal(result[0]!.title, "School pickup");
+  });
+});
+
+describe("MobHandle.forgetAgentMemory()", () => {
+  it("sends mobkit/agent_memory/forget and parses the result", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      memory_id: "mem-1",
+      deleted: true,
+    }));
+
+    const result = await handle.forgetAgentMemory("identity:luka", "mem-1", {
+      realm: "family",
+    });
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/forget");
+    assert.deepEqual(calls[0].params, {
+      identity: "identity:luka",
+      memory_id: "mem-1",
+      realm: "family",
+    });
+    assert.equal(result.memoryId, "mem-1");
+    assert.equal(result.deleted, true);
   });
 });
 

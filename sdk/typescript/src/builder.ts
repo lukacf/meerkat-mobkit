@@ -47,6 +47,7 @@ export interface MobKitBuilderConfig {
   routingConfigPath: string | null;
   schedulingFiles: string[];
   memoryConfig: unknown;
+  agentMemoryConfig: unknown;
   authConfig: unknown;
   implicitDelegateIdleRetireSecs: number | null | undefined;
   maxSessions: number | null;
@@ -81,6 +82,7 @@ function defaultConfig(): MobKitBuilderConfig {
     routingConfigPath: null,
     schedulingFiles: [],
     memoryConfig: null,
+    agentMemoryConfig: null,
     authConfig: null,
     implicitDelegateIdleRetireSecs: undefined,
     maxSessions: null,
@@ -212,6 +214,43 @@ export class MobKitBuilder {
       );
     }
     this._config.memoryConfig = config ?? null;
+    return this;
+  }
+
+  agentMemory(
+    config: true | {
+      enabled?: boolean;
+      realm?: string;
+      selection?: "always" | "contextual";
+      maxEntries?: number;
+      recallTimeoutMs?: number;
+      recallFailurePolicy?: "skip" | "fail";
+      instructionHeader?: string;
+    } = true,
+  ): this {
+    if (config !== true && config.enabled === false) {
+      this._config.agentMemoryConfig = { enabled: false };
+      return this;
+    }
+    if (config === true) {
+      this._config.agentMemoryConfig = true;
+      return this;
+    }
+    const wire: Record<string, unknown> = {};
+    if (config.enabled !== undefined) wire.enabled = config.enabled;
+    if (config.realm !== undefined) wire.realm = config.realm;
+    if (config.selection !== undefined) wire.selection = config.selection;
+    if (config.maxEntries !== undefined) wire.max_entries = config.maxEntries;
+    if (config.recallTimeoutMs !== undefined) {
+      wire.recall_timeout_ms = config.recallTimeoutMs;
+    }
+    if (config.recallFailurePolicy !== undefined) {
+      wire.recall_failure_policy = config.recallFailurePolicy;
+    }
+    if (config.instructionHeader !== undefined) {
+      wire.instruction_header = config.instructionHeader;
+    }
+    this._config.agentMemoryConfig = wire;
     return this;
   }
 

@@ -95,6 +95,7 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | Field | Type | Gateway behavior |
 |-------|------|------------------|
 | `memory_config` | Object | Supports `{ "backend": "elephant", "endpoint": "..." }` and derives `state_path` as `<persistent_state>/elephant-memory-state.json`. |
+| `agent_memory` | Boolean or object | Enables identity-first agent memory injection for roster-backed agents. `true` uses contextual recall defaults and stores markdown under `<persistent_state>/agent-memory`; an object may set `realm`, `selection` (`"always"` or `"contextual"`), `max_entries`, `recall_timeout_ms`, `recall_failure_policy` (`"skip"` or `"fail"`), and `instruction_header`. |
 | `routing_config_path` | String | Loads JSON or TOML route config (`routes = [...]` / `[[routes]]`) and installs the routes into the unified runtime before serving RPCs. |
 | `scheduling_files` | String array | Loads JSON or TOML schedule definitions and uses them as the default schedules for `mobkit/scheduling/evaluate` and `mobkit/scheduling/dispatch` when the RPC request omits `schedules`. |
 | `gating_config_path` | String | Loads JSON or TOML action policies from an `actions` object and supplies a configured `risk_tier` for `mobkit/gating/evaluate` requests that omit `risk_tier`. |
@@ -298,6 +299,20 @@ ElephantMemoryBackendConfig {
 | `state_path` | `String` | Local JSON state file used by the Elephant-backed adapter |
 
 For SDK builds that boot through `rpc_gateway`, `state_path` is derived from `.persistent_state(path)` as `<path>/elephant-memory-state.json`; callers provide only `backend: "elephant"` and `endpoint`.
+
+## Agent memory injection
+
+`agent_memory` is separate from `mobkit/memory/*`. It is hot identity-scoped memory plus prompt injection: during create/resume/materialize and ordinary identity-first turns, MobKit asks an `AgentMemoryProvider` for memories keyed by `AgentIdentity` and injects a bounded, quoted observation summary. The bundled gateway provider stores inspectable markdown files by realm and identity under `<persistent_state>/agent-memory`; the path is server-owned and cannot be overridden from SDK init input. Elephant remains an optional deeper knowledge backend for graph/document/truth/provenance use cases and is not required for this hot path.
+
+Rust builders can use `.persistent_agent_memory(AgentMemoryConfig::default())` with `.persistent_state(path)` and `.roster_provider(...)` to use the bundled markdown store. Callers that need a different authority can use `.agent_memory(provider, config)` instead.
+
+Gateway callers can write records with `mobkit/agent_memory/remember`, read them with `mobkit/agent_memory/recall`, and delete individual records with `mobkit/agent_memory/forget`. TypeScript callers can use `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, `handle.recallAgentMemory(identity, { realm, selection, queryText, queryTerms, maxEntries })`, and `handle.forgetAgentMemory(identity, memoryId, { realm })`; Python callers can use `handle.remember_agent_memory(identity, title=..., body=..., tags=..., realm=...)`, `handle.recall_agent_memory(identity, realm=..., selection=..., query_text=..., query_terms=..., max_entries=...)`, and `handle.forget_agent_memory(identity, memory_id, realm=...)`. Writes and deletes are identity-scoped, require the identity to be registered in the identity runtime, and writes become turn context on the next identity-first send, plus build context on materialization/resume/respawn/reset for that identity. A successful write means the configured hot provider accepted the record; it does not mean optional Elephant extraction/enrichment has completed. Bundled markdown writes cap titles at 200 bytes, bodies at 64 KiB, and tags at 32 entries of 64 bytes each; each identity file is retained to at most 512 records and 8 MiB of rendered markdown, keeping the newest records when compacting.
+
+When `selection = "always"`, the latest memories for the identity are injected. When `selection = "contextual"` (the default), build-time injection sends synthesized identity/profile/label query text and deterministic terms; per-turn injection sends the raw current identity-first message plus normalized terms. Common stopwords are ignored by the bundled markdown provider and records below the relevance threshold are not injected. MobKit does not send app context or customizer-added instructions to the memory provider. Semantic/vector retrieval remains a provider concern rather than a MobKit runtime authority.
+
+Automatic build/turn injection uses `recall_timeout_ms` (default `500`, max `30000`) and `recall_failure_policy` (default `"skip"`, or `"fail"`). With the default skip policy, provider errors and timeouts omit the memory block and allow delivery to continue. Explicit `mobkit/agent_memory/recall` requests still return provider errors.
+
+Agent memory is identity-scoped and is not automatically cleared by session respawn or identity reset. Apps that require privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use an `AgentMemoryProvider` whose lifecycle policy clears memory alongside the app's identity lifecycle. `forget` removes records from future recall and injection; it does not erase text already delivered into an active model context, so reset or respawn the identity after deletion when immediate context revocation matters.
 
 ---
 

@@ -27,6 +27,20 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _require_non_empty_string(data: dict[str, Any], field: str, context: str) -> str:
+    value = data.get(field)
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"{context}.{field} must be a non-empty string")
+    return value
+
+
+def _require_number(data: dict[str, Any], field: str, context: str) -> int | float:
+    value = data.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context}.{field} must be a number")
+    return value
+
+
 @dataclass(frozen=True)
 class StatusResult:
     contract_version: str
@@ -845,6 +859,81 @@ class MemoryIndexResult:
             topic=data["topic"],
             store=data["store"],
             assertion_id=data.get("assertion_id"),
+        )
+
+
+@dataclass(frozen=True)
+class AgentMemoryRecord:
+    """Identity-scoped durable agent memory record."""
+    memory_id: str
+    title: str
+    body: str
+    tags: list[str]
+    created_at_ms: int | float
+    updated_at_ms: int | float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryRecord:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_record must be an object")
+        memory_id = _require_non_empty_string(
+            data, "memory_id", "agent_memory_record"
+        )
+        title = _require_non_empty_string(data, "title", "agent_memory_record")
+        body = _require_non_empty_string(data, "body", "agent_memory_record")
+        created_at_ms = _require_number(
+            data, "created_at_ms", "agent_memory_record"
+        )
+        updated_at_ms = _require_number(
+            data, "updated_at_ms", "agent_memory_record"
+        )
+        tags = data.get("tags")
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            raise ValueError("agent_memory_record.tags must be an array of strings")
+        return cls(
+            memory_id=memory_id,
+            title=title,
+            body=body,
+            tags=list(tags),
+            created_at_ms=created_at_ms,
+            updated_at_ms=updated_at_ms,
+        )
+
+
+@dataclass(frozen=True)
+class AgentMemoryRecallResult:
+    """Envelope returned by mobkit/agent_memory/recall."""
+    records: list[AgentMemoryRecord]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryRecallResult:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_recall_result must be an object")
+        records = data.get("records")
+        if not isinstance(records, list):
+            raise ValueError("agent_memory_recall_result.records must be an array")
+        return cls(records=[AgentMemoryRecord.from_dict(record) for record in records])
+
+
+@dataclass(frozen=True)
+class AgentMemoryForgetResult:
+    """Result of deleting an identity-scoped durable memory record."""
+    memory_id: str
+    deleted: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AgentMemoryForgetResult:
+        if not isinstance(data, dict):
+            raise ValueError("agent_memory_forget_result must be an object")
+        memory_id = _require_non_empty_string(
+            data, "memory_id", "agent_memory_forget_result"
+        )
+        deleted = data.get("deleted")
+        if not isinstance(deleted, bool):
+            raise ValueError("agent_memory_forget_result.deleted must be a boolean")
+        return cls(
+            memory_id=memory_id,
+            deleted=deleted,
         )
 
 
