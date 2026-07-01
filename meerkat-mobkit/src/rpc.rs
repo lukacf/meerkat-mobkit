@@ -1207,6 +1207,7 @@ pub struct IdentityFirstContext {
     pub customizer: Option<std::sync::Arc<dyn crate::identity_first::contracts::AgentCustomizer>>,
     pub agent_memory_provider:
         Option<std::sync::Arc<dyn crate::identity_first::AgentMemoryProvider>>,
+    pub mob_definition: Option<meerkat_mob::MobDefinition>,
 }
 
 pub fn handle_unified_rpc_json<'a>(
@@ -3245,7 +3246,10 @@ async fn handle_unified_rpc_json_inner(
                     };
                 }
             };
-            identity_rt.set_reset_roster_provider(Some(identity_reset_ctx.roster_provider.clone()));
+            identity_rt.set_reset_roster_provider_context(
+                Some(identity_reset_ctx.roster_provider.clone()),
+                identity_reset_ctx.mob_definition.clone(),
+            );
             match identity_rt.reset(&identity).await {
                 Ok(record) => {
                     let cleanup_warning = if let Err(err) = retire_stale_rpc_members_for_identity(
@@ -3537,7 +3541,7 @@ async fn handle_unified_rpc_json_inner(
             let roster_specs = match ctx
                 .roster_provider
                 .roster(&crate::identity_first::RosterContext {
-                    mob_definition: None,
+                    mob_definition: ctx.mob_definition.clone(),
                     previous_identities: Vec::new(),
                 })
                 .await
@@ -4542,13 +4546,14 @@ mod tests {
         resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
         rpc_member_id_matches_durable_identity,
     };
-    use crate::identity_first::contracts::RosterProvider;
+    use crate::identity_first::contracts::{ContinuityStore, LeaseProvider, RosterProvider};
     use crate::identity_first::{
-        AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion,
-        ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
-        IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseGrant,
-        LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
-        RosterError,
+        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
+        CheckpointVersion, ContinuityGeneration, ContinuityRecord, DurabilityPolicy,
+        DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
+        IdentityRuntimeConfig, LeaseAcquireResult, LeaseGrant, LocalContinuityStore,
+        LocalLeaseProvider, MarkdownAgentMemoryStore, ResumeSessionOutcome, RosterContext,
+        RosterError, SessionBridge, SessionSnapshot,
     };
     use crate::{
         DiscoverySpec, IdentityFirstContext, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
@@ -4573,6 +4578,135 @@ mod tests {
             _context: &RosterContext,
         ) -> Result<Vec<DurableAgentSpec>, RosterError> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ContextRequiredEmptyRosterProvider {
+        missing_definition_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ContextRequiredEmptyRosterProvider {
+        fn missing_definition_calls(&self) -> usize {
+            self.missing_definition_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl RosterProvider for ContextRequiredEmptyRosterProvider {
+        async fn roster(
+            &self,
+            context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            if context.mob_definition.is_none() {
+                self.missing_definition_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(RosterError::ProviderUnavailable(
+                    "mob definition required".to_string(),
+                ));
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Debug)]
+    struct ContextRequiredStaticRosterProvider {
+        specs: Vec<DurableAgentSpec>,
+        missing_definition_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ContextRequiredStaticRosterProvider {
+        fn new(specs: Vec<DurableAgentSpec>) -> Self {
+            Self {
+                specs,
+                missing_definition_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn missing_definition_calls(&self) -> usize {
+            self.missing_definition_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl RosterProvider for ContextRequiredStaticRosterProvider {
+        async fn roster(
+            &self,
+            context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            if context.mob_definition.is_none() {
+                self.missing_definition_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(RosterError::ProviderUnavailable(
+                    "mob definition required".to_string(),
+                ));
+            }
+            Ok(self.specs.clone())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RpcResetTestBridge {
+        create_calls: std::sync::atomic::AtomicUsize,
+        last_create_spec: tokio::sync::Mutex<Option<DurableAgentSpec>>,
+    }
+
+    impl RpcResetTestBridge {
+        async fn last_create_spec(&self) -> Option<DurableAgentSpec> {
+            self.last_create_spec.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl SessionBridge for RpcResetTestBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            self.create_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.last_create_spec.lock().await = Some(spec.clone());
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(meerkat_core::types::SessionId::new())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Ok(SessionSnapshot { data: Vec::new() })
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
         }
     }
 
@@ -4619,6 +4753,60 @@ comms = true
                     default_llm_client: Some(Arc::new(TestClient::default())),
                 }),
         )
+    }
+
+    fn rpc_reprofile_mob_spec(
+        temp_dir: &tempfile::TempDir,
+    ) -> Result<MobBootstrapSpec, Box<dyn std::error::Error + Send + Sync>> {
+        let session_path = temp_dir.path().join("sessions");
+        std::fs::create_dir_all(&session_path)?;
+        let factory = AgentFactory::new(&session_path).comms(true);
+        let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "rpc-reset-reprofile-test"
+
+[profiles.domain]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.domain.tools]
+comms = true
+
+[profiles.security]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.security.tools]
+comms = true
+shell = true
+"#,
+        )?;
+        Ok(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                .with_options(MobBootstrapOptions {
+                    allow_ephemeral_sessions: true,
+                    notify_orchestrator_on_resume: true,
+                    default_llm_client: Some(Arc::new(TestClient::default())),
+                }),
+        )
+    }
+
+    fn rpc_durable_spec(identity: &str, profile: &str) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: AgentIdentity::parse(identity).expect("valid identity"),
+            profile: meerkat_mob::ProfileName::from(profile),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        }
     }
 
     #[tokio::test]
@@ -4815,6 +5003,192 @@ comms = true
     }
 
     #[tokio::test]
+    async fn reconcile_identity_passes_mob_definition_to_roster_provider()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-reconcile-roster-context-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let identity_rt = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-reconcile-roster-context-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let roster_provider = Arc::new(ContextRequiredEmptyRosterProvider::default());
+        let identity_ctx = IdentityFirstContext {
+            runtime: identity_rt,
+            roster_provider: roster_provider.clone(),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: None,
+            mob_definition: Some(runtime.mob_handle().definition().clone()),
+        };
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/reconcile_identity",
+                    "params": {},
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            roster_provider.missing_definition_calls(),
+            0,
+            "reconcile_identity must preserve mob_definition in roster context"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_identity_preserves_mob_definition_for_roster_reprofile()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_reprofile_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-reset-roster-context-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let bridge = Arc::new(RpcResetTestBridge::default());
+        let identity_rt = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: continuity_store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "rpc-reset-roster-context-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+
+        let identity = AgentIdentity::parse("domain:security")?;
+        let initial_grants = lease_provider
+            .acquire_leases(
+                std::slice::from_ref(&identity),
+                "rpc-reset-roster-context-test",
+            )
+            .await?;
+        let initial_grant = match initial_grants.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected acquired lease, got {other:?}").into()),
+        };
+        let initial_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:security:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        continuity_store
+            .upsert_continuity_record(&initial_record, initial_grant.fencing_token)
+            .await?;
+        identity_rt
+            .register(
+                rpc_durable_spec(identity.as_str(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(initial_record),
+                Some(initial_grant),
+            )
+            .await;
+
+        let roster_provider = Arc::new(ContextRequiredStaticRosterProvider::new(vec![
+            rpc_durable_spec(identity.as_str(), "security"),
+        ]));
+        let identity_ctx = IdentityFirstContext {
+            runtime: identity_rt.clone(),
+            roster_provider: roster_provider.clone(),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: None,
+            mob_definition: Some(runtime.mob_handle().definition().clone()),
+        };
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/reset",
+                    "params": { "identity": identity.as_str() },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        )?;
+
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(
+            roster_provider.missing_definition_calls(),
+            0,
+            "mobkit/reset must preserve mob_definition when installing the reset roster provider"
+        );
+        assert_eq!(
+            bridge
+                .create_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "reset should rebuild through the bridge"
+        );
+        let created = bridge
+            .last_create_spec()
+            .await
+            .expect("reset should record created spec");
+        assert_eq!(created.profile.as_str(), "security");
+        assert_eq!(
+            identity_rt
+                .status(&identity)
+                .await?
+                .profile
+                .expect("identity should keep profile")
+                .as_str(),
+            "security"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn unified_rpc_agent_memory_remember_writes_identity_scoped_record()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
@@ -4881,6 +5255,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: Some(provider),
+            mob_definition: None,
         };
 
         let capabilities: Value = serde_json::from_str(
@@ -5142,6 +5517,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: Some(provider),
+            mob_definition: None,
         };
 
         let capabilities: Value = serde_json::from_str(
@@ -5815,6 +6191,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: None,
+            mob_definition: None,
         };
         for requested_identity in ["review:singleton", "rt:review:singleton:0"] {
             let response: Value = serde_json::from_str(
@@ -6062,6 +6439,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: None,
+            mob_definition: None,
         };
 
         let send = |id: u64, params: Value| {
@@ -6281,6 +6659,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: None,
+            mob_definition: None,
         };
         let raw = handle_unified_rpc_json(
             &runtime,
@@ -6394,6 +6773,7 @@ comms = true
             topology_provider: None,
             customizer: None,
             agent_memory_provider: None,
+            mob_definition: None,
         };
 
         // The raw roster member is part of the declared baseline ...

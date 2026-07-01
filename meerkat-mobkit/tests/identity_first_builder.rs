@@ -214,11 +214,51 @@ impl StubRosterProvider {
             specs: Arc::new(tokio::sync::Mutex::new(specs)),
         }
     }
+
+    async fn set(&self, specs: Vec<DurableAgentSpec>) {
+        *self.specs.lock().await = specs;
+    }
 }
 
 #[async_trait]
 impl RosterProvider for StubRosterProvider {
     async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        Ok(self.specs.lock().await.clone())
+    }
+}
+
+#[derive(Clone)]
+struct MobDefinitionRequiredRosterProvider {
+    specs: Arc<tokio::sync::Mutex<Vec<DurableAgentSpec>>>,
+    missing_definition_calls: Arc<AtomicUsize>,
+}
+
+impl MobDefinitionRequiredRosterProvider {
+    fn new(specs: Vec<DurableAgentSpec>) -> Self {
+        Self {
+            specs: Arc::new(tokio::sync::Mutex::new(specs)),
+            missing_definition_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    async fn set(&self, specs: Vec<DurableAgentSpec>) {
+        *self.specs.lock().await = specs;
+    }
+
+    fn missing_definition_calls(&self) -> usize {
+        self.missing_definition_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl RosterProvider for MobDefinitionRequiredRosterProvider {
+    async fn roster(&self, context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        if context.mob_definition.is_none() {
+            self.missing_definition_calls.fetch_add(1, Ordering::SeqCst);
+            return Err(RosterError::ProviderUnavailable(
+                "mob definition required".to_string(),
+            ));
+        }
         Ok(self.specs.lock().await.clone())
     }
 }
@@ -319,10 +359,39 @@ message = "run review cycle"
     .unwrap()
 }
 
+fn domain_security_definition() -> meerkat_mob::MobDefinition {
+    meerkat_mob::MobDefinition::from_toml(
+        r#"
+[mob]
+id = "identity-builder-reset-reprofile-test"
+
+[profiles.domain]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.domain.tools]
+comms = true
+
+[profiles.security]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.security.tools]
+comms = true
+shell = true
+"#,
+    )
+    .unwrap()
+}
+
 fn durable_spec(identity: &str) -> DurableAgentSpec {
+    durable_spec_with_profile(identity, "default")
+}
+
+fn durable_spec_with_profile(identity: &str, profile: &str) -> DurableAgentSpec {
     DurableAgentSpec {
         identity: AgentIdentity::parse(identity).unwrap(),
-        profile: meerkat_mob::ProfileName::from("default"),
+        profile: meerkat_mob::ProfileName::from(profile),
         addressability: AgentAddressability::Addressable,
         display_name: None,
         labels: BTreeMap::new(),
@@ -593,6 +662,131 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
         .await
         .expect("runtime should expose empty reads after deleting bundled persistent memory");
     assert!(after_forget.is_empty());
+}
+
+#[tokio::test]
+async fn identity_first_builder_reset_reprofiles_from_current_roster_provider() {
+    let tmp = tempfile::tempdir().unwrap();
+    let identity = AgentIdentity::parse("domain:security").unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec_with_profile(
+        identity.as_str(),
+        "domain",
+    )]));
+
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(domain_security_definition())
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory().unwrap()))
+            .lease_provider(Arc::new(
+                meerkat_mobkit::identity_first::LocalLeaseProvider::new(),
+            ))
+            .roster_provider(roster.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-reset-reprofile-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed");
+    let before = identity_runtime
+        .status(&identity)
+        .await
+        .expect("identity should start active");
+    assert_eq!(before.profile.unwrap().as_str(), "domain");
+
+    roster
+        .set(vec![durable_spec_with_profile(
+            identity.as_str(),
+            "security",
+        )])
+        .await;
+
+    let reset_record = identity_runtime
+        .reset(&identity)
+        .await
+        .expect("reset should use builder-installed roster provider");
+
+    assert_eq!(reset_record.generation.get(), 1);
+    let after = identity_runtime
+        .status(&identity)
+        .await
+        .expect("identity should remain active after reset");
+    assert_eq!(after.profile.unwrap().as_str(), "security");
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn identity_first_builder_reset_reprofiles_with_roster_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let identity = AgentIdentity::parse("domain:security").unwrap();
+    let roster = Arc::new(MobDefinitionRequiredRosterProvider::new(vec![
+        durable_spec_with_profile(identity.as_str(), "domain"),
+    ]));
+
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(domain_security_definition())
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory().unwrap()))
+            .lease_provider(Arc::new(
+                meerkat_mobkit::identity_first::LocalLeaseProvider::new(),
+            ))
+            .roster_provider(roster.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-reset-reprofile-context-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap with context-sensitive roster provider");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed");
+    assert_eq!(
+        identity_runtime
+            .status(&identity)
+            .await
+            .expect("identity should start active")
+            .profile
+            .unwrap()
+            .as_str(),
+        "domain"
+    );
+
+    roster
+        .set(vec![durable_spec_with_profile(
+            identity.as_str(),
+            "security",
+        )])
+        .await;
+
+    identity_runtime
+        .reset(&identity)
+        .await
+        .expect("reset should pass mob_definition to context-sensitive roster provider");
+
+    assert_eq!(
+        roster.missing_definition_calls(),
+        0,
+        "reset must preserve the builder/context mob_definition when reading the current roster"
+    );
+    assert_eq!(
+        identity_runtime
+            .status(&identity)
+            .await
+            .expect("identity should remain active after reset")
+            .profile
+            .unwrap()
+            .as_str(),
+        "security"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
 }
 
 #[tokio::test]

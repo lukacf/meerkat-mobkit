@@ -746,7 +746,11 @@ impl UnifiedRuntimeBuilder {
                     bridge,
                     default_timeout: None,
                 })
-                .with_runtime_services(AgentRuntimeServices::new(runtime.mob_runtime.handle())),
+                .with_runtime_services(AgentRuntimeServices::new(runtime.mob_runtime.handle()))
+                .with_reset_roster_provider_context(
+                    roster_provider.clone(),
+                    Some(runtime.mob_runtime.handle().definition().clone()),
+                ),
             );
             identity_runtime
                 .set_agent_customizer(agent_customizer.clone())

@@ -300,7 +300,10 @@ impl IdentityFirstRuntimeContext {
         mob_definition: Option<meerkat_mob::MobDefinition>,
         lazy_materialization: bool,
     ) -> Self {
-        runtime.set_reset_roster_provider(Some(roster_provider.clone()));
+        runtime.set_reset_roster_provider_context(
+            Some(roster_provider.clone()),
+            mob_definition.clone(),
+        );
         Self {
             runtime,
             roster_provider,
@@ -353,7 +356,7 @@ pub struct IdentityRuntime {
     has_runtime_store: bool,
     durability_policy: DurabilityPolicy,
     bridge: Option<Arc<dyn SessionBridge>>,
-    reset_roster_provider: StdRwLock<Option<Arc<dyn RosterProvider>>>,
+    reset_roster_source: StdRwLock<Option<ResetRosterSource>>,
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     managed_peer_reconcile_lock: Mutex<()>,
@@ -367,6 +370,12 @@ pub struct IdentityRuntime {
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
     error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
+}
+
+#[derive(Clone)]
+struct ResetRosterSource {
+    provider: Arc<dyn RosterProvider>,
+    mob_definition: Option<meerkat_mob::MobDefinition>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,7 +396,7 @@ impl IdentityRuntime {
             has_runtime_store: config.has_runtime_store,
             durability_policy: config.durability_policy,
             bridge: config.bridge,
-            reset_roster_provider: StdRwLock::new(None),
+            reset_roster_source: StdRwLock::new(None),
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
             managed_peer_reconcile_lock: Mutex::new(()),
@@ -406,6 +415,20 @@ impl IdentityRuntime {
 
     pub fn with_runtime_services(mut self, runtime_services: AgentRuntimeServices) -> Self {
         self.runtime_services = runtime_services;
+        self
+    }
+
+    pub fn with_reset_roster_provider(self, provider: Arc<dyn RosterProvider>) -> Self {
+        self.set_reset_roster_provider(Some(provider));
+        self
+    }
+
+    pub fn with_reset_roster_provider_context(
+        self,
+        provider: Arc<dyn RosterProvider>,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+    ) -> Self {
+        self.set_reset_roster_provider_context(Some(provider), mob_definition);
         self
     }
 
@@ -504,30 +527,48 @@ impl IdentityRuntime {
 
     /// Attach the roster provider reset should consult for current specs.
     pub fn set_reset_roster_provider(&self, provider: Option<Arc<dyn RosterProvider>>) {
-        match self.reset_roster_provider.write() {
-            Ok(mut stored_provider) => *stored_provider = provider,
+        self.set_reset_roster_provider_context(provider, None);
+    }
+
+    /// Attach the roster provider and context reset should consult for current specs.
+    pub fn set_reset_roster_provider_context(
+        &self,
+        provider: Option<Arc<dyn RosterProvider>>,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+    ) {
+        let source = provider.map(|provider| ResetRosterSource {
+            provider,
+            mob_definition,
+        });
+        match self.reset_roster_source.write() {
+            Ok(mut stored_source) => *stored_source = source,
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "identity runtime reset roster provider lock poisoned; dropping provider update"
+                    "identity runtime reset roster source lock poisoned; dropping provider update"
                 );
             }
         }
     }
 
     async fn adopt_current_roster_spec_for_reset(&self, identity: &AgentIdentity) {
-        let provider = match self.reset_roster_provider.read() {
-            Ok(stored_provider) => stored_provider.clone(),
+        let source = match self.reset_roster_source.read() {
+            Ok(stored_source) => stored_source.clone(),
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "reset: roster provider lock poisoned; rebuilding on stored spec"
+                    "reset: roster source lock poisoned; rebuilding on stored spec"
                 );
                 None
             }
         };
-        if let Some(provider) = provider {
-            self.adopt_roster_spec(&provider, identity).await;
+        if let Some(source) = source {
+            self.adopt_roster_spec_with_context(
+                &source.provider,
+                identity,
+                source.mob_definition.clone(),
+            )
+            .await;
         }
     }
 
@@ -1782,9 +1823,19 @@ impl IdentityRuntime {
         roster_provider: &Arc<dyn RosterProvider>,
         identity: &AgentIdentity,
     ) {
+        self.adopt_roster_spec_with_context(roster_provider, identity, None)
+            .await;
+    }
+
+    async fn adopt_roster_spec_with_context(
+        &self,
+        roster_provider: &Arc<dyn RosterProvider>,
+        identity: &AgentIdentity,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+    ) {
         match roster_provider
             .roster(&RosterContext {
-                mob_definition: None,
+                mob_definition,
                 previous_identities: Vec::new(),
             })
             .await
@@ -4002,7 +4053,60 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn reset_reprofiles_session_from_current_roster_spec()
+    async fn reset_reprofiles_session_from_runtime_configured_roster_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let roster = Arc::new(MutableRoster::new(vec![durable_spec(
+            identity.clone(),
+            "domain",
+        )]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "reset-reprofile-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge.clone()),
+                default_timeout: None,
+            })
+            .with_reset_roster_provider(roster.clone()),
+        );
+
+        super::super::orchestrator::restore_flow(
+            &runtime,
+            &roster
+                .roster(&RosterContext {
+                    mob_definition: None,
+                    previous_identities: Vec::new(),
+                })
+                .await?,
+            None,
+            None,
+        )
+        .await?;
+        roster
+            .set(vec![durable_spec(identity.clone(), "security")])
+            .await;
+
+        let record = runtime.reset(&identity).await?;
+
+        assert_eq!(record.generation.get(), 1);
+        assert_eq!(
+            bridge.create_profiles().await,
+            vec!["domain".to_string(), "security".to_string()]
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(
+            status.profile.map(|profile| profile.to_string()).as_deref(),
+            Some("security")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_reprofiles_session_from_identity_first_context_roster_provider()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
         let roster = Arc::new(MutableRoster::new(vec![durable_spec(
@@ -4013,7 +4117,7 @@ mod reset_reprofile_tests {
         let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
             lease_provider: Arc::new(LocalLeaseProvider::new()),
-            runtime_instance_id: "reset-reprofile-test".to_string(),
+            runtime_instance_id: "reset-reprofile-context-test".to_string(),
             has_runtime_store: true,
             durability_policy: DurabilityPolicy::SyncWriteThrough,
             bridge: Some(bridge.clone()),

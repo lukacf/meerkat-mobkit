@@ -2483,6 +2483,8 @@ external_addressable = true
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
             Arc::new(GatewayRosterProvider::new(bridge.clone()));
+        let mob_definition = runtime.mob_handle().definition().clone();
+        irt.set_reset_roster_provider_context(Some(roster.clone()), Some(mob_definition.clone()));
         let topology: Option<Arc<dyn meerkat_mobkit::identity_first::contracts::TopologyProvider>> =
             if has_topology_provider {
                 Some(Arc::new(GatewayTopologyProvider::new(bridge.clone())))
@@ -2542,7 +2544,7 @@ external_addressable = true
         // Call restore_flow to bootstrap identities from the roster provider
         let roster_specs = roster
             .roster(&RosterContext {
-                mob_definition: None,
+                mob_definition: Some(mob_definition.clone()),
                 previous_identities: Vec::new(),
             })
             .await
@@ -2580,6 +2582,7 @@ external_addressable = true
             topology_provider: topology,
             customizer,
             agent_memory_provider,
+            mob_definition: Some(mob_definition),
         })
     } else {
         None
