@@ -296,6 +296,7 @@ impl IdentityFirstRuntimeContext {
         mob_definition: Option<meerkat_mob::MobDefinition>,
         lazy_materialization: bool,
     ) -> Self {
+        runtime.set_reset_roster_provider(Some(roster_provider.clone()));
         Self {
             runtime,
             roster_provider,
@@ -348,6 +349,7 @@ pub struct IdentityRuntime {
     has_runtime_store: bool,
     durability_policy: DurabilityPolicy,
     bridge: Option<Arc<dyn SessionBridge>>,
+    reset_roster_provider: StdRwLock<Option<Arc<dyn RosterProvider>>>,
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     managed_peer_reconcile_lock: Mutex<()>,
@@ -380,6 +382,7 @@ impl IdentityRuntime {
             has_runtime_store: config.has_runtime_store,
             durability_policy: config.durability_policy,
             bridge: config.bridge,
+            reset_roster_provider: StdRwLock::new(None),
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
             managed_peer_reconcile_lock: Mutex::new(()),
@@ -406,6 +409,35 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    /// Attach the roster provider reset should consult for current specs.
+    pub fn set_reset_roster_provider(&self, provider: Option<Arc<dyn RosterProvider>>) {
+        match self.reset_roster_provider.write() {
+            Ok(mut stored_provider) => *stored_provider = provider,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "identity runtime reset roster provider lock poisoned; dropping provider update"
+                );
+            }
+        }
+    }
+
+    async fn adopt_current_roster_spec_for_reset(&self, identity: &AgentIdentity) {
+        let provider = match self.reset_roster_provider.read() {
+            Ok(stored_provider) => stored_provider.clone(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "reset: roster provider lock poisoned; rebuilding on stored spec"
+                );
+                None
+            }
+        };
+        if let Some(provider) = provider {
+            self.adopt_roster_spec(&provider, identity).await;
+        }
     }
 
     /// Attach a best-effort operational error hook used for alerting.
@@ -2860,6 +2892,9 @@ impl IdentityRuntime {
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        // Re-profile before snapshotting the lifecycle entry so the rebuilt
+        // session uses the current roster spec, not the old checkpoint spec.
+        self.adopt_current_roster_spec_for_reset(identity).await;
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
             .await?;
@@ -3702,6 +3737,183 @@ pub async fn wire_cross_mob_by_identity(
     Box::pin(local_unified.wire_cross_mob(local_rt.as_str(), remote_rt.as_str(), remote_mob_id))
         .await
         .map_err(|e| IdentityRuntimeError::Internal(format!("wire_cross_mob: {e}")))
+}
+
+#[cfg(test)]
+mod reset_reprofile_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
+
+    use super::super::bridge::{BridgeError, MemberInspection, ResumeSessionOutcome};
+    use super::super::contracts::RosterProvider;
+    use super::super::local_lease::LocalLeaseProvider;
+    use super::super::local_store::LocalContinuityStore;
+    use super::super::types::{AgentBuildDraft, RosterError, SessionSnapshot};
+
+    struct MutableRoster {
+        specs: AsyncRwLock<Vec<DurableAgentSpec>>,
+    }
+
+    impl MutableRoster {
+        fn new(specs: Vec<DurableAgentSpec>) -> Self {
+            Self {
+                specs: AsyncRwLock::new(specs),
+            }
+        }
+
+        async fn set(&self, specs: Vec<DurableAgentSpec>) {
+            *self.specs.write().await = specs;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RosterProvider for MutableRoster {
+        async fn roster(
+            &self,
+            _context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            Ok(self.specs.read().await.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingBridge {
+        create_profiles: AsyncMutex<Vec<String>>,
+        retired_runtime_ids: AsyncMutex<Vec<String>>,
+    }
+
+    impl RecordingBridge {
+        async fn create_profiles(&self) -> Vec<String> {
+            self.create_profiles.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for RecordingBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            self.create_profiles
+                .lock()
+                .await
+                .push(spec.profile.to_string());
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Err(BridgeError::Mob(
+                "resume not used in reset test".to_string(),
+            ))
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in reset test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in reset test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            self.retired_runtime_ids
+                .lock()
+                .await
+                .push(runtime_id.to_string());
+            Ok(())
+        }
+
+        async fn inspect_member(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+        ) -> Result<MemberInspection, BridgeError> {
+            Err(BridgeError::Mob(
+                "inspect not used in reset test".to_string(),
+            ))
+        }
+    }
+
+    fn durable_spec(identity: AgentIdentity, profile: &str) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity,
+            profile: meerkat_mob::ProfileName::from(profile),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_reprofiles_session_from_current_roster_spec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let roster = Arc::new(MutableRoster::new(vec![durable_spec(
+            identity.clone(),
+            "domain",
+        )]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "reset-reprofile-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context =
+            IdentityFirstRuntimeContext::new(runtime.clone(), roster.clone(), None, None, None);
+
+        context.refresh_desired_topology().await?;
+        roster
+            .set(vec![durable_spec(identity.clone(), "security")])
+            .await;
+
+        let record = runtime.reset(&identity).await?;
+
+        assert_eq!(record.generation.get(), 1);
+        assert_eq!(
+            bridge.create_profiles().await,
+            vec!["domain".to_string(), "security".to_string()]
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(
+            status.profile.map(|profile| profile.to_string()).as_deref(),
+            Some("security")
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
