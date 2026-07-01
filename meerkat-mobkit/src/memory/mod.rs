@@ -6,14 +6,18 @@
 //! §12 bright-line ratchet (`scripts/check-memory-bright-line`): it must
 //! never grow retrieval-index machinery; that is hub material.
 
+pub mod coordinator;
 pub mod records;
 pub mod sqlite_store;
 pub mod staged;
 
+pub use coordinator::{
+    RecallCoordinator, ScopeBudget, compose_identity_scope_set, compose_scope_budgets,
+};
 pub use records::{
-    CalibrationRef, EvidenceRef, ManifestTier, MemoryAuthor, MemoryId, MemoryKind,
-    MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId, RecordMeta,
-    RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
+    CalibrationRef, EvidenceRef, InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor,
+    MemoryId, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId,
+    RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
 };
 pub use sqlite_store::SqliteAgentMemoryStore;
 pub use staged::{

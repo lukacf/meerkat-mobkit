@@ -258,13 +258,19 @@ pub struct MemoryProvenance {
 }
 
 /// Usage ledger counters (§9.2). Deterministic side only; judged-useful
-/// verdicts come from the steward's usage audit (P3).
+/// verdicts come from the steward's usage audit (P3). Ambient injection and
+/// explicit recall are counted distinctly: the steward's usage audit treats
+/// "pushed and ignored" very differently from "pulled on purpose".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageStats {
     #[serde(default)]
     pub injected_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_injected_at_ms: Option<u64>,
+    #[serde(default)]
+    pub explicit_recall_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recalled_at_ms: Option<u64>,
     #[serde(default)]
     pub judged_useful_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,6 +285,47 @@ pub enum UsageEvent {
     Injected,
     ExplicitRecall,
     JudgedUseful,
+}
+
+/// Which injection surface delivered a record into context (§9.1 table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectionSurface {
+    /// Build-time assembly (`customize_build` → system prompt).
+    Build,
+    /// Ambient per-turn injection (opt-in `budgeted` mode).
+    Turn,
+}
+
+impl InjectionSurface {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Turn => "turn",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "build" => Some(Self::Build),
+            "turn" => Some(Self::Turn),
+            _ => None,
+        }
+    }
+}
+
+/// One injection-ledger row (§9.2): which record entered whose context,
+/// through which surface, when. Telemetry, not record mutation — rows are
+/// plain appends, never staged. The session key is `None` for build-time
+/// assembly, where the session does not exist yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjectionLogEntry {
+    pub record_id: MemoryId,
+    pub identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
+    pub surface: InjectionSurface,
+    pub at_ms: u64,
 }
 
 /// The full record model (§7.1).

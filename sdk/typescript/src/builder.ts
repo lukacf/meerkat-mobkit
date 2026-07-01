@@ -226,6 +226,9 @@ export class MobKitBuilder {
       recallTimeoutMs?: number;
       recallFailurePolicy?: "skip" | "fail";
       instructionHeader?: string;
+      perTurnInjection?: "off" | "budgeted";
+      defangInbound?: boolean;
+      store?: "sqlite" | "markdown";
     } = true,
   ): this {
     if (config !== true && config.enabled === false) {
@@ -250,6 +253,13 @@ export class MobKitBuilder {
     if (config.instructionHeader !== undefined) {
       wire.instruction_header = config.instructionHeader;
     }
+    if (config.perTurnInjection !== undefined) {
+      wire.per_turn_injection = config.perTurnInjection;
+    }
+    if (config.defangInbound !== undefined) {
+      wire.defang_inbound = config.defangInbound;
+    }
+    if (config.store !== undefined) wire.store = config.store;
     this._config.agentMemoryConfig = wire;
     return this;
   }

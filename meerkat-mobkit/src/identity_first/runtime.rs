@@ -31,7 +31,7 @@ use super::types::{
     RosterContext, SessionSnapshot,
 };
 use crate::memory::records::{
-    ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta,
+    ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
@@ -604,7 +604,20 @@ impl IdentityRuntime {
             .ok_or_else(|| {
                 AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
             })?;
-        provider.recall(request).await
+        let records = provider.recall(request).await?;
+        // §9.2: explicit recall reads mark usage mechanically. Telemetry
+        // never fails the read — providers without usage support
+        // (markdown) return Unsupported, which is downgraded here.
+        if !records.is_empty() {
+            let ids: Vec<MemoryId> = records
+                .iter()
+                .map(|record| record.memory_id.clone())
+                .collect();
+            if let Err(err) = provider.mark_usage(&ids, UsageEvent::ExplicitRecall).await {
+                tracing::debug!(error = %err, "agent memory explicit-recall usage marking skipped");
+            }
+        }
+        Ok(records)
     }
 
     /// Attach the roster provider reset should consult for current specs.
@@ -2509,16 +2522,24 @@ impl IdentityRuntime {
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
             )
         };
+        // Steer is latency-sensitive live operator input: it bypasses both
+        // memory injection and inbound defanging by design. Every other send
+        // is defanged first (§9.1 anti-spoofing — even with injection off,
+        // forged memory envelopes are an inbound threat) and only then
+        // considered for ambient injection.
         let content_to_deliver = if handling_mode == HandlingMode::Steer {
             content.clone()
         } else {
             match self.agent_memory.read().await.clone() {
-                Some(injector) => injector
-                    .inject_for_turn(identity, memory_session_key.as_deref(), content)
-                    .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                    })?,
+                Some(injector) => {
+                    let defanged = injector.defang_inbound(identity, content);
+                    injector
+                        .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
+                        .await
+                        .map_err(|err| {
+                            IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
+                        })?
+                }
                 None => content.clone(),
             }
         };

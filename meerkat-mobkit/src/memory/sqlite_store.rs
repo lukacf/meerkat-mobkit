@@ -30,9 +30,9 @@ use crate::identity_first::agent_memory::{
 };
 
 use super::records::{
-    ManifestTier, MemoryAuthor, MemoryId, MemoryKind, MemoryProvenance, MemoryScope,
-    NewMemoryRecord, ProposalId, RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats,
-    age_days, content_hash, validate_record_fields,
+    InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor, MemoryId, MemoryKind,
+    MemoryProvenance, MemoryScope, NewMemoryRecord, ProposalId, RecordMeta, RecordStatus,
+    TrustTier, UsageEvent, UsageStats, age_days, content_hash, validate_record_fields,
 };
 use super::staged::{
     CommitReceipt, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StageToken, StagedBatchView,
@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS stage (
     batch         TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL
 );
+
+-- Injection ledger (§9.2): plain telemetry appends, deliberately outside
+-- the staged-batch path — rows here are observations about delivery, not
+-- record mutations. session_key is NULL for build-time assembly, where the
+-- session does not exist yet.
+CREATE TABLE IF NOT EXISTS injections (
+    injection_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id     TEXT NOT NULL,
+    identity      TEXT NOT NULL,
+    session_key   TEXT,
+    surface       TEXT NOT NULL,
+    at_ms         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS injections_record_idx
+    ON injections(record_id, at_ms);
 ";
 
 const RECORD_COLUMNS: &str = "memory_id, scope_kind, scope_key, kind, title, description, body, \
@@ -512,11 +527,16 @@ impl SqliteAgentMemoryStore {
                     let mut usage: UsageStats =
                         serde_json::from_str(&usage_json).unwrap_or_default();
                     match event {
-                        // An explicit recall delivers the record into
-                        // context — an injection by pull.
-                        UsageEvent::Injected | UsageEvent::ExplicitRecall => {
+                        UsageEvent::Injected => {
                             usage.injected_count += 1;
                             usage.last_injected_at_ms = Some(now);
+                        }
+                        // Counted apart from ambient injection (§9.2): a
+                        // pull on purpose is a much stronger usefulness
+                        // signal than a push that may have been ignored.
+                        UsageEvent::ExplicitRecall => {
+                            usage.explicit_recall_count += 1;
+                            usage.last_recalled_at_ms = Some(now);
                         }
                         UsageEvent::JudgedUseful => {
                             usage.judged_useful_count += 1;
@@ -533,6 +553,88 @@ impl SqliteAgentMemoryStore {
             })?;
         }
         Ok(())
+    }
+
+    fn log_injections_blocking(
+        &self,
+        realm: &str,
+        entries: &[InjectionLogEntry],
+    ) -> Result<(), AgentMemoryError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        self.with_realm_conn(realm, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO injections (record_id, identity, session_key, surface, at_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(sql_err)?;
+            for entry in entries {
+                stmt.execute(params![
+                    entry.record_id,
+                    entry.identity,
+                    entry.session_key,
+                    entry.surface.as_str(),
+                    entry.at_ms as i64,
+                ])
+                .map_err(sql_err)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn injection_log_blocking(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<InjectionLogEntry>, AgentMemoryError> {
+        self.with_realm_conn(realm, |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT record_id, identity, session_key, surface, at_ms FROM injections \
+                     ORDER BY injection_id DESC LIMIT ?1",
+                )
+                .map_err(sql_err)?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
+                .map_err(sql_err)?;
+            let mut entries = Vec::new();
+            for row in rows {
+                let (record_id, identity, session_key, surface, at_ms) = row.map_err(sql_err)?;
+                let surface = InjectionSurface::parse(&surface).ok_or_else(|| {
+                    AgentMemoryError::Parse(format!("unknown injection surface '{surface}'"))
+                })?;
+                entries.push(InjectionLogEntry {
+                    record_id,
+                    identity,
+                    session_key,
+                    surface,
+                    at_ms: at_ms as u64,
+                });
+            }
+            Ok(entries)
+        })
+    }
+
+    /// Newest-first injection-ledger rows for a realm (§9.2). Read surface
+    /// for the steward's usage audit and the console Memory panel.
+    pub async fn injection_log(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<InjectionLogEntry>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || store.injection_log_blocking(&realm, limit)).await
     }
 
     fn propose_blocking(
@@ -713,6 +815,17 @@ impl AgentMemoryProvider for SqliteAgentMemoryStore {
         let store = self.clone();
         let ids = ids.to_vec();
         run_blocking(move || store.mark_usage_blocking(&ids, event)).await
+    }
+
+    async fn log_injections(
+        &self,
+        realm: &str,
+        entries: &[InjectionLogEntry],
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let entries = entries.to_vec();
+        run_blocking(move || store.log_injections_blocking(&realm, &entries)).await
     }
 
     async fn propose(
@@ -1976,6 +2089,12 @@ mod tests {
             .mark_usage(&[record.memory_id.clone()], UsageEvent::Injected)
             .await?;
         store
+            .mark_usage(&[record.memory_id.clone()], UsageEvent::ExplicitRecall)
+            .await?;
+        store
+            .mark_usage(&[record.memory_id.clone()], UsageEvent::ExplicitRecall)
+            .await?;
+        store
             .mark_usage(&[record.memory_id.clone()], UsageEvent::JudgedUseful)
             .await?;
 
@@ -1987,9 +2106,49 @@ mod tests {
             |row| row.get(0),
         )?;
         let usage: UsageStats = serde_json::from_str(&usage_json)?;
-        assert_eq!(usage.injected_count, 1);
+        assert_eq!(usage.injected_count, 1, "ambient injections only");
+        assert_eq!(usage.explicit_recall_count, 2, "explicit pulls only");
         assert_eq!(usage.judged_useful_count, 1);
         assert!(usage.last_injected_at_ms.is_some());
+        assert!(usage.last_recalled_at_ms.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn injection_ledger_appends_and_reads_newest_first() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let record = store
+            .remember("family", &id, new_memory("Fact", "Body"))
+            .await?;
+
+        let build_entry = InjectionLogEntry {
+            record_id: record.memory_id.clone(),
+            identity: id.as_str().to_string(),
+            session_key: None,
+            surface: InjectionSurface::Build,
+            at_ms: 100,
+        };
+        let turn_entry = InjectionLogEntry {
+            record_id: record.memory_id.clone(),
+            identity: id.as_str().to_string(),
+            session_key: Some("session-1".to_string()),
+            surface: InjectionSurface::Turn,
+            at_ms: 200,
+        };
+        AgentMemoryProvider::log_injections(&store, "family", &[build_entry.clone()]).await?;
+        AgentMemoryProvider::log_injections(&store, "family", &[turn_entry.clone()]).await?;
+
+        let entries = store.injection_log("family", 16).await?;
+        assert_eq!(entries, vec![turn_entry, build_entry]);
+
+        let limited = store.injection_log("family", 1).await?;
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].surface, InjectionSurface::Turn);
+
+        let other_realm = store.injection_log("other", 16).await?;
+        assert!(other_realm.is_empty(), "ledger rows are realm-scoped");
         Ok(())
     }
 

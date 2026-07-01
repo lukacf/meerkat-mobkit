@@ -86,13 +86,14 @@ struct GatewayAgentMemoryOptions {
     store: GatewayAgentMemoryStoreKind,
 }
 
-/// Which bundled store backs agent memory. Markdown stays the default in
-/// P0; the flip to sqlite-by-default comes after the P1 recall coordinator
-/// lands (docs/design/agent-memory-architecture.md §15).
+/// Which bundled store backs agent memory. SQLite is the default now that
+/// the P1 recall coordinator and injection ledger ride on it
+/// (docs/design/agent-memory-architecture.md §15); existing markdown files
+/// are auto-imported on first open. Markdown remains selectable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum GatewayAgentMemoryStoreKind {
-    #[default]
     Markdown,
+    #[default]
     Sqlite,
 }
 
@@ -655,7 +656,34 @@ actions = ["agent.view"]
             agent_memory.config.recall_failure_policy,
             meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip
         );
+        assert!(agent_memory.config.defang_inbound);
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_defang_inbound() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "defang_inbound": false }
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert!(!agent_memory.config.defang_inbound);
+
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "defang_inbound": "yes" }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("non-boolean defang_inbound should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("defang_inbound"), "{err}");
     }
 
     #[test]
@@ -736,7 +764,7 @@ actions = ["agent.view"]
     }
 
     #[test]
-    fn gateway_runtime_options_agent_memory_store_defaults_to_markdown() {
+    fn gateway_runtime_options_agent_memory_store_defaults_to_sqlite() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let params = json!({
             "runtime_options": {
@@ -747,7 +775,7 @@ actions = ["agent.view"]
         let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
             .expect("boolean agent memory config should parse");
         let agent_memory = options.agent_memory.expect("agent memory options");
-        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
 
         let params = json!({
             "runtime_options": {
@@ -757,22 +785,22 @@ actions = ["agent.view"]
         let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
             .expect("object agent memory config should parse");
         let agent_memory = options.agent_memory.expect("agent memory options");
-        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
     }
 
     #[test]
-    fn gateway_runtime_options_agent_memory_store_accepts_sqlite() {
+    fn gateway_runtime_options_agent_memory_store_accepts_markdown() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let params = json!({
             "runtime_options": {
-                "agent_memory": { "store": "sqlite" }
+                "agent_memory": { "store": "markdown" }
             }
         });
 
         let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
-            .expect("sqlite store config should parse");
+            .expect("markdown store config should parse");
         let agent_memory = options.agent_memory.expect("agent memory options");
-        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
     }
 
@@ -1362,6 +1390,7 @@ fn parse_gateway_agent_memory_config(
         "recall_failure_policy",
         "instruction_header",
         "per_turn_injection",
+        "defang_inbound",
         "store",
     ];
     let unsupported = object
@@ -1482,11 +1511,17 @@ fn parse_gateway_agent_memory_config(
             ));
         }
     };
+    let defang_inbound = match object.get("defang_inbound") {
+        None => true,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.defang_inbound must be a boolean".to_string()
+        })?,
+    };
     let store = match object
         .get("store")
         .and_then(Value::as_str)
         .map(str::trim)
-        .unwrap_or("markdown")
+        .unwrap_or("sqlite")
     {
         "markdown" => GatewayAgentMemoryStoreKind::Markdown,
         "sqlite" => GatewayAgentMemoryStoreKind::Sqlite,
@@ -1509,6 +1544,7 @@ fn parse_gateway_agent_memory_config(
             recall_failure_policy,
             instruction_header,
             per_turn_injection,
+            defang_inbound,
         },
         path,
         store,

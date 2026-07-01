@@ -185,6 +185,16 @@ class MobKitBuilder:
             wire["instruction_header"] = config["instruction_header"]
         elif "instructionHeader" in config:
             wire["instruction_header"] = config["instructionHeader"]
+        if "per_turn_injection" in config:
+            wire["per_turn_injection"] = config["per_turn_injection"]
+        elif "perTurnInjection" in config:
+            wire["per_turn_injection"] = config["perTurnInjection"]
+        if "defang_inbound" in config:
+            wire["defang_inbound"] = config["defang_inbound"]
+        elif "defangInbound" in config:
+            wire["defang_inbound"] = config["defangInbound"]
+        if "store" in config:
+            wire["store"] = config["store"]
         self._config.agent_memory_config = wire
         return self
 

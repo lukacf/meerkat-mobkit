@@ -97,7 +97,10 @@ async def test_python_agent_memory_helpers_round_trip_through_real_gateway(tmp_p
         .mob(str(mob_toml))
         .persistent_state(str(state_dir))
         .roster(SmokeRoster())
-        .agent_memory(selection="contextual", max_entries=4)
+        # The gateway default store is sqlite; this test selects markdown
+        # explicitly to verify both the store passthrough and the markdown
+        # file layout end to end.
+        .agent_memory(selection="contextual", max_entries=4, store="markdown")
         .build()
     )
     try:
@@ -145,5 +148,52 @@ async def test_python_agent_memory_helpers_round_trip_through_real_gateway(tmp_p
         )
         assert after_forget == []
         assert "PY-MEM-17" not in memory_file.read_text()
+    finally:
+        await runtime.shutdown()
+
+
+@_skip_no_binary
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_python_agent_memory_defaults_to_sqlite_store(tmp_path):
+    mob_toml = tmp_path / "mob.toml"
+    mob_toml.write_text(_MOB_TOML)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    runtime = await (
+        MobKit.builder()
+        .gateway(_GATEWAY_BIN)
+        .mob(str(mob_toml))
+        .persistent_state(str(state_dir))
+        .roster(SmokeRoster())
+        .agent_memory(selection="contextual", max_entries=4)
+        .build()
+    )
+    try:
+        handle = runtime.mob_handle()
+        record = await handle.remember_agent_memory(
+            "identity:memory-smoke",
+            title="Sqlite smoke token",
+            body="The sqlite default-store smoke token is PY-MEM-18.",
+            tags=["python", "smoke"],
+        )
+        assert record.memory_id.startswith("mem-")
+
+        recalled = await handle.recall_agent_memory(
+            "identity:memory-smoke",
+            selection="contextual",
+            query_text="Where is the PY-MEM-18 token?",
+            query_terms=["PY-MEM-18"],
+            max_entries=4,
+        )
+        assert [item.memory_id for item in recalled] == [record.memory_id]
+
+        sqlite_file = state_dir / "agent-memory" / "default.sqlite3"
+        assert sqlite_file.is_file(), "default store must be the per-realm sqlite database"
+        markdown_file = (
+            state_dir / "agent-memory" / "default" / "identity%3Amemory-smoke.md"
+        )
+        assert not markdown_file.exists(), "sqlite default must not write markdown files"
     finally:
         await runtime.shutdown()
