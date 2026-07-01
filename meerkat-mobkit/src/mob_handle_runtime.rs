@@ -65,6 +65,44 @@ pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
             ))
 }
 
+/// The mob lifecycle authority's `ArchiveSession` step legitimately found no
+/// session to archive because the retired member is a SESSION-OWNED
+/// identity-first agent (built via `Bridge::create_session` / a
+/// `SessionAgentBuilder` roster), not a spawned mob member tracked by that
+/// authority.
+///
+/// meerkat-mob disposes the member (succeeds), then runs `ArchiveSession`; the
+/// authority has no record for the session, and because the runtime adapter
+/// still holds it the archive helper escalates the miss to a fatal "disposal
+/// completed but ArchiveSession failed: ... NotFound for registered runtime
+/// session". For a session-owned identity that archive record never existed —
+/// disposal already completed — so the cleanup retire must not fail the
+/// lifecycle op (otherwise reset/delete_identity brick the identity until a
+/// process restart).
+///
+/// Requires the `disposal completed` prefix so an aborted disposal (the session
+/// genuinely never tore down) stays fail-closed.
+fn is_session_owned_archive_absent_cleanup_error(error: &str) -> bool {
+    error.contains("disposal completed but ArchiveSession failed")
+        && error.contains("NotFound for registered runtime session")
+}
+
+/// Retire-cleanup tolerance for the identity-first SESSION-OWNED bridge.
+///
+/// Every caller of [`Bridge::retire_member`](crate::identity_first) lives in
+/// `identity_first/`, where members are built session-owned (`create_session`),
+/// never spawned. So in addition to the shared recoverable-cleanup cases it
+/// also tolerates the session-owned archive-absent error above.
+///
+/// This is DELIBERATELY kept out of [`is_recoverable_lifecycle_cleanup_error`],
+/// which the mob-member reset/retire paths use (via `lifecycle_archive_cleanup_completed`)
+/// and which MUST keep rejecting archive-NotFound to surface genuinely orphaned
+/// spawned members.
+pub(crate) fn is_recoverable_session_owned_retire_cleanup_error(error: &str) -> bool {
+    is_recoverable_lifecycle_cleanup_error(error)
+        || is_session_owned_archive_absent_cleanup_error(error)
+}
+
 /// True when a session archive failed only at its final runtime-retire
 /// realization because the session machine sits in `Stopped`.
 ///
@@ -5228,6 +5266,76 @@ image_generation = true
         ));
         assert!(!is_recoverable_lifecycle_cleanup_error(
             "disposal aborted at ArchiveSession: continuity save: stale fencing token"
+        ));
+    }
+
+    /// Regression: `reset()` / `delete_identity()` for a SESSION-OWNED roster
+    /// identity failed because meerkat-mob escalates the archive miss to a fatal
+    /// "disposal completed but ArchiveSession failed: ... NotFound for
+    /// registered runtime session". The exact production strings (from the
+    /// field report) must classify as recoverable for the identity-first bridge
+    /// retire path.
+    #[test]
+    fn session_owned_retire_cleanup_accepts_archive_not_found_for_registered_runtime_session() {
+        // Exact shape the classifier receives at the bridge layer:
+        // `handle.retire(..).err().to_string()` (the `MobError` Display chain),
+        // WITHOUT any later `session bridge mob error:` wrapping.
+        let reset_error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: mob archive authority returned \
+            NotFound for registered runtime session 019ee136-33bc-7bc3-80f9-2aac38736291";
+        let delete_error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: mob archive authority returned \
+            NotFound for registered runtime session 019ee136-340d-7203-a089-c3357835c824";
+
+        assert!(is_recoverable_session_owned_retire_cleanup_error(
+            reset_error
+        ));
+        assert!(is_recoverable_session_owned_retire_cleanup_error(
+            delete_error
+        ));
+    }
+
+    /// The mob-MEMBER orphan gate must stay fail-closed on the same string — a
+    /// spawned member whose archive authority lost its record is a real orphan.
+    /// This is the deliberate separation: only the identity-first session-owned
+    /// retire path tolerates it.
+    #[test]
+    fn mob_member_lifecycle_gate_still_rejects_archive_not_found() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: mob archive authority returned \
+            NotFound for registered runtime session 019ee136-33bc-7bc3-80f9-2aac38736291";
+
+        assert!(!is_recoverable_lifecycle_cleanup_error(error));
+        // Belt-and-suspenders: the helper isolates the new arm.
+        assert!(is_session_owned_archive_absent_cleanup_error(error));
+    }
+
+    /// The session-owned gate is a strict superset of the shared one.
+    #[test]
+    fn session_owned_retire_cleanup_still_accepts_shared_recoverable_cases() {
+        let cancel_race = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: runtime cancel-before-retire failed \
+            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
+
+        assert!(is_recoverable_session_owned_retire_cleanup_error(
+            cancel_race
+        ));
+    }
+
+    /// Stay scoped to COMPLETED disposals: an aborted disposal (session never
+    /// tore down) or a bare NotFound without the disposal prefix is a real error.
+    #[test]
+    fn session_owned_retire_cleanup_requires_completed_disposal() {
+        assert!(!is_recoverable_session_owned_retire_cleanup_error(
+            "disposal aborted at ArchiveSession: mob archive authority returned NotFound \
+             for registered runtime session 019ee136-33bc-7bc3-80f9-2aac38736291"
+        ));
+        assert!(!is_recoverable_session_owned_retire_cleanup_error(
+            "mob archive authority returned NotFound for registered runtime session \
+             019ee136-33bc-7bc3-80f9-2aac38736291"
+        ));
+        assert!(!is_recoverable_session_owned_retire_cleanup_error(
+            "model provider returned rate limit"
         ));
     }
 

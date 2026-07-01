@@ -34,8 +34,8 @@ use meerkat_mobkit::identity_first::{
     DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, SessionBridge, SessionSnapshot,
-    TopologyContext, TopologyError,
+    ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, RosterContext, RosterError,
+    RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
 use meerkat_mobkit::{ErrorEvent, ErrorHook};
@@ -856,6 +856,7 @@ struct CountingBridge {
     unregistered_session_ids: tokio::sync::Mutex<Vec<String>>,
     wires: tokio::sync::Mutex<Vec<(String, String)>>,
     current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
+    last_create_spec: tokio::sync::Mutex<Option<DurableAgentSpec>>,
 }
 
 impl CountingBridge {
@@ -912,11 +913,12 @@ impl SessionBridge for CountingBridge {
         &self,
         _identity: &AgentIdentity,
         _runtime_id: &AgentRuntimeId,
-        _spec: &DurableAgentSpec,
+        spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         self.create_calls.fetch_add(1, Ordering::SeqCst);
+        *self.last_create_spec.lock().await = Some(spec.clone());
         if self.fail_create.load(Ordering::SeqCst) {
             return Err(BridgeError::Mob("create failed".to_string()));
         }
@@ -2603,6 +2605,144 @@ async fn identity_first_runtime_reset_register_failure_reports_cleanup_failure_a
         "cleanup ambiguity must not refresh a bridge-visible lease"
     );
     assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &record, old_token).await;
+}
+
+/// Roster provider that returns a fixed set of specs (mirrors the operator's
+/// current roster definition).
+struct StaticRoster(Vec<DurableAgentSpec>);
+
+#[async_trait]
+impl RosterProvider for StaticRoster {
+    async fn roster(&self, _ctx: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// Roster provider that always fails (to exercise the best-effort fallback).
+struct FailingRoster;
+
+#[async_trait]
+impl RosterProvider for FailingRoster {
+    async fn roster(&self, _ctx: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        Err(RosterError::ProviderUnavailable(
+            "roster provider unavailable".to_string(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reset_adopts_updated_spec_profile() {
+    // Re-profile via reset (REQ-10 / HomeCore re-profile): the mobkit/reset RPC
+    // handler calls adopt_roster_spec(roster_provider, identity) before reset,
+    // so the generation-advancing rebuild creates the fresh session on the
+    // roster's CURRENT profile rather than the stored one. reset mints
+    // rt:{id}:{gen+1}, so the fresh member never collides with the outgoing
+    // gen-0 member. This drives the actual handler glue (roster -> find ->
+    // update_spec), so it FAILS on the pre-fix code where reset carried the
+    // stored profile forward.
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
+
+    let id = make_identity("domain:security");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(g) => g.clone(),
+        _ => panic!("expected Acquired"),
+    };
+    let record = make_record("domain:security", 0, 1);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("domain:security"), // stored profile = "default"
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    // Operator flipped the roster profile to "security" (plus an unrelated
+    // identity, to prove adopt_roster_spec picks the matching one).
+    let mut reprofiled = make_spec("domain:security");
+    reprofiled.profile = meerkat_mob::ProfileName::from("security");
+    let roster: Arc<dyn RosterProvider> =
+        Arc::new(StaticRoster(vec![make_spec("other:agent"), reprofiled]));
+
+    // This is exactly what the reset RPC handler does before reset().
+    runtime.adopt_roster_spec(&roster, &id).await;
+
+    let new_record = runtime.reset(&id).await.unwrap();
+    assert_eq!(new_record.generation, ContinuityGeneration::new(1));
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 1);
+
+    let created = bridge
+        .last_create_spec
+        .lock()
+        .await
+        .clone()
+        .expect("reset must create a fresh session via the bridge");
+    assert_eq!(
+        created.profile,
+        meerkat_mob::ProfileName::from("security"),
+        "reset must rebuild on the roster's current profile, not the stored 'default'",
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reset_falls_back_to_stored_spec_when_roster_unavailable() {
+    // Best-effort: if the roster provider fails, adopt_roster_spec leaves the
+    // stored spec in place and reset still rebuilds (on the stored profile)
+    // rather than failing the destructive continuity reset.
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
+
+    let id = make_identity("domain:security");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(g) => g.clone(),
+        _ => panic!("expected Acquired"),
+    };
+    let record = make_record("domain:security", 0, 1);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("domain:security"), // stored profile = "default"
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    let roster: Arc<dyn RosterProvider> = Arc::new(FailingRoster);
+    runtime.adopt_roster_spec(&roster, &id).await; // best-effort, must not panic
+
+    runtime.reset(&id).await.unwrap();
+    let created = bridge
+        .last_create_spec
+        .lock()
+        .await
+        .clone()
+        .expect("reset must still create a fresh session");
+    assert_eq!(
+        created.profile,
+        meerkat_mob::ProfileName::from("default"),
+        "roster failure must fall back to the stored profile, not brick reset",
+    );
 }
 
 #[tokio::test]

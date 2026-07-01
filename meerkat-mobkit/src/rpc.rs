@@ -3148,10 +3148,11 @@ async fn handle_unified_rpc_json_inner(
             }
         }
         "mobkit/reset" => {
-            let identity_rt = match identity_ctx {
-                Some(ctx) => &*ctx.runtime,
+            let identity_reset_ctx = match identity_ctx {
+                Some(ctx) => ctx,
                 None => return maybe_identity_not_configured(is_notification, response_id),
             };
+            let identity_rt = &*identity_reset_ctx.runtime;
             let identity_str = request
                 .params
                 .get("identity")
@@ -3244,6 +3245,7 @@ async fn handle_unified_rpc_json_inner(
                     };
                 }
             };
+            identity_rt.set_reset_roster_provider(Some(identity_reset_ctx.roster_provider.clone()));
             match identity_rt.reset(&identity).await {
                 Ok(record) => {
                     let cleanup_warning = if let Err(err) = retire_stale_rpc_members_for_identity(
