@@ -552,6 +552,71 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn callback_build_agent_options_include_profile_name_from_spawn_labels() {
+        let build = meerkat_core::service::SessionBuildOptions {
+            peer_meta: Some(
+                meerkat_core::PeerMeta::default()
+                    .with_label("role", "security")
+                    .with_label("agent_identity", "domain:security"),
+            ),
+            ..Default::default()
+        };
+        let req = CreateSessionRequest {
+            model: "security-model".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: Some(build),
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+        };
+
+        let options = callback_build_agent_options(&req, "build-test");
+
+        assert_eq!(options["scope_id"], "build-test");
+        assert_eq!(
+            options["profile_name"], "security",
+            "SDK build_agent must see the adopted roster profile instead of \
+             falling back to checkpoint-local defaults"
+        );
+        assert_eq!(options["labels"]["agent_identity"], "domain:security");
+    }
+
+    #[test]
+    fn callback_build_agent_options_merge_request_and_spawn_labels() {
+        let build = meerkat_core::service::SessionBuildOptions {
+            peer_meta: Some(
+                meerkat_core::PeerMeta::default()
+                    .with_label("role", "security")
+                    .with_label("agent_identity", "domain:security"),
+            ),
+            ..Default::default()
+        };
+        let mut request_labels = BTreeMap::new();
+        request_labels.insert("session_id".to_string(), "session-123".to_string());
+        let req = CreateSessionRequest {
+            model: "security-model".to_string(),
+            prompt: meerkat_core::ContentInput::Text("noop".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: Some(build),
+            labels: Some(request_labels),
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+        };
+
+        let options = callback_build_agent_options(&req, "build-test");
+
+        assert_eq!(options["profile_name"], "security");
+        assert_eq!(options["session_id"], "session-123");
+        assert_eq!(options["labels"]["session_id"], "session-123");
+        assert_eq!(options["labels"]["agent_identity"], "domain:security");
+    }
+
+    #[test]
     fn gateway_runtime_options_parse_agent_memory_defaults() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let params = json!({
@@ -1516,6 +1581,47 @@ struct StdioCallbackAgentBuilder {
     session_store: Option<Arc<dyn meerkat::SessionStore>>,
 }
 
+fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> Value {
+    let request_labels = req.labels.as_ref();
+    let build_labels = req
+        .build
+        .as_ref()
+        .and_then(|build| build.peer_meta.as_ref())
+        .map(|meta| &meta.labels);
+    let mut labels = BTreeMap::new();
+    if let Some(build_labels) = build_labels {
+        labels.extend(
+            build_labels
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    if let Some(request_labels) = request_labels {
+        labels.extend(
+            request_labels
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    let labels = (!labels.is_empty()).then_some(labels);
+    let profile_name = build_labels
+        .and_then(|labels| labels.get("profile_name").or_else(|| labels.get("role")))
+        .or_else(|| {
+            request_labels
+                .and_then(|labels| labels.get("profile_name").or_else(|| labels.get("role")))
+        });
+    json!({
+        "scope_id": scope_id,
+        "session_id": labels.as_ref().and_then(|l| l.get("session_id")),
+        "profile_name": profile_name,
+        "model": &req.model,
+        "prompt": &req.prompt,
+        "labels": &labels,
+        "app_context": req.build.as_ref()
+            .and_then(|b| b.app_context.as_ref()),
+    })
+}
+
 #[async_trait]
 impl SessionAgentBuilder for StdioCallbackAgentBuilder {
     type Agent = FactoryAgent;
@@ -1540,15 +1646,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 
         // Send callback to Python with full session context.
         // app_context flows from SpawnMemberSpec.context → build.app_context.
-        let options = json!({
-            "scope_id": scope_id,
-            "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
-            "model": &req.model,
-            "prompt": &req.prompt,
-            "labels": &req.labels,
-            "app_context": req.build.as_ref()
-                .and_then(|b| b.app_context.as_ref()),
-        });
+        let options = callback_build_agent_options(req, &scope_id);
         let params = json!({ "options": options });
         let callback_result = self.bridge.call("callback/build_agent", params).await;
 

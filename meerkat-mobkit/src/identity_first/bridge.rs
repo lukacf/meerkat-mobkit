@@ -45,6 +45,10 @@ fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
     is_recoverable_lifecycle_cleanup_error(error)
 }
 
+fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
+    matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum MemberRepairRespawnFailure {
     DegradedTopologyRestore { failed_peer_ids: Vec<String> },
@@ -581,6 +585,34 @@ impl MobSessionBridge {
                 .map(|_| ())
         }
     }
+
+    async fn spawn_member_spec_replacing_collision(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        spawn_spec: SpawnMemberSpec,
+    ) -> Result<(), meerkat_mob::MobError> {
+        match self.spawn_member_spec(spawn_spec.clone()).await {
+            Ok(()) => Ok(()),
+            Err(error) if is_member_already_exists_error(&error) => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    member_id = %member_id,
+                    error = %error,
+                    "fresh-spawn fallback collided with an existing member; retiring and retrying with adopted spec"
+                );
+                match self.handle.retire(member_id.clone()).await {
+                    Ok(()) => {}
+                    Err(err)
+                        if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
+                    Err(err) => return Err(err),
+                }
+                self.forget_runtime_member(runtime_id).await;
+                self.spawn_member_spec(spawn_spec).await
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// Project meerkat 0.7's tri-state peer connectivity into an inspect-level
@@ -674,6 +706,10 @@ pub(crate) fn build_spawn_spec(
     labels.insert(
         "agent_identity".to_string(),
         spec.identity.as_str().to_string(),
+    );
+    labels.insert(
+        "profile_name".to_string(),
+        spec.profile.as_str().to_string(),
     );
     if !labels.is_empty() {
         spawn_spec = spawn_spec.with_labels(labels);
@@ -838,7 +874,7 @@ impl SessionBridge for MobSessionBridge {
                     draft,
                     self.base_profile_for_spec(spec).as_ref(),
                 );
-                self.spawn_member_spec(fresh_spec)
+                self.spawn_member_spec_replacing_collision(runtime_id, &mid, fresh_spec)
                     .await
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
@@ -1358,6 +1394,33 @@ mod tests {
                 .and_then(|labels| labels.get("agent_identity"))
                 .map(String::as_str),
             Some("agent:alpha")
+        );
+        assert_eq!(
+            spawn
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("profile_name"))
+                .map(String::as_str),
+            Some("worker"),
+            "identity-first spawn labels must carry the adopted profile so the \
+             SDK build callback sees the roster profile, not a checkpoint default"
+        );
+        assert_eq!(
+            spawn.role_name.as_str(),
+            "worker",
+            "SpawnMemberSpec role remains the authoritative mob profile"
+        );
+    }
+
+    #[test]
+    fn fresh_fallback_collision_classifier_matches_member_already_exists() {
+        let error = meerkat_mob::MobError::MemberAlreadyExists(meerkat_mob::AgentIdentity::from(
+            "rt-agent-alpha-0",
+        ));
+
+        assert!(
+            is_member_already_exists_error(&error),
+            "fresh fallback must retry recreate-over-running-member collisions"
         );
     }
 
