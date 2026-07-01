@@ -30,6 +30,8 @@ const MAX_MEMORY_BODY_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_TAGS: usize = 32;
 const MAX_MEMORY_TAG_BYTES: usize = 64;
 const MAX_RENDERED_RECORD_BYTES: usize = 80 * 1024;
+const MAX_MARKDOWN_MEMORY_RECORDS: usize = 512;
+const MAX_MARKDOWN_MEMORY_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INJECTED_TITLE_BYTES: usize = 160;
 const MAX_INJECTED_BODY_BYTES: usize = 2_048;
 const METADATA_PREFIX: &str = "<!-- mobkit-agent-memory ";
@@ -482,21 +484,26 @@ fn append_markdown_record(path: &Path, record: &AgentMemoryRecord) -> Result<(),
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
-        .append(true)
+        .truncate(false)
+        .write(true)
         .open(path)
         .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     file.lock_exclusive()
         .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    let file_is_empty = file
-        .metadata()
-        .map_err(|err| AgentMemoryError::Io(err.to_string()))?
-        .len()
-        == 0;
-    if file_is_empty {
-        file.write_all(b"# MobKit Agent Memory\n\n")
-            .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
-    }
-    let rendered = render_markdown_record(record)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    let mut records = parse_markdown_records(&content);
+    records.retain(|existing| existing.memory_id != record.memory_id);
+    records.push(record.clone());
+    apply_markdown_retention(&mut records)?;
+    let rendered = render_markdown_file(&records)?;
+    file.set_len(0)
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     file.write_all(rendered.as_bytes())
         .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     Ok(())
@@ -530,6 +537,7 @@ fn forget_markdown_record(
     records.retain(|record| record.memory_id != memory_id);
     let deleted = records.len() != original_len;
     if deleted {
+        apply_markdown_retention(&mut records)?;
         let rendered = render_markdown_file(&records)?;
         file.set_len(0)
             .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
@@ -551,10 +559,41 @@ fn read_markdown_records(path: &Path) -> Result<Vec<AgentMemoryRecord>, AgentMem
     let mut file = File::open(path).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     file.lock_shared()
         .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+    let file_len = file
+        .metadata()
+        .map_err(|err| AgentMemoryError::Io(err.to_string()))?
+        .len() as usize;
+    if file_len > MAX_MARKDOWN_MEMORY_FILE_BYTES {
+        return Err(AgentMemoryError::InvalidRecord(format!(
+            "agent memory file exceeds bundled retention cap of {MAX_MARKDOWN_MEMORY_FILE_BYTES} bytes"
+        )));
+    }
     let mut content = String::new();
     file.read_to_string(&mut content)
         .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
     Ok(parse_markdown_records(&content))
+}
+
+fn apply_markdown_retention(records: &mut Vec<AgentMemoryRecord>) -> Result<(), AgentMemoryError> {
+    records.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+            .then_with(|| b.memory_id.cmp(&a.memory_id))
+    });
+    records.truncate(MAX_MARKDOWN_MEMORY_RECORDS);
+    while !records.is_empty()
+        && render_markdown_file(records)?.len() > MAX_MARKDOWN_MEMORY_FILE_BYTES
+    {
+        records.pop();
+    }
+    records.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then_with(|| a.updated_at_ms.cmp(&b.updated_at_ms))
+            .then_with(|| a.memory_id.cmp(&b.memory_id))
+    });
+    Ok(())
 }
 
 fn parse_markdown_records(content: &str) -> Vec<AgentMemoryRecord> {
@@ -1131,6 +1170,39 @@ mod tests {
                 .iter()
                 .any(|record| record.memory_id == old.memory_id),
             "old durable record should remain recallable after later writes: {matches:#?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_store_applies_record_retention_policy() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = MarkdownAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let path = store.path_for("default", &id);
+        for idx in 0..(MAX_MARKDOWN_MEMORY_RECORDS + 8) {
+            append_markdown_record(
+                &path,
+                &AgentMemoryRecord {
+                    memory_id: format!("mem-retention-{idx:04}"),
+                    title: format!("Retained memory {idx}"),
+                    body: format!("Retained memory body {idx}"),
+                    tags: Vec::new(),
+                    created_at_ms: idx as u64,
+                    updated_at_ms: idx as u64,
+                },
+            )?;
+        }
+
+        let records = read_markdown_records(&path)?;
+        assert_eq!(records.len(), MAX_MARKDOWN_MEMORY_RECORDS);
+        assert!(
+            records.iter().all(|record| record.created_at_ms >= 8),
+            "oldest overflow records should be evicted by the explicit retention policy"
+        );
+        assert!(
+            fs::metadata(&path)?.len() <= MAX_MARKDOWN_MEMORY_FILE_BYTES as u64,
+            "memory file should remain under the byte retention cap"
         );
         Ok(())
     }

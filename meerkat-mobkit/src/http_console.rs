@@ -34,10 +34,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::access::{
-    ACCESS_ACTIONS, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE,
-    ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW, ACTION_GATING_DECIDE,
-    ACTION_GATING_VIEW, ACTION_MOB_OBSERVE, ACTION_RUNTIME_ADMIN, AccessController, AccessGroup,
-    AccessResource, AccessRule, AccessView, AgentResourceAttributes,
+    ACCESS_ACTIONS, ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_RESET,
+    ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE, ACTION_AGENT_SEND, ACTION_AGENT_SPAWN,
+    ACTION_AGENT_VIEW, ACTION_GATING_DECIDE, ACTION_GATING_VIEW, ACTION_MOB_OBSERVE,
+    ACTION_RUNTIME_ADMIN, AccessController, AccessGroup, AccessResource, AccessRule, AccessView,
+    AgentResourceAttributes,
 };
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
@@ -1565,9 +1566,8 @@ fn console_rpc_access_requirement<'a>(
         .or_else(|| params.get("agent_id").and_then(Value::as_str));
     match method {
         "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
-        "mobkit/agent_memory/remember" | "mobkit/agent_memory/forget" => {
-            Some((ACTION_AGENT_SEND, identity))
-        }
+        "mobkit/agent_memory/remember" => Some((ACTION_AGENT_MEMORY_WRITE, identity)),
+        "mobkit/agent_memory/forget" => Some((ACTION_AGENT_MEMORY_DELETE, identity)),
         "mobkit/agent_memory/recall" => Some((ACTION_AGENT_VIEW, identity)),
         "mobkit/retire"
         | "mobkit/retire_member"
@@ -8039,7 +8039,10 @@ mod tests {
         handle_console_runtime_rpc_with_visibility, member_id_matches_durable_identity,
         project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
     };
-    use crate::access::{ACTION_AGENT_VIEW, AccessController};
+    use crate::access::{
+        ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_SEND,
+        ACTION_AGENT_VIEW, AccessController,
+    };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
         AllowAllConsoleVisibilityPolicy, ConsoleIdentityRecord,
@@ -10054,6 +10057,92 @@ comms = true
             denied_recall["error"]["data"]["action"],
             json!(ACTION_AGENT_VIEW),
             "{denied_recall:#?}"
+        );
+
+        let send_only_controller = AccessController::new(crate::access::AccessControlConfig {
+            enabled: true,
+            admins: vec!["admin@example.test".to_string()],
+            rules: vec![crate::access::AccessRule {
+                id: "send-only-memory-console".to_string(),
+                subjects: vec!["sender@example.test".to_string()],
+                actions: vec![ACTION_AGENT_SEND.to_string()],
+                agents: vec!["identity:memory-console".to_string()],
+                ..crate::access::AccessRule::default()
+            }],
+            ..crate::access::AccessControlConfig::default()
+        })?;
+        let send_only_view = send_only_controller.view_for_subject(Some("sender@example.test"));
+        let send_only_remember = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/remember",
+                json!({
+                    "identity": "identity:memory-console",
+                    "title": "Send-only denied",
+                    "body": "Send-only users must not persist durable memory."
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&send_only_controller),
+            Some(&send_only_view),
+        ))
+        .await;
+        assert_eq!(
+            send_only_remember["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{send_only_remember:#?}"
+        );
+        assert_eq!(
+            send_only_remember["error"]["data"]["action"],
+            json!(ACTION_AGENT_MEMORY_WRITE),
+            "{send_only_remember:#?}"
+        );
+
+        let send_only_forget = Box::pin(handle_console_runtime_rpc_with_visibility(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            &AllowAllConsoleVisibilityPolicy,
+            rpc_request_with_params(
+                "mobkit/agent_memory/forget",
+                json!({
+                    "identity": "identity:memory-console",
+                    "memory_id": memory_id.clone()
+                }),
+            ),
+            true,
+            false,
+            None,
+            Some(&send_only_controller),
+            Some(&send_only_view),
+        ))
+        .await;
+        assert_eq!(
+            send_only_forget["error"]["data"]["kind"],
+            json!("access_denied"),
+            "{send_only_forget:#?}"
+        );
+        assert_eq!(
+            send_only_forget["error"]["data"]["action"],
+            json!(ACTION_AGENT_MEMORY_DELETE),
+            "{send_only_forget:#?}"
         );
 
         let forget = Box::pin(handle_console_runtime_rpc(

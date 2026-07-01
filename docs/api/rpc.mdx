@@ -267,7 +267,8 @@ Return information about configured memory backends.
 Agent-memory methods are available over the SDK JSON-RPC gateway and over
 console `POST /console/rpc` when the identity runtime has an agent-memory
 provider configured. Console callers can recall only identities they may view;
-`remember` and `forget` also require mutating console access.
+`remember` and `forget` also require mutating console access plus
+`agent.memory.write` and `agent.memory.delete` respectively.
 
 ### `mobkit/agent_memory/remember`
 

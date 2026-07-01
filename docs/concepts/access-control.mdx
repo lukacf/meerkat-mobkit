@@ -18,6 +18,8 @@ There are no roles. Every check evaluates the caller's attributes (subject, grou
 |--------|--------|
 | `agent.view` | See the agent anywhere: sidebar, roster, topology, timeline frames, event streams, inspection |
 | `agent.send` | Send messages to the agent |
+| `agent.memory.write` | Persist durable identity-scoped agent memory for future context injection |
+| `agent.memory.delete` | Delete durable identity-scoped agent memory records |
 | `agent.spawn` | Create members: ensure/spawn/fork helpers, run flows |
 | `agent.respawn` | Respawn the agent |
 | `agent.retire` | Retire / force-cancel / delete the agent |
@@ -136,6 +138,7 @@ All write methods require `access.admin` (or admin standing) and return the new 
 - `/console/experience` — agents the caller can't view vanish from the sidebar, roster, topology, identity status; per-agent affordances (`can_send_message`, `can_retire`, `can_respawn`) and runtime capabilities are intersected with the caller's grants, so the stock console UI degrades invisibly. Affordances are resolved per agent: a caller who can view and retire an agent but not message it gets a disabled composer on that agent while keeping the retire action — having no send grant anywhere does not flip the whole console to deployment read-only.
 - `/console/timeline`, timeline streams, and `mobkit/console/query_timeline` — frames for hidden identities are filtered out.
 - `mobkit/console/send` and `/console/send` — require `agent.send` on the target.
+- `mobkit/agent_memory/remember` and `mobkit/agent_memory/forget` — require `agent.memory.write` and `agent.memory.delete` respectively on the target identity. `mobkit/agent_memory/recall` requires `agent.view`.
 - Lifecycle and runtime RPCs — mapped to `agent.retire` / `agent.respawn` / `agent.reset` / `agent.spawn` / `runtime.admin` per method.
 - `/agents/{id}/events` — requires `agent.view` on that agent. `/mob/events` and `/mobkit/mob_events/stream` require `mob.observe` to open and additionally filter each event by `agent.view` on its source (see below).
 
