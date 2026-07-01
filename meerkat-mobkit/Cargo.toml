@@ -38,7 +38,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std", "r
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 chrono = "0.4"
 chrono-tz = "0.10"
-tokio = { version = "1", features = ["sync", "rt-multi-thread", "process", "io-util", "io-std", "signal", "macros", "net"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "process", "io-util", "io-std", "signal", "macros", "net", "time"] }
 axum = { version = "0.8", features = ["json", "multipart"] }
 tower = { version = "0.5", features = ["limit"] }
 async-stream = "0.3"

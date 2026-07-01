@@ -4517,7 +4517,8 @@ pub(crate) fn agent_memory_rpc_error(
         | crate::identity_first::AgentMemoryError::InvalidRecord(_) => -32602,
         crate::identity_first::AgentMemoryError::Unsupported(_) => -32601,
         crate::identity_first::AgentMemoryError::Io(_)
-        | crate::identity_first::AgentMemoryError::Parse(_) => -32603,
+        | crate::identity_first::AgentMemoryError::Parse(_)
+        | crate::identity_first::AgentMemoryError::Timeout(_) => -32603,
     };
     JsonRpcError {
         code,

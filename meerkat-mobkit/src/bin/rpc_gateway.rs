@@ -569,7 +569,35 @@ actions = ["agent.view"]
             agent_memory.config.selection,
             meerkat_mobkit::AgentMemorySelection::Contextual
         );
+        assert_eq!(agent_memory.config.recall_timeout_ms, 500);
+        assert_eq!(
+            agent_memory.config.recall_failure_policy,
+            meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip
+        );
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_recall_policy() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "recall_timeout_ms": 1200,
+                    "recall_failure_policy": "fail"
+                }
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+
+        assert_eq!(agent_memory.config.recall_timeout_ms, 1200);
+        assert_eq!(
+            agent_memory.config.recall_failure_policy,
+            meerkat_mobkit::AgentMemoryRecallFailurePolicy::Fail
+        );
     }
 
     #[test]
@@ -1115,6 +1143,8 @@ fn parse_gateway_agent_memory_config(
         "realm",
         "selection",
         "max_entries",
+        "recall_timeout_ms",
+        "recall_failure_policy",
         "instruction_header",
     ];
     let unsupported = object
@@ -1174,6 +1204,38 @@ fn parse_gateway_agent_memory_config(
             value as usize
         }
     };
+    let recall_timeout_ms = match object.get("recall_timeout_ms") {
+        None => 500,
+        Some(value) => {
+            let Some(value) = value.as_u64() else {
+                return Err(
+                    "runtime_options.agent_memory.recall_timeout_ms must be a positive integer"
+                        .to_string(),
+                );
+            };
+            if value == 0 || value > 30_000 {
+                return Err(
+                    "runtime_options.agent_memory.recall_timeout_ms must be between 1 and 30000"
+                        .to_string(),
+                );
+            }
+            value
+        }
+    };
+    let recall_failure_policy = match object
+        .get("recall_failure_policy")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("skip")
+    {
+        "skip" => meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip,
+        "fail" => meerkat_mobkit::AgentMemoryRecallFailurePolicy::Fail,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.recall_failure_policy must be 'skip' or 'fail' (got '{other}')"
+            ));
+        }
+    };
     let instruction_header = match object.get("instruction_header") {
         None => None,
         Some(value) => Some(
@@ -1197,6 +1259,8 @@ fn parse_gateway_agent_memory_config(
             realm,
             selection,
             max_entries,
+            recall_timeout_ms,
+            recall_failure_policy,
             instruction_header,
         },
         path,

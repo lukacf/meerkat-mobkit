@@ -110,8 +110,8 @@ pub use http_sse::{
 };
 pub use identity_first::{
     AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryProvider,
-    AgentMemoryRecallRequest, AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection,
-    MarkdownAgentMemoryStore, NewAgentMemory,
+    AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
+    AgentMemoryRuntimeInjector, AgentMemorySelection, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,

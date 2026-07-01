@@ -290,8 +290,10 @@ Google/OIDC helpers are not accepted by gateway init today.
 
 Agent memory is configured with `.agent_memory()` and requires
 `.persistent_state(path)` plus an identity roster when using the bundled gateway
-store. Options include `realm`, `selection`, `max_entries`, and
-`instruction_header`; the SDK serializes them to the gateway wire contract.
+store. Options include `realm`, `selection`, `max_entries`,
+`recall_timeout_ms`, `recall_failure_policy`, and `instruction_header`; the SDK
+serializes them to the gateway wire contract. Automatic injection defaults to a
+500 ms timeout and skips the memory block if recall fails.
 
 ## Runtime lifecycle
 

@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::contracts::AgentCustomizer;
 use super::types::{
@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_REALM: &str = "default";
 const DEFAULT_MAX_ENTRIES: usize = 8;
+const DEFAULT_RECALL_TIMEOUT_MS: u64 = 500;
 const MAX_MEMORY_ENTRIES: usize = 64;
+const MAX_RECALL_TIMEOUT_MS: u64 = 30_000;
 const MIN_CONTEXTUAL_RELEVANCE_SCORE: usize = 2;
 const MAX_MEMORY_TITLE_BYTES: usize = 200;
 const MAX_MEMORY_BODY_BYTES: usize = 64 * 1024;
@@ -46,6 +48,14 @@ pub enum AgentMemorySelection {
     Contextual,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMemoryRecallFailurePolicy {
+    Fail,
+    #[default]
+    Skip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMemoryConfig {
     #[serde(default = "default_realm")]
@@ -54,6 +64,10 @@ pub struct AgentMemoryConfig {
     pub selection: AgentMemorySelection,
     #[serde(default = "default_max_entries")]
     pub max_entries: usize,
+    #[serde(default = "default_recall_timeout_ms")]
+    pub recall_timeout_ms: u64,
+    #[serde(default)]
+    pub recall_failure_policy: AgentMemoryRecallFailurePolicy,
     #[serde(default)]
     pub instruction_header: Option<String>,
 }
@@ -64,6 +78,8 @@ impl Default for AgentMemoryConfig {
             realm: default_realm(),
             selection: AgentMemorySelection::Contextual,
             max_entries: DEFAULT_MAX_ENTRIES,
+            recall_timeout_ms: DEFAULT_RECALL_TIMEOUT_MS,
+            recall_failure_policy: AgentMemoryRecallFailurePolicy::Skip,
             instruction_header: None,
         }
     }
@@ -75,6 +91,10 @@ fn default_realm() -> String {
 
 fn default_max_entries() -> usize {
     DEFAULT_MAX_ENTRIES
+}
+
+fn default_recall_timeout_ms() -> u64 {
+    DEFAULT_RECALL_TIMEOUT_MS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +137,7 @@ pub enum AgentMemoryError {
     InvalidRecord(String),
     Io(String),
     Parse(String),
+    Timeout(String),
     Unsupported(String),
 }
 
@@ -127,6 +148,7 @@ impl std::fmt::Display for AgentMemoryError {
             Self::InvalidRecord(msg) => write!(f, "invalid agent memory record: {msg}"),
             Self::Io(msg) => write!(f, "agent memory I/O error: {msg}"),
             Self::Parse(msg) => write!(f, "agent memory parse error: {msg}"),
+            Self::Timeout(msg) => write!(f, "agent memory timeout: {msg}"),
             Self::Unsupported(msg) => write!(f, "agent memory unsupported operation: {msg}"),
         }
     }
@@ -364,17 +386,19 @@ impl AgentMemoryRuntimeInjector {
         if self.config.selection == AgentMemorySelection::Contextual && query_text.is_empty() {
             return Ok(content.clone());
         }
-        let records = self
-            .provider
-            .recall(AgentMemoryRecallRequest {
+        let records = recall_for_injection(
+            &self.provider,
+            &self.config,
+            AgentMemoryRecallRequest {
                 identity: identity.clone(),
                 realm: self.config.realm.clone(),
                 query_text: (!query_text.is_empty()).then_some(query_text),
                 query_terms,
                 selection: self.config.selection.clone(),
                 max_entries: self.config.max_entries,
-            })
-            .await?;
+            },
+        )
+        .await?;
         if records.is_empty() {
             return Ok(content.clone());
         }
@@ -419,18 +443,20 @@ impl AgentCustomizer for AgentMemoryCustomizer {
             inner.customize_build(context, spec, draft).await?;
         }
 
-        let records = self
-            .provider
-            .recall(AgentMemoryRecallRequest {
+        let records = recall_for_injection(
+            &self.provider,
+            &self.config,
+            AgentMemoryRecallRequest {
                 identity: context.identity.clone(),
                 realm: self.config.realm.clone(),
                 query_text: build_query_text(context, spec),
                 query_terms: build_query_terms(context, spec),
                 selection: self.config.selection.clone(),
                 max_entries: self.config.max_entries,
-            })
-            .await
-            .map_err(|err| CustomizerError::Io(err.to_string()))?;
+            },
+        )
+        .await
+        .map_err(|err| CustomizerError::Io(err.to_string()))?;
 
         if !records.is_empty() {
             draft.additional_instructions.push(format_memory_injection(
@@ -474,7 +500,41 @@ fn normalize_config(mut config: AgentMemoryConfig) -> AgentMemoryConfig {
     } else if config.max_entries > MAX_MEMORY_ENTRIES {
         config.max_entries = MAX_MEMORY_ENTRIES;
     }
+    if config.recall_timeout_ms == 0 {
+        config.recall_timeout_ms = DEFAULT_RECALL_TIMEOUT_MS;
+    } else if config.recall_timeout_ms > MAX_RECALL_TIMEOUT_MS {
+        config.recall_timeout_ms = MAX_RECALL_TIMEOUT_MS;
+    }
     config
+}
+
+async fn recall_for_injection(
+    provider: &Arc<dyn AgentMemoryProvider>,
+    config: &AgentMemoryConfig,
+    request: AgentMemoryRecallRequest,
+) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+    let timeout_ms = config.recall_timeout_ms;
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), provider.recall(request)).await {
+        Ok(Ok(records)) => Ok(records),
+        Ok(Err(err)) => match config.recall_failure_policy {
+            AgentMemoryRecallFailurePolicy::Skip => {
+                tracing::debug!(error = %err, "skipping automatic agent memory injection after recall failure");
+                Ok(Vec::new())
+            }
+            AgentMemoryRecallFailurePolicy::Fail => Err(err),
+        },
+        Err(_) => {
+            let err =
+                AgentMemoryError::Timeout(format!("automatic recall exceeded {timeout_ms} ms"));
+            match config.recall_failure_policy {
+                AgentMemoryRecallFailurePolicy::Skip => {
+                    tracing::debug!(error = %err, "skipping automatic agent memory injection after recall timeout");
+                    Ok(Vec::new())
+                }
+                AgentMemoryRecallFailurePolicy::Fail => Err(err),
+            }
+        }
+    }
 }
 
 fn append_markdown_record(path: &Path, record: &AgentMemoryRecord) -> Result<(), AgentMemoryError> {
@@ -1711,6 +1771,38 @@ mod tests {
         }
     }
 
+    struct FailingProvider;
+
+    #[async_trait]
+    impl AgentMemoryProvider for FailingProvider {
+        async fn recall(
+            &self,
+            _request: AgentMemoryRecallRequest,
+        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+            Err(AgentMemoryError::Io("provider unavailable".to_string()))
+        }
+    }
+
+    struct SlowProvider;
+
+    #[async_trait]
+    impl AgentMemoryProvider for SlowProvider {
+        async fn recall(
+            &self,
+            _request: AgentMemoryRecallRequest,
+        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(vec![AgentMemoryRecord {
+                memory_id: "mem-slow".to_string(),
+                title: "Slow memory".to_string(),
+                body: "This should not block turn delivery.".to_string(),
+                tags: Vec::new(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            }])
+        }
+    }
+
     struct SecretAddingCustomizer {
         after_create_called: AtomicBool,
     }
@@ -1881,6 +1973,57 @@ mod tests {
         assert!(injected_text.contains("Passport location"));
         assert!(injected_text.contains("Current user message"));
         assert!(injected_text.contains("Where did I put my passport?"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_injector_skips_recall_failures_by_default() -> Result<(), Box<dyn Error>> {
+        let injector = AgentMemoryRuntimeInjector::new(
+            Arc::new(FailingProvider),
+            AgentMemoryConfig::default(),
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = injector.inject_for_turn(&identity()?, &content).await?;
+
+        assert_eq!(injected.text_content(), "hello");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_injector_can_fail_closed_on_recall_errors() -> Result<(), Box<dyn Error>> {
+        let injector = AgentMemoryRuntimeInjector::new(
+            Arc::new(FailingProvider),
+            AgentMemoryConfig {
+                recall_failure_policy: AgentMemoryRecallFailurePolicy::Fail,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let err = match injector.inject_for_turn(&identity()?, &content).await {
+            Ok(_) => return Err("fail policy should return provider error".into()),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("provider unavailable"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_injector_skips_recall_timeouts_by_default() -> Result<(), Box<dyn Error>> {
+        let injector = AgentMemoryRuntimeInjector::new(
+            Arc::new(SlowProvider),
+            AgentMemoryConfig {
+                recall_timeout_ms: 1,
+                ..AgentMemoryConfig::default()
+            },
+        );
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = injector.inject_for_turn(&identity()?, &content).await?;
+
+        assert_eq!(injected.text_content(), "hello");
         Ok(())
     }
 

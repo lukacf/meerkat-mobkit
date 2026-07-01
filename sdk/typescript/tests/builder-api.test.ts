@@ -53,6 +53,8 @@ describe("MobKitBuilder.agentMemory()", () => {
       realm: "family",
       selection: "contextual",
       maxEntries: 3,
+      recallTimeoutMs: 1200,
+      recallFailurePolicy: "fail",
       instructionHeader: "Remember",
     });
 
@@ -60,6 +62,8 @@ describe("MobKitBuilder.agentMemory()", () => {
       realm: "family",
       selection: "contextual",
       max_entries: 3,
+      recall_timeout_ms: 1200,
+      recall_failure_policy: "fail",
       instruction_header: "Remember",
     });
   });

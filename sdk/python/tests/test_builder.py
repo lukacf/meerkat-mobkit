@@ -67,6 +67,8 @@ class TestBuilderChain:
             realm="family",
             selection="contextual",
             max_entries=3,
+            recall_timeout_ms=1200,
+            recall_failure_policy="fail",
             instruction_header="Remember",
         )
         params = MobKitRuntime(b._config)._build_init_params()
@@ -75,6 +77,8 @@ class TestBuilderChain:
             "realm": "family",
             "selection": "contextual",
             "max_entries": 3,
+            "recall_timeout_ms": 1200,
+            "recall_failure_policy": "fail",
             "instruction_header": "Remember",
         }
 

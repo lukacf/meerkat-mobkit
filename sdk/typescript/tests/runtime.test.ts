@@ -147,6 +147,8 @@ describe("MobKitRuntime", () => {
     (rt as any)._config.agentMemoryConfig = {
       selection: "contextual",
       max_entries: 8,
+      recall_timeout_ms: 1200,
+      recall_failure_policy: "fail",
     };
 
     const params = (rt as any)._buildInitParams();
@@ -154,6 +156,8 @@ describe("MobKitRuntime", () => {
     assert.deepEqual(params.runtime_options.agent_memory, {
       selection: "contextual",
       max_entries: 8,
+      recall_timeout_ms: 1200,
+      recall_failure_policy: "fail",
     });
   });
 });

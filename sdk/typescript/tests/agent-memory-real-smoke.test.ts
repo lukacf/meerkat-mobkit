@@ -129,7 +129,12 @@ memory = false
         .persistentState(stateWriteDir)
         .consoleAuthRequired(false)
         .rosterProvider(new SmokeRosterProvider())
-        .agentMemory({ selection: "always", maxEntries: 4 })
+        .agentMemory({
+          selection: "always",
+          maxEntries: 4,
+          recallTimeoutMs: 5_000,
+          recallFailurePolicy: "fail",
+        })
         .gatewayTimeoutMs(180_000)
         .build();
 
@@ -179,7 +184,12 @@ memory = false
         .persistentState(stateRunDir)
         .consoleAuthRequired(false)
         .rosterProvider(new SmokeRosterProvider())
-        .agentMemory({ selection: "always", maxEntries: 4 })
+        .agentMemory({
+          selection: "always",
+          maxEntries: 4,
+          recallTimeoutMs: 5_000,
+          recallFailurePolicy: "fail",
+        })
         .gatewayTimeoutMs(180_000)
         .build();
       assert.ok(runtime.rustHttpBaseUrl, "gateway must expose HTTP console base URL");

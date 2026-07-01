@@ -173,6 +173,14 @@ class MobKitBuilder:
             wire["max_entries"] = config["max_entries"]
         elif "maxEntries" in config:
             wire["max_entries"] = config["maxEntries"]
+        if "recall_timeout_ms" in config:
+            wire["recall_timeout_ms"] = config["recall_timeout_ms"]
+        elif "recallTimeoutMs" in config:
+            wire["recall_timeout_ms"] = config["recallTimeoutMs"]
+        if "recall_failure_policy" in config:
+            wire["recall_failure_policy"] = config["recall_failure_policy"]
+        elif "recallFailurePolicy" in config:
+            wire["recall_failure_policy"] = config["recallFailurePolicy"]
         if "instruction_header" in config:
             wire["instruction_header"] = config["instruction_header"]
         elif "instructionHeader" in config:

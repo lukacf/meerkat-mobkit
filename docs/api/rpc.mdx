@@ -272,7 +272,7 @@ provider configured. Console callers can recall only identities they may view;
 
 ### `mobkit/agent_memory/remember`
 
-Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger.
+Write an identity-scoped agent memory record for later per-turn and build-context injection. This is separate from `mobkit/memory/*`, which is the operational assertion ledger. A successful write means the configured hot identity-memory provider accepted the record; optional Elephant enrichment or extraction, when supplied by a custom provider, is out of band.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |
@@ -286,7 +286,7 @@ Write an identity-scoped agent memory record for later per-turn and build-contex
 
 ### `mobkit/agent_memory/recall`
 
-Read identity-scoped agent memory records from the configured agent memory provider. This exposes the same durable record set used for per-turn and build-context injection.
+Read identity-scoped agent memory records from the configured agent memory provider. This exposes the same durable record set used for per-turn and build-context injection. Unlike automatic injection, explicit recall reports provider errors to the caller.
 
 <Accordion title="Parameters">
 | Param | Type | Required | Description |
