@@ -33,7 +33,6 @@ use super::types::{
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
-
 fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
     matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
         || matches!(
@@ -3225,6 +3224,12 @@ impl IdentityRuntime {
             // Update the record with the actual session ID
             let mut new_record = new_record;
             new_record.session_id = session_id;
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                "reset bridge create_session completed",
+            );
 
             if let Err(err) = self
                 .continuity_store
@@ -3315,78 +3320,46 @@ impl IdentityRuntime {
                 }
             };
             new_record.checkpoint_version = effective_checkpoint_version;
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                checkpoint_version = new_record.checkpoint_version.get(),
+                "reset bridge session runtime state registered",
+            );
 
-            if let Some(old_id) = old_runtime_id.as_ref()
-                && old_id != &new_record.agent_runtime_id
-            {
-                if let Err(err) = bridge.retire_member(old_id).await {
-                    let unregister_error = bridge
-                        .unregister_session_runtime_state(&new_record.session_id)
-                        .await
-                        .err();
-                    let cleanup_error = bridge
-                        .retire_member(&new_record.agent_runtime_id)
-                        .await
-                        .err();
-                    self.restore_broken_entry_with_fenced_store(
-                        identity,
-                        registered_entry.clone(),
-                        &grant,
-                    )
-                    .await;
-                    let detail = format!(
-                        "bridge retire old member after reset: {err}{}{}",
-                        unregister_error
-                            .as_ref()
-                            .map(|e| format!("; unregister session failed: {e}"))
-                            .unwrap_or_default(),
-                        cleanup_error
-                            .as_ref()
-                            .map(|e| format!("; cleanup retire failed: {e}"))
-                            .unwrap_or_default(),
-                    );
-                    return Err(IdentityRuntimeError::Internal(detail));
-                }
-                if let Some(old_session_id) = old_session_id.as_ref()
-                    && old_session_id != &new_record.session_id
-                    && let Err(err) = bridge
-                        .unregister_session_runtime_state(old_session_id)
-                        .await
-                {
-                    let unregister_error = bridge
-                        .unregister_session_runtime_state(&new_record.session_id)
-                        .await
-                        .err();
-                    let cleanup_error = bridge
-                        .retire_member(&new_record.agent_runtime_id)
-                        .await
-                        .err();
-                    self.restore_broken_entry_with_fenced_store(
-                        identity,
-                        registered_entry.clone(),
-                        &grant,
-                    )
-                    .await;
-                    let detail = format!(
-                        "bridge unregister old session after reset: {err}{}{}",
-                        unregister_error
-                            .as_ref()
-                            .map(|e| format!("; unregister new session failed: {e}"))
-                            .unwrap_or_default(),
-                        cleanup_error
-                            .as_ref()
-                            .map(|e| format!("; cleanup retire failed: {e}"))
-                            .unwrap_or_default(),
-                    );
-                    return Err(IdentityRuntimeError::Internal(detail));
-                }
-            }
+            let cleanup_old_runtime_id = old_runtime_id
+                .as_ref()
+                .filter(|old_id| *old_id != &new_record.agent_runtime_id)
+                .cloned();
+            let cleanup_old_session_id = old_session_id
+                .as_ref()
+                .filter(|old_session_id| *old_session_id != &new_record.session_id)
+                .cloned();
+            self.spawn_old_bridge_cleanup_after_reset(
+                bridge.clone(),
+                cleanup_old_runtime_id,
+                cleanup_old_session_id,
+            );
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                "reset old bridge cleanup scheduled",
+            );
 
             if let Err(err) = self
                 .continuity_store
                 .upsert_continuity_record(&new_record, grant.fencing_token)
                 .await
             {
+                tracing::warn!(
+                    identity = %identity,
+                    runtime_id = %new_record.agent_runtime_id,
+                    session_id = %new_record.session_id,
+                    error = %err,
+                    "reset final continuity upsert failed after bridge materialization; rolling back new generation",
+                );
                 let unregister_error = bridge
                     .unregister_session_runtime_state(&new_record.session_id)
                     .await
@@ -3430,6 +3403,12 @@ impl IdentityRuntime {
             // Update runtime state
             let mut entries = self.entries.write().await;
             let Some(entry) = entries.get_mut(identity) else {
+                tracing::warn!(
+                    identity = %identity,
+                    runtime_id = %new_record.agent_runtime_id,
+                    session_id = %new_record.session_id,
+                    "reset entry disappeared after bridge materialization; rolling back new generation",
+                );
                 let _ = bridge
                     .unregister_session_runtime_state(&new_record.session_id)
                     .await;
@@ -3446,6 +3425,12 @@ impl IdentityRuntime {
             entry.lease = Some(Self::lease_entry_from_grant(&grant));
             entry.state = IdentityLifecycleState::Active;
             entry.checkpoint_version = new_record.checkpoint_version;
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                "reset completed",
+            );
             return Ok(new_record);
         }
 
@@ -3850,6 +3835,55 @@ impl IdentityRuntime {
         self.default_timeout
     }
 
+    fn spawn_old_bridge_cleanup_after_reset(
+        &self,
+        bridge: Arc<dyn SessionBridge>,
+        old_runtime_id: Option<AgentRuntimeId>,
+        old_session_id: Option<SessionId>,
+    ) {
+        if old_runtime_id.is_none() && old_session_id.is_none() {
+            return;
+        }
+        let runtime_instance_id = self.runtime_instance_id.clone();
+        let timeout = self.default_timeout;
+        tokio::spawn(async move {
+            if let Some(old_runtime_id) = old_runtime_id {
+                tracing::debug!(
+                    runtime_instance_id = %runtime_instance_id,
+                    runtime_id = %old_runtime_id,
+                    "skipping old bridge member retire after reset; reset commits the new generation and only clears stale session projection",
+                );
+            }
+
+            if let Some(old_session_id) = old_session_id {
+                match tokio::time::timeout(
+                    timeout,
+                    bridge.unregister_session_runtime_state(&old_session_id),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            runtime_instance_id = %runtime_instance_id,
+                            session_id = %old_session_id,
+                            error = %err,
+                            "failed to unregister old bridge session after reset; continuing with new generation",
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            runtime_instance_id = %runtime_instance_id,
+                            session_id = %old_session_id,
+                            timeout_ms = timeout.as_millis(),
+                            "timed out unregistering old bridge session after reset; continuing with new generation",
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     /// Poll until the identity produces an output_preview, or timeout.
     pub async fn wait_for_output(
         &self,
@@ -3959,11 +3993,31 @@ mod reset_reprofile_tests {
     struct RecordingBridge {
         create_profiles: AsyncMutex<Vec<String>>,
         retired_runtime_ids: AsyncMutex<Vec<String>>,
+        hanging_retire_runtime_ids: AsyncMutex<BTreeSet<String>>,
+        failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
     }
 
     impl RecordingBridge {
         async fn create_profiles(&self) -> Vec<String> {
             self.create_profiles.lock().await.clone()
+        }
+
+        async fn retired_runtime_ids(&self) -> Vec<String> {
+            self.retired_runtime_ids.lock().await.clone()
+        }
+
+        async fn hang_retire_for(&self, runtime_id: &AgentRuntimeId) {
+            self.hanging_retire_runtime_ids
+                .lock()
+                .await
+                .insert(runtime_id.to_string());
+        }
+
+        async fn fail_unregister_for(&self, session_id: &SessionId) {
+            self.failing_unregister_session_ids
+                .lock()
+                .await
+                .insert(session_id.to_string());
         }
     }
 
@@ -4023,6 +4077,14 @@ mod reset_reprofile_tests {
                 .lock()
                 .await
                 .push(runtime_id.to_string());
+            if self
+                .hanging_retire_runtime_ids
+                .lock()
+                .await
+                .contains(runtime_id.as_str())
+            {
+                futures::future::pending::<()>().await;
+            }
             Ok(())
         }
 
@@ -4033,6 +4095,21 @@ mod reset_reprofile_tests {
             Err(BridgeError::Mob(
                 "inspect not used in reset test".to_string(),
             ))
+        }
+
+        async fn unregister_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), BridgeError> {
+            if self
+                .failing_unregister_session_ids
+                .lock()
+                .await
+                .contains(&session_id.to_string())
+            {
+                return Err(BridgeError::Mob("old session still draining".to_string()));
+            }
+            Ok(())
         }
     }
 
@@ -4132,6 +4209,132 @@ mod reset_reprofile_tests {
             .await;
 
         let record = runtime.reset(&identity).await?;
+
+        assert_eq!(record.generation.get(), 1);
+        assert_eq!(
+            bridge.create_profiles().await,
+            vec!["domain".to_string(), "security".to_string()]
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(
+            status.profile.map(|profile| profile.to_string()).as_deref(),
+            Some("security")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_does_not_retire_old_generation_during_cleanup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let roster = Arc::new(MutableRoster::new(vec![durable_spec(
+            identity.clone(),
+            "domain",
+        )]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "reset-skips-old-retire-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge.clone()),
+                default_timeout: Some(Duration::from_millis(50)),
+            })
+            .with_reset_roster_provider(roster.clone()),
+        );
+
+        super::super::orchestrator::restore_flow(
+            &runtime,
+            &roster
+                .roster(&RosterContext {
+                    mob_definition: None,
+                    previous_identities: Vec::new(),
+                })
+                .await?,
+            None,
+            None,
+        )
+        .await?;
+
+        let old_runtime_id = AgentRuntimeId::parse("rt:domain:security:0")?;
+        bridge.hang_retire_for(&old_runtime_id).await;
+        roster
+            .set(vec![durable_spec(identity.clone(), "security")])
+            .await;
+
+        let record = tokio::time::timeout(Duration::from_secs(1), runtime.reset(&identity))
+            .await
+            .map_err(|_| "reset timed out waiting for old generation retirement")??;
+
+        assert_eq!(record.generation.get(), 1);
+        assert_eq!(
+            bridge.create_profiles().await,
+            vec!["domain".to_string(), "security".to_string()]
+        );
+        assert!(
+            !bridge
+                .retired_runtime_ids()
+                .await
+                .contains(&old_runtime_id.to_string()),
+            "reset cleanup must not call the cancellation-unsafe mob-member retire path"
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(
+            status.profile.map(|profile| profile.to_string()).as_deref(),
+            Some("security")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_returns_when_old_session_unregister_fails_after_new_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let roster = Arc::new(MutableRoster::new(vec![durable_spec(
+            identity.clone(),
+            "domain",
+        )]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "reset-unregister-failure-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge.clone()),
+                default_timeout: Some(Duration::from_millis(50)),
+            })
+            .with_reset_roster_provider(roster.clone()),
+        );
+
+        super::super::orchestrator::restore_flow(
+            &runtime,
+            &roster
+                .roster(&RosterContext {
+                    mob_definition: None,
+                    previous_identities: Vec::new(),
+                })
+                .await?,
+            None,
+            None,
+        )
+        .await?;
+
+        let old_status = runtime.status(&identity).await?;
+        let Some(old_session_id) = old_status.session_id else {
+            return Err("initial session id missing".into());
+        };
+        bridge.fail_unregister_for(&old_session_id).await;
+        roster
+            .set(vec![durable_spec(identity.clone(), "security")])
+            .await;
+
+        let record = tokio::time::timeout(Duration::from_secs(1), runtime.reset(&identity))
+            .await
+            .map_err(|_| "reset timed out waiting for old session unregister cleanup")??;
 
         assert_eq!(record.generation.get(), 1);
         assert_eq!(

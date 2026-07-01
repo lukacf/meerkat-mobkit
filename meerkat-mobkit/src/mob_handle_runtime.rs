@@ -22,6 +22,7 @@ use meerkat_mob::{
 use meerkat_runtime::input_state::{InputStatePersistenceRecord, StoredInputState};
 use meerkat_runtime::store::MachineLifecycleCommit;
 use meerkat_store::StoreAdapter;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::blob_store::{
@@ -1017,6 +1018,47 @@ fn sanitize_create_session_request_llm_override(req: &mut CreateSessionRequest) 
     ));
 }
 
+const SHELL_BUILTIN_TOOL_NAMES: [&str; 4] = [
+    "shell",
+    "shell_job_status",
+    "shell_jobs",
+    "shell_job_cancel",
+];
+const COMMS_TOOL_NAMES: [&str; 4] = ["peers", "send_message", "send_request", "send_response"];
+
+fn shell_and_comms_tool_filter() -> meerkat_core::ToolFilter {
+    meerkat_core::ToolFilter::Allow(
+        SHELL_BUILTIN_TOOL_NAMES
+            .iter()
+            .chain(COMMS_TOOL_NAMES.iter())
+            .map(|name| (*name).to_string())
+            .collect(),
+    )
+}
+
+/// Shell is implemented by Meerkat's native builtin dispatcher, but MobKit
+/// profiles treat `tools.shell` as independent from general `tools.builtins`.
+/// When a profile asks for shell-only access, force the parent builtin
+/// substrate on and install a session-local allow filter so broad builtins
+/// remain hidden while shell and comms stay available.
+pub fn ensure_shell_tooling_build_substrate(req: &mut CreateSessionRequest) {
+    let Some(build) = req.build.as_mut() else {
+        return;
+    };
+    if matches!(
+        build.override_shell,
+        meerkat_core::ToolCategoryOverride::Enable
+    ) && matches!(
+        build.override_builtins,
+        meerkat_core::ToolCategoryOverride::Disable
+    ) {
+        build.override_builtins = meerkat_core::ToolCategoryOverride::Enable;
+        if build.initial_tool_filter.is_none() {
+            build.initial_tool_filter = Some(shell_and_comms_tool_filter());
+        }
+    }
+}
+
 fn sanitize_message_for_stateless_replay(message: Message) -> Message {
     match message {
         Message::BlockAssistant(mut assistant) => {
@@ -1326,6 +1368,16 @@ pub fn mob_definition_may_use_image_generation(definition: &MobDefinition) -> bo
     })
 }
 
+/// Whether the session factory should make the native shell dispatcher
+/// available for profiles that opt into `profile.tools.shell`.
+pub fn mob_definition_may_use_shell(definition: &MobDefinition) -> bool {
+    definition.profiles.values().any(|binding| {
+        binding
+            .as_inline()
+            .is_none_or(|profile| profile.tools.shell)
+    })
+}
+
 fn normalize_runtime_turn_request(
     mut req: meerkat_core::service::StartTurnRequest,
 ) -> meerkat_core::service::StartTurnRequest {
@@ -1354,6 +1406,7 @@ macro_rules! delegate_mob_session_service {
                 mut req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
                 (self.hook)(&mut req).await?;
+                ensure_shell_tooling_build_substrate(&mut req);
                 sanitize_create_session_request_llm_override(&mut req);
 
                 // Capture context before create_session consumes the request.
@@ -1831,6 +1884,7 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         mut req: CreateSessionRequest,
     ) -> Result<meerkat_core::types::RunResult, SessionError> {
         sanitize_create_session_request_llm_override(&mut req);
+        ensure_shell_tooling_build_substrate(&mut req);
         // Capture pre-create context from the request (before inner consumes it).
         // The inner service's pre-build hooks may mutate the request further,
         // but we capture here because we can't read the request after inner
@@ -3139,6 +3193,61 @@ pub fn member_entry_to_json(entry: &meerkat_mob::runtime::MobMemberListEntry) ->
     value
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ResolvedToolsSnapshot {
+    pub identity: String,
+    pub session_id: String,
+    pub tools: Vec<String>,
+}
+
+pub async fn resolved_tools_for_session(
+    session_service: Option<&Arc<dyn MobSessionService>>,
+    identity: &str,
+    session_id: meerkat_core::types::SessionId,
+) -> Result<ResolvedToolsSnapshot, MobRuntimeError> {
+    let Some(session_service) = session_service else {
+        return Err(MobRuntimeError::InvalidInput(
+            "resolved tools unavailable for this runtime",
+        ));
+    };
+    let scope = session_service
+        .tool_scope_snapshot(&session_id)
+        .await
+        .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))?
+        .ok_or(MobRuntimeError::InvalidInput(
+            "identity tool scope is unavailable",
+        ))?;
+    let mut tools = scope
+        .visible_names
+        .into_iter()
+        .map(meerkat_core::types::ToolName::into_string)
+        .collect::<Vec<_>>();
+    tools.sort();
+    Ok(ResolvedToolsSnapshot {
+        identity: identity.to_string(),
+        session_id: session_id.to_string(),
+        tools,
+    })
+}
+
+pub async fn resolved_tools_for_member(
+    handle: &MobHandle,
+    session_service: Option<&Arc<dyn MobSessionService>>,
+    member_id: &str,
+) -> Result<ResolvedToolsSnapshot, MobRuntimeError> {
+    if member_id.trim().is_empty() {
+        return Err(MobRuntimeError::InvalidInput("identity must not be empty"));
+    }
+    let mid = crate::member_comms_id::mob_member_id(member_id);
+    let status = handle.member_status(&mid).await?;
+    let Some(session_id) = status.current_session_id else {
+        return Err(MobRuntimeError::InvalidInput(
+            "identity has no current session",
+        ));
+    };
+    resolved_tools_for_session(session_service, member_id, session_id).await
+}
+
 /// Project a meerkat `AgentEvent` into mobkit's console/SSE/event-log JSON
 /// payload shape.
 ///
@@ -3708,6 +3817,141 @@ image_generation = false
         assert!(
             mob_definition_may_use_image_generation(&definition),
             "one opt-in profile is enough to wire substrate; Meerkat gates visibility per profile"
+        );
+    }
+
+    #[test]
+    fn shell_substrate_defaults_off_for_inline_profiles() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+builtins = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        assert!(
+            !mob_definition_may_use_shell(&definition),
+            "inline profiles should not wire the shell substrate unless a profile opts in"
+        );
+    }
+
+    #[test]
+    fn shell_substrate_follows_profile_tool_config() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.domain]
+model = "gpt-5.5"
+
+[profiles.domain.tools]
+builtins = true
+shell = false
+
+[profiles.security]
+model = "gpt-5.5"
+
+[profiles.security.tools]
+builtins = true
+shell = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        let domain = definition.profiles["domain"].as_inline().unwrap();
+        let security = definition.profiles["security"].as_inline().unwrap();
+        assert!(!domain.tools.shell);
+        assert!(security.tools.shell);
+        assert!(
+            mob_definition_may_use_shell(&definition),
+            "one opt-in profile is enough to wire substrate; Meerkat gates visibility per profile"
+        );
+    }
+
+    #[test]
+    fn shell_tooling_forces_builtin_substrate_without_exposing_broad_builtins() {
+        let mut req = CreateSessionRequest {
+            model: "gpt-5.5".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: Some(meerkat_core::service::SessionBuildOptions {
+                override_builtins: meerkat_core::ToolCategoryOverride::Disable,
+                override_shell: meerkat_core::ToolCategoryOverride::Enable,
+                ..Default::default()
+            }),
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+        };
+
+        ensure_shell_tooling_build_substrate(&mut req);
+
+        let build = req.build.expect("build options");
+        assert_eq!(
+            build.override_shell,
+            meerkat_core::ToolCategoryOverride::Enable
+        );
+        assert_eq!(
+            build.override_builtins,
+            meerkat_core::ToolCategoryOverride::Enable,
+            "shell-only profiles must still enable Meerkat's builtin substrate"
+        );
+        let allow = match build.initial_tool_filter.expect("shell visibility filter") {
+            meerkat_core::ToolFilter::Allow(allow) => allow,
+            other => panic!("expected shell/comms allow filter, got {other:?}"),
+        };
+        for tool in SHELL_BUILTIN_TOOL_NAMES
+            .iter()
+            .chain(COMMS_TOOL_NAMES.iter())
+        {
+            assert!(allow.contains(tool), "missing expected tool {tool}");
+        }
+        for broad_builtin in ["task_list", "task_create", "apply_patch", "browse_skills"] {
+            assert!(
+                !allow.contains(broad_builtin),
+                "shell-only filter must not expose broad builtin {broad_builtin}",
+            );
+        }
+    }
+
+    #[test]
+    fn non_shell_profiles_keep_builtin_override_unchanged() {
+        let mut req = CreateSessionRequest {
+            model: "gpt-5.5".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            system_prompt: meerkat_core::config::SystemPromptOverride::Inherit,
+            max_tokens: None,
+            event_tx: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: Some(meerkat_core::service::SessionBuildOptions {
+                override_builtins: meerkat_core::ToolCategoryOverride::Disable,
+                override_shell: meerkat_core::ToolCategoryOverride::Disable,
+                ..Default::default()
+            }),
+            labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+        };
+
+        ensure_shell_tooling_build_substrate(&mut req);
+
+        let build = req.build.expect("build options");
+        assert_eq!(
+            build.override_builtins,
+            meerkat_core::ToolCategoryOverride::Disable
+        );
+        assert_eq!(
+            build.override_shell,
+            meerkat_core::ToolCategoryOverride::Disable
         );
     }
 

@@ -24,8 +24,8 @@ use meerkat_mob::{
 
 use crate::mob_handle_runtime::{
     is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
-    model_capabilities_for_member_entry, model_capabilities_for_role,
-    topology_restore_failed_peer_ids, topology_restore_warning_json,
+    model_capabilities_for_member_entry, model_capabilities_for_role, resolved_tools_for_member,
+    resolved_tools_for_session, topology_restore_failed_peer_ids, topology_restore_warning_json,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1612,6 +1612,7 @@ fn console_rpc_access_requirement(
         | "mobkit/run_labels/get" => Some((ACTION_RUNTIME_ADMIN, None)),
         "mobkit/get_member"
         | "mobkit/member_status"
+        | "mobkit/identity/resolved_tools"
         | "mobkit/inspect_identity"
         | "mobkit/status_identity"
         | "mobkit/console/inspect_identity" => Some((ACTION_AGENT_VIEW, target)),
@@ -3319,6 +3320,54 @@ async fn stale_live_alias_json_rpc_error(
     })
 }
 
+fn identity_from_runtime_alias(alias: &str) -> Option<crate::identity_first::AgentIdentity> {
+    let rest = alias.strip_prefix("rt:")?;
+    let (identity, generation) = rest.rsplit_once(':')?;
+    if identity.is_empty()
+        || generation.is_empty()
+        || !generation.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    crate::identity_first::AgentIdentity::parse(identity).ok()
+}
+
+async fn stale_runtime_alias_json_rpc_error(
+    operation: &str,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
+    alias: &str,
+) -> Option<JsonRpcError> {
+    let identity_runtime = identity_runtime?;
+    let identity = identity_from_runtime_alias(alias)?;
+    let Ok(status) = identity_runtime.status(&identity).await else {
+        return None;
+    };
+    let registered_runtime_member_id = status
+        .agent_runtime_id
+        .as_ref()
+        .map(crate::identity_first::AgentRuntimeId::as_str);
+    if registered_runtime_member_id == Some(alias) {
+        return None;
+    }
+    Some(JsonRpcError {
+        code: -32000,
+        message: format!(
+            "{operation} failed: identity runtime binding for {} points at {}, but requested live member is {}",
+            identity.as_str(),
+            registered_runtime_member_id.unwrap_or("<none>"),
+            alias
+        ),
+        data: Some(json!({
+            "kind": "stale_identity_runtime_binding",
+            "identity": identity.as_str(),
+            "registered_runtime_member_id": registered_runtime_member_id,
+            "live_runtime_member_id": alias,
+            "registered_session_id": status.session_id.as_ref().map(ToString::to_string),
+            "live_session_id": Value::Null,
+        })),
+    })
+}
+
 fn reset_requires_session_bridge_json_rpc_error() -> JsonRpcError {
     JsonRpcError {
         code: -32602,
@@ -4113,6 +4162,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
+                "mobkit/identity/resolved_tools",
                 "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
@@ -4559,6 +4609,18 @@ async fn handle_console_runtime_rpc_with_visibility(
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
+                let alias =
+                    crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str());
+                if stale_runtime_alias_json_rpc_error(
+                    "list_members",
+                    identity_runtime.as_ref(),
+                    alias.as_ref(),
+                )
+                .await
+                .is_some()
+                {
+                    continue;
+                }
                 members.push(member_entry_to_console_json(runtime, entry).await);
             }
             retain_visible_member_rows(&mut members, access_view);
@@ -4568,6 +4630,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "get_member",
+                identity_runtime.as_ref(),
+                member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             let handle = runtime.handle();
             let identity = crate::member_comms_id::mob_member_id(member_id);
             let entries = handle.list_members_including_retiring().await;
@@ -4605,6 +4676,18 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
+                let alias =
+                    crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str());
+                if stale_runtime_alias_json_rpc_error(
+                    "find_members",
+                    identity_runtime.as_ref(),
+                    alias.as_ref(),
+                )
+                .await
+                .is_some()
+                {
+                    continue;
+                }
                 matches.push(member_entry_to_console_json(runtime, entry).await);
             }
             retain_visible_member_rows(&mut matches, access_view);
@@ -5368,24 +5451,12 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             match identity_runtime.reset(&parsed_identity).await {
                 Ok(record) => {
-                    let cleanup_warning = if let Err(err) =
-                        retire_stale_console_members_for_identity(
-                            &handle,
-                            visibility_policy,
-                            parsed_identity.as_str(),
-                            Some(record.agent_runtime_id.as_str()),
-                        )
-                        .await
-                    {
-                        Some(json!({
-                            "kind": "stale_member_cleanup_failed_after_identity_reset",
-                            "identity": parsed_identity.as_str(),
-                            "agent_runtime_id": record.agent_runtime_id.as_str(),
-                            "message": err,
-                        }))
-                    } else {
-                        None
-                    };
+                    let cleanup_warning = Some(json!({
+                        "kind": "stale_member_cleanup_skipped_after_identity_reset",
+                        "identity": parsed_identity.as_str(),
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                        "message": "reset published the new generation without retiring stale live mob members; identity control calls reject stale runtime ids",
+                    }));
                     if let Some(store) = &console_events {
                         store
                             .record_lifecycle(
@@ -5822,6 +5893,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "retire_member",
+                identity_runtime.as_ref(),
+                member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             if let Some(aggregator) = &console_aggregator {
                 return match Box::pin(aggregator.retire_identity(member_id)).await {
                     Ok(true) => response_value(
@@ -5858,6 +5938,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "respawn_member",
+                identity_runtime.as_ref(),
+                member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             match runtime
                 .handle()
                 .respawn(crate::member_comms_id::mob_member_id(member_id), None)
@@ -5982,6 +6071,15 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "member_status",
+                identity_runtime.as_ref(),
+                member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             match runtime
                 .handle()
                 .member_status(&crate::member_comms_id::mob_member_id(member_id))
@@ -5995,10 +6093,71 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(err) => internal_error(response_id, format!("member_status failed: {err}")),
             }
         }
+        "mobkit/identity/resolved_tools" => {
+            let Some(identity) = request
+                .params
+                .get("identity")
+                .or_else(|| request.params.get("member_id"))
+                .and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "identity required");
+            };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "identity_resolved_tools",
+                identity_runtime.as_ref(),
+                identity,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
+            if let Some(identity_runtime) = identity_runtime.as_ref()
+                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(identity)
+                && let Ok(status) = identity_runtime.status(&parsed).await
+                && let Some(session_id) = status.session_id
+            {
+                match resolved_tools_for_session(runtime.session_service(), identity, session_id)
+                    .await
+                {
+                    Ok(snapshot) => {
+                        return response_value(
+                            response_id,
+                            Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                            None,
+                        );
+                    }
+                    Err(err) => {
+                        return internal_error(
+                            response_id,
+                            format!("resolved_tools failed: {err}"),
+                        );
+                    }
+                }
+            }
+            match resolved_tools_for_member(&runtime.handle(), runtime.session_service(), identity)
+                .await
+            {
+                Ok(snapshot) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("resolved_tools failed: {err}")),
+            }
+        }
         "mobkit/force_cancel_member" => {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(error) = stale_runtime_alias_json_rpc_error(
+                "force_cancel_member",
+                identity_runtime.as_ref(),
+                member_id,
+            )
+            .await
+            {
+                return response_value(response_id, None, Some(error));
+            }
             match runtime
                 .handle()
                 .force_cancel_member(crate::member_comms_id::mob_member_id(member_id))
@@ -7325,57 +7484,30 @@ async fn reset_all_live_console_agents(
                 }
                 match identity_runtime.reset(&parsed_identity).await {
                     Ok(record) => {
-                        match retire_stale_console_members_for_identity(
-                            &handle,
-                            visibility_policy,
-                            parsed_identity.as_str(),
-                            Some(record.agent_runtime_id.as_str()),
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                reset_details.push(json!({ "identity": identity }));
-                                reset_main.push(identity);
-                                if let Some(store) = console_events {
-                                    store
-                                        .record_lifecycle(
-                                            parsed_identity.as_str(),
-                                            "identity_reset",
-                                            json!({
-                                                "scope": "reset_all",
-                                                "generation": record.generation.get(),
-                                                "checkpoint_version": record.checkpoint_version.get(),
-                                            }),
-                                        )
-                                        .await;
-                                }
-                            }
-                            Err(err) => {
-                                warnings.push(json!({
-                                    "identity": identity,
-                                    "kind": "stale_member_cleanup_failed_after_identity_reset",
-                                    "message": err,
-                                }));
-                                reset_details.push(json!({
-                                    "identity": identity,
-                                    "cleanup_warning": warnings.last().cloned(),
-                                }));
-                                reset_main.push(identity);
-                                if let Some(store) = console_events {
-                                    store
-                                        .record_lifecycle(
-                                            parsed_identity.as_str(),
-                                            "identity_reset",
-                                            json!({
-                                                "scope": "reset_all",
-                                                "generation": record.generation.get(),
-                                                "checkpoint_version": record.checkpoint_version.get(),
-                                                "cleanup_warning": warnings.last().cloned(),
-                                            }),
-                                        )
-                                        .await;
-                                }
-                            }
+                        let cleanup_warning = json!({
+                            "identity": identity,
+                            "kind": "stale_member_cleanup_skipped_after_identity_reset",
+                            "message": "reset published the new generation without retiring stale live mob members; identity control calls reject stale runtime ids",
+                        });
+                        warnings.push(cleanup_warning);
+                        reset_details.push(json!({
+                            "identity": identity,
+                            "cleanup_warning": warnings.last().cloned(),
+                        }));
+                        reset_main.push(identity);
+                        if let Some(store) = console_events {
+                            store
+                                .record_lifecycle(
+                                    parsed_identity.as_str(),
+                                    "identity_reset",
+                                    json!({
+                                        "scope": "reset_all",
+                                        "generation": record.generation.get(),
+                                        "checkpoint_version": record.checkpoint_version.get(),
+                                        "cleanup_warning": warnings.last().cloned(),
+                                    }),
+                                )
+                                .await;
                         }
                     }
                     Err(err) => failures.push(json!({
@@ -10574,6 +10706,95 @@ comms = true
                     json!("rt:review:singleton:0")
                 );
             }
+        }
+
+        let list_response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request("mobkit/list_members"),
+            true,
+        ))
+        .await;
+        let listed = list_response["result"].as_array().expect("list members");
+        assert!(
+            listed
+                .iter()
+                .all(|entry| entry["agent_identity"] != json!("rt:review:singleton:0")),
+            "list_members must filter stale runtime aliases: {list_response:#?}"
+        );
+
+        let find_response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime.clone()),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/find_members",
+                json!({ "label_key": "agent_identity", "label_value": "review:singleton" }),
+            ),
+            true,
+        ))
+        .await;
+        let found = find_response["result"].as_array().expect("find members");
+        assert!(
+            found
+                .iter()
+                .all(|entry| entry["agent_identity"] != json!("rt:review:singleton:0")),
+            "find_members must filter stale runtime aliases: {find_response:#?}"
+        );
+
+        for method in [
+            "mobkit/get_member",
+            "mobkit/member_status",
+            "mobkit/identity/resolved_tools",
+            "mobkit/retire_member",
+            "mobkit/respawn_member",
+            "mobkit/force_cancel_member",
+        ] {
+            let param_name = if method == "mobkit/identity/resolved_tools" {
+                "identity"
+            } else {
+                "member_id"
+            };
+            let response = Box::pin(handle_console_runtime_rpc(
+                &runtime,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(identity_runtime.clone()),
+                None,
+                None,
+                rpc_request_with_params(method, json!({ param_name: "rt:review:singleton:0" })),
+                true,
+            ))
+            .await;
+            assert_ne!(
+                response["error"],
+                Value::Null,
+                "{method} must reject stale runtime alias"
+            );
+            assert_eq!(
+                response["error"]["data"]["kind"],
+                json!("stale_identity_runtime_binding")
+            );
+            assert_eq!(
+                response["error"]["data"]["live_runtime_member_id"],
+                json!("rt:review:singleton:0")
+            );
         }
 
         let (_temp_dir_without_stale, runtime_without_stale) =

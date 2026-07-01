@@ -34,7 +34,11 @@ use meerkat_mobkit::{
     RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
     SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime,
     handle_mobkit_rpc_json, handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
-    mob_handle_runtime::mob_definition_may_use_image_generation, start_mobkit_runtime,
+    mob_handle_runtime::{
+        ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
+        mob_definition_may_use_shell,
+    },
+    start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -1632,7 +1636,19 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<Self::Agent, SessionError> {
         if !self.has_session_builder {
-            return self.inner.build_agent(req, event_tx).await;
+            let mut normalized_req = CreateSessionRequest {
+                model: req.model.clone(),
+                prompt: req.prompt.clone(),
+                system_prompt: req.system_prompt.clone(),
+                max_tokens: req.max_tokens,
+                event_tx: req.event_tx.clone(),
+                initial_turn: req.initial_turn.clone(),
+                build: req.build.clone(),
+                labels: req.labels.clone(),
+                deferred_prompt_policy: req.deferred_prompt_policy,
+            };
+            ensure_shell_tooling_build_substrate(&mut normalized_req);
+            return self.inner.build_agent(&normalized_req, event_tx).await;
         }
 
         // Generate a unique scope ID for this build — used to isolate tool
@@ -1783,6 +1799,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
+                ensure_shell_tooling_build_substrate(&mut modified_req);
                 self.inner.build_agent(&modified_req, event_tx).await
             }
             Err(err) => {
@@ -1914,6 +1931,7 @@ external_addressable = true
         std::process::exit(1);
     });
     let image_generation = mob_definition_may_use_image_generation(&definition);
+    let shell = mob_definition_may_use_shell(&definition);
 
     // Validate profile model names against the catalog.
     // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
@@ -2251,7 +2269,10 @@ external_addressable = true
         // Match the ephemeral path's capability mask — only comms is enabled
         // by default. Apps control additional capabilities via their mob
         // definition profiles, not the gateway factory.
-        let mut factory = AgentFactory::new(state_path).builtins(false).comms(true);
+        let mut factory = AgentFactory::new(state_path)
+            .builtins(false)
+            .shell(shell)
+            .comms(true);
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
@@ -2267,8 +2288,11 @@ external_addressable = true
         // after the runtime boots — meerkat's runtime-backed host is now generic
         // over the session builder, so scheduled sessions materialize through the
         // SDK build callback and keep their identity-scoped tools.
-        let schedule_service =
-            meerkat_mobkit::schedule_wiring::attach_schedule_tools(&inner_builder, state_path);
+        let schedule_tools =
+            meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+                &inner_builder,
+                state_path,
+            );
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
@@ -2285,8 +2309,14 @@ external_addressable = true
             Some(Arc::clone(&runtime_store)),
             blob_store,
         ));
-        let schedule_host_inputs =
-            schedule_service.map(|sched| (sched, Arc::clone(&concrete_service), adapter.clone()));
+        let schedule_host_inputs = schedule_tools.map(|tools| {
+            (
+                tools.service,
+                tools.mob_target_registry,
+                Arc::clone(&concrete_service),
+                adapter.clone(),
+            )
+        });
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_runtime_adapter(adapter.clone())
@@ -2330,6 +2360,7 @@ external_addressable = true
         ));
         let mut factory = AgentFactory::new(agent_workspace)
             .builtins(false)
+            .shell(shell)
             .comms(true)
             .session_store(Arc::new(meerkat::MemoryStore::new()));
         if image_generation {
@@ -2348,6 +2379,7 @@ external_addressable = true
                 let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
                 let mut factory = AgentFactory::new(agent_workspace)
                     .builtins(false)
+                    .shell(shell)
                     .comms(true)
                     .session_store(Arc::new(meerkat::MemoryStore::new()));
                 if image_generation {
@@ -2456,21 +2488,6 @@ external_addressable = true
         );
         let _ = stdout.flush();
         std::process::exit(1);
-    });
-
-    // Run the schedule driver so SDK-hosted members' authored schedules fire: at
-    // due time the runtime-backed host materializes a session through the SDK
-    // build callback (keeping identity-scoped tools) and runs the prompt as a
-    // real agent turn. Held for the gateway's lifetime — dropping the handle
-    // shuts the host down. Persistent sessions only.
-    let _schedule_host = schedule_host_inputs.and_then(|(schedule_service, service, adapter)| {
-        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
-            service,
-            adapter,
-            schedule_service,
-            runtime.mob_runtime().agent_mob_mcp_state(),
-            schedule_owner_id.clone(),
-        )
     });
 
     if let Some(state_path) = persistent_state.as_ref() {
@@ -2682,6 +2699,45 @@ external_addressable = true
             agent_memory_provider,
             mob_definition: Some(mob_definition),
         })
+    } else {
+        None
+    };
+
+    // Run the schedule driver after identity-first restore, so legacy
+    // resumable-session repair can see live member bridge-session bindings and
+    // due occurrences do not race identity materialization.
+    let _schedule_host = if let Some((schedule_service, mob_target_registry, service, adapter)) =
+        schedule_host_inputs
+    {
+        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
+        mob_target_registry.set_mob_state(mob_state.clone());
+        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+            &schedule_service,
+            &mob_target_registry,
+        )
+        .await
+        {
+            Ok(repaired) if repaired > 0 => {
+                tracing::info!(
+                    repaired,
+                    "repaired persisted resumable-session schedules to identity mob targets"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to repair persisted resumable-session schedules to identity mob targets",
+                );
+            }
+        }
+        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+            service,
+            adapter,
+            schedule_service,
+            mob_state,
+            schedule_owner_id.clone(),
+        )
     } else {
         None
     };

@@ -741,6 +741,37 @@ async def test_member_status_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_identity_resolved_tools_rpc_name():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/identity/resolved_tools": {
+            "identity": "domain:security",
+            "session_id": "sid-1",
+            "tools": ["shell", "send_message"],
+        }
+    })
+    result = await handle.identity_resolved_tools("domain:security")
+    assert calls[0][0] == "mobkit/identity/resolved_tools"
+    assert calls[0][1] == {"identity": "domain:security"}
+    assert result == ["shell", "send_message"]
+
+
+@pytest.mark.asyncio
+async def test_identity_resolved_tools_detail_rpc_name():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/identity/resolved_tools": {
+            "identity": "domain:security",
+            "session_id": "sid-1",
+            "tools": ["shell"],
+        }
+    })
+    result = await handle.identity_resolved_tools_detail("domain:security")
+    assert calls[0][0] == "mobkit/identity/resolved_tools"
+    assert result.identity == "domain:security"
+    assert result.session_id == "sid-1"
+    assert result.tools == ["shell"]
+
+
+@pytest.mark.asyncio
 async def test_force_cancel_member_rpc_name():
     handle, calls = make_mock_mob_handle()
     await handle.force_cancel_member("w1")

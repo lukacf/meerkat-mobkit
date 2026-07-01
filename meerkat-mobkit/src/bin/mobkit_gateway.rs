@@ -31,6 +31,7 @@ const FALLBACK_TEMPLATE_VERSION: &str = "tux-fallback-v2";
 /// drive the runtime-backed schedule host, which needs the concrete type).
 type ScheduleHostInputs = (
     meerkat::ScheduleService,
+    meerkat_mobkit::schedule_wiring::ScheduleMobTargetRegistry,
     Arc<PersistentSessionService<FactoryAgentBuilder>>,
 );
 type PersistentSessionServiceParts = (
@@ -442,12 +443,13 @@ fn build_persistent_session_service(
     // Attach meerkat's per-session schedule tools so members whose profile sets
     // tools.schedule=true get the meerkat_schedule_* surface; the returned
     // service backs the firing host spawned once the runtime has booted.
-    let schedule_service = meerkat_mobkit::schedule_wiring::attach_schedule_tools(
-        &builder,
-        runtime_db_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(".")),
-    );
+    let schedule_tools =
+        meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+            &builder,
+            runtime_db_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -455,7 +457,13 @@ fn build_persistent_session_service(
         Some(Arc::clone(&runtime_store)),
         blob_store,
     ));
-    let schedule_host_inputs = schedule_service.map(|sched| (sched, Arc::clone(&service)));
+    let schedule_host_inputs = schedule_tools.map(|tools| {
+        (
+            tools.service,
+            tools.mob_target_registry,
+            Arc::clone(&service),
+        )
+    });
     Ok((service, adapter, binary_blob_store, schedule_host_inputs))
 }
 
@@ -695,8 +703,8 @@ async fn run() -> anyhow::Result<()> {
             )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
-        let schedule_host_inputs =
-            schedule_host_inputs.map(|(sched, svc)| (sched, svc, adapter.clone()));
+        let schedule_host_inputs = schedule_host_inputs
+            .map(|(sched, registry, svc)| (sched, registry, svc, adapter.clone()));
         // The explicit runtime adapter must share the session service's runtime
         // persistence authority or meerkat 0.7 fails the bootstrap closed.
         // `with_session_runtime_adapter` wires the SAME adapter into the session
@@ -779,15 +787,41 @@ async fn run() -> anyhow::Result<()> {
     // turn (session targets via the runtime-backed host, mob targets via the
     // mob runtime). Held for the gateway's lifetime — dropping the handle shuts
     // the host down. Persistent sessions only.
-    let _schedule_host = schedule_host_inputs.and_then(|(schedule_service, service, adapter)| {
+    let _schedule_host = if let Some((schedule_service, mob_target_registry, service, adapter)) =
+        schedule_host_inputs
+    {
+        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
+        mob_target_registry.set_mob_state(mob_state.clone());
+        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+            &schedule_service,
+            &mob_target_registry,
+        )
+        .await
+        {
+            Ok(repaired) if repaired > 0 => {
+                tracing::info!(
+                    repaired,
+                    "repaired persisted resumable-session schedules to identity mob targets"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to repair persisted resumable-session schedules to identity mob targets",
+                );
+            }
+        }
         meerkat_mobkit::schedule_wiring::spawn_schedule_host(
             service,
             adapter,
             schedule_service,
-            runtime.mob_runtime().agent_mob_mcp_state(),
+            mob_state,
             runtime_id.clone(),
         )
-    });
+    } else {
+        None
+    };
 
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
     // (lookup of known mob addresses) without requiring peer mob handles.

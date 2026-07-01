@@ -77,6 +77,7 @@ import {
   parseMobStructuralEvent,
   parseMobRun,
   parseRichMemberSnapshot,
+  parseIdentityResolvedToolsResult,
   parseHelperResult,
   parseMobRunSnapshot,
   parseCrossMobContactEntry,
@@ -131,6 +132,7 @@ import {
   type MobStructuralEvent,
   type MobRun,
   type RichMemberSnapshot,
+  type IdentityResolvedToolsResult,
   type HelperResult,
   type MobRunSnapshot,
   type CrossMobContactEntry,
@@ -1266,6 +1268,17 @@ export class MobHandle {
   async memberStatus(memberId: string): Promise<RichMemberSnapshot> {
     return parseRichMemberSnapshot(
       await this._runtime._rpc("mobkit/member_status", { member_id: memberId }),
+    );
+  }
+
+  async identityResolvedTools(identity: string): Promise<readonly string[]> {
+    const result = await this.identityResolvedToolsDetail(identity);
+    return result.tools;
+  }
+
+  async identityResolvedToolsDetail(identity: string): Promise<IdentityResolvedToolsResult> {
+    return parseIdentityResolvedToolsResult(
+      await this._runtime._rpc("mobkit/identity/resolved_tools", { identity }),
     );
   }
 

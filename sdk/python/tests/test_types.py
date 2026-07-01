@@ -40,6 +40,7 @@ from meerkat_mobkit.types import (
     MobpackTemplatesResult,
     MobpackToolsCatalogResult,
     MobpackValidationResult,
+    IdentityResolvedToolsResult,
     PeerConnectivitySnapshot,
     PersistedEvent,
     ReconcileEdgesReport,
@@ -1159,3 +1160,15 @@ class TestPeerConnectivitySnapshot:
         assert snapshot.peer_connectivity.reachable_peer_count == 3
         assert snapshot.peer_connectivity.unknown_peer_count == 1
         assert len(snapshot.peer_connectivity.unreachable_peers) == 1
+
+
+class TestIdentityResolvedToolsResult:
+    def test_from_dict(self):
+        result = IdentityResolvedToolsResult.from_dict({
+            "identity": "domain:security",
+            "session_id": "sid-1",
+            "tools": ["shell", "send_message"],
+        })
+        assert result.identity == "domain:security"
+        assert result.session_id == "sid-1"
+        assert result.tools == ["shell", "send_message"]

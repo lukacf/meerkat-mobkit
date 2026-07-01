@@ -2210,7 +2210,7 @@ async fn identity_first_runtime_reset_advances_generation_creates_fresh() {
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_unregisters_superseded_bridge_session() {
+async fn identity_first_runtime_reset_preserves_superseded_bridge_session_runtime_state() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -2244,8 +2244,13 @@ async fn identity_first_runtime_reset_unregisters_superseded_bridge_session() {
     assert_ne!(new_record.session_id, record.session_id);
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
-        unregistered.contains(&record.session_id.to_string()),
-        "successful reset must unregister the superseded bridge session; unregistered={unregistered:?}"
+        !unregistered.contains(&record.session_id.to_string()),
+        "successful reset must leave superseded bridge session state registered; unregistered={unregistered:?}"
+    );
+    assert_eq!(
+        bridge.unregister_calls.load(Ordering::SeqCst),
+        0,
+        "successful reset should not unregister the old bridge session on the critical path"
     );
 }
 
@@ -2323,7 +2328,7 @@ async fn identity_first_runtime_reset_create_failure_preserves_old_continuity() 
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
     bridge.fail_create();
-    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
 
     let id = make_identity("triage:main");
     let initial_grants = lease_prov
@@ -2746,12 +2751,12 @@ async fn identity_first_runtime_reset_falls_back_to_stored_spec_when_roster_unav
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_retire_failure_marks_identity_broken() {
+async fn identity_first_runtime_reset_skips_old_member_retire_failure_path() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
     bridge.fail_retire();
-    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone());
 
     let id = make_identity("triage:main");
     let initial_grants = lease_prov
@@ -2777,29 +2782,30 @@ async fn identity_first_runtime_reset_retire_failure_marks_identity_broken() {
         )
         .await;
 
-    let err = runtime.reset(&id).await.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("bridge retire old member after reset")
-    );
+    let reset_record = runtime.reset(&id).await.unwrap();
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     assert_eq!(
         resolved.get(&id),
         Some(&ContinuityResolveState::Ready {
-            record: record.clone()
+            record: reset_record.clone()
         })
     );
     let status = runtime.status(&id).await.unwrap();
     assert_eq!(
         status.agent_runtime_id.as_ref(),
-        Some(&record.agent_runtime_id)
+        Some(&reset_record.agent_runtime_id)
     );
-    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert_eq!(status.state, IdentityLifecycleState::Active);
     assert!(
-        status.lease.is_none(),
-        "failed old-member retirement must leave the identity broken without a refreshed lease"
+        status.lease.is_some(),
+        "successful reset should keep a refreshed lease when old-generation cleanup is skipped"
     );
-    assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &record, old_token).await;
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "reset must not retire the old generation as part of the success path"
+    );
+    assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &reset_record, old_token).await;
 }
 
 #[tokio::test]
@@ -2883,18 +2889,18 @@ async fn identity_first_runtime_reset_final_upsert_failure_restores_old_continui
     assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         bridge.retire_calls.load(Ordering::SeqCst),
-        2,
-        "failed reset should retire the old member and then clean up the tentative new member"
+        1,
+        "failed reset should clean up only the tentative new member"
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
-        2,
-        "failed final reset upsert must unregister the old and tentative bridge sessions"
+        1,
+        "failed final reset upsert must unregister only the tentative bridge session"
     );
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
-        unregistered.contains(&record.session_id.to_string()),
-        "failed final reset upsert must unregister the old bridge session; unregistered={unregistered:?}"
+        !unregistered.contains(&record.session_id.to_string()),
+        "failed final reset upsert must leave the old bridge session registered; unregistered={unregistered:?}"
     );
 
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();

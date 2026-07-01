@@ -59,6 +59,7 @@ class PersistentTransport:
         self._reader_thread: threading.Thread | None = None
         self._callback_handler: Callable | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._stderr_file = None
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
@@ -71,11 +72,17 @@ class PersistentTransport:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
+        stderr_target: Any = subprocess.DEVNULL
+        stderr_path = self._env.get("MOBKIT_GATEWAY_STDERR_FILE", "").strip()
+        if stderr_path:
+            self._stderr_file = open(stderr_path, "ab", buffering=0)
+            stderr_target = self._stderr_file
+
         self._process = subprocess.Popen(
             [self.gateway_bin, "--persistent"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_target,
             env=self._env,
         )
         self._reader_thread = threading.Thread(
@@ -236,6 +243,9 @@ class PersistentTransport:
             self._process.kill()
         finally:
             self._process = None
+            if self._stderr_file is not None:
+                self._stderr_file.close()
+                self._stderr_file = None
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None

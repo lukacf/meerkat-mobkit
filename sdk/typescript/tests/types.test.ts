@@ -51,6 +51,7 @@ import {
   parseMobpackSourceResult,
   parseMobpackExportResult,
   parseMobpackImportResult,
+  parseIdentityResolvedToolsResult,
   parseMobpackDraftRow,
   parseMobpackDraftListResult,
   parseMobpackDraftGetResult,
@@ -136,6 +137,19 @@ describe("parseRichMemberSnapshot peer_connectivity", () => {
     });
     assert.equal(snapshot.peerConnectivity?.reachablePeerCount, 2);
     assert.equal(snapshot.peerConnectivity?.status, "known");
+  });
+});
+
+describe("parseIdentityResolvedToolsResult", () => {
+  it("reads the per-identity resolved tool surface", () => {
+    const result = parseIdentityResolvedToolsResult({
+      identity: "domain:security",
+      session_id: "sid-1",
+      tools: ["shell", "send_message"],
+    });
+    assert.equal(result.identity, "domain:security");
+    assert.equal(result.sessionId, "sid-1");
+    assert.deepEqual(result.tools, ["shell", "send_message"]);
   });
 });
 
