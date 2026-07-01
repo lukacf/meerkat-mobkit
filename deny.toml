@@ -74,7 +74,12 @@ feature-depth = 1
 # RUSTSEC-2025-0141: bincode 1.3.3 unmaintained (team ceased development;
 # 1.3.3 declared complete/final by its authors). Transitive via
 # meerkat-memory -> hnsw_rs; no vulnerability, no safe upgrade exists.
-ignore = ["RUSTSEC-2026-0049", "RUSTSEC-2025-0141"]
+# RUSTSEC-2026-0189: rmcp Streamable HTTP server transport host-header
+# validation. Transitive via meerkat-mcp 0.7.x, whose latest published patch
+# still requires rmcp 0.14; MobKit enables client transports, not the affected
+# transport-streamable-http-server feature. Remove when Meerkat lifts to
+# rmcp >= 1.4.0.
+ignore = ["RUSTSEC-2026-0049", "RUSTSEC-2025-0141", "RUSTSEC-2026-0189"]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
 # Setting this to true can be helpful if you have special authentication requirements that cargo-deny does not support.

@@ -3091,13 +3091,7 @@ async fn handle_unified_rpc_json_inner(
                     };
                 }
             };
-            // Re-profile on reset: adopt the roster's CURRENT spec (e.g. a
-            // changed `profile`) for the regenerated session rather than
-            // carrying the stored spec forward. reset advances the generation,
-            // so the fresh member id never collides with the outgoing one.
-            identity_rt
-                .adopt_roster_spec(&identity_reset_ctx.roster_provider, &identity)
-                .await;
+            identity_rt.set_reset_roster_provider(Some(identity_reset_ctx.roster_provider.clone()));
             match identity_rt.reset(&identity).await {
                 Ok(record) => {
                     let cleanup_warning = if let Err(err) = retire_stale_rpc_members_for_identity(
