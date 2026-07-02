@@ -3901,6 +3901,7 @@ shell = true
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         ensure_shell_tooling_build_substrate(&mut req);
@@ -3949,6 +3950,7 @@ shell = true
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         ensure_shell_tooling_build_substrate(&mut req);
@@ -4509,6 +4511,7 @@ realm_profile = "worker-v2"
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         // create_session will fail (no LLM) but the hook runs first.
@@ -4569,6 +4572,7 @@ realm_profile = "worker-v2"
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+            injected_context: Vec::new(),
         };
 
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
@@ -5221,6 +5225,7 @@ image_generation = true
     fn normalize_runtime_turn_request_strips_runtime_owned_semantics() {
         let req = meerkat_core::service::StartTurnRequest {
             prompt: meerkat_core::ContentInput::Text("checkpoint".to_string()),
+            injected_context: Vec::new(),
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
@@ -5298,6 +5303,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         // before_create must succeed with default impl.
         hook.before_create(&mut req).await.unwrap();
@@ -5336,6 +5342,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         let result = hook.before_create(&mut req).await;
         assert!(result.is_err());
@@ -5369,6 +5376,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         hook.before_create(&mut req).await.unwrap();
         assert_eq!(req.model, "hook-overridden");

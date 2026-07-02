@@ -171,6 +171,7 @@ impl CoreExecutor for TargetCoreExecutor {
         );
         let req = StartTurnRequest {
             prompt,
+            injected_context: Vec::new(),
             system_prompt: None,
             event_tx: None,
             // meerkat 0.7: render_metadata/skill_references live on the
@@ -448,6 +449,7 @@ async fn setup_session(
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
             build: Some(build_opts),
             labels: None,
+            injected_context: Vec::new(),
         })
         .await
         .map_err(|error| anyhow::anyhow!("create session: {error}"))?;

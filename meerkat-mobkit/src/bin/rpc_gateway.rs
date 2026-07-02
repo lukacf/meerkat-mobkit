@@ -617,6 +617,7 @@ actions = ["agent.view"]
             build: Some(build),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         let options = callback_build_agent_options(&req, "build-test");
@@ -652,6 +653,7 @@ actions = ["agent.view"]
             build: Some(build),
             labels: Some(request_labels),
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         let options = callback_build_agent_options(&req, "build-test");
@@ -3045,6 +3047,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 build: req.build.clone(),
                 labels: req.labels.clone(),
                 deferred_prompt_policy: req.deferred_prompt_policy,
+                injected_context: req.injected_context.clone(),
             };
             ensure_shell_tooling_build_substrate(&mut normalized_req);
             return self.inner.build_agent(&normalized_req, event_tx).await;
@@ -3078,6 +3081,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     build: req.build.clone(),
                     labels: req.labels.clone(),
                     deferred_prompt_policy: req.deferred_prompt_policy,
+                    injected_context: req.injected_context.clone(),
                 };
                 // Apply additional_instructions as system prompt extension
                 if let Some(instructions) = result.get("additional_instructions") {

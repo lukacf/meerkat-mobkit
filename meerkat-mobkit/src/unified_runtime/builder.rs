@@ -1140,6 +1140,7 @@ mod tests {
             deferred_prompt_policy: DeferredPromptPolicy::Discard,
             build: Some(build),
             labels: None,
+            injected_context: Vec::new(),
         }
     }
 
