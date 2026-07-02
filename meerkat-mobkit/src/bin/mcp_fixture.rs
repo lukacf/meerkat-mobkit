@@ -39,6 +39,8 @@ const SCHEDULING_MESSAGE_PREFIX_ENV: &str = "MOBKIT_PHASE_C_SCHEDULING_MESSAGE_P
 const SCHEDULING_DISABLE_INJECTION_ENV: &str = "MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION";
 const HANG_ON_ENV: &str = "MOBKIT_PHASE_C_HANG_ON";
 const HANG_ON_FILE_ENV: &str = "MOBKIT_PHASE_C_HANG_ON_FILE";
+const DELAY_ON_ENV: &str = "MOBKIT_PHASE_C_DELAY_ON";
+const DELAY_MS_ENV: &str = "MOBKIT_PHASE_C_DELAY_MS";
 const CLOSE_DELAY_MS_ENV: &str = "MOBKIT_PHASE_C_CLOSE_DELAY_MS";
 const DEFAULT_CLOSE_DELAY_MS: u64 = 2_000;
 
@@ -121,6 +123,7 @@ fn handle_request(module: &str, request: &Value) -> Value {
             if should_hang("initialize", None) {
                 hang_forever(module, "initialize", None);
             }
+            maybe_delay(module, "initialize", None);
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -145,6 +148,7 @@ fn handle_request(module: &str, request: &Value) -> Value {
             if should_hang("list_tools", None) {
                 hang_forever(module, "list_tools", None);
             }
+            maybe_delay(module, "list_tools", None);
             append_log(&format!("{module}:list_tools"));
             let tools = tool_descriptors(module)
                 .into_iter()
@@ -193,6 +197,7 @@ fn handle_tool_call(module: &str, id: Value, request: &Value) -> Value {
     if should_hang("call_tool", Some(tool_name)) {
         hang_forever(module, "call_tool", Some(tool_name));
     }
+    maybe_delay(module, "call_tool", Some(tool_name));
     append_log(&format!("{module}:call:{tool_name}:{args}"));
 
     if env::var(FAIL_TOOL_ENV).ok().as_deref() == Some(tool_name) {
@@ -381,4 +386,49 @@ fn hang_forever(module: &str, operation: &str, tool_name: Option<&str>) -> ! {
     loop {
         std::thread::sleep(Duration::from_mins(1));
     }
+}
+
+fn maybe_delay(module: &str, operation: &str, tool_name: Option<&str>) {
+    if !matches_delay_target(operation, tool_name) {
+        return;
+    }
+    let delay_ms = env::var(DELAY_MS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|delay_ms| *delay_ms > 0)
+        .unwrap_or(0);
+    if delay_ms == 0 {
+        return;
+    }
+    if let Some(tool_name) = tool_name {
+        append_log(&format!(
+            "{module}:delay:{operation}:{tool_name}:{delay_ms}"
+        ));
+    } else {
+        append_log(&format!("{module}:delay:{operation}:{delay_ms}"));
+    }
+    std::thread::sleep(Duration::from_millis(delay_ms));
+}
+
+fn matches_delay_target(operation: &str, tool_name: Option<&str>) -> bool {
+    let Some(raw) = env::var(DELAY_ON_ENV).ok() else {
+        return false;
+    };
+    raw.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            return false;
+        }
+        if candidate.eq_ignore_ascii_case("all") || candidate.eq_ignore_ascii_case(operation) {
+            return true;
+        }
+        if operation != "call_tool" {
+            return false;
+        }
+        let Some(tool_name) = tool_name else {
+            return false;
+        };
+        candidate.eq_ignore_ascii_case(&format!("call_tool:{tool_name}"))
+            || candidate.eq_ignore_ascii_case(&format!("call:{tool_name}"))
+    })
 }

@@ -190,16 +190,20 @@ impl UnifiedRuntime {
             drain_duration_ms: drain_start.elapsed().as_millis() as u64,
         };
 
-        // Phase 2: Close event router
-        self.close_event_router().await;
-
-        // Phase 3: Shutdown modules and mob
-        let module_shutdown = self.module_runtime.lock().await.shutdown();
+        // Phase 2: Stop the mob actor while its router/module dependencies
+        // are still alive. Closing them first can race Stop against an
+        // already-dropped actor reply channel under teardown pressure.
         let mob_stop = self
             .mob_handle()
             .stop()
             .await
             .map_err(MobRuntimeError::from);
+
+        // Phase 3: Close event router
+        self.close_event_router().await;
+
+        // Phase 4: Shutdown modules
+        let module_shutdown = self.module_runtime.lock().await.shutdown();
         UnifiedRuntimeShutdownReport {
             drain,
             module_shutdown,

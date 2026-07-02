@@ -27,6 +27,8 @@ use serde_json::{Value, json};
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
 const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
+const DELAY_ON_ENV: &str = "MOBKIT_PHASE_C_DELAY_ON";
+const DELAY_MS_ENV: &str = "MOBKIT_PHASE_C_DELAY_MS";
 
 fn fixture_binary_path() -> PathBuf {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
@@ -200,6 +202,66 @@ fn phase0_contract_009_runtime_routes_and_delivery_history_project_without_host_
                 "backoff_ms": 0,
             }
         ])
+    );
+}
+
+#[test]
+fn phase0_contract_009_delivery_send_survives_slow_mcp_subprocess() {
+    let mut runtime = routing_delivery_runtime_with_env(
+        &[],
+        &[
+            (DELAY_ON_ENV, "call_tool:delivery.send"),
+            (DELAY_MS_ENV, "1500"),
+        ],
+    );
+
+    let add_route = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"phase0-slow-route-add","method":"mobkit/routing/routes/add","params":{"route":{"route_key":"slow-route","recipient":"vip@example.com","channel":"notification","sink":"sms","target_module":"delivery","retry_max":0,"backoff_ms":5,"rate_limit_per_minute":9}}}"#,
+        Duration::from_secs(1),
+    ));
+    let resolved = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"phase0-slow-route-resolve","method":"mobkit/routing/resolve","params":{"recipient":"vip@example.com","channel":"notification"}}"#,
+        Duration::from_secs(1),
+    ));
+    let sent = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "phase0-slow-delivery-send",
+            "method": "mobkit/delivery/send",
+            "params": {
+                "resolution": resolved["result"].clone(),
+                "idempotency_key": "phase0-contract-009-slow",
+                "payload": {"message": "hello"}
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    let history = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"phase0-slow-delivery-history","method":"mobkit/delivery/history","params":{"recipient":"vip@example.com","limit":10}}"#,
+        Duration::from_secs(1),
+    ));
+
+    runtime.shutdown();
+
+    assert_eq!(
+        add_route["result"]["route"]["route_key"],
+        json!("slow-route")
+    );
+    assert!(
+        sent["error"].is_null(),
+        "slow delivery should not time out under the core MCP budget: {sent}"
+    );
+    assert_eq!(sent["result"]["status"], json!("sent"));
+    assert_eq!(
+        history["result"]["deliveries"]
+            .as_array()
+            .map_or(0, Vec::len),
+        1
     );
 }
 
