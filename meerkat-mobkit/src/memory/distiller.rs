@@ -47,9 +47,10 @@
 //! (c) **Compaction** — `AgentEvent::CompactionCompleted` is observable on
 //! the agent-event stream; the discarded content survives only in
 //! meerkat's session semantic memory, so the post-compaction run reads the
-//! discard range host-side via `MemoryStore::search` over that session's
-//! scope (read-only [`HnswDiscardSource`]; opened lazily, one query,
-//! dropped — D3's re-index cost is paid once per harvest, never held).
+//! discard range host-side via `MemoryStore::enumerate_scoped` over that
+//! session's scope (ask 8: exact, provenance-ordered, paged — read-only
+//! [`HnswDiscardSource`]; opened lazily, drained, dropped — D3's re-index
+//! cost is paid once per harvest, never held).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -633,6 +634,20 @@ pub trait CompactionDiscardSource: Send + Sync {
         session_key: &str,
         limit: usize,
     ) -> Result<Vec<DiscardEntry>, DistillerError>;
+
+    /// Ask 2 (landed in meerkat 0.7.12): reclaim a permanently-orphaned
+    /// session's semantic-memory rows via `MemoryStore::drop_scope`. Session
+    /// ids rotate under respawn/reset and vanish under delete, stranding rows
+    /// that nothing will ever search yet that every future agent build in the
+    /// realm re-embeds (defect D3, storage half). Callers MUST run this only
+    /// AFTER distillation has preserved what mattered, and ONLY for causes
+    /// that permanently abandon the id. Returns the number of rows dropped
+    /// (0 when unsupported — the default is a no-op for stores/test doubles
+    /// without a drop facility).
+    async fn drop_scope(&self, session_key: &str) -> Result<usize, DistillerError> {
+        let _ = session_key;
+        Ok(0)
+    }
 }
 
 /// Reads meerkat's own session semantic memory store at
@@ -643,21 +658,21 @@ pub trait CompactionDiscardSource: Send + Sync {
 ///
 /// Cost note (D3): `HnswMemoryStore::open` rebuilds its in-RAM index from
 /// the SQLite rows on every open, so the store is opened lazily per
-/// harvest, queried once, and dropped. The default ranking policy is a
-/// local bag-of-words hash — no network calls. `MemoryStore::search` is the
-/// only read surface (no enumeration API), so the harvest is one scoped
-/// query with a generous limit: at per-session compaction-row counts this
-/// approximates enumeration, and the approximation is documented rather
-/// than hidden.
+/// harvest and dropped afterwards.
+///
+/// Ask 8 (landed in meerkat 0.7.12): the harvest now reads the discard range
+/// via `MemoryStore::enumerate_scoped` — exact, provenance-ordered (durable
+/// id), paged — instead of the old generous-limit `search` approximation.
+/// Enumeration is read-only and additive; it does not touch indexing/search
+/// semantics. The per-page `limit` is the total safety ceiling on rows read;
+/// if a scope exceeds it the harvest stops and logs (never silently), but at
+/// per-session compaction-row counts the full scope fits well within it.
 pub struct HnswDiscardSource {
     dir: PathBuf,
 }
 
-/// The single harvest query (see [`HnswDiscardSource`] docs on why a query
-/// exists at all): doctrine-shaped terms so bag-of-words ranking surfaces
-/// the durable-memory-relevant rows first when the limit truncates.
-const HARVEST_QUERY: &str =
-    "operator said corrected decided preference fact gotcha procedure open loop reference";
+/// Raw scope rows fetched per `enumerate_scoped` page.
+const HARVEST_PAGE_ROWS: usize = 256;
 
 impl HnswDiscardSource {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
@@ -672,7 +687,7 @@ impl CompactionDiscardSource for HnswDiscardSource {
         session_key: &str,
         limit: usize,
     ) -> Result<Vec<DiscardEntry>, DistillerError> {
-        use meerkat_core::memory::{MemorySearchScope, MemoryStore};
+        use meerkat_core::memory::{MemoryEnumerationRequest, MemorySearchScope, MemoryStore};
 
         if !self.dir.is_dir() {
             // No session semantic memory in this deployment: nothing was
@@ -688,21 +703,76 @@ impl CompactionDiscardSource for HnswDiscardSource {
             .map_err(|err| DistillerError::Store(err.to_string()))?
             .map_err(|err| DistillerError::Store(err.to_string()))?;
         let scope = MemorySearchScope::for_session(session_id);
-        let results = store
-            .search(&scope, HARVEST_QUERY, limit)
+
+        // Ask 8: page the scope exactly, in durable-id order, until it is
+        // exhausted or the safety ceiling is hit — no relevance ranking, no
+        // silent truncation.
+        let mut entries = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let remaining = limit.saturating_sub(entries.len());
+            if remaining == 0 {
+                break;
+            }
+            let page = store
+                .enumerate_scoped(
+                    &scope,
+                    MemoryEnumerationRequest {
+                        limit: HARVEST_PAGE_ROWS.min(remaining),
+                        offset,
+                        source_overlap: None,
+                        indexed_after: None,
+                    },
+                )
+                .await
+                .map_err(|err| DistillerError::Store(err.to_string()))?;
+            for record in page.records {
+                entries.push(DiscardEntry {
+                    range: record
+                        .metadata
+                        .source
+                        .source_range()
+                        .map(|range| (range.start(), range.end())),
+                    content: record.content,
+                });
+            }
+            match page.next_offset {
+                Some(next) if entries.len() < limit => offset = next,
+                Some(_) => {
+                    tracing::warn!(
+                        session_key,
+                        limit,
+                        "compaction discard harvest hit its row ceiling; \
+                         scope has more rows than were read"
+                    );
+                    break;
+                }
+                None => break,
+            }
+        }
+        Ok(entries)
+    }
+
+    async fn drop_scope(&self, session_key: &str) -> Result<usize, DistillerError> {
+        use meerkat_core::memory::{MemoryOwner, MemoryStore};
+
+        if !self.dir.is_dir() {
+            // No session semantic memory in this deployment: nothing to reap.
+            return Ok(0);
+        }
+        let session_id = meerkat_core::types::SessionId::parse(session_key).map_err(|err| {
+            DistillerError::Transcript(format!("invalid session key '{session_key}': {err}"))
+        })?;
+        let dir = self.dir.clone();
+        let store = tokio::task::spawn_blocking(move || meerkat_memory::HnswMemoryStore::open(dir))
+            .await
+            .map_err(|err| DistillerError::Store(err.to_string()))?
+            .map_err(|err| DistillerError::Store(err.to_string()))?;
+        let receipt = store
+            .drop_scope(&MemoryOwner::canonical_session(session_id))
             .await
             .map_err(|err| DistillerError::Store(err.to_string()))?;
-        Ok(results
-            .into_iter()
-            .map(|result| DiscardEntry {
-                range: result
-                    .metadata
-                    .source
-                    .source_range()
-                    .map(|range| (range.start(), range.end())),
-                content: result.content,
-            })
-            .collect())
+        Ok(receipt.dropped_entries)
     }
 }
 
@@ -1642,6 +1712,38 @@ impl DistillerEngine {
         }
     }
 
+    /// Ask 2 GC: reclaim a permanently-orphaned session's semantic-memory
+    /// rows after its knowledge has been distilled. Best-effort and bounded —
+    /// a rotation must never fail on cleanup. Caller MUST have already run
+    /// `distill_before_rotation` for this session and MUST only invoke this
+    /// for causes that permanently abandon the session id (respawn/reset mint
+    /// a fresh id; delete discards it) — never for resumable retires.
+    pub async fn drop_orphaned_session_scope(
+        self: &Arc<Self>,
+        session_key: &str,
+        cause: DistillCause,
+    ) {
+        let Some(compaction) = self.compaction.as_ref() else {
+            return;
+        };
+        match compaction.drop_scope(session_key).await {
+            Ok(0) => {}
+            Ok(dropped) => tracing::debug!(
+                session_key,
+                cause = cause.as_str(),
+                dropped,
+                "agent memory GC: reclaimed orphaned session semantic-memory rows"
+            ),
+            Err(err) => tracing::warn!(
+                session_key,
+                cause = cause.as_str(),
+                error = %err,
+                "agent memory GC: dropping orphaned session scope failed; \
+                 rows remain (re-embed tax persists), rotation proceeds"
+            ),
+        }
+    }
+
     /// Detached distillation (reset / resume-fallback / compaction): never
     /// on any critical path. The session store outlives the session, so the
     /// read stays valid after teardown.
@@ -1759,6 +1861,70 @@ mod tests {
     use crate::memory::records::RecordStatus;
     use futures::stream;
     use std::sync::Mutex as StdMutex;
+
+    // Ask 2+8 (meerkat 0.7.12): the compaction-discard harvest reads its
+    // session's semantic-memory scope EXACTLY via `enumerate_scoped`, and a
+    // permanently-orphaned scope is reclaimed via `drop_scope`. This exercises
+    // both against a real `HnswMemoryStore` seeded with compaction-discard
+    // rows (proving the source_range mapping and the round-trip drop).
+    #[tokio::test]
+    async fn hnsw_discard_source_enumerates_then_drops_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use meerkat_core::memory::{
+            MemoryIndexRequest, MemoryIndexScope, MemoryMetadata, MemorySource, MemoryStore,
+            MessageRange,
+        };
+        use meerkat_core::types::{MemoryIndexableContent, SessionId};
+
+        let dir = tempfile::tempdir()?;
+        let session = SessionId::new();
+
+        // Seed two discarded ranges into meerkat's session semantic memory.
+        {
+            let store = meerkat_memory::HnswMemoryStore::open(dir.path())?;
+            let scope = MemoryIndexScope::for_session(session.clone());
+            for (start, end, text) in [
+                (0u64, 2u64, "operator prefers terse status updates"),
+                (2u64, 5u64, "root cause was an expired upstream TLS cert"),
+            ] {
+                let request = MemoryIndexRequest::new(
+                    scope.clone(),
+                    MemoryIndexableContent::Indexable(text.to_string()),
+                    MemoryMetadata {
+                        session_id: session.clone(),
+                        source: MemorySource::Compaction {
+                            source_range: MessageRange::new(start, end)?,
+                        },
+                        indexed_at: meerkat_core::time_compat::SystemTime::now(),
+                    },
+                )?;
+                store.index_scoped(request).await?;
+            }
+        }
+
+        let source = HnswDiscardSource::new(dir.path());
+
+        // Exact enumeration: both rows, with their source ranges intact.
+        let discards = source
+            .read_discards(&session.to_string(), COMPACTION_HARVEST_LIMIT)
+            .await?;
+        assert_eq!(discards.len(), 2, "enumeration must return every scope row");
+        assert!(discards.iter().any(|d| d.range == Some((0, 2))));
+        assert!(
+            discards
+                .iter()
+                .any(|d| d.content.contains("expired upstream TLS cert"))
+        );
+
+        // GC: dropping the scope reclaims exactly those rows; a re-read is empty.
+        let dropped = source.drop_scope(&session.to_string()).await?;
+        assert_eq!(dropped, 2, "drop_scope must reclaim every seeded row");
+        let after = source
+            .read_discards(&session.to_string(), COMPACTION_HARVEST_LIMIT)
+            .await?;
+        assert!(after.is_empty(), "dropped scope must enumerate empty");
+        Ok(())
+    }
 
     // -- scripted LLM -------------------------------------------------------
 

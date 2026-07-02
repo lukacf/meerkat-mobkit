@@ -3752,10 +3752,23 @@ impl IdentityRuntime {
         // Bounded; deletion proceeds at the pre-rotation timeout.
         if let Some(injector) = self.agent_memory.read().await.clone() {
             if let Some(session_id) = session_id.as_ref() {
+                let session_key = session_id.to_string();
                 injector
                     .distill_before_rotation(
                         identity,
-                        &session_id.to_string(),
+                        &session_key,
+                        crate::memory::distiller::DistillCause::Delete,
+                    )
+                    .await;
+                // Ask 2 GC: delete permanently abandons this session id, and
+                // its knowledge has just been distilled into the identity-keyed
+                // MobKit store (which the exit-interview harvest below reads —
+                // a DIFFERENT store from the meerkat session-memory scope). So
+                // reclaiming the orphaned meerkat scope here frees dead
+                // re-embed weight without starving any downstream read.
+                injector
+                    .drop_orphaned_session_scope(
+                        &session_key,
                         crate::memory::distiller::DistillCause::Delete,
                     )
                     .await;

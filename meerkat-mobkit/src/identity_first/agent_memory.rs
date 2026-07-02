@@ -749,6 +749,23 @@ impl AgentMemoryRuntimeInjector {
         }
     }
 
+    /// Ask 2 GC: after distilling a permanently-orphaned session, reclaim its
+    /// meerkat semantic-memory rows (respawn/reset mint a fresh id; delete
+    /// discards it — the old scope is dead weight that every future build in
+    /// the realm re-embeds). Best-effort; no-op without a wired distiller.
+    /// MUST NOT be called for resumable retires.
+    pub async fn drop_orphaned_session_scope(
+        &self,
+        session_key: &str,
+        cause: crate::memory::distiller::DistillCause,
+    ) {
+        if let Some(distiller) = self.distiller.as_ref() {
+            distiller
+                .drop_orphaned_session_scope(session_key, cause)
+                .await;
+        }
+    }
+
     /// §8.5 exit interviews: record a retired/deleted identity in the
     /// pending-harvest queue so the NEXT dream harvests its store. One
     /// fast local write, best-effort — rotation never fails on it. No-op
