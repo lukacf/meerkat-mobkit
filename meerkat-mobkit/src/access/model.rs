@@ -418,6 +418,7 @@ mod tests {
                 &[
                     "agent.memory.read",
                     "agent.memory.admin",
+                    "operator.memory.read",
                     "mob.memory.read",
                     "mob.memory.propose",
                     "mob.memory.commit",

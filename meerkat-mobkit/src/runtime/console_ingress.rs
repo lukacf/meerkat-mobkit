@@ -294,7 +294,8 @@ fn apply_memory_to_experience(
         Some(view) => (
             memory_panel_available
                 && (view.may_perform_anywhere(crate::access::ACTION_AGENT_MEMORY_READ)
-                    || view.may_perform_anywhere(crate::access::ACTION_MOB_MEMORY_READ)),
+                    || view.may_perform_anywhere(crate::access::ACTION_MOB_MEMORY_READ)
+                    || view.may_perform_anywhere(crate::access::ACTION_OPERATOR_MEMORY_READ)),
             memory_panel_available && view.allows(crate::access::ACTION_MEMORY_QUARANTINE_REVIEW),
         ),
         None => (memory_panel_available, memory_panel_available),

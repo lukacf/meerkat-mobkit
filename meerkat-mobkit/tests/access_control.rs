@@ -1123,11 +1123,12 @@ async fn mob_observe_does_not_bypass_per_agent_view() {
 /// Seed a bundled store with one record per scope, a supersede chain, a
 /// quarantined record, an injection-ledger row, and one steward dream's
 /// audit rows. Returns (store, router_active_id, router_quarantined_id,
-/// delivery_id, mob_record_id).
+/// delivery_id, mob_record_id, operator_record_id).
 async fn seeded_memory_store(
     root: &std::path::Path,
 ) -> (
     meerkat_mobkit::SqliteAgentMemoryStore,
+    String,
     String,
     String,
     String,
@@ -1213,6 +1214,19 @@ async fn seeded_memory_store(
         )
         .await
         .expect("realm record");
+    // Operator scope is live (P4 provisional keying) and carries cross-mob
+    // personal facts — the panel gates it on operator.memory.read.
+    let operator_record = store
+        .remember_authored(
+            &MemoryScope::Operator {
+                realm: "default".to_string(),
+                operator: "op-luka".to_string(),
+            },
+            record("Operator preference"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("operator record");
 
     // Quarantined write: LLM author through the installed write gate.
     store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
@@ -1280,6 +1294,7 @@ async fn seeded_memory_store(
         quarantined.memory_id,
         delivery.memory_id,
         mob_record.memory_id,
+        operator_record.memory_id,
     )
 }
 
@@ -1287,7 +1302,7 @@ async fn seeded_memory_store(
 async fn memory_panel_reads_seeded_store_without_access_control() {
     let (_temp_dir, runtime) = build_access_runtime_fixture().await;
     let memory_dir = tempfile::tempdir().expect("memory dir");
-    let (store, tip_id, quarantined_id, _delivery_id, _mob_id) =
+    let (store, tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
         seeded_memory_store(memory_dir.path()).await;
     runtime.set_memory_panel_store(store);
     let app = runtime.build_reference_app_router(decision_state(false));
@@ -1406,7 +1421,7 @@ async fn memory_panel_reads_seeded_store_without_access_control() {
 async fn memory_panel_enforces_scope_actions_end_to_end() {
     let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
     let memory_dir = tempfile::tempdir().expect("memory dir");
-    let (store, tip_id, quarantined_id, delivery_id, mob_id) =
+    let (store, tip_id, quarantined_id, delivery_id, mob_id, operator_id) =
         seeded_memory_store(memory_dir.path()).await;
     runtime.set_memory_panel_store(store);
 
@@ -1490,6 +1505,7 @@ async fn memory_panel_enforces_scope_actions_end_to_end() {
     for (memory_id, action) in [
         (&delivery_id, "agent.memory.read"),
         (&mob_id, "mob.memory.read"),
+        (&operator_id, "operator.memory.read"),
         (&quarantined_id, "memory.quarantine.review"),
     ] {
         let denied = rpc(
@@ -1555,7 +1571,8 @@ async fn memory_panel_enforces_scope_actions_end_to_end() {
         );
     }
 
-    // Live grant of the reviewer + unscoped read opens the gated surfaces.
+    // Live grant of the reviewer + unscoped read opens the gated surfaces —
+    // but NOT operator scope, which needs its own explicit grant.
     controller
         .upsert_rule(AccessRule {
             id: "reviewer".to_string(),
@@ -1575,6 +1592,49 @@ async fn memory_panel_enforces_scope_actions_end_to_end() {
     assert!(
         queue.iter().any(|row| row["id"] == json!(quarantined_id)),
         "{queue:#?}"
+    );
+
+    // Operator-scope rows stay hidden behind operator.memory.read: absent
+    // from unscoped listings, denied on detail, denied as a scope filter —
+    // an unscoped agent.memory.read grant is deliberately not enough.
+    let records = rpc(&app, "mobkit/memory/panel/records", json!({})).await;
+    let rows = records["result"]["records"].as_array().expect("records");
+    assert!(
+        rows.iter().all(|row| row["id"] != json!(operator_id)),
+        "operator rows must not ride the unscoped read grant: {rows:#?}"
+    );
+    let denied_operator = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": operator_id }),
+    )
+    .await;
+    assert_eq!(denied_operator["error"]["code"], json!(-32030));
+    let denied_scope = rpc(
+        &app,
+        "mobkit/memory/panel/records",
+        json!({ "scope": "operator" }),
+    )
+    .await;
+    assert_eq!(denied_scope["error"]["code"], json!(-32030));
+
+    controller
+        .upsert_rule(AccessRule {
+            id: "operator-reader".to_string(),
+            actions: vec!["operator.memory.read".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("live operator grant");
+    let operator_detail = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": operator_id }),
+    )
+    .await;
+    assert_eq!(
+        operator_detail["error"],
+        Value::Null,
+        "{operator_detail:#?}"
     );
 
     let _ = runtime.mob_handle().stop().await;
