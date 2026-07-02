@@ -315,7 +315,8 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
 
 /// Map a `memory.*` frame to a rail signal. Warning-severity events surface
 /// operational issues (quarantined writes, taints, budget denials, blocked
-/// hygiene, conflicts); info-severity events surface routine progress. The
+/// hygiene, blocked quarantine releases, conflicts); info-severity events
+/// surface routine progress. The
 /// remaining subtypes (dream start/skip, hygiene proposed/applied/skipped,
 /// distill timeouts, non-tainted taint transitions) are dropped from the rail.
 function memorySignal(
@@ -336,6 +337,8 @@ function memorySignal(
       return warning("Memory budget denied");
     case "memory.hygiene.blocked":
       return warning("Memory hygiene blocked");
+    case "memory.quarantine.release_blocked":
+      return warning("Quarantine release blocked");
     case "memory.conflict.signal":
       return warning("Memory conflict");
     case "memory.dream.completed":
@@ -587,6 +590,21 @@ export function SignalsRail({
               </span>
               <span className="signal__detail">{s.detail}</span>
               <span className="signal__agent">{s.agent}</span>
+              {s.items.length === 1 &&
+                s.items[0].raw.event.startsWith("memory.") &&
+                onSelect ? (
+                <button
+                  type="button"
+                  className="signal__memory-pivot"
+                  data-testid="signal-memory-pivot"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelect(s.items[0].raw);
+                  }}
+                >
+                  state here
+                </button>
+              ) : null}
               {s.items.length > 1 && expanded && (
                 <span className="signal__events">
                   {s.items.map((item) => (

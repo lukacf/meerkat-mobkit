@@ -62,6 +62,17 @@ import os
 import random
 import re
 import subprocess
+
+
+def _eval_env():
+    """Env for eval-bin builds: CARGO_INCREMENTAL=0 dodges the rustc 1.94.1
+    lib-build ICE (evaluate_obligation panic) that fires when repo-cargo
+    builds the *_eval binaries under incremental compilation. Matches the
+    guard the browser-e2e harness already applies."""
+    import os
+    env = dict(os.environ)
+    env["CARGO_INCREMENTAL"] = "0"
+    return env
 import sys
 import tomllib
 from pathlib import Path
@@ -1147,6 +1158,7 @@ def invoke_selector_eval(payload, mock):
             text=True,
             timeout=600,
             cwd=REPO_ROOT,
+            env=_eval_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail_config(f"cannot run selector-eval ({' '.join(cmd)}): {exc}")
@@ -1293,6 +1305,7 @@ def invoke_distiller_eval(payload, mock):
             text=True,
             timeout=600,
             cwd=REPO_ROOT,
+            env=_eval_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail_config(f"cannot run distiller-eval ({' '.join(cmd)}): {exc}")
@@ -1460,6 +1473,7 @@ def invoke_steward_eval(payload, mock):
             text=True,
             timeout=600,
             cwd=REPO_ROOT,
+            env=_eval_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail_config(f"cannot run steward-eval ({' '.join(cmd)}): {exc}")
@@ -1663,6 +1677,7 @@ def invoke_hygienist_eval(payload, mock):
             text=True,
             timeout=600,
             cwd=REPO_ROOT,
+            env=_eval_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         fail_config(f"cannot run hygienist-eval ({' '.join(cmd)}): {exc}")

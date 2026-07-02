@@ -101,6 +101,18 @@ impl ConsoleSpawnSink {
         if identity.is_empty() || member_id.is_empty() {
             return;
         }
+        // The system identity is reserved for runtime-plane events: the
+        // console aggregator exempts it from the roster-visibility gate and
+        // identity namespacing, so a member registered under this name
+        // would bypass both. Spawn surfaces reject the name; this is the
+        // projection-side backstop for paths that skip that validation.
+        if identity == crate::console_contracts::SYSTEM_EVENT_IDENTITY {
+            tracing::warn!(
+                member_id,
+                "refusing to project a spawned member under the reserved system identity"
+            );
+            return;
+        }
 
         // Live runtime events arrive keyed by runtime ids — `{member}:{gen}`
         // (and `rt:{member}:{gen}` in identity-first packs). Register both
@@ -504,6 +516,33 @@ mod tests {
         assert_eq!(kickoff.data["source_event_type"], "spawn_initial_message");
         assert_eq!(kickoff.data["via_tool"], "mob_spawn_member");
         assert_eq!(kickoff.data["parent_identity"], "ops-lead");
+    }
+
+    /// Backstop for spawn paths that skip rpc validation: a seed carrying
+    /// the reserved runtime-plane identity must project nothing — no
+    /// runtime-id mapping, no kickoff frame — or the member's frames would
+    /// ride the aggregator's `_system` visibility/namespacing exemptions.
+    #[tokio::test]
+    async fn reserved_system_identity_seed_projects_nothing() {
+        let store = ConsoleEventStore::new();
+        let sink = ConsoleSpawnSink::new(store.clone());
+        let mut spoofed = seed("worker-3", Some(json!("Find the person")));
+        spoofed.identity = crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string();
+
+        sink.project_spawned_member(&spoofed).await;
+
+        let replay = store.replay_all(None).await.expect("replay");
+        assert!(
+            !replay.iter().any(|event| event.event_type == "user_input"),
+            "no kickoff may project under the reserved identity: {replay:#?}"
+        );
+        assert!(
+            !sink
+                .identity_labels_snapshot()
+                .await
+                .contains_key(crate::console_contracts::SYSTEM_EVENT_IDENTITY),
+            "no identity metadata may register under the reserved identity"
+        );
     }
 
     #[tokio::test]

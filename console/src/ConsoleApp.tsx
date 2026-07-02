@@ -69,6 +69,7 @@ import type {
   ConsoleTimelinePage,
   ConsoleTopologyNode,
   MemoryDreamRun,
+  MemoryEvidenceRef,
   MemoryPanelDreamsResult,
   MemoryPanelQuarantineResult,
   MemoryPanelRecord,
@@ -80,7 +81,12 @@ import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
-import { MemoryPanel, type MemoryRecordDetail } from "./panels/MemoryPanel";
+import {
+  MemoryPanel,
+  memoryFramePivot,
+  memorySectionOutcome,
+  type MemoryRecordDetail,
+} from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -124,6 +130,16 @@ type MemoryPanelData = {
   detailLoading: boolean;
   unavailable: boolean;
   error: string | null;
+  /// Keyset cursor from the base records page (single-realm only).
+  nextCursor: string | null;
+  /// Per-section -32030 outcomes so the panel can render "no grant"
+  /// (never green) instead of an indistinguishable empty section.
+  recordsDenied: boolean;
+  dreamsDenied: boolean;
+  /// One-row scope-probe outcomes: the scope exists behind a grant this
+  /// principal lacks (the unfiltered listing row-filters them silently).
+  operatorScopeDenied: boolean;
+  mobScopeDenied: boolean;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
@@ -566,6 +582,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     detailLoading: false,
     unavailable: false,
     error: null,
+    nextCursor: null,
+    recordsDenied: false,
+    dreamsDenied: false,
+    operatorScopeDenied: false,
+    mobScopeDenied: false,
   });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
@@ -2032,12 +2053,49 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const refreshMemoryData = React.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
-      const recordsResult = (await executeHeadlessCommand(
-        CONSOLE_COMMAND_NAMES.listMemoryRecords,
-        memoryTarget,
-      )) as MemoryPanelRecordsResult | null;
-      const records = recordsResult?.records || [];
-      const realms = recordsResult?.realms || [];
+      let records: MemoryPanelRecord[] = [];
+      let realms: string[] = [];
+      let nextCursor: string | null = null;
+      let recordsDenied = false;
+      try {
+        const recordsResult = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.listMemoryRecords,
+          memoryTarget,
+        )) as MemoryPanelRecordsResult | null;
+        records = recordsResult?.records || [];
+        realms = recordsResult?.realms || [];
+        nextCursor = recordsResult?.next_cursor ?? null;
+      } catch (err) {
+        // Access denied to records leaves the section empty but flagged, so
+        // the panel renders "no grant" instead of an empty store.
+        if (memorySectionOutcome(err) !== "denied") throw err;
+        recordsDenied = true;
+      }
+
+      // The unfiltered listing row-filters restricted scopes silently, so a
+      // one-row probe per restricted scope kind is the only way to render
+      // the spec'd access-denied Holdings row instead of the scope silently
+      // not existing. Skipped when the listing itself was denied.
+      let operatorScopeDenied = false;
+      let mobScopeDenied = false;
+      if (!recordsDenied) {
+        const probeScope = async (scope: "operator" | "mob"): Promise<boolean> => {
+          try {
+            await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listMemoryRecords, memoryTarget, {
+              scope,
+              limit: 1,
+            });
+            return false;
+          } catch (err) {
+            if (memorySectionOutcome(err) === "denied") return true;
+            throw err;
+          }
+        };
+        [operatorScopeDenied, mobScopeDenied] = await Promise.all([
+          probeScope("operator"),
+          probeScope("mob"),
+        ]);
+      }
 
       let quarantineRecords: MemoryPanelRecord[] = [];
       let pendingPromotions: MemoryPendingPromotion[] = [];
@@ -2057,6 +2115,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
 
       let dreams: MemoryDreamRun[] = [];
+      let dreamsDenied = false;
       try {
         const dreamsResult = (await executeHeadlessCommand(
           CONSOLE_COMMAND_NAMES.listMemoryDreams,
@@ -2064,8 +2123,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         )) as MemoryPanelDreamsResult | null;
         dreams = dreamsResult?.runs || [];
       } catch (err) {
-        // Tolerate access-denied for dreams: leave the list empty.
-        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        // Tolerate access-denied for dreams: leave the list empty but flagged.
+        if (memorySectionOutcome(err) !== "denied") throw err;
+        dreamsDenied = true;
       }
 
       setMemoryData((current) => ({
@@ -2075,6 +2135,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         quarantineRecords,
         pendingPromotions,
         dreams,
+        nextCursor,
+        recordsDenied,
+        dreamsDenied,
+        operatorScopeDenied,
+        mobScopeDenied,
         unavailable: false,
         error: null,
       }));
@@ -2088,6 +2153,60 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
+
+  /// Filtered/paged panel/records query for the Records filter bar, the
+  /// keyset load-more, and the lattice page-walk. Resolves null STRICTLY on
+  /// -32030 (denied — consumers render "no grant", never an empty store);
+  /// other failures surface via the panel error banner and rethrow so the
+  /// pager keeps the prior page instead of clobbering it.
+  const queryMemoryRecords = React.useCallback(
+    async (params: Record<string, unknown>): Promise<MemoryPanelRecordsResult | null> => {
+      try {
+        return (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.listMemoryRecords,
+          controlWorkbenchTarget("memory"),
+          params,
+        )) as MemoryPanelRecordsResult | null;
+      } catch (err) {
+        if (memorySectionOutcome(err) === "denied") return null;
+        setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
+        throw err;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl],
+  );
+
+  /// Evidence click-through: resolve a MemoryEvidenceRef against the
+  /// contracted query_timeline surface. Resolves null when the session is no
+  /// longer in the timeline — the Biography degrades to the evidenceLabel text.
+  const loadMemoryEvidence = React.useCallback(
+    async (
+      identity: string | undefined,
+      evidence: MemoryEvidenceRef,
+    ): Promise<ConversationTimelineEntry[] | null> => {
+      if (!evidence.session_id) return null;
+      try {
+        const pageFact = await consoleController.timeline.query({
+          ...(identity ? { identity } : {}),
+          mode: "recent",
+          limit: 1000,
+        });
+        const page = pageFact.value;
+        if (!page.available) return null;
+        const frames = page.frames.filter(
+          (frame) => frame.sessionId === evidence.session_id,
+        );
+        if (frames.length === 0) return null;
+        return mapFramesToTimelineEntries(null, frames, {
+          renderInteractionStartsAsUser: true,
+        });
+      } catch {
+        return null;
+      }
+    },
+    [consoleController],
+  );
 
   const loadMemoryRecordDetail = React.useCallback(
     async (realm: string | undefined, memoryId: string) => {
@@ -2330,6 +2449,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
   const scheduleExperienceRefreshRef = React.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
+  // Memory panels anchor on durable SQLite state; live memory.* frames are
+  // freshness signals only. Debounced so dream-commit bursts coalesce into
+  // one re-read, and gated on a memory panel actually being docked.
+  const refreshMemoryDataRef = React.useRef(refreshMemoryData);
+  refreshMemoryDataRef.current = refreshMemoryData;
+  const memoryPanelDockedRef = React.useRef(false);
+  memoryPanelDockedRef.current = dock.viewState.panels.some(
+    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
+  );
+  const memoryRefreshTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     // Seed activity with recent history (only on mount) — apply same
@@ -2383,6 +2512,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefreshRef.current();
       }
+      if (
+        frame.event.startsWith("memory.") &&
+        memoryPanelDockedRef.current &&
+        memoryRefreshTimerRef.current === null
+      ) {
+        memoryRefreshTimerRef.current = window.setTimeout(() => {
+          memoryRefreshTimerRef.current = null;
+          void refreshMemoryDataRef.current().catch(() => {});
+        }, 250);
+      }
     };
 
     let stopped = false;
@@ -2418,6 +2557,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         window.clearTimeout(timer);
       if (experienceTimerRef.current !== null)
         window.clearTimeout(experienceTimerRef.current);
+      if (memoryRefreshTimerRef.current !== null)
+        window.clearTimeout(memoryRefreshTimerRef.current);
     };
   }, []);
 
@@ -3530,10 +3671,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           canReviewQuarantine={experience?.memory?.can_review_quarantine === true}
           unavailable={memoryData.unavailable}
           error={memoryData.error}
+          nextCursor={memoryData.nextCursor}
+          recordsDenied={memoryData.recordsDenied}
+          dreamsDenied={memoryData.dreamsDenied}
+          operatorScopeDenied={memoryData.operatorScopeDenied}
+          mobScopeDenied={memoryData.mobScopeDenied}
+          liveFrames={activityRef.current}
           onRefresh={() => void refreshMemoryData()}
           onSelectRecord={(realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId)}
           onClearDetail={() =>
             setMemoryData((current) => ({ ...current, detail: null, detailLoading: false }))
+          }
+          onQueryRecords={queryMemoryRecords}
+          onLoadEvidence={loadMemoryEvidence}
+          onOpenGating={
+            // Only offered where the nav itself offers gating — on runtimes
+            // without a mob control surface (or with gating hidden) the
+            // target would land on a dead-end placeholder.
+            visibleControls.includes("gating")
+              ? () => dock.openTarget(buildControlTarget("gating"), "replace_focused")
+              : undefined
           }
         />
       );
@@ -3641,6 +3798,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
               emptyText={railConfig?.empty_text}
               watchedIdentities={watchedIdentities}
               onPresetChange={setActiveActivityPresetId}
+              onSelect={
+                // "State here" pivot: a live memory signal opens the Memory
+                // panel, and lands on the record's Biography when the frame
+                // names one. Offered only when the server-projected
+                // experience grants memory.can_read — the affordance must
+                // never outrun the nav gate.
+                experience?.memory?.can_read === true
+                  ? (frame) => {
+                      if (!frame.event.startsWith("memory.")) return;
+                      dock.openTarget(buildControlTarget("memory"), "replace_focused");
+                      const pivot = memoryFramePivot(frame);
+                      if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
+                    }
+                  : undefined
+              }
             />
           </>
         ) : null}

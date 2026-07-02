@@ -179,6 +179,28 @@ test("signals rail surfaces quarantined memory writes as a warning", () => {
   assert.ok(!/[{}]/.test(signal?.detail || ""), "signal detail must not leak JSON");
 });
 
+test("signals rail surfaces blocked quarantine releases as a warning with adapter copy", () => {
+  const frames: ConsoleFrame[] = [
+    {
+      id: "mem-release-blocked",
+      event: "memory.quarantine.release_blocked",
+      identity: "steward",
+      timestampMs: Date.now(),
+      data: { realm: "default", record_id: "m-42", verdict: "release", class: "api_key" },
+    },
+  ];
+
+  const groups = buildSignalGroupsForTest(frames);
+  const signal = groups.find((group) => group.title === "Quarantine release blocked");
+
+  assert.ok(signal, "release_blocked should surface as a signal instead of being dropped");
+  assert.equal(signal?.severity, "warning");
+  assert.equal(
+    signal?.detail,
+    "Quarantine release blocked for m-42 — matches secret pattern api_key",
+  );
+});
+
 test("signals rail drops routine memory dream lifecycle noise", () => {
   const frames: ConsoleFrame[] = [
     {
