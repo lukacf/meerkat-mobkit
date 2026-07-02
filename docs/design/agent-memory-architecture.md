@@ -834,6 +834,17 @@ thing being disabled is the weak lexical scorer, and the pull model (rich index 
 one cheap tool call) is exactly how Claude Code operates in its skip-index
 cohort.
 
+**Classic-mob (roster-less) scope.** The A2 decouple carries the two echo-safe
+surfaces — build-time injection and the Recorder tool — onto the classic mob
+path via meerkat-mob's per-spawn seam
+(`memory/spawn_customizer.rs::MemorySpawnCustomizer`), keyed on the member's
+`AgentIdentity` with no IdentityRuntime/roster requirement. Per-turn ambient
+injection is **deliberately not** carried over: it is off by default anyway
+(this section), and the classic send path has no injection hook. A classic-mob
+per-turn hook is a scoped follow-up gated on the same echo-safe delivery
+coupling above; until then `per_turn_injection = "budgeted"` only takes effect
+on identity-first members (the classic customizer warns at construction).
+
 Budget ladder (applies to build-time bodies and to `budgeted` per-turn mode):
 ≤2 KB/record (kept), ≤20 KB/assembly aggregate, ≤60 KB/session cumulative, then
 index-only until compaction — with the cumulative counter computed by transcript

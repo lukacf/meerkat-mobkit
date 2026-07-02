@@ -450,9 +450,15 @@ impl UnifiedRuntimeBuilder {
         let has_lease_provider = self.lease_provider.is_some();
         let has_roster_provider = self.roster_provider.is_some();
         let has_topology_provider = self.topology_provider.is_some();
-        let has_agent_memory =
-            self.agent_memory_provider.is_some() || self.agent_memory_from_persistent_state;
-        let has_agent_customizer = self.agent_customizer.is_some() || has_agent_memory;
+        // A2 decouple: agent memory is keyed by AgentIdentity, which every
+        // mob member already has, so enabling it must NOT pull in the
+        // identity-first orchestration layer (roster/continuity/leases).
+        // Without a roster the BASIC memory surface (recorder tool +
+        // build-time injection + panel store) rides the classic path via a
+        // `MemorySpawnCustomizer`; with a roster, memory composes into the
+        // IdentityRuntime customizer exactly as before (advanced lifecycle
+        // features included).
+        let has_agent_customizer = self.agent_customizer.is_some();
         let has_identity_runtime_instance_id = self.identity_runtime_instance_id.is_some();
         let has_scratch_dir = self.scratch_dir.is_some();
         let has_external_identity_storage =
@@ -531,7 +537,7 @@ impl UnifiedRuntimeBuilder {
 
         // Legacy mob_spec path takes precedence — must be consumed before
         // resolve_mob_spec (which borrows &self for the definition path).
-        let mob_spec = match self.mob_spec.take() {
+        let mut mob_spec = match self.mob_spec.take() {
             Some(spec) => {
                 // Legacy path: require module_config and timeout as before.
                 if self.module_config.is_none() {
@@ -596,6 +602,25 @@ impl UnifiedRuntimeBuilder {
             )
         });
         let agent_customizer = self.composed_agent_customizer(agent_memory_provider.clone());
+
+        // Classic (roster-less) agent memory: register the per-spawn memory
+        // customizer on the mob runtime itself, so every member spawn —
+        // consumer, agent-tool, policy, respawn, resume — gets the recorder
+        // tool and the build-time injection keyed on its AgentIdentity. The
+        // identity-first path keeps its AgentCustomizer instead (composing
+        // both would double-inject on identity-first materializations).
+        let classic_agent_memory = if wants_identity_first {
+            None
+        } else {
+            agent_memory_provider.clone()
+        };
+        if let Some(provider) = classic_agent_memory.as_ref() {
+            mob_spec.spawn_member_customizer =
+                Some(Arc::new(crate::memory::MemorySpawnCustomizer::new(
+                    provider.clone(),
+                    self.agent_memory_config.clone().unwrap_or_default(),
+                )));
+        }
 
         // The structural-events subscription cursor lives in the
         // persistent metadata adapter. For ephemeral builds this can be
@@ -880,6 +905,27 @@ impl UnifiedRuntimeBuilder {
             console_log_store,
             ..runtime
         };
+
+        // Classic-path bundled-store wiring: the console Memory panel (§9.3),
+        // the §10.1 posture write gate (only when the embedder did not
+        // install a taint-tracking gate already), and the §9.3 timeline sink
+        // for quarantined writes. Providers other than the bundled SQLite
+        // store keep injection + recorder without a panel.
+        if let Some(store) = classic_agent_memory
+            .as_ref()
+            .and_then(|provider| provider.as_sqlite_store())
+        {
+            let llm_writes = self
+                .agent_memory_config
+                .as_ref()
+                .map(|config| config.llm_writes)
+                .unwrap_or_default();
+            store.set_llm_write_gate_if_absent(Arc::new(
+                crate::memory::taint::TaintLlmWriteGate::new(None, llm_writes),
+            ));
+            store.set_event_sink_if_absent(runtime.memory_event_sink());
+            runtime.set_memory_panel_store(store.clone());
+        }
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
             hook().await.map_err(|err| {

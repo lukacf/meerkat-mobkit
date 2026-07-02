@@ -2255,6 +2255,10 @@ pub struct MobBootstrapSpec {
     /// service's `runtime_store` can stay `None` (keeping the checkpointer
     /// enabled). See meerkat-session#checkpointer-enabled-flag.
     pub runtime_adapter: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    /// Pre-build customizer applied to every mob member spawn (classic-path
+    /// agent memory rides here — see `crate::memory::spawn_customizer`).
+    /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
+    pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -2287,6 +2291,7 @@ impl MobBootstrapSpec {
                 default_llm_client: None,
             },
             runtime_adapter: None,
+            spawn_member_customizer: None,
             _ephemeral_dir: None,
         }
     }
@@ -2915,6 +2920,10 @@ impl MobRuntime {
             .with_session_service(session_service.clone())
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
+
+        if let Some(customizer) = spec.spawn_member_customizer.clone() {
+            builder = builder.with_spawn_member_customizer(customizer);
+        }
 
         if let Some(client) = default_llm_client {
             builder = builder.with_default_llm_client(client);

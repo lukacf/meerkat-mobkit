@@ -425,6 +425,13 @@ pub trait AgentMemoryProvider: Send + Sync {
     fn supports_authored_writes(&self) -> bool {
         false
     }
+
+    /// Bundled-store downcast seam: the builder wires the console Memory
+    /// panel (§9.3) when — and only when — the configured provider is the
+    /// bundled SQLite store. External providers keep the default `None`.
+    fn as_sqlite_store(&self) -> Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -917,8 +924,9 @@ pub const MEMORY_TOOL_NAME: &str = "memory";
 
 /// Build-time behavioral protocol for members that carry the Recorder.
 /// Injected as an additional instruction alongside the memory index — the
-/// write-side counterpart of the coordinator's recall protocol.
-const RECORDER_PROTOCOL_INSTRUCTIONS: &str = "Memory recorder protocol: you have a `memory` tool \
+/// write-side counterpart of the coordinator's recall protocol. Shared with
+/// the classic-mob spawn customizer (`crate::memory::spawn_customizer`).
+pub(crate) const RECORDER_PROTOCOL_INSTRUCTIONS: &str = "Memory recorder protocol: you have a `memory` tool \
 for durable records that survive session resets and respawns.\n\
 - Check the memory index in your context before writing; if a record already covers the fact, \
 use action \"update\" on its id instead of creating a duplicate.\n\
@@ -1061,6 +1069,23 @@ pub(crate) struct MemoryRecorder {
 }
 
 impl MemoryRecorder {
+    /// Shared constructor for the two recorder hosts: the identity-first
+    /// `AgentMemoryCustomizer` and the classic-mob
+    /// `crate::memory::spawn_customizer::MemorySpawnCustomizer`.
+    pub(crate) fn new(
+        provider: Arc<dyn AgentMemoryProvider>,
+        config: AgentMemoryConfig,
+        identity: AgentIdentity,
+        mob: Option<String>,
+    ) -> Self {
+        Self {
+            provider,
+            config,
+            identity,
+            mob,
+        }
+    }
+
     fn identity_scope(&self) -> MemoryScope {
         MemoryScope::Identity {
             realm: self.config.realm.clone(),
@@ -1744,7 +1769,7 @@ fn build_query_text(context: &AgentBuildContext, spec: &DurableAgentSpec) -> Opt
     (!text.is_empty()).then_some(text)
 }
 
-fn insert_terms(terms: &mut BTreeSet<String>, value: &str) {
+pub(crate) fn insert_terms(terms: &mut BTreeSet<String>, value: &str) {
     for term in value
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
         .map(str::trim)
