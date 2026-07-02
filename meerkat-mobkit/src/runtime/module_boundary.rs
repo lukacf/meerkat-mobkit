@@ -13,7 +13,7 @@ use super::*;
 
 pub(super) const MODULE_BOUNDARY_KIND_ENV: &str = "MOBKIT_MODULE_BOUNDARY";
 pub(super) const MODULE_BOUNDARY_KIND_MCP: &str = "mcp";
-pub(super) const CORE_MODULE_MCP_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const CORE_MODULE_MCP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const ROUTER_RESOLVE_MCP_TOOL: &str = "routing.resolve";
 pub(super) const DELIVERY_SEND_MCP_TOOL: &str = "delivery.send";
 pub(super) const MEMORY_CONFLICT_READ_MCP_TOOL: &str = "memory.conflict_read";

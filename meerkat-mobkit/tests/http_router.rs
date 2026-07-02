@@ -257,6 +257,29 @@ fn sc_001_reference_app_router_proves_unified_owned_console_path() {
     assert!(!unified_runtime_source.contains("interaction_sse_router"));
 }
 
+#[test]
+fn sc_002_unified_shutdown_stops_mob_before_router_and_module_teardown() {
+    let lifecycle_source = include_str!("../src/unified_runtime/lifecycle.rs");
+    let mob_stop = lifecycle_source
+        .find("let mob_stop = self")
+        .expect("shutdown must stop mob");
+    let close_event_router = lifecycle_source
+        .find("self.close_event_router().await;")
+        .expect("shutdown must close event router");
+    let module_shutdown = lifecycle_source
+        .find("let module_shutdown = self.module_runtime.lock().await.shutdown();")
+        .expect("shutdown must stop modules");
+
+    assert!(
+        mob_stop < close_event_router,
+        "mob stop must happen before closing the event router"
+    );
+    assert!(
+        close_event_router < module_shutdown,
+        "module teardown must happen after mob stop and event-router close"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn req_002_router_builders_prove_console_and_sse_behavior() {
