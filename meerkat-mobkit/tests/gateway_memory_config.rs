@@ -242,6 +242,126 @@ fn gateway_runtime_options_memory_config_persists_memory_across_restart() {
 }
 
 #[test]
+fn gateway_local_json_memory_config_persists_without_health_endpoint() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+
+    {
+        let mut gateway = GatewayProcess::start();
+        let init = gateway.init_with_runtime_options(
+            &state_dir,
+            json!({
+                "memory_config": {
+                    "backend": "local_json"
+                }
+            }),
+        );
+        assert!(init["result"]["contract_version"].is_string());
+
+        let indexed = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "index",
+            "method": "mobkit/memory/index",
+            "params": {
+                "entity": "delivery",
+                "topic": "email_send",
+                "store": "todo",
+                "fact": "double-check recipient consent"
+            }
+        }));
+        assert_eq!(indexed["result"]["store"], json!("todo"));
+    }
+
+    assert!(
+        state_dir.path().join("memory-ledger-state.json").exists(),
+        "local_json backend should store the ledger under persistent_state"
+    );
+
+    {
+        let mut gateway = GatewayProcess::start();
+        let init = gateway.init_with_runtime_options(
+            &state_dir,
+            json!({
+                "memory_config": {
+                    "backend": "local_json"
+                }
+            }),
+        );
+        assert!(init["result"]["contract_version"].is_string());
+
+        let queried = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "query",
+            "method": "mobkit/memory/query",
+            "params": { "query": "recipient consent" }
+        }));
+        assert_eq!(
+            queried["result"]["assertions"][0]["fact"],
+            json!("double-check recipient consent")
+        );
+    }
+}
+
+#[test]
+fn gateway_local_json_memory_config_adopts_legacy_elephant_state_file() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let endpoint = HealthEndpointServer::start();
+
+    {
+        let mut gateway = GatewayProcess::start();
+        let init = gateway.init_with_memory(&state_dir, endpoint.endpoint());
+        assert!(init["result"]["contract_version"].is_string());
+        let indexed = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "index",
+            "method": "mobkit/memory/index",
+            "params": {
+                "entity": "delivery",
+                "topic": "email_send",
+                "store": "todo",
+                "fact": "written under legacy elephant shape"
+            }
+        }));
+        assert_eq!(indexed["result"]["store"], json!("todo"));
+    }
+
+    assert!(state_dir.path().join("elephant-memory-state.json").exists());
+
+    {
+        let mut gateway = GatewayProcess::start();
+        let init = gateway.init_with_runtime_options(
+            &state_dir,
+            json!({
+                "memory_config": {
+                    "backend": "local_json",
+                    "health_check_endpoint": endpoint.endpoint()
+                }
+            }),
+        );
+        assert!(init["result"]["contract_version"].is_string());
+
+        let queried = gateway.rpc(json!({
+            "jsonrpc": "2.0",
+            "id": "query",
+            "method": "mobkit/memory/query",
+            "params": {
+                "entity": "delivery",
+                "topic": "email_send",
+                "store": "todo"
+            }
+        }));
+        assert_eq!(
+            queried["result"]["assertions"][0]["fact"],
+            json!("written under legacy elephant shape")
+        );
+    }
+
+    assert!(
+        endpoint.paths().iter().any(|path| path == "/v1/health"),
+        "local_json health_check_endpoint should be health-checked"
+    );
+}
+
+#[test]
 fn gateway_rejects_unsupported_memory_config_fields() {
     let state_dir = tempfile::tempdir().expect("state dir");
     let endpoint = HealthEndpointServer::start();

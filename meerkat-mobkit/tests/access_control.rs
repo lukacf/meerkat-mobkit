@@ -1115,3 +1115,833 @@ async fn mob_observe_does_not_bypass_per_agent_view() {
 
     let _ = runtime.mob_handle().stop().await;
 }
+
+// ---------------------------------------------------------------------------
+// §10.3 memory read actions + §9.3 console Memory panel
+// ---------------------------------------------------------------------------
+
+/// Seed a bundled store with one record per scope, a supersede chain, a
+/// quarantined record, an injection-ledger row, one steward dream's audit
+/// rows, and two gated promotions parked in the quarantine queue
+/// (`gate-mob-promotion` targeting mob scope, `gate-delivery-promotion`
+/// targeting the "delivery" identity). Returns (store, router_active_id,
+/// router_quarantined_id, delivery_id, mob_record_id, operator_record_id).
+async fn seeded_memory_store(
+    root: &std::path::Path,
+) -> (
+    meerkat_mobkit::SqliteAgentMemoryStore,
+    String,
+    String,
+    String,
+    String,
+    String,
+) {
+    use meerkat_mobkit::memory::records::{
+        InjectionLogEntry, InjectionSurface, MemoryAuthor, MemoryKind,
+    };
+    use meerkat_mobkit::{
+        AgentMemoryProvider, MemoryScope, NewMemoryRecord, SqliteAgentMemoryStore,
+        StagedMemoryStore, StagedMutationBatch, StagedOp, TrustTier,
+    };
+
+    struct AlwaysQuarantine;
+    impl meerkat_mobkit::memory::taint::LlmWriteGate for AlwaysQuarantine {
+        fn quarantine_reason(
+            &self,
+            author: &MemoryAuthor,
+            _kind: meerkat_mobkit::memory::staged::StagedBatchKind,
+            _evidence: &[meerkat_mobkit::memory::records::EvidenceRef],
+        ) -> Option<String> {
+            author.is_llm().then(|| "test taint".to_string())
+        }
+    }
+
+    let store = SqliteAgentMemoryStore::open(root).expect("open store");
+    let record = |title: &str| NewMemoryRecord {
+        kind: MemoryKind::Fact,
+        title: title.to_string(),
+        description: format!("{title} description"),
+        body: format!("{title} body"),
+        tags: Vec::new(),
+        evidence: Vec::new(),
+        verification: None,
+    };
+    let identity_scope = |identity: &str| MemoryScope::Identity {
+        realm: "default".to_string(),
+        identity: identity.to_string(),
+    };
+
+    let router_root = store
+        .remember_authored(
+            &identity_scope("router"),
+            record("Router root"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("router root");
+    let router_tip = store
+        .supersede_authored(
+            &identity_scope("router"),
+            &router_root.memory_id,
+            record("Router tip"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("router tip");
+    let delivery = store
+        .remember_authored(
+            &identity_scope("delivery"),
+            record("Delivery fact"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("delivery record");
+    let mob_record = store
+        .remember_authored(
+            &MemoryScope::Mob {
+                realm: "default".to_string(),
+                mob: "access-control-mob".to_string(),
+            },
+            record("Mob convention"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("mob record");
+    store
+        .remember_authored(
+            &MemoryScope::Realm {
+                realm: "default".to_string(),
+            },
+            record("Realm fact"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("realm record");
+    // Operator scope is live (P4 provisional keying) and carries cross-mob
+    // personal facts — the panel gates it on operator.memory.read.
+    let operator_record = store
+        .remember_authored(
+            &MemoryScope::Operator {
+                realm: "default".to_string(),
+                operator: "op-luka".to_string(),
+            },
+            record("Operator preference"),
+            MemoryAuthor::Operator,
+        )
+        .await
+        .expect("operator record");
+
+    // Quarantined write: LLM author through the installed write gate.
+    store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
+    let quarantined = store
+        .remember_authored(
+            &identity_scope("router"),
+            record("Router quarantined claim"),
+            MemoryAuthor::Agent {
+                identity: "router".to_string(),
+            },
+        )
+        .await
+        .expect("quarantined record");
+    assert!(
+        matches!(
+            quarantined.status,
+            meerkat_mobkit::memory::records::RecordStatus::Quarantined { .. }
+        ),
+        "seed record should land quarantined: {quarantined:?}"
+    );
+
+    // One injection-ledger row for the tip record.
+    store
+        .log_injections(
+            "default",
+            &[InjectionLogEntry {
+                record_id: router_tip.memory_id.clone(),
+                identity: "router".to_string(),
+                session_key: Some("sess-1".to_string()),
+                surface: InjectionSurface::Build,
+                at_ms: 1,
+            }],
+        )
+        .await
+        .expect("injection row");
+
+    // One steward dream commit → audit rows for the dreams surface.
+    let token = store
+        .stage(StagedMutationBatch {
+            kind: meerkat_mobkit::memory::staged::StagedBatchKind::FreshWrite,
+            realm: "default".to_string(),
+            author: MemoryAuthor::Steward {
+                run_id: "run-dream-1".to_string(),
+            },
+            ops: vec![StagedOp::Create {
+                id: None,
+                scope: MemoryScope::Mob {
+                    realm: "default".to_string(),
+                    mob: "access-control-mob".to_string(),
+                },
+                record: record("Dream consolidated"),
+                trust: TrustTier::AgentObserved,
+                derived_from: Vec::new(),
+                rationale: Some("consolidated during dream".to_string()),
+                created_at_ms: None,
+                updated_at_ms: None,
+            }],
+        })
+        .await
+        .expect("stage dream batch");
+    store.commit(token).await.expect("commit dream batch");
+
+    // Two gated promotions parked in the queue (staged, never committed):
+    // the quarantine panel gates each row on the target scope's read grant.
+    let stage_promotion = |scope: MemoryScope, title: &str| {
+        let store = store.clone();
+        let record = record(title);
+        async move {
+            store
+                .stage(StagedMutationBatch {
+                    kind: meerkat_mobkit::memory::staged::StagedBatchKind::FreshWrite,
+                    realm: "default".to_string(),
+                    author: MemoryAuthor::Steward {
+                        run_id: "run-gate-1".to_string(),
+                    },
+                    ops: vec![StagedOp::Create {
+                        id: None,
+                        scope,
+                        record,
+                        trust: TrustTier::AgentObserved,
+                        derived_from: Vec::new(),
+                        rationale: Some("gated promotion".to_string()),
+                        created_at_ms: None,
+                        updated_at_ms: None,
+                    }],
+                })
+                .await
+                .expect("stage promotion batch")
+        }
+    };
+    let mob_stage = stage_promotion(
+        MemoryScope::Mob {
+            realm: "default".to_string(),
+            mob: "access-control-mob".to_string(),
+        },
+        "Promoted mob claim",
+    )
+    .await;
+    store
+        .record_pending_promotion(
+            "default",
+            meerkat_mobkit::memory::PendingPromotion {
+                pending_id: "gate-mob-promotion".to_string(),
+                stage_token: mob_stage.token,
+                record_id: quarantined.memory_id.clone(),
+                scope_kind: "mob".to_string(),
+                scope_key: "access-control-mob".to_string(),
+                rationale: Some("steward: mob-wide convention".to_string()),
+                status: "pending".to_string(),
+                created_at_ms: 2,
+            },
+        )
+        .await
+        .expect("mob promotion row");
+    let delivery_stage =
+        stage_promotion(identity_scope("delivery"), "Promoted delivery claim").await;
+    store
+        .record_pending_promotion(
+            "default",
+            meerkat_mobkit::memory::PendingPromotion {
+                pending_id: "gate-delivery-promotion".to_string(),
+                stage_token: delivery_stage.token,
+                record_id: quarantined.memory_id.clone(),
+                scope_kind: "identity".to_string(),
+                scope_key: "delivery".to_string(),
+                rationale: Some("steward: delivery personal fact".to_string()),
+                status: "pending".to_string(),
+                created_at_ms: 3,
+            },
+        )
+        .await
+        .expect("delivery promotion row");
+
+    (
+        store,
+        router_tip.memory_id,
+        quarantined.memory_id,
+        delivery.memory_id,
+        mob_record.memory_id,
+        operator_record.memory_id,
+    )
+}
+
+#[tokio::test]
+async fn memory_panel_reads_seeded_store_without_access_control() {
+    let (_temp_dir, runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    runtime.set_memory_panel_store(store);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Capability advertisement follows the provider-dependent pattern.
+    let capabilities = rpc(&app, "mobkit/capabilities", json!({})).await;
+    let methods = capabilities["result"]["methods"]
+        .as_array()
+        .expect("methods");
+    for method in [
+        "mobkit/memory/panel/records",
+        "mobkit/memory/panel/record",
+        "mobkit/memory/panel/quarantine",
+        "mobkit/memory/panel/dreams",
+    ] {
+        assert!(
+            methods.iter().any(|value| value == method),
+            "{method} must be advertised: {methods:#?}"
+        );
+    }
+
+    // Records: every scope visible, list rows body-free.
+    let records = rpc(&app, "mobkit/memory/panel/records", json!({})).await;
+    assert_eq!(records["error"], Value::Null, "{records:#?}");
+    let rows = records["result"]["records"].as_array().expect("records");
+    assert!(rows.len() >= 5, "all seeded records: {rows:#?}");
+    assert!(
+        rows.iter().all(|row| row.get("body").is_none()),
+        "list rows must be body-free: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row["status"]["status"] == json!("quarantined")),
+        "quarantined row visible without enforcement: {rows:#?}"
+    );
+
+    // Identity filter narrows to that identity's scope.
+    let router_rows = rpc(
+        &app,
+        "mobkit/memory/panel/records",
+        json!({ "identity": "router" }),
+    )
+    .await;
+    let router_rows = router_rows["result"]["records"]
+        .as_array()
+        .expect("router rows")
+        .clone();
+    assert!(!router_rows.is_empty());
+    assert!(
+        router_rows
+            .iter()
+            .all(|row| row["scope"]["identity"] == json!("router")),
+        "identity filter leaked other scopes: {router_rows:#?}"
+    );
+
+    // Record detail: body + supersede chain + injection usage.
+    let detail = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": tip_id }),
+    )
+    .await;
+    assert_eq!(detail["error"], Value::Null, "{detail:#?}");
+    assert_eq!(detail["result"]["record"]["body"], json!("Router tip body"));
+    let chain = detail["result"]["chain"].as_array().expect("chain");
+    assert_eq!(chain.len(), 2, "root + tip: {chain:#?}");
+    assert_eq!(chain[0]["status"]["status"], json!("superseded"));
+    assert_eq!(chain[1]["id"], json!(tip_id));
+    let injections = detail["result"]["injections"]
+        .as_array()
+        .expect("injections");
+    assert_eq!(injections.len(), 1, "{injections:#?}");
+    assert_eq!(injections[0]["surface"], json!("build"));
+
+    // Quarantine queue: records plus both seeded promotions, tokenless.
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    assert_eq!(quarantine["error"], Value::Null, "{quarantine:#?}");
+    let queue = quarantine["result"]["records"].as_array().expect("queue");
+    assert!(
+        queue.iter().any(|row| row["id"] == json!(quarantined_id)),
+        "{queue:#?}"
+    );
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert_eq!(promotions.len(), 2, "{promotions:#?}");
+    assert!(
+        promotions
+            .iter()
+            .all(|row| row.get("stage_token").is_none()),
+        "stage_token is a commit capability and must never surface: {promotions:#?}"
+    );
+
+    // Dream history from steward audit rows.
+    let dreams = rpc(&app, "mobkit/memory/panel/dreams", json!({})).await;
+    assert_eq!(dreams["error"], Value::Null, "{dreams:#?}");
+    let runs = dreams["result"]["runs"].as_array().expect("runs");
+    assert_eq!(runs.len(), 1, "{runs:#?}");
+    assert_eq!(runs[0]["run_id"], json!("run-dream-1"));
+    assert_eq!(runs[0]["op_kinds"]["create"], json!(1));
+
+    // Experience advertises the panel affordances.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/experience")
+                .body(Body::empty())
+                .expect("experience request"),
+        )
+        .await
+        .expect("experience response");
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("experience body");
+    let experience: Value = serde_json::from_slice(&body).expect("experience json");
+    assert_eq!(experience["memory"]["available"], json!(true));
+    assert_eq!(experience["memory"]["can_read"], json!(true));
+    assert_eq!(experience["memory"]["can_review_quarantine"], json!(true));
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn memory_panel_enforces_scope_actions_end_to_end() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, tip_id, quarantined_id, delivery_id, mob_id, operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    runtime.set_memory_panel_store(store);
+
+    // Anonymous callers: view + EXPLICIT memory read on "router" only. The
+    // config mentions a memory action, so it is taken literally — no
+    // compat rewrite, no mob/realm/quarantine grants.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "view-router".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["router".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "read-router-memory".to_string(),
+                actions: vec!["agent.memory.read".to_string()],
+                agents: vec!["router".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Experience affordances: readable, not reviewer.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/experience")
+                .body(Body::empty())
+                .expect("experience request"),
+        )
+        .await
+        .expect("experience response");
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("experience body");
+    let experience: Value = serde_json::from_slice(&body).expect("experience json");
+    assert_eq!(experience["memory"]["can_read"], json!(true));
+    assert_eq!(experience["memory"]["can_review_quarantine"], json!(false));
+
+    // Unscoped listing is row-filtered to the granted identity scope; the
+    // quarantined router record needs the review grant on top.
+    let records = rpc(&app, "mobkit/memory/panel/records", json!({})).await;
+    assert_eq!(records["error"], Value::Null, "{records:#?}");
+    let rows = records["result"]["records"].as_array().expect("records");
+    assert!(
+        rows.iter()
+            .all(|row| row["scope"]["identity"] == json!("router")),
+        "only router-scope rows may survive: {rows:#?}"
+    );
+    assert!(
+        rows.iter().all(|row| row["id"] != json!(quarantined_id)),
+        "quarantined rows need the review grant: {rows:#?}"
+    );
+
+    // Identity-keyed listing for a denied identity fails the entry gate.
+    let denied = rpc(
+        &app,
+        "mobkit/memory/panel/records",
+        json!({ "identity": "delivery" }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+
+    // Record detail enforcement is post-load, per record scope.
+    let allowed = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": tip_id }),
+    )
+    .await;
+    assert_eq!(allowed["error"], Value::Null, "{allowed:#?}");
+    for (memory_id, action) in [
+        (&delivery_id, "agent.memory.read"),
+        (&mob_id, "mob.memory.read"),
+        (&operator_id, "operator.memory.read"),
+        (&quarantined_id, "memory.quarantine.review"),
+    ] {
+        let denied = rpc(
+            &app,
+            "mobkit/memory/panel/record",
+            json!({ "memory_id": memory_id }),
+        )
+        .await;
+        assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+        assert_eq!(
+            denied["error"]["data"]["action"],
+            json!(action),
+            "{denied:#?}"
+        );
+    }
+
+    // Quarantine queue and dream history are gated.
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    assert_eq!(quarantine["error"]["code"], json!(-32030));
+    let dreams = rpc(&app, "mobkit/memory/panel/dreams", json!({})).await;
+    assert_eq!(dreams["error"]["code"], json!(-32030));
+
+    // §10.3 migration: recall requires read AND view. This config grants
+    // both on router (explicitly), neither on delivery.
+    let recall_router = rpc(
+        &app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": "router", "selection": "always" }),
+    )
+    .await;
+    assert_ne!(
+        recall_router["error"]["code"],
+        json!(-32030),
+        "router recall passes the access gate: {recall_router:#?}"
+    );
+    let recall_delivery = rpc(
+        &app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": "delivery", "selection": "always" }),
+    )
+    .await;
+    assert_eq!(recall_delivery["error"]["code"], json!(-32030));
+
+    // Capabilities intersect: the resource-less panel reads the caller can
+    // never use disappear; agent-scoped ones stay (enforced per call).
+    let capabilities = rpc(&app, "mobkit/capabilities", json!({})).await;
+    let methods = capabilities["result"]["methods"]
+        .as_array()
+        .expect("methods")
+        .clone();
+    assert!(
+        methods
+            .iter()
+            .any(|value| value == "mobkit/memory/panel/records")
+    );
+    for hidden in [
+        "mobkit/memory/panel/dreams",
+        "mobkit/memory/panel/quarantine",
+    ] {
+        assert!(
+            methods.iter().all(|value| value != hidden),
+            "{hidden} requires a grant this caller lacks: {methods:#?}"
+        );
+    }
+
+    // Live grant of the reviewer + unscoped read opens the gated surfaces —
+    // but NOT operator scope, which needs its own explicit grant.
+    controller
+        .upsert_rule(AccessRule {
+            id: "reviewer".to_string(),
+            actions: vec![
+                "agent.memory.read".to_string(),
+                "mob.memory.read".to_string(),
+                "memory.quarantine.review".to_string(),
+            ],
+            ..AccessRule::default()
+        })
+        .expect("live reviewer grant");
+    let dreams = rpc(&app, "mobkit/memory/panel/dreams", json!({})).await;
+    assert_eq!(dreams["error"], Value::Null, "{dreams:#?}");
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    assert_eq!(quarantine["error"], Value::Null, "{quarantine:#?}");
+    let queue = quarantine["result"]["records"].as_array().expect("queue");
+    assert!(
+        queue.iter().any(|row| row["id"] == json!(quarantined_id)),
+        "{queue:#?}"
+    );
+    // Promotion rows ride the target scope's read grant: mob.memory.read
+    // admits the mob-targeted promotion, while the delivery-identity one
+    // stays hidden — the unscoped read grant lacks agent.view on delivery.
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert!(
+        promotions
+            .iter()
+            .any(|row| row["pending_id"] == json!("gate-mob-promotion")),
+        "{promotions:#?}"
+    );
+    assert!(
+        promotions
+            .iter()
+            .all(|row| row["pending_id"] != json!("gate-delivery-promotion")),
+        "identity promotions must not ride the unscoped read grant: {promotions:#?}"
+    );
+
+    // Operator-scope rows stay hidden behind operator.memory.read: absent
+    // from unscoped listings, denied on detail, denied as a scope filter —
+    // an unscoped agent.memory.read grant is deliberately not enough.
+    let records = rpc(&app, "mobkit/memory/panel/records", json!({})).await;
+    let rows = records["result"]["records"].as_array().expect("records");
+    assert!(
+        rows.iter().all(|row| row["id"] != json!(operator_id)),
+        "operator rows must not ride the unscoped read grant: {rows:#?}"
+    );
+    let denied_operator = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": operator_id }),
+    )
+    .await;
+    assert_eq!(denied_operator["error"]["code"], json!(-32030));
+    let denied_scope = rpc(
+        &app,
+        "mobkit/memory/panel/records",
+        json!({ "scope": "operator" }),
+    )
+    .await;
+    assert_eq!(denied_scope["error"]["code"], json!(-32030));
+
+    controller
+        .upsert_rule(AccessRule {
+            id: "operator-reader".to_string(),
+            actions: vec!["operator.memory.read".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("live operator grant");
+    let operator_detail = rpc(
+        &app,
+        "mobkit/memory/panel/record",
+        json!({ "memory_id": operator_id }),
+    )
+    .await;
+    assert_eq!(
+        operator_detail["error"],
+        Value::Null,
+        "{operator_detail:#?}"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+/// §10.3 on the quarantine queue itself: `memory.quarantine.review` is the
+/// entry gate but never sufficient per row — each queue record and each
+/// pending promotion still needs the caller's read grant on its (target)
+/// scope, so a reviewer-only principal sees an empty queue rather than
+/// cross-scope titles, scope keys, and steward rationales.
+#[tokio::test]
+async fn memory_panel_quarantine_queue_filters_rows_per_scope() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let (store, _tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
+        seeded_memory_store(memory_dir.path()).await;
+    runtime.set_memory_panel_store(store);
+
+    // Enforcement on, zero rules: the anonymous caller holds no grants.
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: Vec::new(),
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Non-reviewers fail the entry gate.
+    let denied = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+
+    // Reviewer-only principal: past the entry gate, but with no per-scope
+    // read grant every row is filtered — records AND promotions come back
+    // empty instead of leaking cross-scope metadata.
+    controller
+        .upsert_rule(AccessRule {
+            id: "reviewer".to_string(),
+            actions: vec!["memory.quarantine.review".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("reviewer grant");
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    assert_eq!(quarantine["error"], Value::Null, "{quarantine:#?}");
+    let queue = quarantine["result"]["records"].as_array().expect("queue");
+    assert!(
+        queue.is_empty(),
+        "reviewer-only must see no queue records: {queue:#?}"
+    );
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert!(
+        promotions.is_empty(),
+        "reviewer-only must see no promotions: {promotions:#?}"
+    );
+
+    // Reviewer + read/view on "router": exactly router's quarantined record
+    // appears; both promotions (mob-targeted, delivery-targeted) stay hidden.
+    controller
+        .upsert_rule(AccessRule {
+            id: "router-reader".to_string(),
+            actions: vec!["agent.memory.read".to_string(), "agent.view".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("router grant");
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    let queue = quarantine["result"]["records"].as_array().expect("queue");
+    assert_eq!(queue.len(), 1, "{queue:#?}");
+    assert_eq!(queue[0]["id"], json!(quarantined_id));
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert!(
+        promotions.is_empty(),
+        "router grants must not expose mob/delivery promotions: {promotions:#?}"
+    );
+
+    // Reviewer + mob.memory.read: the mob-targeted promotion appears; the
+    // delivery-identity promotion still needs read+view on "delivery".
+    controller
+        .upsert_rule(AccessRule {
+            id: "mob-reader".to_string(),
+            actions: vec!["mob.memory.read".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("mob grant");
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert_eq!(promotions.len(), 1, "{promotions:#?}");
+    assert_eq!(promotions[0]["pending_id"], json!("gate-mob-promotion"));
+
+    // Reviewer + read/view on "delivery": its promotion joins the queue.
+    controller
+        .upsert_rule(AccessRule {
+            id: "delivery-reader".to_string(),
+            actions: vec!["agent.memory.read".to_string(), "agent.view".to_string()],
+            agents: vec!["delivery".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("delivery grant");
+    let quarantine = rpc(&app, "mobkit/memory/panel/quarantine", json!({})).await;
+    let promotions = quarantine["result"]["pending_promotions"]
+        .as_array()
+        .expect("promotions");
+    assert_eq!(promotions.len(), 2, "{promotions:#?}");
+    assert!(
+        promotions
+            .iter()
+            .any(|row| row["pending_id"] == json!("gate-delivery-promotion")),
+        "{promotions:#?}"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn recall_read_action_migration_compat_rule_both_ways() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+
+    // Memory-naive config (no memory action anywhere): agent.memory.read is
+    // implicitly granted wherever agent.view is granted, so pre-migration
+    // recall behavior is preserved.
+    let naive = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "view-router".to_string(),
+            actions: vec!["agent.view".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("naive controller");
+    let (config, _) = naive.snapshot();
+    assert!(
+        config.rules[0]
+            .actions
+            .contains(&"agent.memory.read".to_string()),
+        "compat rewrite materializes the read grant: {config:#?}"
+    );
+    runtime.set_access_controller(naive);
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let recall_router = rpc(
+        &app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": "router", "selection": "always" }),
+    )
+    .await;
+    assert_ne!(
+        recall_router["error"]["code"],
+        json!(-32030),
+        "naive config keeps recall working on view grants: {recall_router:#?}"
+    );
+    let recall_delivery = rpc(
+        &app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": "delivery", "selection": "always" }),
+    )
+    .await;
+    assert_eq!(recall_delivery["error"]["code"], json!(-32030));
+
+    // Explicit config (mentions a memory action anywhere): taken literally.
+    // View on router without a read grant now denies recall on the read
+    // action.
+    let explicit = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "view-router".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["router".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "unrelated-memory-rule".to_string(),
+                actions: vec!["agent.memory.read".to_string()],
+                agents: vec!["someone-else".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("explicit controller");
+    runtime.set_access_controller(explicit);
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let denied = rpc(
+        &app,
+        "mobkit/agent_memory/recall",
+        json!({ "identity": "router", "selection": "always" }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], json!(-32030), "{denied:#?}");
+    assert_eq!(
+        denied["error"]["data"]["action"],
+        json!("agent.memory.read"),
+        "explicit configs are taken literally: {denied:#?}"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}

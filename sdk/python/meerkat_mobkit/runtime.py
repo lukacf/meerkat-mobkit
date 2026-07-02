@@ -40,8 +40,11 @@ from ._transport import PersistentTransport
 from .models import DiscoverySpec
 from .types import (
     AgentMemoryForgetResult,
+    AgentMemoryManifestResult,
     AgentMemoryRecallResult,
     AgentMemoryRecord,
+    AgentMemoryRecordMeta,
+    AgentMemoryUpdateResult,
     CallToolResult,
     CapabilitiesResult,
     DeliveryHistoryResult,
@@ -737,9 +740,10 @@ class MobHandle:
     ) -> MemoryQueryResult:
         """Query the assertion ledger by entity/topic/store filters.
 
-        Passing a string preserves the legacy wire shape by sending it as
-        ``query``; the stock runtime filters by ``entity``, ``topic``, and
-        ``store``.
+        Passing a string sends it as ``query``; the stock runtime applies it
+        as a case-insensitive substring filter across entity, topic, and fact
+        (reason for conflict signals), after the exact ``entity``/``topic``/
+        ``store`` filters.
         """
         if isinstance(query, dict):
             params = {**query, **kwargs}
@@ -812,6 +816,58 @@ class MobHandle:
             params["realm"] = realm
         raw = await self._runtime._rpc("mobkit/agent_memory/forget", params)
         return AgentMemoryForgetResult.from_dict(raw)
+
+    async def update_agent_memory(
+        self,
+        identity: str,
+        memory_id: str,
+        *,
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        realm: str | None = None,
+    ) -> AgentMemoryUpdateResult:
+        """Supersede a durable memory record within its lineage.
+
+        The new title/body/tags become the active record; the prior record
+        stays retrievable with provenance and is no longer recalled.
+        """
+        params: dict[str, Any] = {
+            "identity": identity,
+            "memory_id": memory_id,
+            "title": title,
+            "body": body,
+        }
+        if realm is not None:
+            params["realm"] = realm
+        if tags is not None:
+            params["tags"] = list(tags)
+        raw = await self._runtime._rpc("mobkit/agent_memory/update", params)
+        return AgentMemoryUpdateResult.from_dict(raw)
+
+    async def manifest_agent_memory(
+        self,
+        identity: str,
+        *,
+        realm: str | None = None,
+        tier: str | None = None,
+        k: int | None = None,
+    ) -> list[AgentMemoryRecordMeta]:
+        """List durable memory record metadata (id/kind/title/description/
+        age/rank — never bodies).
+
+        ``tier`` is ``"working_set"`` (default; top-K ranked plus the
+        recent/unranked slice) or ``"full"``; ``k`` bounds the working set.
+        """
+        params: dict[str, Any] = {"identity": identity}
+        if realm is not None:
+            params["realm"] = realm
+        if tier is not None:
+            params["tier"] = tier
+        if k is not None:
+            params["k"] = k
+        raw = await self._runtime._rpc("mobkit/agent_memory/manifest", params)
+        return list(AgentMemoryManifestResult.from_dict(raw).records)
 
     async def call_tool(
         self, module_id: str, tool: str, arguments: dict[str, Any] | None = None

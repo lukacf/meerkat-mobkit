@@ -34,11 +34,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::access::{
-    ACCESS_ACTIONS, ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_RESET,
-    ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE, ACTION_AGENT_SEND, ACTION_AGENT_SPAWN,
-    ACTION_AGENT_VIEW, ACTION_GATING_DECIDE, ACTION_GATING_VIEW, ACTION_MOB_OBSERVE,
-    ACTION_RUNTIME_ADMIN, AccessController, AccessGroup, AccessResource, AccessRule, AccessView,
-    AgentResourceAttributes,
+    ACCESS_ACTIONS, ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ,
+    ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE,
+    ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW, ACTION_GATING_DECIDE,
+    ACTION_GATING_VIEW, ACTION_MEMORY_QUARANTINE_REVIEW, ACTION_MOB_MEMORY_READ,
+    ACTION_MOB_OBSERVE, ACTION_OPERATOR_MEMORY_READ, ACTION_RUNTIME_ADMIN, AccessController,
+    AccessGroup, AccessResource, AccessRule, AccessView, AgentResourceAttributes,
 };
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
@@ -54,8 +55,9 @@ use crate::mob_handle_runtime::{
     MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime, member_status_state_string,
 };
 use crate::rpc::memory_methods::{
-    parse_agent_memory_forget_params, parse_agent_memory_recall_params,
-    parse_agent_memory_remember_params,
+    parse_agent_memory_forget_params, parse_agent_memory_manifest_params,
+    parse_agent_memory_recall_params, parse_agent_memory_remember_params,
+    parse_agent_memory_update_params,
 };
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
@@ -63,7 +65,7 @@ use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
     RuntimeDecisionState, extract_bearer_token_from_header,
-    handle_console_rest_json_route_with_snapshot_and_access,
+    handle_console_rest_json_route_with_snapshot_access_and_memory,
     resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
@@ -93,6 +95,10 @@ pub struct ConsoleJsonState {
     /// Optional ABAC enforcement. `None` (or a disabled config) keeps every
     /// console surface byte-for-byte compatible with the pre-access world.
     pub(crate) access: Option<AccessController>,
+    /// Optional bundled-store handle for the console Memory panel's
+    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (markdown
+    /// store, no memory configured) leaves those methods unadvertised.
+    pub(crate) memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +241,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
         access: None,
+        memory_panel: None,
     })
 }
 
@@ -265,6 +272,7 @@ pub fn console_json_router_with_aggregator_and_access(
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
         access,
+        memory_panel: None,
     })
 }
 
@@ -317,6 +325,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         identity_runtime,
         Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         None,
+        None,
     )
 }
 
@@ -335,6 +344,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     access: Option<AccessController>,
+    memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -378,6 +388,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         visibility_policy,
         snapshot_read_model,
         access,
+        memory_panel,
     })
 }
 
@@ -493,7 +504,7 @@ pub async fn console_json_handler(
         snapshot
     });
 
-    let response = handle_console_rest_json_route_with_snapshot_and_access(
+    let response = handle_console_rest_json_route_with_snapshot_access_and_memory(
         &state.decisions,
         &ConsoleRestJsonRequest {
             method: "GET".to_string(),
@@ -502,6 +513,7 @@ pub async fn console_json_handler(
         },
         live_snapshot.as_ref(),
         state.access.as_ref(),
+        state.memory_panel.is_some(),
     );
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
@@ -585,6 +597,7 @@ pub async fn console_rpc_handler(
         auth_context.principal.as_deref(),
         state.access.as_ref(),
         auth_context.access_view.as_ref(),
+        state.memory_panel.as_ref(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -1352,6 +1365,7 @@ fn is_console_mutating_rpc_method(method: &str) -> bool {
             | "mobkit/reset"
             | "mobkit/delete_identity"
             | "mobkit/agent_memory/remember"
+            | "mobkit/agent_memory/update"
             | "mobkit/agent_memory/forget"
             | "mobkit/gating/decide"
             | "mobkit/mob_labels/set"
@@ -1552,47 +1566,80 @@ fn retain_visible_identity_records(
     });
 }
 
-/// Maps a console RPC method to the access action it requires plus the
-/// targeted agent (when the method is agent-scoped). Methods not listed are
-/// either pure read surfaces whose *results* are filtered per caller, or
-/// non-sensitive metadata.
-fn console_rpc_access_requirement(
+/// Maps a console RPC method to the access actions it requires, each with
+/// the targeted agent (when the check is agent-scoped). Every listed action
+/// must be allowed (logical AND). Methods not listed are either pure read
+/// surfaces whose *results* are filtered per caller, or non-sensitive
+/// metadata.
+fn console_rpc_access_requirements(
     method: &str,
     params: &Value,
-) -> Option<(&'static str, Option<String>)> {
+) -> Option<Vec<(&'static str, Option<String>)>> {
     let identity = normalized_console_rpc_string_param(params, "identity");
     let target = identity
         .clone()
         .or_else(|| normalized_console_rpc_string_param(params, "member_id"))
         .or_else(|| normalized_console_rpc_string_param(params, "agent_id"));
+    let one = |action: &'static str, target: Option<String>| Some(vec![(action, target)]);
     match method {
-        "mobkit/console/send" => Some((ACTION_AGENT_SEND, identity)),
-        "mobkit/agent_memory/remember" => Some((ACTION_AGENT_MEMORY_WRITE, identity)),
-        "mobkit/agent_memory/forget" => Some((ACTION_AGENT_MEMORY_DELETE, identity)),
-        "mobkit/agent_memory/recall" => Some((ACTION_AGENT_VIEW, identity)),
+        "mobkit/console/send" => one(ACTION_AGENT_SEND, identity),
+        "mobkit/agent_memory/remember" => one(ACTION_AGENT_MEMORY_WRITE, identity),
+        // Update is a supersede — a write within the record's lineage.
+        "mobkit/agent_memory/update" => one(ACTION_AGENT_MEMORY_WRITE, identity),
+        "mobkit/agent_memory/forget" => one(ACTION_AGENT_MEMORY_DELETE, identity),
+        // §10.3 migration: memory reads moved from bare `agent.view` to the
+        // per-scope read action, and the console keeps `agent.view` as a
+        // prerequisite — both are required. Pre-migration configs are
+        // covered by `normalize_access_config_for_memory_actions`.
+        "mobkit/agent_memory/recall" | "mobkit/agent_memory/manifest" => Some(vec![
+            (ACTION_AGENT_MEMORY_READ, identity.clone()),
+            (ACTION_AGENT_VIEW, identity),
+        ]),
+        // Memory panel reads (§9.3). Identity-keyed listings gate up front
+        // like recall; mob-scope listings need the mob read action;
+        // unscoped listings carry no entry gate — every returned row is
+        // filtered per caller scope in the handler
+        // (`panel_record_visible`). The record-detail method is likewise
+        // enforced post-load, where the record's scope is known.
+        "mobkit/memory/panel/records" => match memory_panel_scope_param(params) {
+            Some(scope) if scope == "mob" => one(ACTION_MOB_MEMORY_READ, None),
+            Some(scope) if scope == "operator" => one(ACTION_OPERATOR_MEMORY_READ, None),
+            _ if identity.is_some() => Some(vec![
+                (ACTION_AGENT_MEMORY_READ, identity.clone()),
+                (ACTION_AGENT_VIEW, identity),
+            ]),
+            _ => None,
+        },
+        // Dream history is realm-level steward activity spanning scopes; it
+        // requires the unscoped read grant (a rule with no resource
+        // selector), same as realm-scope record reads.
+        "mobkit/memory/panel/dreams" => one(ACTION_AGENT_MEMORY_READ, None),
+        "mobkit/memory/panel/quarantine" => one(ACTION_MEMORY_QUARANTINE_REVIEW, None),
+        // `mob.memory.propose` gates future propose surfaces and
+        // `mob.memory.commit` is reserved for a future direct-commit RPC —
+        // steward promotions ride the existing gating flow (gating.decide),
+        // so neither maps to a method yet.
         "mobkit/retire"
         | "mobkit/retire_member"
         | "mobkit/force_cancel_member"
-        | "mobkit/delete_identity" => Some((ACTION_AGENT_RETIRE, target)),
-        "mobkit/respawn" | "mobkit/respawn_member" => Some((ACTION_AGENT_RESPAWN, target)),
-        "mobkit/reset" | "mobkit/reset_all" => Some((ACTION_AGENT_RESET, target)),
+        | "mobkit/delete_identity" => one(ACTION_AGENT_RETIRE, target),
+        "mobkit/respawn" | "mobkit/respawn_member" => one(ACTION_AGENT_RESPAWN, target),
+        "mobkit/reset" | "mobkit/reset_all" => one(ACTION_AGENT_RESET, target),
         "mobkit/ensure_member"
         | "mobkit/spawn_helper"
         | "mobkit/fork_helper"
         | "mobkit/attach_existing_session"
         | "mobkit/run_flow"
         | "mobkit/cancel_flow"
-        | "mobkit/collect_completed" => Some((ACTION_AGENT_SPAWN, target)),
+        | "mobkit/collect_completed" => one(ACTION_AGENT_SPAWN, target),
         // Flow state reads expose run records (including spawned member
         // identities), so they sit in the same tier as running flows.
         "mobkit/flow_status" | "mobkit/list_flows" | "mobkit/list_runs" => {
-            Some((ACTION_AGENT_SPAWN, None))
+            one(ACTION_AGENT_SPAWN, None)
         }
-        "mobkit/gating/decide" => Some((ACTION_GATING_DECIDE, None)),
-        "mobkit/gating/pending" | "mobkit/gating/audit" => Some((ACTION_GATING_VIEW, None)),
-        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
-            Some((ACTION_MOB_OBSERVE, None))
-        }
+        "mobkit/gating/decide" => one(ACTION_GATING_DECIDE, None),
+        "mobkit/gating/pending" | "mobkit/gating/audit" => one(ACTION_GATING_VIEW, None),
+        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => one(ACTION_MOB_OBSERVE, None),
         "mobkit/reconcile_edges"
         | "mobkit/cross_mob/wire_local"
         | "mobkit/cross_mob/unwire_local"
@@ -1609,15 +1656,19 @@ fn console_rpc_access_requirement(
         | "mobkit/cross_mob/directory"
         | "mobkit/cross_mob/peer_info"
         | "mobkit/mob_labels/get"
-        | "mobkit/run_labels/get" => Some((ACTION_RUNTIME_ADMIN, None)),
+        | "mobkit/run_labels/get" => one(ACTION_RUNTIME_ADMIN, None),
         "mobkit/get_member"
         | "mobkit/member_status"
         | "mobkit/identity/resolved_tools"
         | "mobkit/inspect_identity"
         | "mobkit/status_identity"
-        | "mobkit/console/inspect_identity" => Some((ACTION_AGENT_VIEW, target)),
+        | "mobkit/console/inspect_identity" => one(ACTION_AGENT_VIEW, target),
         _ => None,
     }
+}
+
+fn memory_panel_scope_param(params: &Value) -> Option<String> {
+    normalized_console_rpc_string_param(params, "scope").filter(|scope| !scope.is_empty())
 }
 
 fn normalized_console_rpc_string_param(params: &Value, key: &str) -> Option<String> {
@@ -1629,29 +1680,32 @@ fn normalized_console_rpc_string_param(params: &Value, key: &str) -> Option<Stri
 }
 
 /// Returns the denial error when the caller's view forbids the method.
+/// Every mapped requirement must pass; the first failing one is reported.
 fn console_rpc_access_violation(
     view: Option<&AccessView>,
     method: &str,
     params: &Value,
 ) -> Option<JsonRpcError> {
     let view = view.filter(|view| view.enforced())?;
-    let (action, target) = console_rpc_access_requirement(method, params)?;
-    let allowed = match target {
-        Some(ref identity) => view.allows_agent(action, identity),
-        None => view.allows(action),
-    };
-    if allowed {
-        return None;
+    let requirements = console_rpc_access_requirements(method, params)?;
+    for (action, target) in requirements {
+        let allowed = match target {
+            Some(ref identity) => view.allows_agent(action, identity),
+            None => view.allows(action),
+        };
+        if !allowed {
+            return Some(JsonRpcError {
+                code: ACCESS_DENIED_RPC_CODE,
+                message: format!("access denied: {action}"),
+                data: Some(json!({
+                    "kind": "access_denied",
+                    "action": action,
+                    "resource": target,
+                })),
+            });
+        }
     }
-    Some(JsonRpcError {
-        code: ACCESS_DENIED_RPC_CODE,
-        message: format!("access denied: {action}"),
-        data: Some(json!({
-            "kind": "access_denied",
-            "action": action,
-            "resource": target,
-        })),
-    })
+    None
 }
 
 fn access_denied_rpc_error(response_id: Value, message: impl Into<String>) -> Value {
@@ -1687,6 +1741,481 @@ fn access_config_rpc_error(response_id: Value, err: crate::access::AccessConfigE
             message: err.to_string(),
             data: Some(json!({ "kind": "invalid_access_config" })),
         }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Console Memory panel (§9.3): read-only `mobkit/memory/panel/*` RPCs
+// ---------------------------------------------------------------------------
+
+const MEMORY_PANEL_DEFAULT_LIMIT: usize = 50;
+const MEMORY_PANEL_MAX_LIMIT: usize = 200;
+const MEMORY_PANEL_CHAIN_MAX: usize = 32;
+const MEMORY_PANEL_INJECTIONS_MAX: usize = 50;
+const MEMORY_PANEL_DREAMS_DEFAULT: usize = 20;
+const MEMORY_PANEL_DREAMS_MAX: usize = 100;
+
+fn memory_panel_unavailable(response_id: Value) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32601,
+            message: "memory panel is not configured".to_string(),
+            data: None,
+        }),
+    )
+}
+
+fn memory_panel_store_error(
+    response_id: Value,
+    err: crate::identity_first::agent_memory::AgentMemoryError,
+) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(crate::rpc::agent_memory_rpc_error("panel", err)),
+    )
+}
+
+fn memory_panel_limit_param(params: &Value, default: usize, max: usize) -> usize {
+    params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|limit| (limit as usize).clamp(1, max))
+        .unwrap_or(default)
+}
+
+fn encode_memory_panel_cursor(cursor: &(u64, String)) -> String {
+    format!("{}:{}", cursor.0, cursor.1)
+}
+
+fn parse_memory_panel_cursor(raw: &str) -> Option<(u64, String)> {
+    let (ms, id) = raw.split_once(':')?;
+    let ms = ms.parse::<u64>().ok()?;
+    (!id.is_empty()).then(|| (ms, id.to_string()))
+}
+
+/// The read action guarding a record of this scope on the panel (§10.3).
+/// Realm-scope reads ride an *unscoped* `agent.memory.read` grant (a rule
+/// with no resource selector); operator scope (live since P4's provisional
+/// keying) requires its own explicit `operator.memory.read` grant.
+fn memory_panel_scope_action(scope: &crate::memory::records::MemoryScope) -> &'static str {
+    match scope {
+        crate::memory::records::MemoryScope::Identity { .. } => ACTION_AGENT_MEMORY_READ,
+        crate::memory::records::MemoryScope::Mob { .. } => ACTION_MOB_MEMORY_READ,
+        crate::memory::records::MemoryScope::Operator { .. } => ACTION_OPERATOR_MEMORY_READ,
+        crate::memory::records::MemoryScope::Realm { .. } => ACTION_AGENT_MEMORY_READ,
+    }
+}
+
+/// Per-row visibility for panel reads. Identity-scope rows require the
+/// per-scope read action AND `agent.view` on the identity (§10.3: the
+/// console keeps view as a prerequisite); mob rows require
+/// `mob.memory.read`; operator rows require the explicit
+/// `operator.memory.read` grant (cross-mob personal facts — an unscoped
+/// `agent.memory.read` deliberately does NOT cover them); realm rows
+/// require the unscoped read grant. Quarantined rows are additionally
+/// reviewer-only — their bodies are exactly the content the quarantine
+/// gate exists for.
+fn memory_panel_record_visible(
+    view: Option<&AccessView>,
+    record: &crate::memory::records::MemoryRecord,
+) -> bool {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return true;
+    };
+    let scope_allowed = match &record.scope {
+        crate::memory::records::MemoryScope::Identity { identity, .. } => {
+            view.allows_agent(ACTION_AGENT_MEMORY_READ, identity)
+                && view.allows_agent(ACTION_AGENT_VIEW, identity)
+        }
+        crate::memory::records::MemoryScope::Mob { .. } => view.allows(ACTION_MOB_MEMORY_READ),
+        crate::memory::records::MemoryScope::Operator { .. } => {
+            view.allows(ACTION_OPERATOR_MEMORY_READ)
+        }
+        crate::memory::records::MemoryScope::Realm { .. } => view.allows(ACTION_AGENT_MEMORY_READ),
+    };
+    if !scope_allowed {
+        return false;
+    }
+    if matches!(
+        record.status,
+        crate::memory::records::RecordStatus::Quarantined { .. }
+    ) {
+        return view.allows(ACTION_MEMORY_QUARANTINE_REVIEW);
+    }
+    true
+}
+
+/// Per-row visibility for pending-promotion queue rows, mirroring
+/// [`memory_panel_record_visible`] on the promotion's *target* scope:
+/// promotions carry the scope key and steward rationale, so they leak the
+/// same cross-scope metadata as record rows. `memory.quarantine.review` is
+/// the queue's entry gate but is deliberately not sufficient per row.
+/// Unknown scope kinds are denied.
+fn memory_panel_promotion_visible(
+    view: Option<&AccessView>,
+    scope_kind: &str,
+    scope_key: &str,
+) -> bool {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return true;
+    };
+    match scope_kind {
+        "identity" => {
+            view.allows_agent(ACTION_AGENT_MEMORY_READ, scope_key)
+                && view.allows_agent(ACTION_AGENT_VIEW, scope_key)
+        }
+        "mob" => view.allows(ACTION_MOB_MEMORY_READ),
+        "operator" => view.allows(ACTION_OPERATOR_MEMORY_READ),
+        "realm" => view.allows(ACTION_AGENT_MEMORY_READ),
+        _ => false,
+    }
+}
+
+/// Serialize a record for the panel. List rows are body-free (`body_bytes`
+/// stands in); only the record-detail surface carries the body.
+fn memory_panel_record_json(
+    record: &crate::memory::records::MemoryRecord,
+    include_body: bool,
+) -> Value {
+    let mut value = serde_json::to_value(record).unwrap_or(Value::Null);
+    if !include_body && let Some(object) = value.as_object_mut() {
+        object.remove("body");
+        object.insert("body_bytes".to_string(), json!(record.body.len()));
+    }
+    value
+}
+
+/// Resolve the realms a panel read spans: the explicit `realm` param, or
+/// every realm with a store file.
+async fn memory_panel_realms(
+    store: &crate::memory::sqlite_store::SqliteAgentMemoryStore,
+    params: &Value,
+) -> Result<Vec<String>, crate::identity_first::agent_memory::AgentMemoryError> {
+    match normalized_console_rpc_string_param(params, "realm").filter(|realm| !realm.is_empty()) {
+        Some(realm) => Ok(vec![realm]),
+        None => store.panel_realms().await,
+    }
+}
+
+async fn handle_memory_panel_records(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    view: Option<&AccessView>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let scope_kind = memory_panel_scope_param(params);
+    if let Some(kind) = &scope_kind
+        && !matches!(kind.as_str(), "identity" | "mob" | "operator" | "realm")
+    {
+        return invalid_params(
+            response_id,
+            format!("Invalid params: unknown scope '{kind}'"),
+        );
+    }
+    let identity = normalized_console_rpc_string_param(params, "identity")
+        .filter(|identity| !identity.is_empty());
+    let scope_kind = scope_kind.or_else(|| identity.as_ref().map(|_| "identity".to_string()));
+    let scope_key = normalized_console_rpc_string_param(params, "scope_key")
+        .filter(|key| !key.is_empty())
+        .or(identity);
+    let status =
+        normalized_console_rpc_string_param(params, "status").filter(|status| !status.is_empty());
+    if let Some(status) = &status
+        && !matches!(
+            status.as_str(),
+            "active" | "quarantined" | "superseded" | "tombstoned"
+        )
+    {
+        return invalid_params(
+            response_id,
+            format!("Invalid params: unknown status '{status}'"),
+        );
+    }
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DEFAULT_LIMIT, MEMORY_PANEL_MAX_LIMIT);
+    let cursor = normalized_console_rpc_string_param(params, "cursor")
+        .filter(|cursor| !cursor.is_empty())
+        .map(|raw| parse_memory_panel_cursor(&raw));
+    let cursor = match cursor {
+        Some(None) => {
+            return invalid_params(response_id, "Invalid params: malformed cursor".to_string());
+        }
+        Some(Some(cursor)) => Some(cursor),
+        None => None,
+    };
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    // Keyset continuation is per-realm: honored only when the query names
+    // one realm. Multi-realm listings merge one bounded page per realm.
+    let single_realm = realms.len() == 1;
+    let mut records = Vec::new();
+    let mut next_cursor = None;
+    for realm in &realms {
+        let page = match store
+            .records_page(
+                realm,
+                scope_kind.as_deref(),
+                scope_key.as_deref(),
+                status.as_deref(),
+                limit,
+                if single_realm { cursor.clone() } else { None },
+            )
+            .await
+        {
+            Ok(page) => page,
+            Err(err) => return memory_panel_store_error(response_id, err),
+        };
+        if single_realm {
+            next_cursor = page.next_cursor.as_ref().map(encode_memory_panel_cursor);
+        }
+        records.extend(page.records);
+    }
+    records.retain(|record| memory_panel_record_visible(view, record));
+    records.sort_by(|a, b| {
+        b.updated_at_ms
+            .cmp(&a.updated_at_ms)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    records.truncate(limit);
+    let rows: Vec<Value> = records
+        .iter()
+        .map(|record| memory_panel_record_json(record, false))
+        .collect();
+    response_value(
+        response_id,
+        Some(json!({
+            "records": rows,
+            "next_cursor": next_cursor,
+            "realms": realms,
+        })),
+        None,
+    )
+}
+
+async fn handle_memory_panel_record(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    view: Option<&AccessView>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let Some(memory_id) = normalized_console_rpc_string_param(params, "memory_id")
+        .filter(|memory_id| !memory_id.is_empty())
+    else {
+        return invalid_params(
+            response_id,
+            "Invalid params: memory_id is required".to_string(),
+        );
+    };
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut found = None;
+    for realm in &realms {
+        match store.record_by_id(realm, &memory_id).await {
+            Ok(Some(record)) => {
+                found = Some((realm.clone(), record));
+                break;
+            }
+            Ok(None) => {}
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    let Some((realm, record)) = found else {
+        return response_value(
+            response_id,
+            None,
+            Some(JsonRpcError {
+                code: -32001,
+                message: format!("unknown memory record '{memory_id}'"),
+                data: None,
+            }),
+        );
+    };
+    // Scope is only known post-load, so the entry gate lives here rather
+    // than in the requirements table.
+    if !memory_panel_record_visible(view, &record) {
+        let action = if matches!(
+            record.status,
+            crate::memory::records::RecordStatus::Quarantined { .. }
+        ) && view
+            .is_some_and(|view| view.enforced() && !view.allows(ACTION_MEMORY_QUARANTINE_REVIEW))
+        {
+            ACTION_MEMORY_QUARANTINE_REVIEW
+        } else {
+            memory_panel_scope_action(&record.scope)
+        };
+        return response_value(
+            response_id,
+            None,
+            Some(JsonRpcError {
+                code: ACCESS_DENIED_RPC_CODE,
+                message: format!("access denied: {action}"),
+                data: Some(json!({
+                    "kind": "access_denied",
+                    "action": action,
+                    "resource": record.id,
+                })),
+            }),
+        );
+    }
+    let chain = match store
+        .supersede_chain(&realm, &memory_id, MEMORY_PANEL_CHAIN_MAX)
+        .await
+    {
+        Ok(chain) => chain,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let chain_rows: Vec<Value> = chain
+        .iter()
+        .filter(|link| memory_panel_record_visible(view, link))
+        .map(|link| memory_panel_record_json(link, false))
+        .collect();
+    let injections = match store
+        .injection_log_for_record(&realm, &memory_id, MEMORY_PANEL_INJECTIONS_MAX)
+        .await
+    {
+        Ok(entries) => entries,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    response_value(
+        response_id,
+        Some(json!({
+            "realm": realm,
+            "record": memory_panel_record_json(&record, true),
+            "chain": chain_rows,
+            "injections": injections,
+        })),
+        None,
+    )
+}
+
+async fn handle_memory_panel_quarantine(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    view: Option<&AccessView>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DEFAULT_LIMIT, MEMORY_PANEL_MAX_LIMIT);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut records = Vec::new();
+    let mut pending = Vec::new();
+    for realm in &realms {
+        match store.quarantined_records(realm, limit).await {
+            Ok(rows) => records.extend(rows),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+        match store.pending_promotions(realm).await {
+            Ok(rows) => pending.extend(
+                rows.into_iter()
+                    .filter(|promotion| {
+                        memory_panel_promotion_visible(
+                            view,
+                            &promotion.scope_kind,
+                            &promotion.scope_key,
+                        )
+                    })
+                    .map(|promotion| {
+                        // stage_token is a commit capability — never surfaced.
+                        json!({
+                            "realm": realm,
+                            "pending_id": promotion.pending_id,
+                            "record_id": promotion.record_id,
+                            "scope_kind": promotion.scope_kind,
+                            "scope_key": promotion.scope_key,
+                            "rationale": promotion.rationale,
+                            "status": promotion.status,
+                            "created_at_ms": promotion.created_at_ms,
+                        })
+                    }),
+            ),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    // The reviewer entry gate is necessary but not sufficient: each queue row
+    // still needs the caller's per-scope read grant, and hidden rows must not
+    // consume the page budget.
+    records.retain(|record| memory_panel_record_visible(view, record));
+    records.sort_by_key(|record| std::cmp::Reverse(record.created_at_ms));
+    records.truncate(limit);
+    // Queue rows stay body-free even for reviewers: verdicts are decided on
+    // the record detail surface, which renders the body with provenance.
+    let rows: Vec<Value> = records
+        .iter()
+        .map(|record| memory_panel_record_json(record, false))
+        .collect();
+    response_value(
+        response_id,
+        Some(json!({
+            "records": rows,
+            "pending_promotions": pending,
+            "realms": realms,
+        })),
+        None,
+    )
+}
+
+async fn handle_memory_panel_dreams(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut runs = Vec::new();
+    for realm in &realms {
+        match store.dream_history(realm, limit).await {
+            Ok(history) => runs.extend(history.into_iter().map(|run| (realm.clone(), run))),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    runs.sort_by_key(|(_, run)| std::cmp::Reverse(run.last_op_at_ms));
+    runs.truncate(limit);
+    let rows: Vec<Value> = runs
+        .iter()
+        .map(|(realm, run)| {
+            json!({
+                "realm": realm,
+                "run_id": run.run_id,
+                "first_op_at_ms": run.first_op_at_ms,
+                "last_op_at_ms": run.last_op_at_ms,
+                "ops": run.ops,
+                "op_kinds": run.op_kinds,
+                "quarantined_ops": run.quarantined_ops,
+                "memory_ids": run.memory_ids,
+                "rationales": run.rationales,
+            })
+        })
+        .collect();
+    response_value(
+        response_id,
+        Some(json!({ "runs": rows, "realms": realms })),
+        None,
     )
 }
 
@@ -2247,6 +2776,7 @@ pub async fn console_rpc_multipart_handler(
                 auth_context.principal.as_deref(),
                 state.access.as_ref(),
                 auth_context.access_view.as_ref(),
+                state.memory_panel.as_ref(),
             ))
             .await
         };
@@ -4108,6 +4638,7 @@ async fn handle_console_runtime_rpc(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -4130,6 +4661,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     authenticated_principal: Option<&str>,
     access: Option<&AccessController>,
     access_view: Option<&AccessView>,
+    memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
@@ -4189,6 +4721,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                     if can_mutate && identity_runtime.agent_memory_supports_forget().await {
                         methods.push("mobkit/agent_memory/forget");
                     }
+                    if can_mutate && identity_runtime.agent_memory_supports_update().await {
+                        methods.push("mobkit/agent_memory/update");
+                    }
+                    if identity_runtime.agent_memory_supports_manifest().await {
+                        methods.push("mobkit/agent_memory/manifest");
+                    }
                 }
                 if can_mutate {
                     methods.push("mobkit/delete_identity");
@@ -4247,6 +4785,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                     ]);
                 }
             }
+            if memory_panel.is_some() {
+                // Provider-dependent supports pattern: the panel methods
+                // exist only when the bundled sqlite store is wired. The
+                // grant-intersection probe below additionally strips the
+                // resource-less ones (dreams/quarantine) the caller could
+                // never use.
+                methods.extend_from_slice(&[
+                    "mobkit/memory/panel/records",
+                    "mobkit/memory/panel/record",
+                    "mobkit/memory/panel/dreams",
+                    "mobkit/memory/panel/quarantine",
+                ]);
+            }
             if access.is_some() {
                 methods.push("mobkit/access/status");
                 if access_view.is_some_and(AccessView::can_administer) {
@@ -4273,9 +4824,11 @@ async fn handle_console_runtime_rpc_with_visibility(
             if let Some(view) = access_view.filter(|view| view.enforced()) {
                 let probe = serde_json::json!({ "identity": "\u{0}cap-probe" });
                 methods.retain(
-                    |method| match console_rpc_access_requirement(method, &probe) {
-                        Some((action, None)) => view.allows(action),
-                        _ => true,
+                    |method| match console_rpc_access_requirements(method, &probe) {
+                        Some(requirements) => requirements
+                            .iter()
+                            .all(|(action, target)| target.is_some() || view.allows(action)),
+                        None => true,
                     },
                 );
             }
@@ -4409,6 +4962,101 @@ async fn handle_console_runtime_rpc_with_visibility(
                     invalid_params(response_id, format!("Invalid params: {}", err.message()))
                 }
             }
+        }
+        "mobkit/agent_memory/update" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_update_params(&request.params) {
+                Ok(update_request) => match identity_runtime
+                    .update_agent_memory(
+                        &update_request.realm,
+                        &update_request.identity,
+                        &update_request.memory_id,
+                        update_request.memory,
+                    )
+                    .await
+                {
+                    Ok(new_id) => response_value(
+                        response_id,
+                        Some(json!({
+                            "memory_id": new_id,
+                            "supersedes": update_request.memory_id,
+                        })),
+                        None,
+                    ),
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("update", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        "mobkit/agent_memory/manifest" => {
+            let Some(identity_runtime) = &identity_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "agent memory is not configured".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match parse_agent_memory_manifest_params(&request.params) {
+                Ok(manifest_request) => match identity_runtime
+                    .manifest_agent_memory(
+                        &manifest_request.realm,
+                        &manifest_request.identity,
+                        manifest_request.tier,
+                    )
+                    .await
+                {
+                    Ok(records) => {
+                        response_value(response_id, Some(json!({ "records": records })), None)
+                    }
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(crate::rpc::agent_memory_rpc_error("manifest", err)),
+                    ),
+                },
+                Err(err) => {
+                    invalid_params(response_id, format!("Invalid params: {}", err.message()))
+                }
+            }
+        }
+        // §9.3 Memory panel reads. Read-only mode allows all of these (they
+        // are reads); the ACL mapping lives in
+        // `console_rpc_access_requirements` plus per-row scope filtering in
+        // the handlers.
+        "mobkit/memory/panel/records" => {
+            handle_memory_panel_records(memory_panel, access_view, &request.params, response_id)
+                .await
+        }
+        "mobkit/memory/panel/record" => {
+            handle_memory_panel_record(memory_panel, access_view, &request.params, response_id)
+                .await
+        }
+        "mobkit/memory/panel/quarantine" => {
+            handle_memory_panel_quarantine(memory_panel, access_view, &request.params, response_id)
+                .await
+        }
+        "mobkit/memory/panel/dreams" => {
+            handle_memory_panel_dreams(memory_panel, &request.params, response_id).await
         }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
@@ -8181,8 +8829,8 @@ mod tests {
         project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
     };
     use crate::access::{
-        ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_SEND,
-        ACTION_AGENT_VIEW, AccessController,
+        ACTION_AGENT_MEMORY_DELETE, ACTION_AGENT_MEMORY_READ, ACTION_AGENT_MEMORY_WRITE,
+        ACTION_AGENT_SEND, ACTION_AGENT_VIEW, AccessController,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -9169,6 +9817,7 @@ comms = true
                 None,
                 None,
                 None,
+                None,
             ))
             .await;
             assert_ne!(
@@ -9277,6 +9926,7 @@ comms = true
                     None,
                     None,
                     None,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -9347,6 +9997,7 @@ comms = true
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -9615,6 +10266,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -9710,6 +10362,7 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -9828,6 +10481,7 @@ comms = true
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -10187,6 +10841,7 @@ comms = true
             None,
             Some(&access_controller),
             Some(&denied_view),
+            None,
         ))
         .await;
         assert_eq!(
@@ -10194,9 +10849,11 @@ comms = true
             json!("access_denied"),
             "{denied_recall:#?}"
         );
+        // §10.3: recall requires agent.memory.read AND agent.view; the read
+        // action is checked (and reported) first.
         assert_eq!(
             denied_recall["error"]["data"]["action"],
-            json!(ACTION_AGENT_VIEW),
+            json!(ACTION_AGENT_MEMORY_READ),
             "{denied_recall:#?}"
         );
 
@@ -10237,6 +10894,7 @@ comms = true
             None,
             Some(&send_only_controller),
             Some(&send_only_view),
+            None,
         ))
         .await;
         assert_eq!(
@@ -10273,6 +10931,7 @@ comms = true
             None,
             Some(&send_only_controller),
             Some(&send_only_view),
+            None,
         ))
         .await;
         assert_eq!(
@@ -10344,6 +11003,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
         ))
         .await;
         assert_eq!(
@@ -10380,6 +11040,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
         ))
         .await;
         assert_eq!(
@@ -10387,9 +11048,11 @@ comms = true
             json!("access_denied"),
             "{whitespace_denied_recall:#?}"
         );
+        // The exact-identity deny matches agent.memory.read through its
+        // `agent.*` pattern; read is checked first (§10.3 mapping).
         assert_eq!(
             whitespace_denied_recall["error"]["data"]["action"],
-            json!(ACTION_AGENT_VIEW),
+            json!(ACTION_AGENT_MEMORY_READ),
             "{whitespace_denied_recall:#?}"
         );
 
@@ -10416,6 +11079,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
         ))
         .await;
         assert_eq!(

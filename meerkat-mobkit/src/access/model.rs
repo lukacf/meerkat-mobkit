@@ -13,6 +13,28 @@ pub const ACTION_AGENT_SEND: &str = "agent.send";
 pub const ACTION_AGENT_MEMORY_WRITE: &str = "agent.memory.write";
 /// Delete durable identity-scoped memory records.
 pub const ACTION_AGENT_MEMORY_DELETE: &str = "agent.memory.delete";
+/// Read identity-scoped memory: the recall/manifest RPCs and every console
+/// Memory-panel read (§10.3). Realm-scoped reads ride an *unscoped*
+/// `agent.memory.read` grant (a rule with no resource selector).
+pub const ACTION_AGENT_MEMORY_READ: &str = "agent.memory.read";
+/// Read operator-scoped memory records (§10.3): cross-mob personal facts
+/// about the operator, more sensitive than any other scope. Never implied
+/// by an unscoped `agent.memory.read` grant and never granted by the
+/// migration compat rewrite — always an explicit rule.
+pub const ACTION_OPERATOR_MEMORY_READ: &str = "operator.memory.read";
+/// Administrative memory operations on an identity's store (imports,
+/// re-keying, floor overrides). Reserved: no console RPC maps to it yet.
+pub const ACTION_AGENT_MEMORY_ADMIN: &str = "agent.memory.admin";
+/// Read mob-scoped memory records in the console Memory panel.
+pub const ACTION_MOB_MEMORY_READ: &str = "mob.memory.read";
+/// Propose a record into mob scope (`propose` surfaces).
+pub const ACTION_MOB_MEMORY_PROPOSE: &str = "mob.memory.propose";
+/// Commit records directly into mob scope. Reserved for a future direct
+/// commit RPC — steward promotions ride the gating flow (`gating.decide`),
+/// not this action, so nothing maps to it yet.
+pub const ACTION_MOB_MEMORY_COMMIT: &str = "mob.memory.commit";
+/// Read the quarantine queue and its verdict surfaces (§10.3).
+pub const ACTION_MEMORY_QUARANTINE_REVIEW: &str = "memory.quarantine.review";
 /// Create new members: ensure/spawn/fork helpers, run flows.
 pub const ACTION_AGENT_SPAWN: &str = "agent.spawn";
 /// Respawn an existing agent.
@@ -43,6 +65,13 @@ pub const ACCESS_ACTIONS: &[&str] = &[
     ACTION_AGENT_SEND,
     ACTION_AGENT_MEMORY_WRITE,
     ACTION_AGENT_MEMORY_DELETE,
+    ACTION_AGENT_MEMORY_READ,
+    ACTION_AGENT_MEMORY_ADMIN,
+    ACTION_OPERATOR_MEMORY_READ,
+    ACTION_MOB_MEMORY_READ,
+    ACTION_MOB_MEMORY_PROPOSE,
+    ACTION_MOB_MEMORY_COMMIT,
+    ACTION_MEMORY_QUARANTINE_REVIEW,
     ACTION_AGENT_SPAWN,
     ACTION_AGENT_RESPAWN,
     ACTION_AGENT_RETIRE,
@@ -194,6 +223,84 @@ fn action_pattern_is_known(pattern: &str) -> bool {
     ACCESS_ACTIONS.contains(&pattern)
 }
 
+/// Whether a rule action pattern (`*`, `prefix.*`, or an exact name)
+/// matches a concrete action. Single source of truth for pattern
+/// semantics, shared with rule evaluation.
+pub(crate) fn action_pattern_matches(pattern: &str, action: &str) -> bool {
+    if pattern == "*" || pattern == action {
+        return true;
+    }
+    pattern.strip_suffix(".*").is_some_and(|prefix| {
+        action
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
+/// True when the pattern explicitly references the memory action family —
+/// one of its dot-separated segments (with a trailing `.*` stripped) is
+/// `memory`. Broad wildcards (`*`, `agent.*`) do NOT count: they already
+/// match the memory actions through ordinary pattern semantics and need no
+/// compat handling.
+fn pattern_mentions_memory(pattern: &str) -> bool {
+    pattern
+        .strip_suffix(".*")
+        .unwrap_or(pattern)
+        .split('.')
+        .any(|segment| segment == "memory")
+}
+
+/// §10.3 migration compat: configs written before the per-scope memory read
+/// actions existed keep working.
+///
+/// A config that mentions **no** memory action in any rule (neither the
+/// pre-existing `agent.memory.write`/`delete` nor any of the new read
+/// actions) is treated as memory-naive: every rule matching `agent.view`
+/// is extended to also cover `agent.memory.read`, for allow *and* deny
+/// rules alike, so "read rides view" exactly reproduces the pre-migration
+/// recall behavior (deny-overrides included). A config that mentions any
+/// memory action anywhere is taken literally and left untouched.
+///
+/// The extension is materialized into the rule list (and therefore into the
+/// persisted TOML on the next admin save), which also makes the rewrite
+/// self-limiting: a normalized config mentions `agent.memory.read` and is
+/// never rewritten again. Returns `true` when anything changed; callers log
+/// the recommendation to write explicit memory rules.
+pub fn normalize_access_config_for_memory_actions(config: &mut AccessControlConfig) -> bool {
+    let mentions_memory = config
+        .rules
+        .iter()
+        .flat_map(|rule| rule.actions.iter())
+        .any(|pattern| pattern_mentions_memory(pattern));
+    if mentions_memory {
+        return false;
+    }
+    let mut changed = false;
+    for rule in &mut config.rules {
+        let matches_view = rule
+            .actions
+            .iter()
+            .any(|pattern| action_pattern_matches(pattern, ACTION_AGENT_VIEW));
+        let matches_read = rule
+            .actions
+            .iter()
+            .any(|pattern| action_pattern_matches(pattern, ACTION_AGENT_MEMORY_READ));
+        if matches_view && !matches_read {
+            rule.actions.push(ACTION_AGENT_MEMORY_READ.to_string());
+            changed = true;
+        }
+    }
+    if changed {
+        tracing::warn!(
+            target: "mobkit::access",
+            "access config predates memory read actions; granting agent.memory.read wherever \
+             agent.view is granted (write explicit agent.memory.read / mob.memory.read / \
+             memory.quarantine.review rules to silence this)"
+        );
+    }
+    changed
+}
+
 /// Validate a configuration before accepting it.
 ///
 /// Enforces the anti-lockout invariant (enabled implies admins), unique
@@ -300,6 +407,112 @@ mod tests {
             validate_access_config(&config),
             Err(AccessConfigError::UnknownGroup { .. })
         ));
+    }
+
+    #[test]
+    fn memory_actions_validate() {
+        let config = AccessControlConfig {
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![rule(
+                "r1",
+                &[
+                    "agent.memory.read",
+                    "agent.memory.admin",
+                    "operator.memory.read",
+                    "mob.memory.read",
+                    "mob.memory.propose",
+                    "mob.memory.commit",
+                    "memory.quarantine.review",
+                    "mob.memory.*",
+                    "memory.*",
+                ],
+            )],
+            ..AccessControlConfig::default()
+        };
+        assert!(validate_access_config(&config).is_ok());
+    }
+
+    #[test]
+    fn memory_naive_config_grants_read_alongside_view() {
+        // Pre-migration config: view granted broadly, view denied on one
+        // agent, an unrelated send rule. No memory action anywhere.
+        let mut deny_view = rule("deny-secret", &["agent.view"]);
+        deny_view.effect = AccessEffect::Deny;
+        deny_view.agents = vec!["identity:secret".to_string()];
+        let mut config = AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![
+                rule("view-all", &["agent.view"]),
+                deny_view,
+                rule("send-one", &["agent.send"]),
+            ],
+            ..AccessControlConfig::default()
+        };
+        assert!(normalize_access_config_for_memory_actions(&mut config));
+        let actions_of = |id: &str| {
+            config
+                .rules
+                .iter()
+                .find(|rule| rule.id == id)
+                .expect("rule")
+                .actions
+                .clone()
+        };
+        assert!(actions_of("view-all").contains(&"agent.memory.read".to_string()));
+        assert!(
+            actions_of("deny-secret").contains(&"agent.memory.read".to_string()),
+            "denies mirror too, so read cannot outlive a view deny"
+        );
+        assert!(!actions_of("send-one").contains(&"agent.memory.read".to_string()));
+        // Idempotent: the normalized config now mentions memory.
+        assert!(!normalize_access_config_for_memory_actions(&mut config));
+    }
+
+    #[test]
+    fn config_mentioning_any_memory_action_is_taken_literally() {
+        // The pre-existing write action counts as "mentions memory": the
+        // author knew about memory actions, so the absence of read rules is
+        // an explicit choice.
+        let mut config = AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![
+                rule("view-all", &["agent.view"]),
+                rule("writer", &["agent.memory.write"]),
+            ],
+            ..AccessControlConfig::default()
+        };
+        assert!(!normalize_access_config_for_memory_actions(&mut config));
+        assert!(
+            !config.rules[0]
+                .actions
+                .contains(&"agent.memory.read".to_string())
+        );
+
+        // A prefix wildcard naming the family counts as a mention as well.
+        let mut config = AccessControlConfig {
+            rules: vec![
+                rule("view-all", &["agent.view"]),
+                rule("mem", &["agent.memory.*"]),
+            ],
+            ..AccessControlConfig::default()
+        };
+        assert!(!normalize_access_config_for_memory_actions(&mut config));
+    }
+
+    #[test]
+    fn broad_wildcards_do_not_trigger_or_need_compat() {
+        // `agent.*` already matches agent.memory.read through pattern
+        // semantics, so the rule needs no rewrite; `*` likewise.
+        let mut config = AccessControlConfig {
+            rules: vec![rule("all-agent-verbs", &["agent.*"])],
+            ..AccessControlConfig::default()
+        };
+        assert!(!normalize_access_config_for_memory_actions(&mut config));
+        assert!(action_pattern_matches("agent.*", "agent.memory.read"));
+        assert!(action_pattern_matches("*", "memory.quarantine.review"));
+        assert!(!action_pattern_matches("agent.*", "mob.memory.read"));
     }
 
     #[test]

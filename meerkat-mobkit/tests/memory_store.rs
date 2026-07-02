@@ -65,6 +65,9 @@ fn runtime_for_phase13() -> meerkat_mobkit::MobkitRuntimeHandle {
     .expect("runtime starts")
 }
 
+// Uses the deprecated legacy config shape on purpose: the runtime must keep
+// accepting `MemoryBackendConfig::Elephant` and treat `endpoint` as the
+// health-check endpoint of the local-JSON ledger backend.
 fn runtime_for_phase13_with_memory_backend(
     endpoint: &str,
     state_path: &str,
@@ -89,6 +92,93 @@ fn runtime_for_phase13_with_memory_backend(
         },
     )
     .expect("runtime with memory backend starts")
+}
+
+#[test]
+fn memory_query_query_param_substring_filters_assertions_and_conflicts() {
+    let mut runtime = runtime_for_phase13();
+    let indexed = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"query-filter-index-1",
+            "method":"mobkit/memory/index",
+            "params":{
+                "entity":"delivery",
+                "topic":"email_send",
+                "store":"todo",
+                "fact":"double-check Recipient Consent"
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    assert!(indexed["result"]["assertion_id"].is_string());
+    assert_eq!(indexed["result"]["conflict_active"], json!(false));
+    let indexed_conflict = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"query-filter-index-2",
+            "method":"mobkit/memory/index",
+            "params":{
+                "entity":"router",
+                "topic":"deploy",
+                "store":"todo",
+                "fact":"validate rollback checklist",
+                "conflict":true,
+                "conflict_reason":"facts disagree on rollback"
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    assert_eq!(indexed_conflict["result"]["conflict_active"], json!(true));
+
+    let matched = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"query-filter-match","method":"mobkit/memory/query","params":{"query":"recipient consent"}}"#,
+        Duration::from_secs(1),
+    ));
+    let matched_conflict = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"query-filter-conflict","method":"mobkit/memory/query","params":{"query":"ROLLBACK"}}"#,
+        Duration::from_secs(1),
+    ));
+    let unmatched = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"query-filter-none","method":"mobkit/memory/query","params":{"query":"no-such-substring"}}"#,
+        Duration::from_secs(1),
+    ));
+    runtime.shutdown();
+
+    assert_eq!(
+        (
+            matched["result"]["assertions"].as_array().map(Vec::len),
+            matched["result"]["assertions"][0]["fact"].clone(),
+            matched["result"]["conflicts"].clone(),
+        ),
+        (Some(1), json!("double-check Recipient Consent"), json!([]),)
+    );
+    assert_eq!(
+        (
+            matched_conflict["result"]["assertions"]
+                .as_array()
+                .map(Vec::len),
+            matched_conflict["result"]["conflicts"]
+                .as_array()
+                .map(Vec::len),
+            matched_conflict["result"]["conflicts"][0]["reason"].clone(),
+        ),
+        (Some(1), Some(1), json!("facts disagree on rollback"))
+    );
+    assert_eq!(
+        (
+            unmatched["result"]["assertions"].clone(),
+            unmatched["result"]["conflicts"].clone(),
+        ),
+        (json!([]), json!([]))
+    );
 }
 
 struct HealthEndpointServer {

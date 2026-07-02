@@ -163,6 +163,25 @@ pub fn handle_console_rest_json_route_with_snapshot_and_access(
     live_snapshot: Option<&ConsoleLiveSnapshot>,
     access: Option<&AccessController>,
 ) -> ConsoleRestJsonResponse {
+    handle_console_rest_json_route_with_snapshot_access_and_memory(
+        decisions,
+        request,
+        live_snapshot,
+        access,
+        false,
+    )
+}
+
+/// Memory-panel-aware variant: `memory_panel_available` reports whether the
+/// runtime wired a Memory-panel store, so the experience can project the
+/// `memory` affordance section (§9.3) the console nav gate consumes.
+pub fn handle_console_rest_json_route_with_snapshot_access_and_memory(
+    decisions: &RuntimeDecisionState,
+    request: &ConsoleRestJsonRequest,
+    live_snapshot: Option<&ConsoleLiveSnapshot>,
+    access: Option<&AccessController>,
+    memory_panel_available: bool,
+) -> ConsoleRestJsonResponse {
     let (base_path, query_params) = split_path_and_query(&request.path);
     if request.method != "GET"
         || (base_path != CONSOLE_MODULES_ROUTE && base_path != CONSOLE_EXPERIENCE_ROUTE)
@@ -256,7 +275,41 @@ pub fn handle_console_rest_json_route_with_snapshot_and_access(
     {
         apply_access_to_experience(&mut body, view);
     }
+    if base_path == CONSOLE_EXPERIENCE_ROUTE {
+        apply_memory_to_experience(&mut body, access_view.as_ref(), memory_panel_available);
+    }
     ConsoleRestJsonResponse { status: 200, body }
+}
+
+/// Append the `memory` affordance section (§9.3) the console nav gate
+/// consumes. Coarse by design — `can_read` means "some memory read could
+/// succeed for this caller", mirroring the capabilities intersection;
+/// per-scope enforcement still applies to every panel RPC.
+fn apply_memory_to_experience(
+    body: &mut Value,
+    view: Option<&AccessView>,
+    memory_panel_available: bool,
+) {
+    let (can_read, can_review_quarantine) = match view.filter(|view| view.enforced()) {
+        Some(view) => (
+            memory_panel_available
+                && (view.may_perform_anywhere(crate::access::ACTION_AGENT_MEMORY_READ)
+                    || view.may_perform_anywhere(crate::access::ACTION_MOB_MEMORY_READ)
+                    || view.may_perform_anywhere(crate::access::ACTION_OPERATOR_MEMORY_READ)),
+            memory_panel_available && view.allows(crate::access::ACTION_MEMORY_QUARANTINE_REVIEW),
+        ),
+        None => (memory_panel_available, memory_panel_available),
+    };
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "memory".to_string(),
+            serde_json::json!({
+                "available": memory_panel_available,
+                "can_read": can_read,
+                "can_review_quarantine": can_review_quarantine,
+            }),
+        );
+    }
 }
 
 /// Feed the controller's attribute cache from a roster snapshot so

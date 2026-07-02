@@ -807,6 +807,20 @@ class TestMemoryIndexResult:
         assert r.topic == "prefs"
         assert r.store == "knowledge_graph"
         assert r.assertion_id == "mem-001"
+        assert r.conflict_active is False
+
+    def test_from_dict_conflict_active(self):
+        r = MemoryIndexResult.from_dict(
+            {
+                "entity": "user-1",
+                "topic": "prefs",
+                "store": "knowledge_graph",
+                "assertion_id": None,
+                "conflict_active": True,
+            }
+        )
+        assert r.assertion_id is None
+        assert r.conflict_active is True
 
 
 class TestAgentMemoryRecord:

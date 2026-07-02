@@ -1542,6 +1542,89 @@ describe("MobHandle.forgetAgentMemory()", () => {
   });
 });
 
+describe("MobHandle.updateAgentMemory()", () => {
+  it("sends mobkit/agent_memory/update and parses the result", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      memory_id: "mem-2",
+      supersedes: "mem-1",
+    }));
+
+    const result = await handle.updateAgentMemory("identity:luka", "mem-1", {
+      realm: "family",
+      title: "School pickup",
+      body: "Pickup moved to 15:30.",
+      tags: ["family"],
+    });
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/update");
+    assert.deepEqual(calls[0].params, {
+      identity: "identity:luka",
+      memory_id: "mem-1",
+      title: "School pickup",
+      body: "Pickup moved to 15:30.",
+      realm: "family",
+      tags: ["family"],
+    });
+    assert.equal(result.memoryId, "mem-2");
+    assert.equal(result.supersedes, "mem-1");
+  });
+});
+
+describe("MobHandle.manifestAgentMemory()", () => {
+  it("sends mobkit/agent_memory/manifest and parses record metas", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      records: [{
+        id: "mem-2",
+        kind: "fact",
+        title: "School pickup",
+        description: "When planning the family calendar",
+        age_days: 3,
+        rank: 1,
+      }],
+    }));
+
+    const result = await handle.manifestAgentMemory("identity:luka", {
+      realm: "family",
+      tier: "working_set",
+      k: 4,
+    });
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/manifest");
+    assert.deepEqual(calls[0].params, {
+      identity: "identity:luka",
+      realm: "family",
+      tier: "working_set",
+      k: 4,
+    });
+    assert.equal(result.length, 1);
+    assert.equal(result[0]!.id, "mem-2");
+    assert.equal(result[0]!.kind, "fact");
+    assert.equal(result[0]!.ageDays, 3);
+    assert.equal(result[0]!.rank, 1);
+  });
+
+  it("omits optional params and parses rank-less rows", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      records: [{
+        id: "mem-3",
+        kind: "gotcha",
+        title: "Unranked",
+        age_days: 0,
+      }],
+    }));
+
+    const result = await handle.manifestAgentMemory("identity:luka");
+
+    assert.equal(calls[0].method, "mobkit/agent_memory/manifest");
+    assert.deepEqual(calls[0].params, { identity: "identity:luka" });
+    assert.equal(result[0]!.rank, null);
+    assert.equal(result[0]!.description, "");
+  });
+});
+
 describe("MobHandle.callTool()", () => {
   it("sends mobkit/call_tool with args", async () => {
     const { handle, calls, setResponse } = createMockRuntime();

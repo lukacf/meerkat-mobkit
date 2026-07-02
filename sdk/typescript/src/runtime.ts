@@ -62,6 +62,8 @@ import {
   parseAgentMemoryRecord,
   parseAgentMemoryRecallResult,
   parseAgentMemoryForgetResult,
+  parseAgentMemoryUpdateResult,
+  parseAgentMemoryManifestResult,
   parseMemoryStoreInfo,
   parseMemoryIndexResult,
   parseCallToolResult,
@@ -116,7 +118,9 @@ import {
   type DeliveryHistoryResult,
   type MemoryQueryResult,
   type AgentMemoryRecord,
+  type AgentMemoryRecordMeta,
   type AgentMemoryForgetResult,
+  type AgentMemoryUpdateResult,
   type MemoryStoreInfo,
   type MemoryIndexResult,
   type CallToolResult,
@@ -250,6 +254,19 @@ export interface RecallAgentMemoryOptions {
 
 export interface ForgetAgentMemoryOptions {
   readonly realm?: string;
+}
+
+export interface UpdateAgentMemoryOptions {
+  readonly title: string;
+  readonly body: string;
+  readonly tags?: readonly string[];
+  readonly realm?: string;
+}
+
+export interface ManifestAgentMemoryOptions {
+  readonly realm?: string;
+  readonly tier?: "working_set" | "full";
+  readonly k?: number;
 }
 
 /** Input alternatives for {@link MobHandle.mobpackImport}. */
@@ -1534,9 +1551,9 @@ export class MobHandle {
    * Query the operational memory assertion ledger.
    *
    * Pass `{ entity, topic, store }` for the Rust gateway's exact-filter
-   * contract. The string overload is retained only for older callers and is
-   * forwarded as `query`; current Rust gateways do not perform semantic search
-   * on that field.
+   * contract. The string overload is forwarded as `query`, which the gateway
+   * applies as a case-insensitive substring filter across entity, topic, and
+   * fact (reason for conflict signals), after the exact filters.
    */
   async memoryQuery(
     queryOrOptions?: string | {
@@ -1622,6 +1639,48 @@ export class MobHandle {
     return parseAgentMemoryForgetResult(
       await this._runtime._rpc("mobkit/agent_memory/forget", params),
     );
+  }
+
+  /**
+   * Supersede a durable memory record within its lineage: the new
+   * title/body/tags become the active record; the prior stays retrievable
+   * with provenance and is no longer recalled.
+   */
+  async updateAgentMemory(
+    identity: string,
+    memoryId: string,
+    memory: UpdateAgentMemoryOptions,
+  ): Promise<AgentMemoryUpdateResult> {
+    const params: Record<string, unknown> = {
+      identity,
+      memory_id: memoryId,
+      title: memory.title,
+      body: memory.body,
+    };
+    if (memory.realm !== undefined) params.realm = memory.realm;
+    if (memory.tags !== undefined) params.tags = [...memory.tags];
+    return parseAgentMemoryUpdateResult(
+      await this._runtime._rpc("mobkit/agent_memory/update", params),
+    );
+  }
+
+  /**
+   * List durable memory record metadata (id/kind/title/description/age/rank
+   * — never bodies). Tier "working_set" (default) returns the top-K ranked
+   * records plus the recent/unranked slice; "full" returns everything.
+   */
+  async manifestAgentMemory(
+    identity: string,
+    options: ManifestAgentMemoryOptions = {},
+  ): Promise<AgentMemoryRecordMeta[]> {
+    const params: Record<string, unknown> = { identity };
+    if (options.realm !== undefined) params.realm = options.realm;
+    if (options.tier !== undefined) params.tier = options.tier;
+    if (options.k !== undefined) params.k = options.k;
+    const result = parseAgentMemoryManifestResult(
+      await this._runtime._rpc("mobkit/agent_memory/manifest", params),
+    );
+    return [...result.records];
   }
 
   // -- Tools --------------------------------------------------------------

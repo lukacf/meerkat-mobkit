@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,7 +49,7 @@ pub mod metadata;
 mod module_boundary;
 mod routing;
 mod rpc;
-mod scheduling;
+pub(crate) mod scheduling;
 mod session_store;
 mod supervisor;
 
@@ -58,6 +59,7 @@ pub use console_ingress::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, extract_bearer_token_from_header,
     handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
+    handle_console_rest_json_route_with_snapshot_access_and_memory,
     handle_console_rest_json_route_with_snapshot_and_access, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
@@ -365,7 +367,7 @@ impl std::error::Error for BaselineRuntimeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MobkitRuntimeError {
     Config(ConfigResolutionError),
-    MemoryBackend(ElephantMemoryStoreError),
+    MemoryBackend(LocalJsonMemoryStoreError),
 }
 
 impl std::fmt::Display for MobkitRuntimeError {
@@ -437,7 +439,7 @@ pub struct TrustedOidcRuntimeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ElephantMemoryStoreError {
+pub enum LocalJsonMemoryStoreError {
     InvalidConfig(String),
     Io(String),
     Serialize(String),
@@ -445,7 +447,7 @@ pub enum ElephantMemoryStoreError {
     ExternalCallFailed(String),
 }
 
-impl std::fmt::Display for ElephantMemoryStoreError {
+impl std::fmt::Display for LocalJsonMemoryStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
@@ -457,23 +459,54 @@ impl std::fmt::Display for ElephantMemoryStoreError {
     }
 }
 
-impl std::error::Error for ElephantMemoryStoreError {}
+impl std::error::Error for LocalJsonMemoryStoreError {}
 
+/// Deprecated: kept as an alias for the pre-rename error type. The backend
+/// never sent data to Elephant, so the type is now named for what it does.
+pub type ElephantMemoryStoreError = LocalJsonMemoryStoreError;
+
+/// Operational-ledger backend that persists assertions/conflicts as local
+/// JSON, with an optional HTTP health gate applied before every read/write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalJsonMemoryBackendConfig {
+    pub state_path: String,
+    #[serde(default)]
+    pub health_check_endpoint: Option<String>,
+}
+
+/// Deprecated legacy config shape. Despite the name, this backend never
+/// wrote to Elephant: `endpoint` is only health-checked and the ledger is
+/// persisted as local JSON at `state_path`. Use
+/// [`LocalJsonMemoryBackendConfig`]; this shape is still accepted for wire
+/// and config compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElephantMemoryBackendConfig {
     pub endpoint: String,
     pub state_path: String,
 }
 
+impl From<ElephantMemoryBackendConfig> for LocalJsonMemoryBackendConfig {
+    fn from(legacy: ElephantMemoryBackendConfig) -> Self {
+        Self {
+            state_path: legacy.state_path,
+            health_check_endpoint: Some(legacy.endpoint),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryBackendConfig {
+    LocalJson(LocalJsonMemoryBackendConfig),
+    /// Deprecated: legacy `kind = "elephant"` shape. Accepted and mapped to
+    /// the local-JSON backend (endpoint becomes the health-check endpoint);
+    /// a deprecation warning is logged at runtime start.
     Elephant(ElephantMemoryBackendConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ElephantMemoryStoreAdapter {
-    endpoint: String,
+struct LocalJsonMemoryStoreAdapter {
+    health_check_endpoint: Option<String>,
     state_path: PathBuf,
 }
 
@@ -773,6 +806,10 @@ pub struct MemoryQueryRequest {
     pub topic: Option<String>,
     #[serde(default)]
     pub store: Option<String>,
+    /// Case-insensitive substring filter applied across entity, topic, and
+    /// fact (reason for conflict signals), after the exact filters above.
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,7 +832,7 @@ pub enum MemoryIndexError {
     TopicRequired,
     UnsupportedStore(String),
     FactRequiredWhenConflictUnset,
-    BackendPersistFailed(ElephantMemoryStoreError),
+    BackendPersistFailed(LocalJsonMemoryStoreError),
 }
 
 impl std::fmt::Display for MemoryIndexError {
@@ -939,6 +976,50 @@ pub struct GatingAuditEntry {
     pub detail: Value,
 }
 
+/// One resolved gating pending entry (decision or timeout), pushed
+/// synchronously to registered observers. The gating subsystem itself is
+/// poll-only; this seam exists so components that staged work behind a
+/// pending entry (the memory steward's quarantine-promotions, §10.2) can
+/// react without polling. Observers must not block — defer real work onto
+/// the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatingResolutionNotice {
+    pub pending_id: String,
+    pub action_id: String,
+    pub approved: bool,
+    /// Set when an escalation minted a successor pending entry.
+    pub next_pending_id: Option<String>,
+    /// `approval_decided`, `rejection_decided`, `escalation_decided`, or
+    /// `timeout_fallback`.
+    pub cause: String,
+}
+
+pub trait GatingResolutionObserver: Send + Sync {
+    fn on_gating_resolution(&self, notice: &GatingResolutionNotice);
+}
+
+/// Registered observers; newtype so `MobkitRuntimeHandle` keeps `Debug`.
+#[derive(Default)]
+pub(crate) struct GatingResolutionObservers(Vec<Arc<dyn GatingResolutionObserver>>);
+
+impl std::fmt::Debug for GatingResolutionObservers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GatingResolutionObservers({})", self.0.len())
+    }
+}
+
+impl GatingResolutionObservers {
+    pub(crate) fn push(&mut self, observer: Arc<dyn GatingResolutionObserver>) {
+        self.0.push(observer);
+    }
+
+    pub(crate) fn notify(&self, notice: &GatingResolutionNotice) {
+        for observer in &self.0 {
+            observer.on_gating_resolution(notice);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatingDecideError {
     UnknownPendingId(String),
@@ -1027,14 +1108,25 @@ pub struct MobkitRuntimeHandle {
     gating_pending: BTreeMap<String, GatingPendingEntry>,
     gating_pending_order: Vec<String>,
     gating_audit: Vec<GatingAuditEntry>,
+    gating_resolution_observers: GatingResolutionObservers,
     memory_sequence: u64,
     memory_assertions: Vec<MemoryAssertion>,
     memory_conflicts: BTreeMap<MemoryConflictKey, MemoryConflictSignal>,
-    memory_backend: Option<ElephantMemoryStoreAdapter>,
+    memory_backend: Option<LocalJsonMemoryStoreAdapter>,
     running: bool,
 }
 
 impl MobkitRuntimeHandle {
+    /// Register a gating-resolution observer (see
+    /// [`GatingResolutionObserver`]). Registration is append-only for the
+    /// process lifetime.
+    pub fn register_gating_resolution_observer(
+        &mut self,
+        observer: Arc<dyn GatingResolutionObserver>,
+    ) {
+        self.gating_resolution_observers.push(observer);
+    }
+
     pub fn lifecycle_events(&self) -> &[LifecycleEvent] {
         &self.lifecycle_events
     }
@@ -1424,7 +1516,7 @@ const MEMORY_SUPPORTED_STORES: [&str; 5] = [
     "todo",
     "top_of_mind",
 ];
-const ELEPHANT_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const MEMORY_LEDGER_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(2);
 // Multi-year bounded lookback so sparse valid cron schedules (for example leap-day)
 // are not silently skipped when polling cadence is coarse.
 const CRON_LOOKBACK_MINUTES: u64 = 5_270_400;

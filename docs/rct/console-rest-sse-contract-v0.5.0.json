@@ -841,6 +841,110 @@
               ]
             }
           ]
+        },
+        "mobkit/memory/panel/records": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "scope",
+              "identity",
+              "scope_key",
+              "status",
+              "limit",
+              "cursor"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "records",
+              "next_cursor",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/record": {
+          "request": {
+            "required_fields": [
+              "memory_id"
+            ],
+            "optional_fields": [
+              "realm"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "realm",
+              "record",
+              "chain",
+              "injections"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32001,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/quarantine": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "records",
+              "pending_promotions",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/dreams": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "runs",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
         }
       }
     },

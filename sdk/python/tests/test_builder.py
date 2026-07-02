@@ -88,6 +88,173 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["agent_memory"] == {"enabled": False}
 
+    def test_agent_memory_taint_knobs_serialize_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            llm_writes="quarantined",
+            recorder_tool=False,
+            content_trust={
+                "trusted_mcp_servers": ["knowledge_graph"],
+                "untrusted_tools": ["scrape_page"],
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "llm_writes": "quarantined",
+            "recorder_tool": False,
+            "content_trust": {
+                "trusted_mcp_servers": ["knowledge_graph"],
+                "untrusted_tools": ["scrape_page"],
+            },
+        }
+
+    def test_agent_memory_taint_knobs_accept_camel_case(self):
+        b = MobKit.builder().agent_memory(
+            llmWrites="quarantined",
+            recorderTool=True,
+            contentTrust={"trusted_tools": ["safe_calc"]},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "llm_writes": "quarantined",
+            "recorder_tool": True,
+            "content_trust": {"trusted_tools": ["safe_calc"]},
+        }
+
+    def test_agent_memory_selector_serializes_to_gateway_wire_key(self):
+        b = MobKit.builder().agent_memory(selector="profile:/etc/mobkit/selector.toml")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "selector": "profile:/etc/mobkit/selector.toml",
+        }
+
+    def test_agent_memory_distiller_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            distiller={
+                "enabled": True,
+                "runs_per_hour": 6,
+                "min_interactions": 5,
+                "model": "claude-haiku-4-5",
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "distiller": {
+                "enabled": True,
+                "runs_per_hour": 6,
+                "min_interactions": 5,
+                "model": "claude-haiku-4-5",
+            },
+        }
+
+    def test_agent_memory_distiller_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            distiller={"runsPerHour": 3, "minInteractions": 2},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "distiller": {"runs_per_hour": 3, "min_interactions": 2},
+        }
+
+        b = MobKit.builder().agent_memory(distiller=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"distiller": True}
+
+    def test_agent_memory_steward_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            steward={
+                "enabled": True,
+                "cadence": "*/6h",
+                "model": "claude-sonnet-4-6",
+                "per_mob": False,
+                "runs_per_day": 4,
+                "min_signals": 3,
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "steward": {
+                "enabled": True,
+                "cadence": "*/6h",
+                "model": "claude-sonnet-4-6",
+                "per_mob": False,
+                "runs_per_day": 4,
+                "min_signals": 3,
+            },
+        }
+
+    def test_agent_memory_steward_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            steward={"runsPerDay": 2, "minSignals": 5, "perMob": True},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "steward": {"per_mob": True, "runs_per_day": 2, "min_signals": 5},
+        }
+
+        b = MobKit.builder().agent_memory(steward=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"steward": True}
+
+    def test_agent_memory_operator_scope_serializes_to_gateway_wire_key(self):
+        b = MobKit.builder().agent_memory(store="sqlite", operator_scope="provisional")
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "store": "sqlite",
+            "operator_scope": "provisional",
+        }
+
+    def test_agent_memory_operator_scope_accepts_camel_case(self):
+        b = MobKit.builder().agent_memory(operatorScope="off")
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"operator_scope": "off"}
+
+    def test_agent_memory_hygienist_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            hygienist={
+                "enabled": True,
+                "runs_per_day": 3,
+                "model": "claude-haiku-4-5",
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "hygienist": {
+                "enabled": True,
+                "runs_per_day": 3,
+                "model": "claude-haiku-4-5",
+            },
+        }
+
+    def test_agent_memory_hygienist_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(hygienist={"runsPerDay": 2})
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "hygienist": {"runs_per_day": 2},
+        }
+
+        b = MobKit.builder().agent_memory(hygienist=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"hygienist": True}
+
+    def test_agent_memory_unknown_option_raises_instead_of_silently_dropping(self):
+        with pytest.raises(ValueError, match="per_turn_injecton"):
+            MobKit.builder().agent_memory(per_turn_injecton="budgeted")
+
+    def test_agent_memory_unknown_nested_option_raises(self):
+        with pytest.raises(ValueError, match="distiller.*runsperhour_typo"):
+            MobKit.builder().agent_memory(
+                distiller={"runs_per_hour": 2, "runsperhour_typo": 9},
+            )
+        with pytest.raises(ValueError, match="steward.*cadance"):
+            MobKit.builder().agent_memory(steward={"cadance": "*/6h"})
+        with pytest.raises(ValueError, match="hygienist.*runs_per_dya"):
+            MobKit.builder().agent_memory(hygienist={"runs_per_dya": 2})
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

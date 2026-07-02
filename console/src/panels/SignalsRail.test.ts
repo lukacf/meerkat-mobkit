@@ -159,3 +159,44 @@ test("signals rail previews never leak the meerkat 0.7.1 peer transport projecti
     }
   }
 });
+
+test("signals rail surfaces quarantined memory writes as a warning", () => {
+  const frames: ConsoleFrame[] = [
+    {
+      id: "mem-quarantine",
+      event: "memory.write.quarantined",
+      identity: "distiller",
+      timestampMs: Date.now(),
+      data: { realm: "default", author: "agent", reason: "low trust source" },
+    },
+  ];
+
+  const groups = buildSignalGroupsForTest(frames);
+  const signal = groups.find((group) => group.title === "Memory write quarantined");
+
+  assert.ok(signal, "quarantined write should surface as a signal");
+  assert.equal(signal?.severity, "warning");
+  assert.ok(!/[{}]/.test(signal?.detail || ""), "signal detail must not leak JSON");
+});
+
+test("signals rail drops routine memory dream lifecycle noise", () => {
+  const frames: ConsoleFrame[] = [
+    {
+      id: "dream-start",
+      event: "memory.dream.started",
+      identity: "steward",
+      timestampMs: Date.now(),
+      data: { realm: "default", run_id: "run-1" },
+    },
+    {
+      id: "clean-rotate",
+      event: "memory.taint.transition",
+      identity: "steward",
+      timestampMs: Date.now() - 500,
+      data: { session_key: "s", kind: "rotated_clean", source: "reset" },
+    },
+  ];
+
+  const groups = buildSignalGroupsForTest(frames);
+  assert.equal(groups.length, 0, "dream.started and non-tainted transitions are dropped");
+});

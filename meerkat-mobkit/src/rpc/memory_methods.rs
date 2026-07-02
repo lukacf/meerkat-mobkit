@@ -4,6 +4,7 @@ use super::*;
 use crate::identity_first::{
     AgentIdentity, AgentMemoryRecallRequest, AgentMemorySelection, NewAgentMemory,
 };
+use crate::memory::records::ManifestTier;
 
 const MEMORY_SUPPORTED_STORES: [&str; 5] = [
     "knowledge_graph",
@@ -19,6 +20,8 @@ const MAX_AGENT_MEMORY_BODY_BYTES: usize = 64 * 1024;
 const MAX_AGENT_MEMORY_TAGS: usize = 32;
 const MAX_AGENT_MEMORY_TAG_BYTES: usize = 64;
 const MAX_AGENT_MEMORY_QUERY_TEXT_BYTES: usize = 16 * 1024;
+const DEFAULT_AGENT_MEMORY_MANIFEST_K: usize = 32;
+const MAX_AGENT_MEMORY_MANIFEST_K: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MemoryParamsError {
@@ -33,6 +36,7 @@ pub(crate) enum MemoryParamsError {
     ConflictReasonMustBeString,
     EntityMustBeString,
     TopicMustBeString,
+    QueryMustBeString,
     IdentityRequired,
     RealmMustBeString,
     MemoryIdRequired,
@@ -52,17 +56,22 @@ pub(crate) enum MemoryParamsError {
     QueryTermMustBeString,
     MaxEntriesMustBePositiveInteger,
     MaxEntriesOutOfRange,
+    TierMustBeString,
+    UnsupportedTier(String),
+    KMustBePositiveInteger,
+    KOutOfRange,
+    KRequiresWorkingSetTier,
     Index(MemoryIndexError),
 }
 
 impl MemoryParamsError {
-    pub(super) fn backend_message(error: &ElephantMemoryStoreError) -> String {
+    pub(super) fn backend_message(error: &LocalJsonMemoryStoreError) -> String {
         match error {
-            ElephantMemoryStoreError::InvalidConfig(reason)
-            | ElephantMemoryStoreError::Io(reason)
-            | ElephantMemoryStoreError::Serialize(reason)
-            | ElephantMemoryStoreError::InvalidStoreData(reason)
-            | ElephantMemoryStoreError::ExternalCallFailed(reason) => reason.clone(),
+            LocalJsonMemoryStoreError::InvalidConfig(reason)
+            | LocalJsonMemoryStoreError::Io(reason)
+            | LocalJsonMemoryStoreError::Serialize(reason)
+            | LocalJsonMemoryStoreError::InvalidStoreData(reason)
+            | LocalJsonMemoryStoreError::ExternalCallFailed(reason) => reason.clone(),
         }
     }
 
@@ -91,6 +100,7 @@ impl MemoryParamsError {
             }
             MemoryParamsError::EntityMustBeString => "entity filter must be a string".to_string(),
             MemoryParamsError::TopicMustBeString => "topic filter must be a string".to_string(),
+            MemoryParamsError::QueryMustBeString => "query filter must be a string".to_string(),
             MemoryParamsError::IdentityRequired => {
                 "identity must be a valid non-empty string".to_string()
             }
@@ -134,6 +144,21 @@ impl MemoryParamsError {
             MemoryParamsError::MaxEntriesOutOfRange => {
                 "max_entries must be between 1 and 64".to_string()
             }
+            MemoryParamsError::TierMustBeString => {
+                "tier must be 'working_set' or 'full' when provided".to_string()
+            }
+            MemoryParamsError::UnsupportedTier(tier) => {
+                format!("tier must be 'working_set' or 'full' (got '{tier}')")
+            }
+            MemoryParamsError::KMustBePositiveInteger => {
+                "k must be a positive integer when provided".to_string()
+            }
+            MemoryParamsError::KOutOfRange => {
+                format!("k must be between 1 and {MAX_AGENT_MEMORY_MANIFEST_K}")
+            }
+            MemoryParamsError::KRequiresWorkingSetTier => {
+                "k is only valid with tier 'working_set'".to_string()
+            }
             MemoryParamsError::Index(MemoryIndexError::EntityRequired) => {
                 "entity must be a non-empty string".to_string()
             }
@@ -173,6 +198,23 @@ pub(crate) struct AgentMemoryForgetRpcRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentMemoryRecallRpcRequest {
     pub(crate) request: AgentMemoryRecallRequest,
+}
+
+/// `mobkit/agent_memory/update` — supersede within a record's lineage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentMemoryUpdateRpcRequest {
+    pub(crate) identity: AgentIdentity,
+    pub(crate) realm: String,
+    pub(crate) memory_id: String,
+    pub(crate) memory: NewAgentMemory,
+}
+
+/// `mobkit/agent_memory/manifest` — tiered metadata index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentMemoryManifestRpcRequest {
+    pub(crate) identity: AgentIdentity,
+    pub(crate) realm: String,
+    pub(crate) tier: ManifestTier,
 }
 
 pub(super) fn parse_memory_stores_params(params: &Value) -> Result<(), MemoryParamsError> {
@@ -238,6 +280,83 @@ pub(crate) fn parse_agent_memory_remember_params(
         identity,
         realm,
         memory: NewAgentMemory { title, body, tags },
+    })
+}
+
+pub(crate) fn parse_agent_memory_update_params(
+    params: &Value,
+) -> Result<AgentMemoryUpdateRpcRequest, MemoryParamsError> {
+    let object = params
+        .as_object()
+        .ok_or(MemoryParamsError::ParamsMustBeObject)?;
+    let identity = parse_agent_memory_identity(object)?;
+    let realm = parse_agent_memory_realm(object)?;
+    let memory_id = object
+        .get("memory_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(MemoryParamsError::MemoryIdRequired)?
+        .to_string();
+    // Same title/body/tags shape and caps as remember, wire-compatibly.
+    let remember = parse_agent_memory_remember_params(params)?;
+    Ok(AgentMemoryUpdateRpcRequest {
+        identity,
+        realm,
+        memory_id,
+        memory: remember.memory,
+    })
+}
+
+pub(crate) fn parse_agent_memory_manifest_params(
+    params: &Value,
+) -> Result<AgentMemoryManifestRpcRequest, MemoryParamsError> {
+    let object = params
+        .as_object()
+        .ok_or(MemoryParamsError::ParamsMustBeObject)?;
+    let identity = parse_agent_memory_identity(object)?;
+    let realm = parse_agent_memory_realm(object)?;
+    let tier_name = match object.get("tier") {
+        None => "working_set".to_string(),
+        Some(value) => {
+            let tier = value
+                .as_str()
+                .ok_or(MemoryParamsError::TierMustBeString)?
+                .trim()
+                .to_ascii_lowercase();
+            match tier.as_str() {
+                "working_set" | "full" => tier,
+                _ => return Err(MemoryParamsError::UnsupportedTier(tier)),
+            }
+        }
+    };
+    let k = match object.get("k") {
+        None => None,
+        Some(value) => {
+            let k = value
+                .as_u64()
+                .filter(|k| *k > 0)
+                .ok_or(MemoryParamsError::KMustBePositiveInteger)?;
+            let k = usize::try_from(k).map_err(|_| MemoryParamsError::KOutOfRange)?;
+            if k > MAX_AGENT_MEMORY_MANIFEST_K {
+                return Err(MemoryParamsError::KOutOfRange);
+            }
+            Some(k)
+        }
+    };
+    let tier = match tier_name.as_str() {
+        "full" => {
+            if k.is_some() {
+                return Err(MemoryParamsError::KRequiresWorkingSetTier);
+            }
+            ManifestTier::Full
+        }
+        _ => ManifestTier::WorkingSet(k.unwrap_or(DEFAULT_AGENT_MEMORY_MANIFEST_K)),
+    };
+    Ok(AgentMemoryManifestRpcRequest {
+        identity,
+        realm,
+        tier,
     })
 }
 
@@ -476,6 +595,7 @@ pub(super) fn parse_memory_query_params(
             entity: None,
             topic: None,
             store: None,
+            query: None,
         });
     }
     let object = params
@@ -503,10 +623,20 @@ pub(super) fn parse_memory_query_params(
         None => None,
         Some(value) => Some(parse_memory_store_field(value)?),
     };
+    let query = match object.get("query") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or(MemoryParamsError::QueryMustBeString)?
+                .to_string(),
+        ),
+    };
     Ok(MemoryQueryRequest {
         entity,
         topic,
         store,
+        query,
     })
 }
 
@@ -556,6 +686,135 @@ mod tests {
 
         assert_eq!(parsed.request.selection, AgentMemorySelection::Always);
         Ok(())
+    }
+
+    #[test]
+    fn memory_query_params_accept_legacy_query_string() -> Result<(), Box<dyn Error>> {
+        let parsed = parse_memory_query_params(&json!({
+            "query": "recipient consent",
+            "store": "todo"
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+
+        assert_eq!(parsed.query, Some("recipient consent".to_string()));
+        assert_eq!(parsed.store, Some("todo".to_string()));
+        assert_eq!(parsed.entity, None);
+        assert_eq!(parsed.topic, None);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_query_params_reject_non_string_query() {
+        let err = parse_memory_query_params(&json!({ "query": 42 })).err();
+        assert_eq!(err, Some(MemoryParamsError::QueryMustBeString));
+    }
+
+    #[test]
+    fn agent_memory_update_parses_full_shape() -> Result<(), Box<dyn Error>> {
+        let parsed = parse_agent_memory_update_params(&json!({
+            "identity": "identity:luka",
+            "realm": "family",
+            "memory_id": "mem-1",
+            "title": "School pickup",
+            "body": "Corrected pickup time.",
+            "tags": ["family"]
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+
+        assert_eq!(parsed.identity.as_str(), "identity:luka");
+        assert_eq!(parsed.realm, "family");
+        assert_eq!(parsed.memory_id, "mem-1");
+        assert_eq!(parsed.memory.title, "School pickup");
+        assert_eq!(parsed.memory.body, "Corrected pickup time.");
+        assert_eq!(parsed.memory.tags, vec!["family".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_memory_update_requires_memory_id_and_body() {
+        let missing_id = parse_agent_memory_update_params(&json!({
+            "identity": "identity:luka",
+            "title": "T",
+            "body": "B"
+        }))
+        .err();
+        assert_eq!(missing_id, Some(MemoryParamsError::MemoryIdRequired));
+
+        let missing_body = parse_agent_memory_update_params(&json!({
+            "identity": "identity:luka",
+            "memory_id": "mem-1",
+            "title": "T"
+        }))
+        .err();
+        assert_eq!(missing_body, Some(MemoryParamsError::BodyRequired));
+    }
+
+    #[test]
+    fn agent_memory_manifest_defaults_to_working_set() -> Result<(), Box<dyn Error>> {
+        let parsed = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka"
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+
+        assert_eq!(parsed.realm, "default");
+        assert_eq!(
+            parsed.tier,
+            ManifestTier::WorkingSet(DEFAULT_AGENT_MEMORY_MANIFEST_K)
+        );
+
+        let with_k = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "tier": "working_set",
+            "k": 4
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+        assert_eq!(with_k.tier, ManifestTier::WorkingSet(4));
+
+        let full = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "tier": "full"
+        }))
+        .map_err(|err| std::io::Error::other(err.message()))?;
+        assert_eq!(full.tier, ManifestTier::Full);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_memory_manifest_rejects_bad_tier_and_k() {
+        let bad_tier = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "tier": "vector"
+        }))
+        .err();
+        assert_eq!(
+            bad_tier,
+            Some(MemoryParamsError::UnsupportedTier("vector".to_string()))
+        );
+
+        let zero_k = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "k": 0
+        }))
+        .err();
+        assert_eq!(zero_k, Some(MemoryParamsError::KMustBePositiveInteger));
+
+        let huge_k = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "k": 100000
+        }))
+        .err();
+        assert_eq!(huge_k, Some(MemoryParamsError::KOutOfRange));
+
+        let k_with_full = parse_agent_memory_manifest_params(&json!({
+            "identity": "identity:luka",
+            "tier": "full",
+            "k": 8
+        }))
+        .err();
+        assert_eq!(
+            k_with_full,
+            Some(MemoryParamsError::KRequiresWorkingSetTier)
+        );
     }
 
     #[test]

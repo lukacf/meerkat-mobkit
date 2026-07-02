@@ -117,10 +117,11 @@ impl UnifiedRuntime {
         self.module_runtime.lock().await.memory_stores()
     }
 
-    /// Index into the memory backend. When an Elephant backend is configured,
-    /// `persist_memory_state` performs a synchronous blocking TCP healthcheck
-    /// (`std::net::TcpStream::connect_timeout` + blocking socket read/write,
-    /// bounded by `ELEPHANT_HEALTHCHECK_TIMEOUT`). Run it on a dedicated thread
+    /// Index into the memory backend. When a backend with a health-check
+    /// endpoint is configured, `persist_memory_state` performs a synchronous
+    /// blocking TCP healthcheck (`std::net::TcpStream::connect_timeout` +
+    /// blocking socket read/write, bounded by
+    /// `MEMORY_LEDGER_HEALTHCHECK_TIMEOUT`). Run it on a dedicated thread
     /// via `run_blocking` like the other blocking module ops, so the tokio
     /// worker (and every operation waiting on the `module_runtime` mutex) is
     /// not stalled for up to ~2s per call when the backend is slow/unreachable.

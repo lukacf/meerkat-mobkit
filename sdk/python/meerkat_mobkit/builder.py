@@ -136,7 +136,7 @@ class MobKitBuilder:
         if config is None and stores is not None:
             raise ValueError(
                 "memory(stores=...) is not supported by the Rust gateway; "
-                "pass memory.elephant(endpoint)"
+                "pass memory.local_json()"
             )
         self._config.memory_config = config
         return self
@@ -162,6 +162,45 @@ class MobKitBuilder:
             self._config.agent_memory_config = config
             return self
 
+        # Fail loud on unknown keys instead of silently dropping them: a
+        # typo'd option would otherwise be scrubbed here and the gateway's
+        # own unknown-field rejection would never fire.
+        known = {
+            "enabled",
+            "realm",
+            "selection",
+            "max_entries",
+            "maxEntries",
+            "recall_timeout_ms",
+            "recallTimeoutMs",
+            "recall_failure_policy",
+            "recallFailurePolicy",
+            "instruction_header",
+            "instructionHeader",
+            "per_turn_injection",
+            "perTurnInjection",
+            "defang_inbound",
+            "defangInbound",
+            "store",
+            "llm_writes",
+            "llmWrites",
+            "recorder_tool",
+            "recorderTool",
+            "content_trust",
+            "contentTrust",
+            "selector",
+            "distiller",
+            "steward",
+            "operator_scope",
+            "operatorScope",
+            "hygienist",
+        }
+        unknown = sorted(set(config) - known)
+        if unknown:
+            raise ValueError(
+                "agent_memory got unsupported option(s): " + ", ".join(unknown)
+            )
+
         wire: dict[str, Any] = {}
         if "enabled" in config:
             wire["enabled"] = config["enabled"]
@@ -185,6 +224,136 @@ class MobKitBuilder:
             wire["instruction_header"] = config["instruction_header"]
         elif "instructionHeader" in config:
             wire["instruction_header"] = config["instructionHeader"]
+        if "per_turn_injection" in config:
+            wire["per_turn_injection"] = config["per_turn_injection"]
+        elif "perTurnInjection" in config:
+            wire["per_turn_injection"] = config["perTurnInjection"]
+        if "defang_inbound" in config:
+            wire["defang_inbound"] = config["defang_inbound"]
+        elif "defangInbound" in config:
+            wire["defang_inbound"] = config["defangInbound"]
+        if "store" in config:
+            wire["store"] = config["store"]
+        if "llm_writes" in config:
+            wire["llm_writes"] = config["llm_writes"]
+        elif "llmWrites" in config:
+            wire["llm_writes"] = config["llmWrites"]
+        if "recorder_tool" in config:
+            wire["recorder_tool"] = config["recorder_tool"]
+        elif "recorderTool" in config:
+            wire["recorder_tool"] = config["recorderTool"]
+        if "content_trust" in config:
+            wire["content_trust"] = config["content_trust"]
+        elif "contentTrust" in config:
+            wire["content_trust"] = config["contentTrust"]
+        if "selector" in config:
+            wire["selector"] = config["selector"]
+        if "operator_scope" in config:
+            wire["operator_scope"] = config["operator_scope"]
+        elif "operatorScope" in config:
+            wire["operator_scope"] = config["operatorScope"]
+        distiller = config.get("distiller")
+        if distiller is not None:
+            if isinstance(distiller, dict):
+                unknown = sorted(
+                    set(distiller)
+                    - {
+                        "enabled",
+                        "runs_per_hour",
+                        "runsPerHour",
+                        "min_interactions",
+                        "minInteractions",
+                        "model",
+                    }
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory distiller got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
+                distiller_wire: dict[str, Any] = {}
+                if "enabled" in distiller:
+                    distiller_wire["enabled"] = distiller["enabled"]
+                if "runs_per_hour" in distiller:
+                    distiller_wire["runs_per_hour"] = distiller["runs_per_hour"]
+                elif "runsPerHour" in distiller:
+                    distiller_wire["runs_per_hour"] = distiller["runsPerHour"]
+                if "min_interactions" in distiller:
+                    distiller_wire["min_interactions"] = distiller["min_interactions"]
+                elif "minInteractions" in distiller:
+                    distiller_wire["min_interactions"] = distiller["minInteractions"]
+                if "model" in distiller:
+                    distiller_wire["model"] = distiller["model"]
+                wire["distiller"] = distiller_wire
+            else:
+                wire["distiller"] = distiller
+        steward = config.get("steward")
+        if steward is not None:
+            if isinstance(steward, dict):
+                unknown = sorted(
+                    set(steward)
+                    - {
+                        "enabled",
+                        "cadence",
+                        "model",
+                        "per_mob",
+                        "perMob",
+                        "runs_per_day",
+                        "runsPerDay",
+                        "min_signals",
+                        "minSignals",
+                    }
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory steward got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
+                steward_wire: dict[str, Any] = {}
+                if "enabled" in steward:
+                    steward_wire["enabled"] = steward["enabled"]
+                if "cadence" in steward:
+                    steward_wire["cadence"] = steward["cadence"]
+                if "model" in steward:
+                    steward_wire["model"] = steward["model"]
+                if "per_mob" in steward:
+                    steward_wire["per_mob"] = steward["per_mob"]
+                elif "perMob" in steward:
+                    steward_wire["per_mob"] = steward["perMob"]
+                if "runs_per_day" in steward:
+                    steward_wire["runs_per_day"] = steward["runs_per_day"]
+                elif "runsPerDay" in steward:
+                    steward_wire["runs_per_day"] = steward["runsPerDay"]
+                if "min_signals" in steward:
+                    steward_wire["min_signals"] = steward["min_signals"]
+                elif "minSignals" in steward:
+                    steward_wire["min_signals"] = steward["minSignals"]
+                wire["steward"] = steward_wire
+            else:
+                wire["steward"] = steward
+        hygienist = config.get("hygienist")
+        if hygienist is not None:
+            if isinstance(hygienist, dict):
+                unknown = sorted(
+                    set(hygienist) - {"enabled", "runs_per_day", "runsPerDay", "model"}
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory hygienist got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
+                hygienist_wire: dict[str, Any] = {}
+                if "enabled" in hygienist:
+                    hygienist_wire["enabled"] = hygienist["enabled"]
+                if "runs_per_day" in hygienist:
+                    hygienist_wire["runs_per_day"] = hygienist["runs_per_day"]
+                elif "runsPerDay" in hygienist:
+                    hygienist_wire["runs_per_day"] = hygienist["runsPerDay"]
+                if "model" in hygienist:
+                    hygienist_wire["model"] = hygienist["model"]
+                wire["hygienist"] = hygienist_wire
+            else:
+                wire["hygienist"] = hygienist
         self._config.agent_memory_config = wire
         return self
 

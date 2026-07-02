@@ -39,6 +39,10 @@ export const CONSOLE_RPC_METHODS = {
   accessGroupSet: "mobkit/access/groups/set",
   accessGroupDelete: "mobkit/access/groups/delete",
   accessPreview: "mobkit/access/preview",
+  memoryPanelRecords: "mobkit/memory/panel/records",
+  memoryPanelRecord: "mobkit/memory/panel/record",
+  memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
+  memoryPanelDreams: "mobkit/memory/panel/dreams",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

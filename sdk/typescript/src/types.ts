@@ -478,6 +478,61 @@ export function parseAgentMemoryForgetResult(raw: unknown): AgentMemoryForgetRes
   };
 }
 
+/** Result of mobkit/agent_memory/update: the superseding record's id. */
+export interface AgentMemoryUpdateResult {
+  readonly memoryId: string;
+  readonly supersedes: string;
+}
+
+/** Manifest row: record metadata without the body (an index, not a dump). */
+export interface AgentMemoryRecordMeta {
+  readonly id: string;
+  readonly kind: string;
+  readonly title: string;
+  readonly description: string;
+  readonly ageDays: number;
+  readonly rank: number | null;
+}
+
+export interface AgentMemoryManifestResult {
+  readonly records: readonly AgentMemoryRecordMeta[];
+}
+
+export function parseAgentMemoryUpdateResult(raw: unknown): AgentMemoryUpdateResult {
+  const d = asRecord(raw);
+  return {
+    memoryId: requiredStringField(d, "memory_id", "agent_memory_update_result"),
+    supersedes: requiredStringField(d, "supersedes", "agent_memory_update_result"),
+  };
+}
+
+export function parseAgentMemoryRecordMeta(raw: unknown): AgentMemoryRecordMeta {
+  const d = asRecord(raw);
+  const id = requiredStringField(d, "id", "agent_memory_record_meta");
+  const kind = requiredStringField(d, "kind", "agent_memory_record_meta");
+  const title = requiredStringField(d, "title", "agent_memory_record_meta");
+  const description = d.description ?? "";
+  if (typeof description !== "string") {
+    throw new Error("agent_memory_record_meta.description must be a string");
+  }
+  const ageDays = requiredNumberField(d, "age_days", "agent_memory_record_meta");
+  const rank = d.rank ?? null;
+  if (rank !== null && typeof rank !== "number") {
+    throw new Error("agent_memory_record_meta.rank must be a number");
+  }
+  return { id, kind, title, description, ageDays, rank };
+}
+
+export function parseAgentMemoryManifestResult(raw: unknown): AgentMemoryManifestResult {
+  const d = asRecord(raw);
+  if (!Array.isArray(d.records)) {
+    throw new Error("agent_memory_manifest_result.records must be an array");
+  }
+  return {
+    records: d.records.map(parseAgentMemoryRecordMeta),
+  };
+}
+
 // -- MemoryStoreInfo ------------------------------------------------------
 
 export interface MemoryStoreInfo {
@@ -500,6 +555,7 @@ export interface MemoryIndexResult {
   readonly topic: string;
   readonly store: string;
   readonly assertionId: string | null;
+  readonly conflictActive: boolean;
 }
 
 export function parseMemoryIndexResult(raw: unknown): MemoryIndexResult {
@@ -509,6 +565,7 @@ export function parseMemoryIndexResult(raw: unknown): MemoryIndexResult {
     topic: String(d.topic ?? ""),
     store: String(d.store ?? ""),
     assertionId: typeof d.assertion_id === "string" ? d.assertion_id : null,
+    conflictActive: d.conflict_active === true,
   };
 }
 

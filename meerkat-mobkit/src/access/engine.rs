@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::model::{AccessControlConfig, AccessEffect, AccessRule};
+use super::model::{AccessControlConfig, AccessEffect, AccessRule, action_pattern_matches};
 
 /// The authenticated caller's attributes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -75,14 +75,7 @@ impl AccessDecision {
 }
 
 fn action_matches(pattern: &str, action: &str) -> bool {
-    if pattern == "*" || pattern == action {
-        return true;
-    }
-    pattern.strip_suffix(".*").is_some_and(|prefix| {
-        action
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.starts_with('.'))
-    })
+    action_pattern_matches(pattern, action)
 }
 
 fn subject_matches(rule: &AccessRule, principal: &AccessPrincipal) -> bool {

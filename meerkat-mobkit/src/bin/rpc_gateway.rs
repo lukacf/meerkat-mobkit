@@ -27,13 +27,14 @@ use base64::Engine;
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
-    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig,
-    EventLogStore, EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
-    PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata, RestartPolicy,
-    RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
-    SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    handle_mobkit_rpc_json, handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
+    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, EventLogConfig, EventLogStore, EventQuery,
+    InMemoryMetadataStore, LocalJsonMemoryBackendConfig, MOBKIT_CONTRACT_VERSION,
+    MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
+    ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
+    RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
+    ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
         mob_definition_may_use_shell,
@@ -82,6 +83,47 @@ struct GatewayRuntimeOptions {
 struct GatewayAgentMemoryOptions {
     config: meerkat_mobkit::AgentMemoryConfig,
     path: std::path::PathBuf,
+    store: GatewayAgentMemoryStoreKind,
+    /// §8.3 selector switch from `agent_memory.selector`. `None` = not
+    /// configured; the wiring then falls back to the
+    /// `MOBKIT_AGENT_MEMORY_SELECTOR` env var (config takes precedence).
+    selector: Option<meerkat_mobkit::memory::selector::SelectorSpec>,
+    /// §8.4 distiller block from `agent_memory.distiller`. Disabled by
+    /// default (flipping it is a calibration decision, §11).
+    distiller: meerkat_mobkit::memory::distiller::DistillerConfig,
+    /// §8.5 steward block from `agent_memory.steward`. Disabled by
+    /// default; enablement is the application's call (mechanism from
+    /// MobKit, policy from the app).
+    steward: meerkat_mobkit::memory::steward::StewardConfig,
+    /// §8.6 hygienist block from `agent_memory.hygienist`. Disabled by
+    /// default (§15 ships it last; flipping is a calibration decision).
+    hygienist: meerkat_mobkit::memory::hygienist::HygienistConfig,
+}
+
+/// Which bundled store backs agent memory. SQLite is the default now that
+/// the P1 recall coordinator and injection ledger ride on it
+/// (docs/design/agent-memory-architecture.md §15); existing markdown files
+/// are auto-imported on first open. Markdown remains selectable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GatewayAgentMemoryStoreKind {
+    Markdown,
+    #[default]
+    Sqlite,
+}
+
+/// §7.2: `operator_scope = "provisional"` composes operator-scope recall
+/// only when an `OperatorResolver` is installed; the shipped gateway
+/// installs none, so a provisional deployment without one runs steward
+/// proposal-routing while recall composition is INERT. True exactly when
+/// the startup warning about that half-activation must fire.
+fn operator_scope_recall_inert(
+    agent_memory: Option<&GatewayAgentMemoryOptions>,
+    resolver_installed: bool,
+) -> bool {
+    !resolver_installed
+        && agent_memory.is_some_and(|memory| {
+            memory.config.operator_scope == meerkat_mobkit::AgentMemoryOperatorScope::Provisional
+        })
 }
 
 impl Default for GatewayRuntimeOptions {
@@ -643,7 +685,34 @@ actions = ["agent.view"]
             agent_memory.config.recall_failure_policy,
             meerkat_mobkit::AgentMemoryRecallFailurePolicy::Skip
         );
+        assert!(agent_memory.config.defang_inbound);
         assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_defang_inbound() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "defang_inbound": false }
+            }
+        });
+
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert!(!agent_memory.config.defang_inbound);
+
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "defang_inbound": "yes" }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("non-boolean defang_inbound should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("defang_inbound"), "{err}");
     }
 
     #[test]
@@ -721,6 +790,826 @@ actions = ["agent.view"]
         };
 
         assert!(err.contains("path"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_store_defaults_to_sqlite() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": true
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("boolean agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
+
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "enabled": true }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("object agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Sqlite);
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_store_accepts_markdown() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown" }
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("markdown store config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(agent_memory.store, GatewayAgentMemoryStoreKind::Markdown);
+        assert_eq!(agent_memory.path, tmp.path().join("agent-memory"));
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_store_rejects_unknown_backend() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "postgres" }
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("unknown store backend should fail loudly"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("'markdown' or 'sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_budgeted_injection_requires_sqlite() {
+        // The §9.1 compaction budget-reset sink is wired only in the sqlite
+        // arm; markdown + budgeted would silently stop injecting once the
+        // session budget is spent — the config must fail loudly instead.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "per_turn_injection": "budgeted" }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + budgeted injection should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("per_turn_injection='budgeted' requires store='sqlite'"),
+            "{err}"
+        );
+
+        // Both knobs stay valid apart: sqlite + budgeted, markdown + off.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "per_turn_injection": "budgeted" }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("sqlite + budgeted should parse");
+        assert_eq!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .config
+                .per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+        );
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "per_turn_injection": "off" }
+            }
+        });
+        parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("markdown + off should parse");
+    }
+
+    #[test]
+    fn operator_scope_warning_fires_exactly_when_provisional_without_resolver() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let parse = |scope: &str| {
+            let params = json!({
+                "runtime_options": {
+                    "agent_memory": { "operator_scope": scope }
+                }
+            });
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("parse")
+                .agent_memory
+                .expect("agent memory options")
+        };
+        let provisional = parse("provisional");
+        let off = parse("off");
+
+        assert!(operator_scope_recall_inert(Some(&provisional), false));
+        assert!(!operator_scope_recall_inert(Some(&provisional), true));
+        assert!(!operator_scope_recall_inert(Some(&off), false));
+        assert!(!operator_scope_recall_inert(Some(&off), true));
+        assert!(!operator_scope_recall_inert(None, false));
+        assert!(!operator_scope_recall_inert(None, true));
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_distiller_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        // Default: disabled (flipping the default is a calibration decision).
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert!(!agent_memory.distiller.enabled);
+        assert_eq!(agent_memory.distiller.runs_per_hour, 12);
+        assert_eq!(agent_memory.distiller.min_interactions, 3);
+        assert_eq!(agent_memory.distiller.model, None);
+
+        // Full object block.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "distiller": {
+                        "enabled": true,
+                        "runs_per_hour": 6,
+                        "min_interactions": 5,
+                        "model": "claude-haiku-4-5"
+                    }
+                }
+            }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let distiller = options.agent_memory.expect("agent memory").distiller;
+        assert!(distiller.enabled);
+        assert_eq!(distiller.runs_per_hour, 6);
+        assert_eq!(distiller.min_interactions, 5);
+        assert_eq!(distiller.model.as_deref(), Some("claude-haiku-4-5"));
+
+        // Boolean shorthand + object-without-enabled is an explicit opt-in.
+        let params = json!({
+            "runtime_options": { "agent_memory": { "distiller": true } }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        assert!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .distiller
+                .enabled
+        );
+        let params = json!({
+            "runtime_options": { "agent_memory": { "distiller": { "runs_per_hour": 2 } } }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        assert!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .distiller
+                .enabled
+        );
+
+        // Fail-loud: unknown fields, bad types, out-of-range values.
+        for (params, needle) in [
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "cadence": 5 } } } }),
+                "unsupported runtime_options.agent_memory.distiller fields",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": "on" } } }),
+                "must be a boolean or object",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "runs_per_hour": 0 } } } }),
+                "runs_per_hour must be between 1 and 240",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "min_interactions": 0 } } } }),
+                "min_interactions must be between 1 and 100",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "model": "" } } } }),
+                "model must be a non-empty string",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+        }
+
+        // The markdown store has no manifest/tombstone/authored-write seams.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "distiller": { "enabled": true } }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + distiller should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("distiller requires store='sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_steward_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Defaults: disabled, */6h cadence, per-realm, 4 runs/day.
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("defaults parse");
+        let steward = options.agent_memory.expect("agent memory").steward;
+        assert!(!steward.enabled);
+        assert_eq!(steward.cadence, "*/6h");
+        assert!(!steward.per_mob);
+        assert_eq!(steward.runs_per_day, 4);
+        assert_eq!(steward.min_signals, 3);
+        assert_eq!(steward.model, None);
+
+        // Full object form.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "steward": {
+                        "enabled": true,
+                        "cadence": "*/30m",
+                        "model": "claude-sonnet-4-6",
+                        "per_mob": true,
+                        "runs_per_day": 8,
+                        "min_signals": 5
+                    }
+                }
+            }
+        });
+        let steward = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("object form parses")
+            .agent_memory
+            .expect("agent memory")
+            .steward;
+        assert!(steward.enabled);
+        assert_eq!(steward.cadence, "*/30m");
+        assert_eq!(steward.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert!(steward.per_mob);
+        assert_eq!(steward.runs_per_day, 8);
+        assert_eq!(steward.min_signals, 5);
+
+        // Bare true / bare object are opt-ins.
+        let params = json!({
+            "runtime_options": { "agent_memory": { "steward": true } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("bool form parses")
+                .agent_memory
+                .expect("agent memory")
+                .steward
+                .enabled
+        );
+        let params = json!({
+            "runtime_options": { "agent_memory": { "steward": { "runs_per_day": 2 } } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("object without enabled parses")
+                .agent_memory
+                .expect("agent memory")
+                .steward
+                .enabled
+        );
+
+        // Fail-loud matrix.
+        for (params, needle) in [
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "tempo": 5 } } } }),
+                "unsupported runtime_options.agent_memory.steward fields",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": "on" } } }),
+                "must be a boolean or object",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "cadence": "0 9 * * *" } } } }),
+                "not an interval marker",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "cadence": "" } } } }),
+                "cadence must be a non-empty string",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "runs_per_day": 0 } } } }),
+                "runs_per_day must be between 1 and 96",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "min_signals": 0 } } } }),
+                "min_signals must be between 1 and 1000",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "model": "" } } } }),
+                "model must be a non-empty string",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "per_mob": "yes" } } } }),
+                "per_mob must be a boolean",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+        }
+
+        // Staging/proposals/harvest tables are sqlite-store machinery.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "steward": { "enabled": true } }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + steward should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("steward requires store='sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_hygienist_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Defaults: disabled, 2 runs/day, no model override.
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("defaults parse");
+        let hygienist = options.agent_memory.expect("agent memory").hygienist;
+        assert!(!hygienist.enabled);
+        assert_eq!(hygienist.runs_per_day, 2);
+        assert_eq!(hygienist.model, None);
+
+        // Full object form.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "hygienist": {
+                        "enabled": true,
+                        "runs_per_day": 4,
+                        "model": "claude-sonnet-4-6"
+                    }
+                }
+            }
+        });
+        let hygienist = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("object form parses")
+            .agent_memory
+            .expect("agent memory")
+            .hygienist;
+        assert!(hygienist.enabled);
+        assert_eq!(hygienist.runs_per_day, 4);
+        assert_eq!(hygienist.model.as_deref(), Some("claude-sonnet-4-6"));
+
+        // Bare true / bare object are opt-ins.
+        let params = json!({
+            "runtime_options": { "agent_memory": { "hygienist": true } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("bool form parses")
+                .agent_memory
+                .expect("agent memory")
+                .hygienist
+                .enabled
+        );
+        let params = json!({
+            "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 1 } } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("object without enabled parses")
+                .agent_memory
+                .expect("agent memory")
+                .hygienist
+                .enabled
+        );
+
+        // Fail-loud matrix.
+        for (params, needle) in [
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": { "cadence": "*/6h" } } } }),
+                "unsupported runtime_options.agent_memory.hygienist fields",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": "on" } } }),
+                "must be a boolean or object",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 0 } } } }),
+                "runs_per_day must be between 1 and 24",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": { "runs_per_day": 48 } } } }),
+                "runs_per_day must be between 1 and 24",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": { "model": "" } } } }),
+                "model must be a non-empty string",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "hygienist": { "enabled": "yes" } } } }),
+                "enabled must be a boolean",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+        }
+
+        // The §8.6 quarantine hard-block reads sqlite-store machinery.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "hygienist": { "enabled": true } }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + hygienist should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("hygienist requires store='sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_operator_scope_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Default: off.
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("defaults parse");
+        assert_eq!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .config
+                .operator_scope,
+            meerkat_mobkit::AgentMemoryOperatorScope::Off
+        );
+
+        // Explicit values.
+        for (value, expected) in [
+            ("off", meerkat_mobkit::AgentMemoryOperatorScope::Off),
+            (
+                "provisional",
+                meerkat_mobkit::AgentMemoryOperatorScope::Provisional,
+            ),
+        ] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "operator_scope": value } }
+            });
+            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("operator_scope parses");
+            assert_eq!(
+                options
+                    .agent_memory
+                    .expect("agent memory")
+                    .config
+                    .operator_scope,
+                expected
+            );
+        }
+
+        // Fail-loud on unknown values and wrong types.
+        for params in [
+            json!({ "runtime_options": { "agent_memory": { "operator_scope": "final" } } }),
+            json!({ "runtime_options": { "agent_memory": { "operator_scope": true } } }),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains("operator_scope must be 'off' or"), "{err}");
+        }
+
+        // Operator composition/routing is sqlite-store machinery.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "operator_scope": "provisional" }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + operator_scope should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("operator_scope requires store='sqlite'"),
+            "{err}"
+        );
+    }
+
+    // §7.2 mob-scope binding: the exact resolver the gateway installs on the
+    // customizer and injector. The hosting mob composes only for the
+    // configured realm — a foreign realm gets no mob scope.
+    #[test]
+    fn gateway_mob_binding_resolves_hosting_mob_only_for_matching_realm() {
+        use meerkat_mobkit::memory::coordinator::{MobScopeResolver, StaticMobBinding};
+
+        let binding = StaticMobBinding {
+            realm: "default".to_string(),
+            mob: "mob:example".to_string(),
+        };
+        assert_eq!(
+            binding.active_mobs("default", "identity:frontdesk"),
+            vec!["mob:example".to_string()],
+            "matching realm must compose the hosting mob"
+        );
+        assert!(
+            binding
+                .active_mobs("other-realm", "identity:frontdesk")
+                .is_empty(),
+            "foreign realm must compose no mob scope"
+        );
+    }
+
+    // §9.1 always-on compaction reset: the sink the gateway registers
+    // unconditionally next to the taint tracker. CompactionCompleted with
+    // session attribution fires the reset callback with that session key
+    // (the gateway binds it to AgentMemoryRuntimeInjector::
+    // on_session_compacted); other events and unattributed sources do not.
+    #[test]
+    fn compaction_reset_sink_fires_on_attributed_compaction_only() {
+        use meerkat_core::event::AgentEvent;
+
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = meerkat_mobkit::CompactionResetSink::new({
+            let seen = seen.clone();
+            Arc::new(move |session: &str| {
+                seen.lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(session.to_string());
+            })
+        });
+
+        let session = meerkat_core::types::SessionId::new();
+        let envelope = |source, payload| meerkat_core::event::EventEnvelope {
+            event_id: Default::default(),
+            source,
+            seq: 0,
+            mob_id: None,
+            timestamp_ms: 0,
+            payload,
+        };
+        let compaction = || AgentEvent::CompactionCompleted {
+            summary_tokens: 10,
+            messages_before: 20,
+            messages_after: 2,
+        };
+
+        use meerkat_mobkit::MemberAgentEventSink as _;
+        // Attributed compaction fires with the envelope's session key.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Session {
+                    session_id: session.clone(),
+                },
+                compaction(),
+            ),
+        );
+        assert_eq!(
+            seen.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+            vec![session.to_string()],
+            "reset must fire with the compacted session's key"
+        );
+
+        // A non-compaction event on the same session never fires it.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Session {
+                    session_id: session.clone(),
+                },
+                AgentEvent::RunCompleted {
+                    session_id: session.clone(),
+                    result: "done".to_string(),
+                    structured_output: None,
+                    extraction_required: false,
+                    usage: Default::default(),
+                    terminal_cause_kind: None,
+                },
+            ),
+        );
+        // Compaction without session attribution has no key to reset.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Callback,
+                compaction(),
+            ),
+        );
+        assert_eq!(
+            seen.lock().unwrap_or_else(|err| err.into_inner()).len(),
+            1,
+            "only attributed compaction events reset"
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_taint_knobs() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "llm_writes": "quarantined",
+                    "recorder_tool": false,
+                    "content_trust": {
+                        "trusted_mcp_servers": ["knowledge_graph"],
+                        "untrusted_tools": ["scrape_page"],
+                        "trusted_tools": ["safe_calc"],
+                    }
+                }
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("taint knobs should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.config.llm_writes,
+            meerkat_mobkit::AgentMemoryLlmWrites::Quarantined
+        );
+        assert!(!agent_memory.config.recorder_tool);
+        assert_eq!(
+            agent_memory.config.content_trust.trusted_mcp_servers,
+            vec!["knowledge_graph"]
+        );
+        assert_eq!(
+            agent_memory.config.content_trust.untrusted_tools,
+            vec!["scrape_page"]
+        );
+
+        // Defaults: observed writes, recorder on, empty trust lists.
+        let params = json!({
+            "runtime_options": { "agent_memory": true }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("boolean agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.config.llm_writes,
+            meerkat_mobkit::AgentMemoryLlmWrites::Observed
+        );
+        assert!(agent_memory.config.recorder_tool);
+        assert_eq!(
+            agent_memory.config.content_trust,
+            meerkat_mobkit::ContentTrustConfig::default()
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_bad_taint_knobs() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        for (block, needle) in [
+            (
+                json!({ "llm_writes": "yolo" }),
+                "'observed' or 'quarantined'",
+            ),
+            (json!({ "llm_writes": true }), "'observed' or 'quarantined'"),
+            (json!({ "recorder_tool": "yes" }), "must be a boolean"),
+            (
+                json!({ "content_trust": { "servers": [] } }),
+                "unsupported content_trust fields",
+            ),
+            (
+                json!({ "content_trust": { "trusted_mcp_servers": "kg" } }),
+                "must be an array",
+            ),
+            (
+                json!({ "store": "markdown", "llm_writes": "quarantined" }),
+                "require store='sqlite'",
+            ),
+            (
+                json!({ "store": "markdown", "content_trust": {} }),
+                "require store='sqlite'",
+            ),
+        ] {
+            let params = json!({ "runtime_options": { "agent_memory": block } });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("config must fail loudly: {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err} (wanted '{needle}')");
+        }
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_selector() {
+        use meerkat_mobkit::memory::selector::SelectorSpec;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        // Default: not configured — the env var stays the fallback.
+        for params in [
+            json!({ "runtime_options": { "agent_memory": true } }),
+            json!({ "runtime_options": { "agent_memory": {} } }),
+        ] {
+            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("agent memory config should parse");
+            let agent_memory = options.agent_memory.expect("agent memory options");
+            assert_eq!(agent_memory.selector, None);
+        }
+
+        for (value, want) in [
+            ("off", SelectorSpec::Off),
+            ("default", SelectorSpec::Default),
+            (
+                "profile:/etc/mobkit/selector.toml",
+                SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml")),
+            ),
+        ] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "selector": value } }
+            });
+            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("selector value should parse");
+            let agent_memory = options.agent_memory.expect("agent memory options");
+            assert_eq!(agent_memory.selector, Some(want), "selector '{value}'");
+        }
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_bad_agent_memory_selector() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        for (block, needle) in [
+            (json!({ "selector": "on" }), "'off', 'default'"),
+            (json!({ "selector": "profile:" }), "'off', 'default'"),
+            (json!({ "selector": true }), "must be a string"),
+            (
+                // The markdown provider has no manifest; a configured
+                // selector would silently do nothing.
+                json!({ "store": "markdown", "selector": "default" }),
+                "selector requires store='sqlite'",
+            ),
+        ] {
+            let params = json!({ "runtime_options": { "agent_memory": block } });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("selector config must fail loudly: {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err} (wanted '{needle}')");
+        }
+
+        // Explicit off with markdown is fine (nothing to enforce).
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "selector": "off" }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("selector=off with markdown should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.selector,
+            Some(meerkat_mobkit::memory::selector::SelectorSpec::Off)
+        );
+    }
+
+    #[test]
+    fn selector_config_takes_precedence_over_env_fallback() {
+        use meerkat_mobkit::memory::selector::SelectorSpec;
+
+        // The crate denies `unsafe`, so the env var cannot be mutated in a
+        // test; precedence is shown structurally instead. With the env
+        // unset (nextest never sets MOBKIT_AGENT_MEMORY_SELECTOR), the env
+        // fallback alone resolves to Off — so a non-Off result for a
+        // configured spec proves the config path won, not the env.
+        assert_eq!(
+            resolve_selector_spec(Some(&SelectorSpec::Default)).expect("configured spec resolves"),
+            SelectorSpec::Default,
+            "agent_memory.selector must be used ahead of the env fallback"
+        );
+        let profile = SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml"));
+        assert_eq!(
+            resolve_selector_spec(Some(&profile)).expect("configured profile resolves"),
+            profile
+        );
+        assert_eq!(
+            resolve_selector_spec(None).expect("env fallback resolves"),
+            SelectorSpec::Off,
+            "unset config must fall back to MOBKIT_AGENT_MEMORY_SELECTOR (unset ⇒ off)"
+        );
     }
 
     #[test]
@@ -1157,6 +2046,12 @@ fn apply_gateway_runtime_config_to_request(
     serde_json::to_string(&request).unwrap_or_else(|_| request_line.to_string())
 }
 
+// Legacy state file name written by the misleadingly-named "elephant" backend
+// (which always persisted local JSON). Kept so existing deployments keep their
+// ledger across the rename.
+const LEGACY_MEMORY_LEDGER_STATE_FILE: &str = "elephant-memory-state.json";
+const MEMORY_LEDGER_STATE_FILE: &str = "memory-ledger-state.json";
+
 fn parse_gateway_memory_config(
     memory_config: &Value,
     persistent_state: Option<&std::path::Path>,
@@ -1164,44 +2059,94 @@ fn parse_gateway_memory_config(
     let object = memory_config
         .as_object()
         .ok_or_else(|| "runtime_options.memory_config must be a JSON object".to_string())?;
-    let backend = object
-        .get("backend")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "runtime_options.memory_config.backend must be 'elephant'".to_string())?;
-    if backend != "elephant" {
-        return Err(format!(
-            "unsupported runtime_options.memory_config.backend '{backend}'"
-        ));
+    let backend = object.get("backend").and_then(Value::as_str).ok_or_else(|| {
+        "runtime_options.memory_config.backend must be 'local_json' (or the deprecated 'elephant')"
+            .to_string()
+    })?;
+    let persistent_state = persistent_state.ok_or_else(|| {
+        "runtime_options.memory_config requires persistent_state so the memory ledger has a stable path"
+            .to_string()
+    })?;
+    match backend {
+        "local_json" => {
+            let health_check_endpoint = match object.get("health_check_endpoint") {
+                None => None,
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            "runtime_options.memory_config.health_check_endpoint must be a non-empty string when provided"
+                                .to_string()
+                        })?
+                        .to_string(),
+                ),
+            };
+            let unsupported = object
+                .keys()
+                .filter(|key| key.as_str() != "backend" && key.as_str() != "health_check_endpoint")
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !unsupported.is_empty() {
+                return Err(format!(
+                    "unsupported runtime_options.memory_config fields: {}",
+                    unsupported.join(", ")
+                ));
+            }
+            // Adopt the legacy ledger file when it is the only one present so
+            // switching backend shape does not lose persisted state.
+            let new_path = persistent_state.join(MEMORY_LEDGER_STATE_FILE);
+            let legacy_path = persistent_state.join(LEGACY_MEMORY_LEDGER_STATE_FILE);
+            let state_path = if !new_path.exists() && legacy_path.exists() {
+                legacy_path
+            } else {
+                new_path
+            };
+            Ok(MemoryBackendConfig::LocalJson(
+                LocalJsonMemoryBackendConfig {
+                    state_path: state_path.to_string_lossy().to_string(),
+                    health_check_endpoint,
+                },
+            ))
+        }
+        "elephant" => {
+            let endpoint = object
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "runtime_options.memory_config.endpoint must be a non-empty string".to_string()
+                })?;
+            let unsupported = object
+                .keys()
+                .filter(|key| key.as_str() != "backend" && key.as_str() != "endpoint")
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !unsupported.is_empty() {
+                return Err(format!(
+                    "unsupported runtime_options.memory_config fields: {}",
+                    unsupported.join(", ")
+                ));
+            }
+            eprintln!(
+                "[mobkit-gateway] runtime_options.memory_config.backend 'elephant' is deprecated: \
+                 it only health-checks the endpoint and persists the ledger as local JSON; use \
+                 backend 'local_json' with an optional health_check_endpoint"
+            );
+            let state_path = persistent_state.join(LEGACY_MEMORY_LEDGER_STATE_FILE);
+            Ok(MemoryBackendConfig::LocalJson(
+                LocalJsonMemoryBackendConfig {
+                    state_path: state_path.to_string_lossy().to_string(),
+                    health_check_endpoint: Some(endpoint.to_string()),
+                },
+            ))
+        }
+        other => Err(format!(
+            "unsupported runtime_options.memory_config.backend '{other}'"
+        )),
     }
-    let endpoint = object
-        .get("endpoint")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "runtime_options.memory_config.endpoint must be a non-empty string".to_string()
-        })?;
-    let unsupported = object
-        .keys()
-        .filter(|key| key.as_str() != "backend" && key.as_str() != "endpoint")
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "unsupported runtime_options.memory_config fields: {}",
-            unsupported.join(", ")
-        ));
-    }
-    let state_path = persistent_state
-        .ok_or_else(|| {
-            "runtime_options.memory_config requires persistent_state so Elephant memory state has a stable path"
-                .to_string()
-        })?
-        .join("elephant-memory-state.json");
-    Ok(MemoryBackendConfig::Elephant(ElephantMemoryBackendConfig {
-        endpoint: endpoint.to_string(),
-        state_path: state_path.to_string_lossy().to_string(),
-    }))
 }
 
 fn parse_gateway_agent_memory_config(
@@ -1220,6 +2165,11 @@ fn parse_gateway_agent_memory_config(
         return Ok(Some(GatewayAgentMemoryOptions {
             config: meerkat_mobkit::AgentMemoryConfig::default(),
             path,
+            store: GatewayAgentMemoryStoreKind::default(),
+            selector: None,
+            distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
+            steward: meerkat_mobkit::memory::steward::StewardConfig::default(),
+            hygienist: meerkat_mobkit::memory::hygienist::HygienistConfig::default(),
         }));
     }
 
@@ -1234,6 +2184,17 @@ fn parse_gateway_agent_memory_config(
         "recall_timeout_ms",
         "recall_failure_policy",
         "instruction_header",
+        "per_turn_injection",
+        "defang_inbound",
+        "store",
+        "llm_writes",
+        "recorder_tool",
+        "content_trust",
+        "selector",
+        "distiller",
+        "steward",
+        "operator_scope",
+        "hygienist",
     ];
     let unsupported = object
         .keys()
@@ -1339,6 +2300,184 @@ fn parse_gateway_agent_memory_config(
                 .to_string(),
         ),
     };
+    let per_turn_injection = match object
+        .get("per_turn_injection")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("off")
+    {
+        "off" => meerkat_mobkit::AgentMemoryPerTurnInjection::Off,
+        "budgeted" => meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.per_turn_injection must be 'off' or 'budgeted' (got '{other}')"
+            ));
+        }
+    };
+    let defang_inbound = match object.get("defang_inbound") {
+        None => true,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.defang_inbound must be a boolean".to_string()
+        })?,
+    };
+    let store = match object
+        .get("store")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("sqlite")
+    {
+        "markdown" => GatewayAgentMemoryStoreKind::Markdown,
+        "sqlite" => GatewayAgentMemoryStoreKind::Sqlite,
+        other => {
+            return Err(format!(
+                "runtime_options.agent_memory.store must be 'markdown' or 'sqlite' (got '{other}')"
+            ));
+        }
+    };
+    let llm_writes = match object.get("llm_writes") {
+        None => meerkat_mobkit::AgentMemoryLlmWrites::Observed,
+        Some(value) => match value.as_str().map(str::trim) {
+            Some("observed") => meerkat_mobkit::AgentMemoryLlmWrites::Observed,
+            Some("quarantined") => meerkat_mobkit::AgentMemoryLlmWrites::Quarantined,
+            _ => {
+                return Err(format!(
+                    "runtime_options.agent_memory.llm_writes must be 'observed' or 'quarantined' \
+                     (got '{value}')"
+                ));
+            }
+        },
+    };
+    let recorder_tool = match object.get("recorder_tool") {
+        None => true,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.recorder_tool must be a boolean".to_string()
+        })?,
+    };
+    let content_trust = match object.get("content_trust") {
+        None => meerkat_mobkit::ContentTrustConfig::default(),
+        Some(value) => meerkat_mobkit::ContentTrustConfig::from_json_value(value)
+            .map_err(|err| format!("runtime_options.agent_memory.{err}"))?,
+    };
+    // §7.2 operator-scope activation. PROVISIONAL keying (§16 Q1): the
+    // value name says so on purpose — deployments opting in accept that the
+    // keying (console auth principal) may change when the question closes.
+    let operator_scope = match object.get("operator_scope") {
+        None => meerkat_mobkit::AgentMemoryOperatorScope::Off,
+        Some(value) => match value.as_str().map(str::trim) {
+            Some("off") => meerkat_mobkit::AgentMemoryOperatorScope::Off,
+            Some("provisional") => meerkat_mobkit::AgentMemoryOperatorScope::Provisional,
+            _ => {
+                return Err(format!(
+                    "runtime_options.agent_memory.operator_scope must be 'off' or \
+                     'provisional' (got '{value}')"
+                ));
+            }
+        },
+    };
+    // §8.3 selector switch. When set it takes precedence over the
+    // MOBKIT_AGENT_MEMORY_SELECTOR env var; when absent the env var stays
+    // the fallback.
+    let selector = match object.get("selector") {
+        None => None,
+        Some(value) => {
+            let value = value.as_str().map(str::trim).ok_or_else(|| {
+                "runtime_options.agent_memory.selector must be a string \
+                 ('off', 'default', or 'profile:<path>')"
+                    .to_string()
+            })?;
+            match value {
+                "off" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Off),
+                "default" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Default),
+                other => match other.strip_prefix("profile:") {
+                    Some(path) if !path.trim().is_empty() => {
+                        Some(meerkat_mobkit::memory::selector::SelectorSpec::Profile(
+                            std::path::PathBuf::from(path.trim()),
+                        ))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "runtime_options.agent_memory.selector must be 'off', 'default', \
+                             or 'profile:<path>' (got '{other}'); this option overrides the \
+                             MOBKIT_AGENT_MEMORY_SELECTOR environment variable"
+                        ));
+                    }
+                },
+            }
+        }
+    };
+    // §8.4 distiller block: fail-loud parse; enabled defaults false.
+    let distiller = match object.get("distiller") {
+        None => meerkat_mobkit::memory::distiller::DistillerConfig::default(),
+        Some(value) => parse_gateway_distiller_config(value)?,
+    };
+    // §8.5 steward block: fail-loud parse; enabled defaults false.
+    let steward = match object.get("steward") {
+        None => meerkat_mobkit::memory::steward::StewardConfig::default(),
+        Some(value) => parse_gateway_steward_config(value)?,
+    };
+    // §8.6 hygienist block: fail-loud parse; enabled defaults false.
+    let hygienist = match object.get("hygienist") {
+        None => meerkat_mobkit::memory::hygienist::HygienistConfig::default(),
+        Some(value) => parse_gateway_hygienist_config(value)?,
+    };
+    // The write gate and taint tracker are store-seam machinery; only the
+    // sqlite store has the seam. Accepting these knobs with the markdown
+    // store would silently enforce nothing — fail loud instead.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && (llm_writes != meerkat_mobkit::AgentMemoryLlmWrites::Observed
+            || object.contains_key("content_trust"))
+    {
+        return Err(
+            "runtime_options.agent_memory.llm_writes/content_trust require store='sqlite'"
+                .to_string(),
+        );
+    }
+    // Same rationale for the selector: the markdown provider has no
+    // manifest, so a configured selector would silently do nothing.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && selector
+            .as_ref()
+            .is_some_and(|spec| *spec != meerkat_mobkit::memory::selector::SelectorSpec::Off)
+    {
+        return Err("runtime_options.agent_memory.selector requires store='sqlite'".to_string());
+    }
+    // And for the distiller: manifests, tombstones, and the authored-write
+    // seam all live on the sqlite store.
+    if store == GatewayAgentMemoryStoreKind::Markdown && distiller.enabled {
+        return Err("runtime_options.agent_memory.distiller requires store='sqlite'".to_string());
+    }
+    // And for the steward: staging, proposals, quarantine review, and the
+    // pending-harvest/promotion tables are all sqlite-store machinery.
+    if store == GatewayAgentMemoryStoreKind::Markdown && steward.enabled {
+        return Err("runtime_options.agent_memory.steward requires store='sqlite'".to_string());
+    }
+    // And for the hygienist: the §8.6 quarantine hard-block reads the
+    // sqlite store's quarantine queue and evidence refs.
+    if store == GatewayAgentMemoryStoreKind::Markdown && hygienist.enabled {
+        return Err("runtime_options.agent_memory.hygienist requires store='sqlite'".to_string());
+    }
+    // Operator scope composes through manifests and steward routing — both
+    // sqlite-store machinery.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && operator_scope != meerkat_mobkit::AgentMemoryOperatorScope::Off
+    {
+        return Err(
+            "runtime_options.agent_memory.operator_scope requires store='sqlite'".to_string(),
+        );
+    }
+    // And for budgeted per-turn injection: the §9.1 compaction reset sink
+    // (which restores the session injection budget and dedup set when a
+    // session compacts) is wired only in the sqlite arm, so a markdown
+    // deployment would silently stop injecting once a session's cumulative
+    // budget is spent — fail loud instead.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && per_turn_injection == meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+    {
+        return Err(
+            "runtime_options.agent_memory.per_turn_injection='budgeted' requires store='sqlite'"
+                .to_string(),
+        );
+    }
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
         .join("agent-memory");
@@ -1351,9 +2490,269 @@ fn parse_gateway_agent_memory_config(
             recall_timeout_ms,
             recall_failure_policy,
             instruction_header,
+            per_turn_injection,
+            defang_inbound,
+            llm_writes,
+            recorder_tool,
+            content_trust,
+            operator_scope,
         },
         path,
+        store,
+        selector,
+        distiller,
+        steward,
+        hygienist,
     }))
+}
+
+/// Fail-loud parse of `runtime_options.agent_memory.distiller` (§8.4):
+/// `{enabled, runs_per_hour, min_interactions, model}`; unknown fields and
+/// wrong types are errors, never silently ignored.
+fn parse_gateway_distiller_config(
+    value: &Value,
+) -> Result<meerkat_mobkit::memory::distiller::DistillerConfig, String> {
+    let mut config = meerkat_mobkit::memory::distiller::DistillerConfig::default();
+    if let Some(enabled) = value.as_bool() {
+        config.enabled = enabled;
+        return Ok(config);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.agent_memory.distiller must be a boolean or object".to_string()
+    })?;
+    let supported = ["enabled", "runs_per_hour", "min_interactions", "model"];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory.distiller fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        config.enabled = enabled.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.enabled must be a boolean".to_string()
+        })?;
+    } else {
+        // An object block without `enabled` is an explicit opt-in.
+        config.enabled = true;
+    }
+    if let Some(value) = object.get("runs_per_hour") {
+        let runs = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.runs_per_hour must be a positive integer"
+                .to_string()
+        })?;
+        if runs == 0 || runs > 240 {
+            return Err(
+                "runtime_options.agent_memory.distiller.runs_per_hour must be between 1 and 240"
+                    .to_string(),
+            );
+        }
+        config.runs_per_hour = runs as u32;
+    }
+    if let Some(value) = object.get("min_interactions") {
+        let min = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.min_interactions must be a positive integer"
+                .to_string()
+        })?;
+        if min == 0 || min > 100 {
+            return Err(
+                "runtime_options.agent_memory.distiller.min_interactions must be between 1 and 100"
+                    .to_string(),
+            );
+        }
+        config.min_interactions = min as u32;
+    }
+    if let Some(value) = object.get("model") {
+        let model = value
+            .as_str()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.distiller.model must be a non-empty string"
+                    .to_string()
+            })?;
+        config.model = Some(model.to_string());
+    }
+    Ok(config)
+}
+
+/// Fail-loud parse of `runtime_options.agent_memory.steward` (§8.5):
+/// `{enabled, cadence, model, per_mob, runs_per_day, min_signals}`;
+/// unknown fields and wrong types are errors, never silently ignored. The
+/// cadence uses the scheduling subsystem's interval-marker grammar.
+fn parse_gateway_steward_config(
+    value: &Value,
+) -> Result<meerkat_mobkit::memory::steward::StewardConfig, String> {
+    let mut config = meerkat_mobkit::memory::steward::StewardConfig::default();
+    if let Some(enabled) = value.as_bool() {
+        config.enabled = enabled;
+        return Ok(config);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.agent_memory.steward must be a boolean or object".to_string()
+    })?;
+    let supported = [
+        "enabled",
+        "cadence",
+        "model",
+        "per_mob",
+        "runs_per_day",
+        "min_signals",
+    ];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory.steward fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        config.enabled = enabled.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.enabled must be a boolean".to_string()
+        })?;
+    } else {
+        // An object block without `enabled` is an explicit opt-in.
+        config.enabled = true;
+    }
+    if let Some(value) = object.get("cadence") {
+        let cadence = value
+            .as_str()
+            .map(str::trim)
+            .filter(|cadence| !cadence.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.steward.cadence must be a non-empty string"
+                    .to_string()
+            })?;
+        meerkat_mobkit::memory::steward::StewardConfig::parse_cadence(cadence)
+            .map_err(|err| format!("runtime_options.agent_memory.steward.cadence: {err}"))?;
+        config.cadence = cadence.to_string();
+    }
+    if let Some(value) = object.get("model") {
+        let model = value
+            .as_str()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.steward.model must be a non-empty string".to_string()
+            })?;
+        config.model = Some(model.to_string());
+    }
+    if let Some(value) = object.get("per_mob") {
+        config.per_mob = value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.per_mob must be a boolean".to_string()
+        })?;
+    }
+    if let Some(value) = object.get("runs_per_day") {
+        let runs = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.runs_per_day must be a positive integer"
+                .to_string()
+        })?;
+        if runs == 0 || runs > 96 {
+            return Err(
+                "runtime_options.agent_memory.steward.runs_per_day must be between 1 and 96"
+                    .to_string(),
+            );
+        }
+        config.runs_per_day = runs as u32;
+    }
+    if let Some(value) = object.get("min_signals") {
+        let min = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.min_signals must be a positive integer"
+                .to_string()
+        })?;
+        if min == 0 || min > 1000 {
+            return Err(
+                "runtime_options.agent_memory.steward.min_signals must be between 1 and 1000"
+                    .to_string(),
+            );
+        }
+        config.min_signals = min as u32;
+    }
+    Ok(config)
+}
+
+/// Fail-loud parse of `runtime_options.agent_memory.hygienist` (§8.6):
+/// `{enabled, runs_per_day, model}`; unknown fields and wrong types are
+/// errors, never silently ignored.
+fn parse_gateway_hygienist_config(
+    value: &Value,
+) -> Result<meerkat_mobkit::memory::hygienist::HygienistConfig, String> {
+    let mut config = meerkat_mobkit::memory::hygienist::HygienistConfig::default();
+    if let Some(enabled) = value.as_bool() {
+        config.enabled = enabled;
+        return Ok(config);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.agent_memory.hygienist must be a boolean or object".to_string()
+    })?;
+    let supported = ["enabled", "runs_per_day", "model"];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory.hygienist fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        config.enabled = enabled.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.hygienist.enabled must be a boolean".to_string()
+        })?;
+    } else {
+        // An object block without `enabled` is an explicit opt-in.
+        config.enabled = true;
+    }
+    if let Some(value) = object.get("runs_per_day") {
+        let runs = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.hygienist.runs_per_day must be a positive integer"
+                .to_string()
+        })?;
+        if runs == 0 || runs > 24 {
+            return Err(
+                "runtime_options.agent_memory.hygienist.runs_per_day must be between 1 and 24"
+                    .to_string(),
+            );
+        }
+        config.runs_per_day = runs as u32;
+    }
+    if let Some(value) = object.get("model") {
+        let model = value
+            .as_str()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.hygienist.model must be a non-empty string"
+                    .to_string()
+            })?;
+        config.model = Some(model.to_string());
+    }
+    Ok(config)
+}
+
+/// §8.3 selector precedence: `agent_memory.selector` config wins; the
+/// `MOBKIT_AGENT_MEMORY_SELECTOR` env var stays as the fallback for
+/// deployments that have not migrated to the config option.
+fn resolve_selector_spec(
+    configured: Option<&meerkat_mobkit::memory::selector::SelectorSpec>,
+) -> Result<
+    meerkat_mobkit::memory::selector::SelectorSpec,
+    meerkat_mobkit::memory::selector::SelectorError,
+> {
+    match configured {
+        Some(spec) => Ok(spec.clone()),
+        None => meerkat_mobkit::memory::selector::spec_from_env(),
+    }
 }
 
 /// Original single-shot mode: reads request from env, runs once, prints response.
@@ -2209,7 +3608,10 @@ external_addressable = true
     // Stable owner id for the schedule driver, captured before `definition` is
     // moved into the bootstrap spec.
     let schedule_owner_id = definition.id.to_string();
-    let (mob_spec, _temp_dir, schedule_host_inputs) = if let Some(ref state_path) = persistent_state
+    let (mob_spec, _temp_dir, schedule_host_inputs, transcript_edit_service) = if let Some(
+        ref state_path,
+    ) =
+        persistent_state
     {
         if let Err(e) = std::fs::create_dir_all(state_path) {
             fail_init(
@@ -2317,6 +3719,12 @@ external_addressable = true
                 adapter.clone(),
             )
         });
+        // §8.6 Hygienist apply seam: the CONCRETE service implements
+        // meerkat's transcript-edit extension; the erased MobSessionService
+        // does not carry it, so the typed handle is kept here.
+        let transcript_edit_service: Option<
+            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
+        > = Some(Arc::clone(&concrete_service) as _);
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_runtime_adapter(adapter.clone())
@@ -2327,7 +3735,7 @@ external_addressable = true
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        (spec, None, schedule_host_inputs)
+        (spec, None, schedule_host_inputs, transcript_edit_service)
     } else {
         // Ephemeral mode (original behavior).
         // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
@@ -2374,6 +3782,9 @@ external_addressable = true
             has_session_builder,
             session_store: None,
         };
+        let mut transcript_edit_service: Option<
+            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
+        > = None;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             if let Some(session_adapter) = identity_session_store_adapter.clone() {
                 let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
@@ -2396,13 +3807,15 @@ external_addressable = true
                     has_session_builder,
                     session_store: Some(session_store.clone()),
                 };
-                Arc::new(meerkat_session::PersistentSessionService::new(
+                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
                     callback_builder,
                     gateway_options.max_sessions,
                     session_store,
                     Some(Arc::clone(&runtime_store)),
                     blob_store.clone(),
-                ))
+                ));
+                transcript_edit_service = Some(Arc::clone(&concrete) as _);
+                concrete
             } else {
                 Arc::new(EphemeralSessionService::new(
                     callback_builder,
@@ -2420,7 +3833,7 @@ external_addressable = true
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         // Ephemeral sessions have no persistent service; firing is persistent-only.
-        (spec, temp_dir, None)
+        (spec, temp_dir, None, transcript_edit_service)
     };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
@@ -2540,6 +3953,17 @@ external_addressable = true
     runtime.set_error_hook(gateway_error_hook.clone());
 
     // 5c. Build identity-first runtime if providers are configured
+    // §8.5 steward late-bound seams: the gating/conflict bridges need the
+    // Arc'd UnifiedRuntime, which exists only after identity-first init; a
+    // OnceCell defers the binding without restructuring bootstrap. The
+    // roster slot feeds mob-purpose context once restore_flow has run.
+    let steward_late_runtime = StewardLateRuntime::default();
+    let steward_roster_slot: Arc<
+        std::sync::Mutex<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
+    > = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut agent_memory_steward: Option<Arc<meerkat_mobkit::memory::steward::StewardEngine>> =
+        None;
+
     let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
         use meerkat_mobkit::identity_first::{
             AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
@@ -2595,6 +4019,68 @@ external_addressable = true
         .with_runtime_services(AgentRuntimeServices::new(mob_handle));
         irt.set_error_hook(Some(gateway_error_hook.clone()));
 
+        // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
+        // customizer/injector are constructed below, so their coordinators
+        // snapshot the stage. Operator switch is
+        // `agent_memory.selector = "off" | "default" | "profile:<path>"`;
+        // the MOBKIT_AGENT_MEMORY_SELECTOR env var remains a fallback for
+        // unmigrated deployments, with config taking precedence.
+        {
+            use meerkat_mobkit::memory::selector as memory_selector;
+            let configured = gateway_options
+                .agent_memory
+                .as_ref()
+                .and_then(|agent_memory| agent_memory.selector.as_ref());
+            let spec = resolve_selector_spec(configured).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            let profile = memory_selector::profile_for_spec(&spec).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            if let Some(profile) = profile {
+                let Some(agent_memory) = gateway_options.agent_memory.as_ref() else {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "agent memory selector requires runtime_options.agent_memory".to_string(),
+                    );
+                };
+                if agent_memory.store != GatewayAgentMemoryStoreKind::Sqlite {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "agent memory selector requires the sqlite agent-memory store".to_string(),
+                    );
+                }
+                // Second handle on the same per-realm database files, used
+                // only for selected-body fetch; WAL keeps this safe.
+                let fetch = meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                    .unwrap_or_else(|e| {
+                        fail_init(
+                            &request_id,
+                            -32603,
+                            format!("agent memory selector store: {e}"),
+                        );
+                    });
+                let factory_state = persistent_state.clone().unwrap_or_else(std::env::temp_dir);
+                let handle = memory_selector::FactorySelectorHandle::new(
+                    factory_state,
+                    meerkat::Config::default(),
+                    agent_memory.config.realm.clone(),
+                    &profile,
+                );
+                let model = profile.model.clone();
+                memory_selector::install(Arc::new(memory_selector::SelectorRuntime {
+                    stage: Arc::new(memory_selector::SelectorStage::new(
+                        profile,
+                        Arc::new(handle),
+                    )),
+                    fetch: Arc::new(fetch),
+                }));
+                tracing::info!(model = %model, "agent memory selector installed");
+            }
+        }
+
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
             Arc::new(GatewayRosterProvider::new(bridge.clone()));
@@ -2613,33 +4099,406 @@ external_addressable = true
         } else {
             None
         };
+        let mut agent_memory_taint: Option<meerkat_mobkit::SessionTaintTracker> = None;
+        // Late-bound target for the always-on compaction reset sink: the
+        // sink joins the observer before the injector exists, so it calls
+        // through this slot (empty until wiring completes = no-op).
+        let agent_memory_compaction_reset: Arc<
+            std::sync::OnceLock<meerkat_mobkit::AgentMemoryRuntimeInjector>,
+        > = Arc::new(std::sync::OnceLock::new());
+        let mut agent_memory_distiller: Option<
+            Arc<meerkat_mobkit::memory::distiller::DistillerEngine>,
+        > = None;
+        let mut agent_memory_hygienist: Option<
+            Arc<meerkat_mobkit::memory::hygienist::HygienistEngine>,
+        > = None;
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
-                let store = Arc::new(
-                    meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
-                        .unwrap_or_else(|e| {
-                            fail_init(
-                                &request_id,
-                                -32603,
-                                format!("failed to open agent memory store: {e}"),
+                match agent_memory.store {
+                    GatewayAgentMemoryStoreKind::Markdown => Some(Arc::new(
+                        meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
+                            .unwrap_or_else(|e| {
+                                fail_init(
+                                    &request_id,
+                                    -32603,
+                                    format!("failed to open agent memory store: {e}"),
+                                );
+                            }),
+                    )
+                        as Arc<dyn meerkat_mobkit::AgentMemoryProvider>),
+                    GatewayAgentMemoryStoreKind::Sqlite => {
+                        let store =
+                            meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                                .unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32603,
+                                        format!("failed to open agent memory store: {e}"),
+                                    );
+                                });
+                        // §10.1 taint firewall: the Recorder must not ship
+                        // without it. Content-trust classification feeds a
+                        // session-sticky tracker; the write gate applies
+                        // taint/posture/evidence quarantine at the store seam.
+                        let tracker = meerkat_mobkit::SessionTaintTracker::new(
+                            agent_memory.config.content_trust.clone(),
+                        );
+                        store.set_llm_write_gate(Arc::new(meerkat_mobkit::TaintLlmWriteGate::new(
+                            Some(tracker.clone()),
+                            agent_memory.config.llm_writes,
+                        )));
+                        // §9.3: memory-plane events project onto the
+                        // console timeline through this sink.
+                        let memory_events = runtime.memory_event_sink();
+                        store.set_event_sink(memory_events.clone());
+                        tracker.set_event_sink(memory_events.clone());
+                        // §9.3 console Memory panel (P3b): a read handle on
+                        // this realm store enables the read-only
+                        // mobkit/memory/panel/* RPCs and the panel nav.
+                        // Must precede build_reference_app_router; the
+                        // router builds after this region.
+                        runtime.set_memory_panel_store(store.clone());
+                        // Shared read handle on the persistent session
+                        // store for the Distiller's evidence windows and
+                        // the steward's gather/usage/resolvability reads.
+                        let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
+                            if agent_memory.distiller.enabled || agent_memory.steward.enabled {
+                                let Some(state) = persistent_state.clone() else {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        "agent memory distiller/steward require persistent_state"
+                                            .to_string(),
+                                    );
+                                };
+                                Some(
+                                    if let Some(adapter) = identity_session_store_adapter.clone() {
+                                        adapter
+                                    } else {
+                                        // Second handle on the same session
+                                        // database the mob bridge persists to;
+                                        // WAL keeps the read-side safe.
+                                        match meerkat_store::SqliteSessionStore::open(
+                                            state.join("sessions.db"),
+                                        ) {
+                                            Ok(store) => Arc::new(store),
+                                            Err(e) => fail_init(
+                                                &request_id,
+                                                -32603,
+                                                format!("agent memory session store: {e}"),
+                                            ),
+                                        }
+                                    },
+                                )
+                            } else {
+                                None
+                            };
+                        // §8.4 Distiller: shares the tracker's observe loop.
+                        let mut sinks: Vec<Arc<dyn meerkat_mobkit::MemberAgentEventSink>> =
+                            vec![Arc::new(tracker.clone())];
+                        if agent_memory.distiller.enabled {
+                            use meerkat_mobkit::memory::distiller as memory_distiller;
+                            let mut profile =
+                                memory_distiller::DistillerProfile::embedded_default();
+                            if let Some(model) = agent_memory.distiller.model.as_deref() {
+                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        format!("agent memory distiller: {e}"),
+                                    );
+                                });
+                            }
+                            let Some(state) = persistent_state.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory distiller requires persistent_state".to_string(),
+                                );
+                            };
+                            let transcript_store: Arc<dyn meerkat::SessionStore> =
+                                memory_transcript_store
+                                    .clone()
+                                    .expect("transcript store built when distiller enabled");
+                            let handle = memory_distiller::FactoryDistillerHandle::new(
+                                state.clone(),
+                                meerkat::Config::default(),
+                                agent_memory.config.realm.clone(),
+                                &profile,
                             );
-                        }),
-                );
-                Some(store)
+                            let model = profile.model.clone();
+                            let engine = Arc::new(memory_distiller::DistillerEngine::new(
+                                profile,
+                                agent_memory.distiller.clone(),
+                                Arc::new(handle),
+                                Arc::new(store.clone()),
+                                Arc::new(store.clone()),
+                                Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
+                                    transcript_store,
+                                )),
+                                // Meerkat's session semantic memory lives at
+                                // <persistent_state>/memory; absent dir ⇒
+                                // nothing was preserved at compaction.
+                                Some(Arc::new(memory_distiller::HnswDiscardSource::new(
+                                    state.join("memory"),
+                                ))),
+                                Some(tracker.clone()),
+                                agent_memory.config.realm.clone(),
+                            ));
+                            engine.set_event_sink(memory_events.clone());
+                            sinks.push(Arc::new(memory_distiller::DistillerTriggers::new(
+                                engine.clone(),
+                            )));
+                            agent_memory_distiller = Some(engine);
+                            tracing::info!(model = %model, "agent memory distiller installed");
+                        }
+                        // §8.5 Steward: scheduled dreams over this realm's
+                        // store. Provisioning is app-side opt-in; the
+                        // gating/conflict bridges bind late (post-Arc).
+                        if agent_memory.steward.enabled {
+                            use meerkat_mobkit::memory::distiller as memory_distiller;
+                            use meerkat_mobkit::memory::steward as memory_steward;
+                            let mut profile = memory_steward::StewardProfile::embedded_default();
+                            if let Some(model) = agent_memory.steward.model.as_deref() {
+                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        format!("agent memory steward: {e}"),
+                                    );
+                                });
+                            }
+                            let Some(state) = persistent_state.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory steward requires persistent_state".to_string(),
+                                );
+                            };
+                            let transcript_store: Arc<dyn meerkat::SessionStore> =
+                                memory_transcript_store
+                                    .clone()
+                                    .expect("transcript store built when steward enabled");
+                            let transcripts: Arc<
+                                dyn meerkat_mobkit::memory::distiller::TranscriptSource,
+                            > = Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
+                                transcript_store,
+                            ));
+                            // §10.2 P3 validator extension: agent_verified
+                            // retiers must cite evidence that resolves
+                            // against the session store, from now on.
+                            store.set_evidence_resolver(Arc::new(
+                                memory_steward::SessionStoreEvidenceResolver::new(
+                                    transcripts.clone(),
+                                    tokio::runtime::Handle::current(),
+                                ),
+                            ));
+                            let handle = memory_steward::FactoryStewardHandle::new(
+                                state,
+                                meerkat::Config::default(),
+                                agent_memory.config.realm.clone(),
+                                &profile,
+                            );
+                            let model = profile.model.clone();
+                            let engine = memory_steward::StewardEngine::new(
+                                profile,
+                                agent_memory.steward.clone(),
+                                Arc::new(handle),
+                                Arc::new(store.clone()),
+                                transcripts,
+                                agent_memory.config.realm.clone(),
+                            )
+                            .with_events(memory_events.clone())
+                            .with_mob_context(Arc::new(GatewayMobPurposeSource {
+                                mob: mob_definition.id.to_string(),
+                                roster: steward_roster_slot.clone(),
+                            }))
+                            .with_gating(Arc::new(GatewayMemoryGatingBridge {
+                                runtime: steward_late_runtime.clone(),
+                            }))
+                            .with_conflicts(Arc::new(GatewayMemoryConflictBridge {
+                                runtime: steward_late_runtime.clone(),
+                                handle: tokio::runtime::Handle::current(),
+                            }))
+                            // §7.2 P4: operator-scope routing follows the
+                            // agent_memory.operator_scope activation knob.
+                            .with_operator_routing(
+                                agent_memory.config.operator_scope
+                                    == meerkat_mobkit::AgentMemoryOperatorScope::Provisional,
+                            );
+                            let engine = Arc::new(engine);
+                            sinks.push(Arc::new(memory_steward::StewardTriggers::new(
+                                engine.clone(),
+                            )));
+                            // The dream loop runs for the gateway process;
+                            // forgetting the handle keeps it alive (same
+                            // pattern as the member-event observer).
+                            std::mem::forget(engine.spawn_dream_loop());
+                            agent_memory_steward = Some(engine);
+                            tracing::info!(
+                                model = %model,
+                                cadence = %agent_memory.steward.cadence,
+                                per_mob = agent_memory.steward.per_mob,
+                                "agent memory steward installed"
+                            );
+                        }
+                        // §8.6 Hygienist: audited transcript curation at
+                        // compaction boundaries and on demand, applied
+                        // through meerkat's typed transcript-revision
+                        // extension on the concrete session service.
+                        if agent_memory.hygienist.enabled {
+                            use meerkat_mobkit::memory::hygienist as memory_hygienist;
+                            let Some(edit_service) = transcript_edit_service.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory hygienist requires persistent sessions \
+                                     (runtime_options.persistent_state or an identity session \
+                                     store): the transcript-revision seam only exists on the \
+                                     persistent session service"
+                                        .to_string(),
+                                );
+                            };
+                            let mut profile =
+                                memory_hygienist::HygienistProfile::embedded_default();
+                            if let Some(model) = agent_memory.hygienist.model.as_deref() {
+                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        format!("agent memory hygienist: {e}"),
+                                    );
+                                });
+                            }
+                            let Some(state) = persistent_state.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory hygienist requires persistent_state".to_string(),
+                                );
+                            };
+                            let handle = memory_hygienist::FactoryHygienistHandle::new(
+                                state,
+                                meerkat::Config::default(),
+                                agent_memory.config.realm.clone(),
+                                &profile,
+                            );
+                            let model = profile.model.clone();
+                            let gate: Option<Arc<dyn memory_hygienist::DistillationGate>> =
+                                agent_memory_distiller.clone().map(|engine| {
+                                    engine as Arc<dyn memory_hygienist::DistillationGate>
+                                });
+                            let engine = Arc::new(memory_hygienist::HygienistEngine::new(
+                                profile,
+                                agent_memory.hygienist.clone(),
+                                Arc::new(handle),
+                                Arc::new(memory_hygienist::SessionServiceRevisionSeam::new(
+                                    edit_service,
+                                )),
+                                Arc::new(memory_hygienist::StoreSpanReferenceSource::new(
+                                    Arc::new(store.clone()),
+                                    agent_memory.config.realm.clone(),
+                                )),
+                                gate,
+                                agent_memory.config.realm.clone(),
+                            ));
+                            engine.set_event_sink(memory_events.clone());
+                            // §8.6 trigger sequencing: behind the distiller's
+                            // compaction harvest when one exists; directly off
+                            // the compaction event otherwise. Never both —
+                            // that would race the ordering this preserves.
+                            match agent_memory_distiller.as_ref() {
+                                Some(distiller) => distiller.set_compaction_follow_up(
+                                    memory_hygienist::distiller_follow_up(engine.clone()),
+                                ),
+                                None => sinks.push(Arc::new(
+                                    memory_hygienist::HygienistTriggers::new(engine.clone()),
+                                )),
+                            }
+                            agent_memory_hygienist = Some(engine);
+                            tracing::info!(
+                                model = %model,
+                                runs_per_day = agent_memory.hygienist.runs_per_day,
+                                "agent memory hygienist installed"
+                            );
+                        }
+                        // §9.1 as-built: ALWAYS-ON compaction reset for the
+                        // coordinator's session budgets — deliberately NOT
+                        // gated on distiller.enabled (gate finding: budgeted
+                        // injection without a distiller never reset).
+                        let compaction_reset_slot = agent_memory_compaction_reset.clone();
+                        sinks.push(Arc::new(meerkat_mobkit::CompactionResetSink::new(
+                            Arc::new(move |session: &str| {
+                                if let Some(injector) = compaction_reset_slot.get() {
+                                    injector.on_session_compacted(session);
+                                }
+                            }),
+                        )));
+                        // Observe-stream feed lives for the gateway process;
+                        // forgetting the guard keeps the task running.
+                        std::mem::forget(meerkat_mobkit::spawn_member_event_observer(
+                            runtime.mob_handle(),
+                            sinks,
+                        ));
+                        agent_memory_taint = Some(tracker);
+                        Some(Arc::new(store) as Arc<dyn meerkat_mobkit::AgentMemoryProvider>)
+                    }
+                }
             } else {
                 None
             };
+        // §7.2 / §16 Q1 operator-resolver seam. The PROVISIONAL keying is
+        // the console auth principal; that resolver lives with the console
+        // auth wiring and plugs in here as one line of glue. Until it is
+        // installed, `operator_scope = "provisional"` composes nothing
+        // (inert by design) while steward routing (proposal-keyed) is
+        // already active.
+        let agent_memory_operator_resolver: Option<
+            Arc<dyn meerkat_mobkit::memory::coordinator::OperatorResolver>,
+        > = None;
+        // Degrade LOUD, not silent: recall composition of the Operator scope
+        // needs BOTH the knob and a resolver (coordinator.rs scope_set), so a
+        // resolver-less provisional deployment gets steward proposal-routing
+        // only. Without this warning that half-activation is invisible.
+        if operator_scope_recall_inert(
+            gateway_options.agent_memory.as_ref(),
+            agent_memory_operator_resolver.is_some(),
+        ) {
+            tracing::warn!(
+                "agent_memory.operator_scope=\"provisional\" is configured but this gateway \
+                 installs no operator resolver: operator-scope recall composition is INERT \
+                 (records routed to the operator scope will not be recalled or injected); \
+                 steward routing of operator-scope proposals remains active; the provisional \
+                 console-auth-principal keying requires session-to-principal plumbing that \
+                 has not landed"
+            );
+        }
+        // §7.2 mob-scope binding: every identity this gateway hosts runs
+        // inside the one mob the runtime fronts, so a static binding closes
+        // the mob-memory read path (write-only otherwise — gate blocker).
+        let agent_memory_mob_resolver: Option<
+            Arc<dyn meerkat_mobkit::memory::coordinator::MobScopeResolver>,
+        > = gateway_options.agent_memory.as_ref().map(|memory| {
+            Arc::new(meerkat_mobkit::memory::coordinator::StaticMobBinding {
+                realm: memory.config.realm.clone(),
+                mob: runtime.mob_handle().mob_id().to_string(),
+            }) as Arc<dyn meerkat_mobkit::memory::coordinator::MobScopeResolver>
+        });
         let customizer: Option<
             Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
         > = if let (Some(agent_memory), Some(provider)) = (
             gateway_options.agent_memory.as_ref(),
             agent_memory_provider.clone(),
         ) {
-            Some(Arc::new(meerkat_mobkit::AgentMemoryCustomizer::wrap(
-                base_customizer,
-                provider,
-                agent_memory.config.clone(),
-            )))
+            Some(Arc::new(
+                meerkat_mobkit::AgentMemoryCustomizer::wrap(
+                    base_customizer,
+                    provider,
+                    agent_memory.config.clone(),
+                )
+                .with_operator_resolver(agent_memory_operator_resolver.clone())
+                .with_mob_resolver(agent_memory_mob_resolver.clone()),
+            ))
         } else {
             base_customizer
         };
@@ -2647,10 +4506,29 @@ external_addressable = true
             gateway_options.agent_memory.as_ref(),
             agent_memory_provider.clone(),
         ) {
-            Some(meerkat_mobkit::AgentMemoryRuntimeInjector::new(
+            let mut injector = meerkat_mobkit::AgentMemoryRuntimeInjector::new(
                 provider,
                 agent_memory.config.clone(),
-            ))
+            );
+            if let Some(tracker) = agent_memory_taint.clone() {
+                injector = injector.with_taint_tracker(tracker);
+            }
+            if let Some(distiller) = agent_memory_distiller.clone() {
+                injector = injector.with_distiller(distiller);
+            }
+            if let Some(steward) = agent_memory_steward.clone() {
+                injector = injector.with_steward(steward);
+            }
+            if let Some(hygienist) = agent_memory_hygienist.clone() {
+                injector = injector.with_hygienist(hygienist);
+            }
+            injector = injector.with_operator_resolver(agent_memory_operator_resolver.clone());
+            injector = injector.with_mob_resolver(agent_memory_mob_resolver.clone());
+            // Arm the always-on compaction reset sink (state is Arc-shared
+            // across injector clones, so resetting through this clone
+            // resets the delivery path's budgets too).
+            let _ = agent_memory_compaction_reset.set(injector.clone());
+            Some(injector)
         } else {
             None
         };
@@ -2666,6 +4544,13 @@ external_addressable = true
             .unwrap_or_else(|e| {
                 fail_init(&request_id, -32603, format!("roster provider failed: {e}"));
             });
+
+        // Mob-purpose context for the steward's promotion judgment: no
+        // mob-level purpose field exists (verified — `MobDefinition` is
+        // structural only), so the roster's labels are the source.
+        *steward_roster_slot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = roster_specs.clone();
 
         if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
             &irt,
@@ -2743,6 +4628,19 @@ external_addressable = true
     };
 
     let runtime = Arc::new(runtime);
+    // Bind the steward's late runtime seams and wire gating decisions back
+    // to staged promotion commits (§10.2).
+    steward_late_runtime.bind(runtime.clone());
+    if let Some(steward) = agent_memory_steward.clone() {
+        runtime
+            .register_gating_resolution_observer(Arc::new(
+                meerkat_mobkit::PromotionGateResolver::new(
+                    steward,
+                    tokio::runtime::Handle::current(),
+                ),
+            ))
+            .await;
+    }
     let event_drain_task = runtime.clone().spawn_event_drain_task();
 
     // 6. Bind HTTP server on ephemeral port
@@ -2860,5 +4758,146 @@ fn main() {
         run_persistent();
     } else {
         run_single_shot();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §8.5 steward runtime bridges
+// ---------------------------------------------------------------------------
+
+/// Late-bound Arc'd runtime for the steward's gating/conflict bridges: the
+/// engine is constructed during identity-first init, before
+/// `Arc::new(runtime)` exists; the cell binds right after.
+#[derive(Clone, Default)]
+struct StewardLateRuntime(Arc<tokio::sync::OnceCell<Arc<UnifiedRuntime>>>);
+
+impl StewardLateRuntime {
+    fn bind(&self, runtime: Arc<UnifiedRuntime>) {
+        let _ = self.0.set(runtime);
+    }
+
+    fn get(&self) -> Option<Arc<UnifiedRuntime>> {
+        self.0.get().cloned()
+    }
+}
+
+/// Mob-purpose context from the hosted mob's id plus the restored roster's
+/// labels (no mob-level purpose field exists — verified; a `mob_purpose`
+/// or `purpose` label on any member spec is adopted as the mob's purpose).
+struct GatewayMobPurposeSource {
+    mob: String,
+    roster: Arc<std::sync::Mutex<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>>,
+}
+
+impl meerkat_mobkit::MobPurposeSource for GatewayMobPurposeSource {
+    fn mob_contexts(&self) -> Vec<meerkat_mobkit::memory::steward::MobContext> {
+        let roster = self.roster.lock().unwrap_or_else(|err| err.into_inner());
+        let purpose = roster.iter().find_map(|spec| {
+            spec.labels
+                .get("mob_purpose")
+                .or_else(|| spec.labels.get("purpose"))
+                .cloned()
+        });
+        let member_labels = roster
+            .iter()
+            .map(|spec| (spec.identity.as_str().to_string(), spec.labels.clone()))
+            .collect();
+        vec![meerkat_mobkit::memory::steward::MobContext {
+            mob: self.mob.clone(),
+            purpose,
+            member_labels,
+        }]
+    }
+}
+
+/// Quarantine-promotion gate enqueue over the runtime's gating engine
+/// (§10.2): risk tier R3, so the evaluation mints a pending entry the
+/// operator decides through the existing console/RPC gating flow.
+struct GatewayMemoryGatingBridge {
+    runtime: StewardLateRuntime,
+}
+
+#[async_trait]
+impl meerkat_mobkit::MemoryGatingBridge for GatewayMemoryGatingBridge {
+    async fn enqueue_promotion_gate(
+        &self,
+        realm: &str,
+        description: &str,
+        entity: &str,
+        topic: &str,
+    ) -> Result<String, String> {
+        let Some(runtime) = self.runtime.get() else {
+            return Err("runtime not yet bound".to_string());
+        };
+        let result = runtime
+            .evaluate_gating_action(meerkat_mobkit::runtime::GatingEvaluateRequest {
+                action: description.to_string(),
+                actor_id: format!("memory-steward:{realm}"),
+                risk_tier: meerkat_mobkit::runtime::GatingRiskTier::R3,
+                rationale: Some(
+                    "memory steward quarantine promotion (agent-memory §10.2)".to_string(),
+                ),
+                requested_approver: None,
+                approval_recipient: None,
+                approval_channel: None,
+                approval_timeout_ms: None,
+                entity: Some(entity.to_string()),
+                topic: Some(topic.to_string()),
+            })
+            .await;
+        result.pending_id.ok_or_else(|| {
+            format!(
+                "gating evaluation returned outcome {:?} without a pending entry{}",
+                result.outcome,
+                result
+                    .fallback_reason
+                    .as_deref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            )
+        })
+    }
+}
+
+/// Contradiction bridge (§8.5): dream findings with operational
+/// consequence land as `MemoryConflictSignal`s in the operational ledger,
+/// where gating's R2/R3 conflict probe reads them. Fire-and-forget.
+struct GatewayMemoryConflictBridge {
+    runtime: StewardLateRuntime,
+    handle: tokio::runtime::Handle,
+}
+
+impl meerkat_mobkit::MemoryConflictBridge for GatewayMemoryConflictBridge {
+    fn emit_conflict(&self, entity: &str, topic: &str, reason: &str) {
+        let Some(runtime) = self.runtime.get() else {
+            tracing::warn!(
+                entity,
+                topic,
+                "memory conflict bridge: runtime not yet bound"
+            );
+            return;
+        };
+        let entity = entity.to_string();
+        let topic = topic.to_string();
+        let reason = reason.to_string();
+        self.handle.spawn(async move {
+            let request = meerkat_mobkit::runtime::MemoryIndexRequest {
+                entity: entity.clone(),
+                topic: topic.clone(),
+                store: None,
+                fact: None,
+                metadata: None,
+                conflict: Some(true),
+                conflict_reason: Some(reason),
+            };
+            if let Err(err) = runtime.memory_index(request).await {
+                tracing::warn!(
+                    entity,
+                    topic,
+                    error = ?err,
+                    "memory conflict bridge: conflict signal write failed"
+                );
+            }
+        });
     }
 }

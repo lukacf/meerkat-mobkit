@@ -57,6 +57,11 @@ meerkat-models = "0.7"
 # meerkat 0.7 split session memory out of `memory-store` (which now only maps
 # to meerkat-store/memory); explicit `memory` enables need `memory-store-session`.
 meerkat = { version = "0.7", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store"] }
+# READ-ONLY host-side access to meerkat's OWN session semantic memory for the
+# Distiller's post-compaction harvest (§8.4: `MemoryStore::search` over the
+# discard range). This reads meerkat's store; the §12 bright line governs the
+# bundled agent-memory store, which stays plain B-tree SQLite.
+meerkat-memory = "0.7"
 meerkat-runtime = { version = "0.7", features = ["sqlite-store", "live"] }
 meerkat-session = { version = "0.7", features = ["session-store"] }
 meerkat-store = { version = "0.7", features = ["sqlite"] }
@@ -69,6 +74,31 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 integration-real-tests = []
+
+# Calibration-harness seam for the memory Selector (§8.3/§11):
+# `scripts/memory-evals --mode live` drives this binary per fixture. Named
+# explicitly so the CLI name is hyphenated.
+[[bin]]
+name = "selector-eval"
+path = "src/bin/selector_eval.rs"
+
+# Calibration-harness seam for the memory Distiller (§8.4/§11); same contract
+# as selector-eval, fixture in / structured ops out.
+[[bin]]
+name = "distiller-eval"
+path = "src/bin/distiller_eval.rs"
+
+# Calibration-harness seam for the memory Steward's consolidate phase
+# (§8.5/§11): fixture in / mapped ops + staged-validator verdict out.
+[[bin]]
+name = "steward-eval"
+path = "src/bin/steward_eval.rs"
+
+# Calibration-harness seam for the memory Hygienist (§8.6/§11): fixture in /
+# parsed ops + §8.6 revision-validator verdict out.
+[[bin]]
+name = "hygienist-eval"
+path = "src/bin/hygienist_eval.rs"
 
 [[example]]
 name = "incident_command_center"

@@ -1771,11 +1771,13 @@ for (const pkg of localPackages.values()) {
   );
 }
 
-writeRootBuild(
-  [...new Set(fastTestLabels)].sort(),
-  [...new Set(e2eSystemTestLabels)].sort(),
-  [...new Set(surfaceFeatureMatrixLabels)].sort(),
-);
+// The root BUILD.bazel is HAND-MAINTAINED in mobkit, not generated:
+// writeRootBuild's meerkat-derived template references meerkat-only labels
+// (//meerkat-cli, //meerkat-rpc, test-fixtures/live_smoke/support.rs,
+// .claude/skills/meerkat-platform) that do not exist in this repo, and it
+// drops the exports_files marker crate_universe needs. Per-crate BUILD.bazel
+// files stay generator-owned; `--check` gates their freshness in CI.
+void writeRootBuild;
 if (checkOnly && staleFileCount > 0) {
   console.error(`${staleFileCount} generated Bazel file(s) are stale; run node scripts/generate-bazel-rust-builds.mjs`);
   process.exit(1);

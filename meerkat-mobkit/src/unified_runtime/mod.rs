@@ -159,6 +159,12 @@ pub struct UnifiedRuntime {
     // Optional ABAC enforcement shared by the console/SSE surfaces.
     access_controller: Option<crate::access::AccessController>,
 
+    // Optional bundled-store handle backing the console Memory panel's
+    // read-only RPCs (§9.3). Interior-mutable so gateways can wire it after
+    // the runtime is shared (`Arc`), wherever the store is constructed.
+    memory_panel_store:
+        std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
 
@@ -235,6 +241,7 @@ impl UnifiedRuntime {
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,
+            memory_panel_store: std::sync::RwLock::new(None),
             metadata_table,
             persistent_metadata,
         }
@@ -343,6 +350,31 @@ impl UnifiedRuntime {
 
     pub(crate) fn console_events(&self) -> ConsoleEventStore {
         self.console_events.clone()
+    }
+
+    /// A §9.3 memory-event sink projecting typed memory-plane events onto
+    /// the console timeline (standard `ConsoleIdentityEventEnvelope`,
+    /// `event_type = "memory.*"`). Must be called from async context — the
+    /// sink captures the current runtime handle so sync emitters
+    /// (store/taint/guard code) can fire-and-forget.
+    pub fn memory_event_sink(&self) -> Arc<dyn crate::memory::events::MemoryEventSink> {
+        Arc::new(ConsoleMemoryEventSink {
+            store: self.console_events(),
+            handle: tokio::runtime::Handle::current(),
+        })
+    }
+
+    /// Register an observer for gating pending-entry resolutions
+    /// (decisions and timeout fallbacks) — the seam the memory steward's
+    /// gated promotions commit through (§10.2).
+    pub async fn register_gating_resolution_observer(
+        &self,
+        observer: Arc<dyn crate::runtime::GatingResolutionObserver>,
+    ) {
+        self.module_runtime
+            .lock()
+            .await
+            .register_gating_resolution_observer(observer);
     }
 
     /// Internal accessor used by console-facing RPC routers to share the
@@ -527,6 +559,29 @@ impl UnifiedRuntime {
     /// this call enforce (and live-serve) the ABAC configuration.
     pub fn set_access_controller(&mut self, controller: crate::access::AccessController) {
         self.access_controller = Some(controller);
+    }
+
+    /// Wire the bundled sqlite memory store into the console Memory panel
+    /// (§9.3). `&self` deliberately: gateways construct the store next to
+    /// the memory subsystem wiring, which may run after the runtime is
+    /// `Arc`-shared. Routers built *after* this call serve the panel RPCs.
+    pub fn set_memory_panel_store(
+        &self,
+        store: crate::memory::sqlite_store::SqliteAgentMemoryStore,
+    ) {
+        *self
+            .memory_panel_store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+    }
+
+    pub fn memory_panel_store(
+        &self,
+    ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+        self.memory_panel_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Borrow the shared access controller if one was installed.
@@ -1103,6 +1158,30 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
                 &attributed.envelope.payload,
             )),
         },
+    }
+}
+
+/// Projects [`crate::memory::events::MemoryTimelineEvent`]s onto the
+/// console timeline. Sync fire-and-forget: the async append is spawned on
+/// the captured runtime handle, so emitters inside mutexes or blocking
+/// threads never wait on the event surface.
+struct ConsoleMemoryEventSink {
+    store: ConsoleEventStore,
+    handle: tokio::runtime::Handle,
+}
+
+impl crate::memory::events::MemoryEventSink for ConsoleMemoryEventSink {
+    fn emit(&self, event: crate::memory::events::MemoryTimelineEvent) {
+        let store = self.store.clone();
+        let identity = event
+            .identity()
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string());
+        let event_type = event.event_type().to_string();
+        let data = event.data();
+        self.handle.spawn(async move {
+            store.append(identity, None, event_type, data).await;
+        });
     }
 }
 

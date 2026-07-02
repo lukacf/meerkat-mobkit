@@ -19,6 +19,7 @@ pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
 pub mod member_comms_id;
+pub mod memory;
 pub mod mob_handle_runtime;
 pub mod mobpack;
 pub mod mocks;
@@ -109,9 +110,21 @@ pub use http_sse::{
     mob_structural_events_sse_router, mob_structural_events_sse_router_with_access,
 };
 pub use identity_first::{
-    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryProvider,
+    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryLlmWrites,
+    AgentMemoryOperatorScope, AgentMemoryPerTurnInjection, AgentMemoryProvider,
     AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
-    AgentMemoryRuntimeInjector, AgentMemorySelection, MarkdownAgentMemoryStore, NewAgentMemory,
+    AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
+    MarkdownAgentMemoryStore, NewAgentMemory,
+};
+pub use memory::{
+    CompactionResetSink, ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine,
+    DreamOutcome, DreamRun, HygieneCause, HygieneOutcome, HygienistConfig, HygienistEngine,
+    ManifestTier, MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge,
+    MemoryKind, MemoryRecord, MemoryScope, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
+    OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
+    SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
+    StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,
+    TrustTier, spawn_member_event_observer, spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
@@ -141,18 +154,19 @@ pub use runtime::{
     GatingDecideRequest, GatingDecision, GatingDecisionResult, GatingEvaluateRequest,
     GatingEvaluateResult, GatingOutcome, GatingPendingEntry, GatingRiskTier, InMemoryMetadataStore,
     JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent,
-    LifecycleStage, McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal,
-    MemoryIndexError, MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult,
-    MemoryStoreInfo, MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle,
-    ModuleHealthState, ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest,
-    ModuleRouteResponse, NormalizationError, PersistentMetadataStore, RpcRouteError,
-    RpcRuntimeError, RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState,
-    RuntimeFromConfigError, RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions,
-    RuntimeRoute, RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition,
-    ScheduleDispatch, ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection,
-    ScheduleTrigger, SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract,
-    SessionStoreKind, SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope,
-    SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
+    LifecycleStage, LocalJsonMemoryBackendConfig, LocalJsonMemoryStoreError, McpBoundaryError,
+    MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
+    MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo,
+    MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState,
+    ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
+    NormalizationError, PersistentMetadataStore, RpcRouteError, RpcRuntimeError,
+    RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError,
+    RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
+    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
+    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
+    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
+    SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
+    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
     evaluate_schedules_at_tick, handle_console_rest_json_route,
     handle_console_rest_json_route_with_snapshot,
     handle_console_rest_json_route_with_snapshot_and_access, materialize_latest_session_rows,

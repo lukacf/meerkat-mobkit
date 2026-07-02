@@ -283,7 +283,9 @@ continuity generation. A live session rebind changes `session_id` without
 resetting the version; only destructive reset advances `generation` and starts
 the version stream over.
 
-Gateway memory config currently accepts Elephant as `{backend, endpoint}`.
+Gateway memory config accepts `{backend: "local_json"}` with an optional
+`health_check_endpoint` (`memory.local_json(...)`); the legacy Elephant
+`{backend, endpoint}` shape still works but emits a `DeprecationWarning`.
 `memory(stores=...)` is intentionally rejected because the Rust gateway does not
 accept store lists in `mobkit/init`. JWT auth is the gateway-supported auth mode;
 Google/OIDC helpers are not accepted by gateway init today.

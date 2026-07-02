@@ -57,6 +57,7 @@ impl UnifiedRuntime {
             self.identity_runtime().cloned(),
             visibility_policy,
             self.access_controller().cloned(),
+            self.memory_panel_store(),
         )
     }
 

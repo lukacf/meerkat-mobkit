@@ -66,7 +66,11 @@ impl std::fmt::Debug for AccessController {
 
 impl AccessController {
     /// Create a controller from a validated config.
-    pub fn new(config: AccessControlConfig) -> Result<Self, AccessConfigError> {
+    pub fn new(mut config: AccessControlConfig) -> Result<Self, AccessConfigError> {
+        // §10.3 migration: memory-naive configs (written before the memory
+        // read actions existed) get `agent.memory.read` alongside
+        // `agent.view`; see `normalize_access_config_for_memory_actions`.
+        super::model::normalize_access_config_for_memory_actions(&mut config);
         validate_access_config(&config)?;
         Ok(Self {
             inner: Arc::new(AccessControllerInner {
@@ -207,6 +211,11 @@ impl AccessController {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut config = (*self.snapshot().0).clone();
         mutator(&mut config)?;
+        // Same §10.3 compat rewrite as construction, so a memory-naive
+        // config replaced over the admin RPC behaves like one loaded from
+        // disk. Self-limiting: normalized configs mention memory actions
+        // and pass through untouched.
+        super::model::normalize_access_config_for_memory_actions(&mut config);
         validate_access_config(&config)?;
         self.commit(config)
     }
@@ -704,6 +713,9 @@ mod tests {
         });
         controller.replace_config(config.clone()).expect("replace");
 
+        // The accepted config is the §10.3-normalized one (this fixture is
+        // memory-naive, so `agent.memory.read` rides its view rule).
+        super::super::model::normalize_access_config_for_memory_actions(&mut config);
         let reloaded = AccessController::load_or_default(&path).expect("reload");
         let (reloaded_config, _) = reloaded.snapshot();
         assert_eq!(*reloaded_config, config);

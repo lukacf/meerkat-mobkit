@@ -1,5 +1,5 @@
 import React from "react";
-import { stripPeerTransportScaffold } from "../lib/adapters";
+import { describeMemoryTimelineEvent, stripPeerTransportScaffold } from "../lib/adapters";
 import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
 
 interface SignalsRailProps {
@@ -306,6 +306,51 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
     case "route_changed":
       return { ...base, label: "Route changed", detail: truncate(textFromValue(data.reason) || "Routing updated") };
     default:
+      if (frame.event.startsWith("memory.")) {
+        return memorySignal(frame, data, base);
+      }
+      return null;
+  }
+}
+
+/// Map a `memory.*` frame to a rail signal. Warning-severity events surface
+/// operational issues (quarantined writes, taints, budget denials, blocked
+/// hygiene, conflicts); info-severity events surface routine progress. The
+/// remaining subtypes (dream start/skip, hygiene proposed/applied/skipped,
+/// distill timeouts, non-tainted taint transitions) are dropped from the rail.
+function memorySignal(
+  frame: ConsoleFrame,
+  data: Record<string, unknown>,
+  base: Omit<Signal, "label" | "detail">,
+): Signal | null {
+  const detail = truncate(describeMemoryTimelineEvent(frame.event, data));
+  const warning = (label: string): Signal => ({ ...base, severity: "warning", label, detail });
+  const info = (label: string): Signal => ({ ...base, severity: "info", label, detail });
+
+  switch (frame.event) {
+    case "memory.write.quarantined":
+      return warning("Memory write quarantined");
+    case "memory.taint.transition":
+      return data.kind === "tainted" ? warning("Session memory tainted") : null;
+    case "memory.budget.denied":
+      return warning("Memory budget denied");
+    case "memory.hygiene.blocked":
+      return warning("Memory hygiene blocked");
+    case "memory.conflict.signal":
+      return warning("Memory conflict");
+    case "memory.dream.completed":
+      return info("Memory dream completed");
+    case "memory.record.promoted":
+      return info("Memory record promoted");
+    case "memory.harvest.completed":
+      return info("Memory harvest completed");
+    case "memory.quarantine.verdict":
+      return info("Quarantine verdict");
+    case "memory.promotion.pending_gate":
+      return info("Promotion awaiting gate");
+    default:
+      // memory.dream.started/skipped, memory.hygiene.proposed/applied/skipped,
+      // memory.distill.timed_out, and any other subtype are not shown.
       return null;
   }
 }

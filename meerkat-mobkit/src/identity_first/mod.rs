@@ -17,9 +17,10 @@ pub use adapters::{
 };
 pub use agent_memory::{
     AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryForgetResult,
+    AgentMemoryLlmWrites, AgentMemoryOperatorScope, AgentMemoryPerTurnInjection,
     AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
-    AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, MarkdownAgentMemoryStore,
-    NewAgentMemory,
+    AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt,
+    MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
     BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeSessionOutcome,

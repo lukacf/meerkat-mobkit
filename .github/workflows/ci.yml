@@ -24,6 +24,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: scripts/repo-cargo fmt --all -- --check
       - run: scripts/verify-version-parity.sh
+      - run: scripts/check-memory-bright-line
+      - run: scripts/memory-evals --check
+      - run: node scripts/generate-bazel-rust-builds.mjs --check
       - uses: taiki-e/install-action@cargo-machete
       - run: scripts/repo-cargo clippy --workspace --all-targets -- -D warnings
       - run: scripts/repo-cargo machete --with-metadata

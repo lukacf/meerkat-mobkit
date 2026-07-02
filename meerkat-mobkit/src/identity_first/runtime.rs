@@ -30,6 +30,9 @@ use super::types::{
     IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
     RosterContext, SessionSnapshot,
 };
+use crate::memory::records::{
+    ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
+};
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
@@ -463,6 +466,22 @@ impl IdentityRuntime {
             .is_some_and(|injector| injector.provider().supports_forget())
     }
 
+    pub async fn agent_memory_supports_update(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_supersede())
+    }
+
+    pub async fn agent_memory_supports_manifest(&self) -> bool {
+        self.agent_memory
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|injector| injector.provider().supports_manifest())
+    }
+
     pub async fn remember_agent_memory(
         &self,
         realm: &str,
@@ -505,6 +524,70 @@ impl IdentityRuntime {
         provider.forget(realm, identity, memory_id).await
     }
 
+    /// Supersede `memory_id` within its lineage (the D4 fix): the new
+    /// title/body/tags become the active record; the prior stays
+    /// retrievable with provenance.
+    pub async fn update_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory_id: &str,
+        memory: NewAgentMemory,
+    ) -> Result<MemoryId, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        let scope = MemoryScope::Identity {
+            realm: realm.to_string(),
+            identity: identity.as_str().to_string(),
+        };
+        let record = NewMemoryRecord {
+            kind: MemoryKind::Fact,
+            title: memory.title,
+            description: String::new(),
+            body: memory.body,
+            tags: memory.tags,
+            evidence: Vec::new(),
+            verification: None,
+        };
+        provider.supersede(&scope, memory_id, record).await
+    }
+
+    /// Tiered metadata manifest for the identity's own scope (§8.3).
+    pub async fn manifest_agent_memory(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        tier: ManifestTier,
+    ) -> Result<Vec<RecordMeta>, AgentMemoryError> {
+        self.status(identity)
+            .await
+            .map_err(|err| AgentMemoryError::InvalidConfig(err.to_string()))?;
+        let provider = self
+            .agent_memory
+            .read()
+            .await
+            .as_ref()
+            .map(AgentMemoryRuntimeInjector::provider)
+            .ok_or_else(|| {
+                AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
+            })?;
+        let scope = MemoryScope::Identity {
+            realm: realm.to_string(),
+            identity: identity.as_str().to_string(),
+        };
+        provider.manifest(&[scope], tier).await
+    }
+
     pub async fn recall_agent_memory(
         &self,
         request: AgentMemoryRecallRequest,
@@ -521,7 +604,20 @@ impl IdentityRuntime {
             .ok_or_else(|| {
                 AgentMemoryError::InvalidConfig("agent memory is not configured".to_string())
             })?;
-        provider.recall(request).await
+        let records = provider.recall(request).await?;
+        // §9.2: explicit recall reads mark usage mechanically. Telemetry
+        // never fails the read — providers without usage support
+        // (markdown) return Unsupported, which is downgraded here.
+        if !records.is_empty() {
+            let ids: Vec<MemoryId> = records
+                .iter()
+                .map(|record| record.memory_id.clone())
+                .collect();
+            if let Err(err) = provider.mark_usage(&ids, UsageEvent::ExplicitRecall).await {
+                tracing::debug!(error = %err, "agent memory explicit-recall usage marking skipped");
+            }
+        }
+        Ok(records)
     }
 
     /// Attach the roster provider reset should consult for current specs.
@@ -1285,6 +1381,22 @@ impl IdentityRuntime {
                 }
                 let effective_session_id = outcome.session_id().clone();
                 if effective_session_id != registered_session_id {
+                    // §8.4 trigger (b): the resume fallback abandoned the
+                    // registered session — harvest it detached (materialize
+                    // is a hot path; the session store read stays valid).
+                    if let Some(injector) = self.agent_memory.read().await.as_ref() {
+                        let abandoned_key = registered_session_id.to_string();
+                        injector.note_session_generation(
+                            identity,
+                            &abandoned_key,
+                            record.generation.get(),
+                        );
+                        injector.spawn_rotation_distillation(
+                            identity,
+                            &abandoned_key,
+                            crate::memory::distiller::DistillCause::ResumeFallback,
+                        );
+                    }
                     abandoned_session_registrations.push(registered_session_id);
                 }
                 record.session_id = effective_session_id;
@@ -2412,23 +2524,44 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
-        let runtime_id = {
+        let (runtime_id, memory_session_key, memory_generation) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            entry
-                .continuity
-                .as_ref()
-                .map(|c| c.agent_runtime_id.clone())
+            (
+                entry
+                    .continuity
+                    .as_ref()
+                    .map(|c| c.agent_runtime_id.clone()),
+                // Scopes the injector's cross-turn dedup + cumulative budget.
+                entry.continuity.as_ref().map(|c| c.session_id.to_string()),
+                entry.continuity.as_ref().map(|c| c.generation.get()),
+            )
         };
+        // Steer is latency-sensitive live operator input: it bypasses both
+        // memory injection and inbound defanging by design. Every other send
+        // is defanged first (§9.1 anti-spoofing — even with injection off,
+        // forged memory envelopes are an inbound threat) and only then
+        // considered for ambient injection.
         let content_to_deliver = if handling_mode == HandlingMode::Steer {
             content.clone()
         } else {
             match self.agent_memory.read().await.clone() {
                 Some(injector) => {
+                    // §10.1 taint hook: authoritative session attribution
+                    // ahead of the async observe stream — the run this send
+                    // triggers belongs to this session. The generation bind
+                    // feeds the Distiller's EvidenceRefs (§8.4).
+                    if let Some(session_key) = memory_session_key.as_deref() {
+                        injector.note_current_session(identity, session_key);
+                        if let Some(generation) = memory_generation {
+                            injector.note_session_generation(identity, session_key, generation);
+                        }
+                    }
+                    let defanged = injector.defang_inbound(identity, content);
                     injector
-                        .inject_for_turn(identity, content)
+                        .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
                         .await
                         .map_err(|err| {
                             IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
@@ -2670,6 +2803,33 @@ impl IdentityRuntime {
             return Err(err);
         }
 
+        // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
+        // member retires. Best-effort and bounded — retirement proceeds at
+        // the distiller's pre-rotation timeout.
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            if let Some(session_id) = session_id.as_ref() {
+                injector
+                    .distill_before_rotation(
+                        identity,
+                        &session_id.to_string(),
+                        crate::memory::distiller::DistillCause::Retire,
+                    )
+                    .await;
+            }
+            // §8.5 exit interview: queue the retired identity's store for
+            // the next dream's harvest sub-phase.
+            injector
+                .note_identity_retired(
+                    identity,
+                    session_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string)
+                        .as_deref(),
+                    "retire",
+                )
+                .await;
+        }
+
         // Retire the mob member through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id)
             && let Err(err) = bridge.retire_member(rid).await
@@ -2788,6 +2948,22 @@ impl IdentityRuntime {
                 ));
             }
         };
+
+        // §8.4 trigger (b): respawn is a recovery boundary — harvest the
+        // session's window before the runtime refreshes (the SessionId does
+        // not rotate here; the cursor stays valid). Bounded; respawn
+        // proceeds at the pre-rotation timeout.
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            let session_key = record.session_id.to_string();
+            injector.note_session_generation(identity, &session_key, record.generation.get());
+            injector
+                .distill_before_rotation(
+                    identity,
+                    &session_key,
+                    crate::memory::distiller::DistillCause::Respawn,
+                )
+                .await;
+        }
 
         let effective_checkpoint_version = match self
             .refresh_existing_session_runtime_state(identity, &record, &grant)
@@ -3431,6 +3607,36 @@ impl IdentityRuntime {
                 session_id = %new_record.session_id,
                 "reset completed",
             );
+            drop(entries);
+            // §10.1: reset is the deliberate clean-slate boundary — clear
+            // session taint explicitly (rotation clears implicitly; this
+            // also drops pending pre-attribution taint). §8.4: distill the
+            // outgoing session DETACHED (never on the reset critical path;
+            // the session store outlives the member, so the read stays
+            // valid after teardown) with the reset boundary marked first so
+            // every distillate lands Quarantined pending steward review.
+            if let Some(injector) = self.agent_memory.read().await.as_ref() {
+                injector.clear_taint_for_identity(identity);
+                injector.note_session_generation(
+                    identity,
+                    &new_record.session_id.to_string(),
+                    new_record.generation.get(),
+                );
+                if let Some(old_continuity) = registered_entry.continuity.as_ref() {
+                    let old_session_key = old_continuity.session_id.to_string();
+                    injector.note_reset_boundary(&old_session_key);
+                    injector.note_session_generation(
+                        identity,
+                        &old_session_key,
+                        old_continuity.generation.get(),
+                    );
+                    injector.spawn_rotation_distillation(
+                        identity,
+                        &old_session_key,
+                        crate::memory::distiller::DistillCause::Reset,
+                    );
+                }
+            }
             return Ok(new_record);
         }
 
@@ -3454,6 +3660,20 @@ impl IdentityRuntime {
         entry.lease = Some(Self::lease_entry_from_grant(&grant));
         entry.state = IdentityLifecycleState::Active;
         entry.checkpoint_version = CheckpointVersion::new(0);
+        drop(entries);
+        if let Some(injector) = self.agent_memory.read().await.as_ref() {
+            injector.clear_taint_for_identity(identity);
+            // No-bridge (validation) reset: same §8.4 boundary semantics.
+            if let Some(old_continuity) = registered_entry.continuity.as_ref() {
+                let old_session_key = old_continuity.session_id.to_string();
+                injector.note_reset_boundary(&old_session_key);
+                injector.spawn_rotation_distillation(
+                    identity,
+                    &old_session_key,
+                    crate::memory::distiller::DistillCause::Reset,
+                );
+            }
+        }
 
         Ok(new_record)
     }
@@ -3514,6 +3734,33 @@ impl IdentityRuntime {
             broken_entry.lease = None;
             self.restore_entry(identity, broken_entry).await;
             return Err(err);
+        }
+
+        // §8.4 trigger (b): delete is the identity's LAST boundary — harvest
+        // the outgoing session before teardown (its exit-interview analog,
+        // §8.5, is the steward's; the distillate is what it will read).
+        // Bounded; deletion proceeds at the pre-rotation timeout.
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            if let Some(session_id) = session_id.as_ref() {
+                injector
+                    .distill_before_rotation(
+                        identity,
+                        &session_id.to_string(),
+                        crate::memory::distiller::DistillCause::Delete,
+                    )
+                    .await;
+            }
+            // §8.5 exit interview (delete is the identity's LAST boundary).
+            injector
+                .note_identity_retired(
+                    identity,
+                    session_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string)
+                        .as_deref(),
+                    "delete",
+                )
+                .await;
         }
 
         // Retire the mob member through the session bridge before removing

@@ -308,6 +308,16 @@ export interface ConsoleExperience {
     live_snapshot?: ConsoleHealthSnapshot;
   }>;
   access?: ConsoleAccessSection;
+  memory?: ConsoleMemorySection;
+}
+
+/// Per-caller memory-panel standing, projected by `/console/experience` when a
+/// memory panel is wired on the runtime. `can_read` gates the Memory nav entry;
+/// `can_review_quarantine` gates the quarantine tab.
+export interface ConsoleMemorySection {
+  available?: boolean;
+  can_read?: boolean;
+  can_review_quarantine?: boolean;
 }
 
 /// Per-caller access standing, projected by `/console/experience` when an
@@ -348,6 +358,149 @@ export interface ConsoleAccessConfig {
   admins?: string[];
   groups?: Record<string, ConsoleAccessGroup>;
   rules?: ConsoleAccessRule[];
+}
+
+// ── Memory panel (read-only) ──────────────────────────────────────────────
+// Shapes mirror the server contract for the four `mobkit/memory/panel/*`
+// JSON-RPC methods. All fields are best-effort/optional on the client so the
+// panel degrades gracefully across runtime versions.
+
+export type MemoryRecordScope =
+  | { scope: "identity"; realm: string; identity: string }
+  | { scope: "mob"; realm: string; mob: string }
+  | { scope: "operator"; realm: string; operator: string }
+  | { scope: "realm"; realm: string };
+
+export type MemoryRecordKind =
+  | "preference"
+  | "fact"
+  | "gotcha"
+  | "procedure"
+  | "relationship"
+  | "open_loop"
+  | "reference";
+
+export type MemoryTrust =
+  | "untrusted"
+  | "agent_observed"
+  | "agent_verified"
+  | "application"
+  | "operator";
+
+export type MemoryRecordStatus =
+  | { status: "active" }
+  | { status: "superseded"; by?: string }
+  | { status: "quarantined"; reason?: string }
+  | { status: "tombstoned" };
+
+export interface MemoryEvidenceRef {
+  session_id?: string;
+  generation?: number;
+  revision?: string;
+  range?: [number, number];
+}
+
+export type MemoryAuthor =
+  | { author: "agent"; identity?: string }
+  | { author: "steward"; run_id?: string }
+  | { author: "distiller"; run_id?: string }
+  | { author: "operator" }
+  | { author: "application" };
+
+export interface MemoryProvenance {
+  evidence?: MemoryEvidenceRef[];
+  author?: MemoryAuthor;
+  verification?: {
+    checked?: string;
+    evidence?: MemoryEvidenceRef[];
+  };
+}
+
+export interface MemoryUsage {
+  injected_count?: number;
+  last_injected_at_ms?: number;
+  explicit_recall_count?: number;
+  last_recalled_at_ms?: number;
+  judged_useful_count?: number;
+  last_useful_at_ms?: number;
+}
+
+export interface MemoryPanelRecord {
+  id: string;
+  scope: MemoryRecordScope;
+  kind: MemoryRecordKind;
+  title: string;
+  description?: string;
+  tags?: string[];
+  provenance?: MemoryProvenance;
+  trust: MemoryTrust;
+  status: MemoryRecordStatus;
+  supersedes?: string;
+  derived_from?: string[];
+  working_set_rank?: number;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+  usage?: MemoryUsage;
+  body_bytes?: number;
+}
+
+export interface MemoryFullRecord extends Omit<MemoryPanelRecord, "body_bytes"> {
+  body: string;
+}
+
+export interface MemoryInjectionEntry {
+  record_id: string;
+  identity: string;
+  session_key?: string;
+  surface: "build" | "turn";
+  at_ms: number;
+}
+
+export interface MemoryPendingPromotion {
+  realm: string;
+  pending_id: string;
+  record_id: string;
+  scope_kind: string;
+  scope_key: string;
+  rationale?: string;
+  status?: string;
+  created_at_ms?: number;
+}
+
+export interface MemoryDreamRun {
+  realm: string;
+  run_id: string;
+  first_op_at_ms?: number;
+  last_op_at_ms?: number;
+  ops?: number;
+  op_kinds?: Record<string, number>;
+  quarantined_ops?: number;
+  memory_ids?: string[];
+  rationales?: string[];
+}
+
+export interface MemoryPanelRecordsResult {
+  records: MemoryPanelRecord[];
+  next_cursor: string | null;
+  realms: string[];
+}
+
+export interface MemoryPanelRecordResult {
+  realm: string;
+  record: MemoryFullRecord;
+  chain: MemoryPanelRecord[];
+  injections: MemoryInjectionEntry[];
+}
+
+export interface MemoryPanelQuarantineResult {
+  records: MemoryPanelRecord[];
+  pending_promotions: MemoryPendingPromotion[];
+  realms: string[];
+}
+
+export interface MemoryPanelDreamsResult {
+  runs: MemoryDreamRun[];
+  realms: string[];
 }
 
 export interface ConsoleModulesResponse {

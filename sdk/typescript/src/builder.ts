@@ -27,6 +27,69 @@ import type {
   TopologyProvider,
 } from "./types.js";
 
+// -- agentMemory() key whitelists ------------------------------------------
+// Mirror the gateway's supported-field lists (rpc_gateway.rs); the runtime
+// checks exist so plain-JS callers fail loud on typos the way TS callers do
+// at compile time.
+
+const AGENT_MEMORY_KEYS = new Set([
+  "enabled",
+  "realm",
+  "selection",
+  "maxEntries",
+  "recallTimeoutMs",
+  "recallFailurePolicy",
+  "instructionHeader",
+  "perTurnInjection",
+  "defangInbound",
+  "store",
+  "llmWrites",
+  "recorderTool",
+  "contentTrust",
+  "selector",
+  "operatorScope",
+  "distiller",
+  "steward",
+  "hygienist",
+]);
+
+const CONTENT_TRUST_KEYS = new Set([
+  "trustedMcpServers",
+  "untrustedTools",
+  "trustedTools",
+]);
+
+const DISTILLER_KEYS = new Set([
+  "enabled",
+  "runsPerHour",
+  "minInteractions",
+  "model",
+]);
+
+const STEWARD_KEYS = new Set([
+  "enabled",
+  "cadence",
+  "model",
+  "perMob",
+  "runsPerDay",
+  "minSignals",
+]);
+
+const HYGIENIST_KEYS = new Set(["enabled", "runsPerDay", "model"]);
+
+function rejectUnknownKeys(
+  config: object,
+  known: Set<string>,
+  context: string,
+): void {
+  const unknown = Object.keys(config).filter((key) => !known.has(key)).sort();
+  if (unknown.length > 0) {
+    throw new Error(
+      `${context} got unsupported option(s): ${unknown.join(", ")}`,
+    );
+  }
+}
+
 // -- Builder config -------------------------------------------------------
 
 export interface MobKitBuilderConfig {
@@ -210,7 +273,7 @@ export class MobKitBuilder {
   memory(config?: unknown, options?: { stores?: string[] }): this {
     if (config === undefined && options?.stores !== undefined) {
       throw new Error(
-        "memory(stores=...) is not supported by the Rust gateway; pass memory.elephant(endpoint)",
+        "memory(stores=...) is not supported by the Rust gateway; pass memory.localJson()",
       );
     }
     this._config.memoryConfig = config ?? null;
@@ -226,8 +289,45 @@ export class MobKitBuilder {
       recallTimeoutMs?: number;
       recallFailurePolicy?: "skip" | "fail";
       instructionHeader?: string;
+      perTurnInjection?: "off" | "budgeted";
+      defangInbound?: boolean;
+      store?: "sqlite" | "markdown";
+      llmWrites?: "observed" | "quarantined";
+      recorderTool?: boolean;
+      contentTrust?: {
+        trustedMcpServers?: string[];
+        untrustedTools?: string[];
+        trustedTools?: string[];
+      };
+      selector?: "off" | "default" | `profile:${string}`;
+      operatorScope?: "off" | "provisional";
+      distiller?: boolean | {
+        enabled?: boolean;
+        runsPerHour?: number;
+        minInteractions?: number;
+        model?: string;
+      };
+      steward?: boolean | {
+        enabled?: boolean;
+        cadence?: string;
+        model?: string;
+        perMob?: boolean;
+        runsPerDay?: number;
+        minSignals?: number;
+      };
+      hygienist?: boolean | {
+        enabled?: boolean;
+        runsPerDay?: number;
+        model?: string;
+      };
     } = true,
   ): this {
+    // Runtime unknown-key rejection for plain-JS callers (the type already
+    // catches typos for TS callers): a typo'd option would otherwise be
+    // silently dropped here, before the gateway's own fail-loud check.
+    if (config !== true) {
+      rejectUnknownKeys(config, AGENT_MEMORY_KEYS, "agentMemory");
+    }
     if (config !== true && config.enabled === false) {
       this._config.agentMemoryConfig = { enabled: false };
       return this;
@@ -249,6 +349,113 @@ export class MobKitBuilder {
     }
     if (config.instructionHeader !== undefined) {
       wire.instruction_header = config.instructionHeader;
+    }
+    if (config.perTurnInjection !== undefined) {
+      wire.per_turn_injection = config.perTurnInjection;
+    }
+    if (config.defangInbound !== undefined) {
+      wire.defang_inbound = config.defangInbound;
+    }
+    if (config.store !== undefined) wire.store = config.store;
+    if (config.llmWrites !== undefined) wire.llm_writes = config.llmWrites;
+    if (config.recorderTool !== undefined) {
+      wire.recorder_tool = config.recorderTool;
+    }
+    if (config.contentTrust !== undefined) {
+      rejectUnknownKeys(
+        config.contentTrust,
+        CONTENT_TRUST_KEYS,
+        "agentMemory contentTrust",
+      );
+      const contentTrust: Record<string, unknown> = {};
+      if (config.contentTrust.trustedMcpServers !== undefined) {
+        contentTrust.trusted_mcp_servers = config.contentTrust.trustedMcpServers;
+      }
+      if (config.contentTrust.untrustedTools !== undefined) {
+        contentTrust.untrusted_tools = config.contentTrust.untrustedTools;
+      }
+      if (config.contentTrust.trustedTools !== undefined) {
+        contentTrust.trusted_tools = config.contentTrust.trustedTools;
+      }
+      wire.content_trust = contentTrust;
+    }
+    if (config.selector !== undefined) wire.selector = config.selector;
+    if (config.operatorScope !== undefined) {
+      wire.operator_scope = config.operatorScope;
+    }
+    if (config.distiller !== undefined) {
+      if (typeof config.distiller === "boolean") {
+        wire.distiller = config.distiller;
+      } else {
+        rejectUnknownKeys(
+          config.distiller,
+          DISTILLER_KEYS,
+          "agentMemory distiller",
+        );
+        const distiller: Record<string, unknown> = {};
+        if (config.distiller.enabled !== undefined) {
+          distiller.enabled = config.distiller.enabled;
+        }
+        if (config.distiller.runsPerHour !== undefined) {
+          distiller.runs_per_hour = config.distiller.runsPerHour;
+        }
+        if (config.distiller.minInteractions !== undefined) {
+          distiller.min_interactions = config.distiller.minInteractions;
+        }
+        if (config.distiller.model !== undefined) {
+          distiller.model = config.distiller.model;
+        }
+        wire.distiller = distiller;
+      }
+    }
+    if (config.steward !== undefined) {
+      if (typeof config.steward === "boolean") {
+        wire.steward = config.steward;
+      } else {
+        rejectUnknownKeys(config.steward, STEWARD_KEYS, "agentMemory steward");
+        const steward: Record<string, unknown> = {};
+        if (config.steward.enabled !== undefined) {
+          steward.enabled = config.steward.enabled;
+        }
+        if (config.steward.cadence !== undefined) {
+          steward.cadence = config.steward.cadence;
+        }
+        if (config.steward.model !== undefined) {
+          steward.model = config.steward.model;
+        }
+        if (config.steward.perMob !== undefined) {
+          steward.per_mob = config.steward.perMob;
+        }
+        if (config.steward.runsPerDay !== undefined) {
+          steward.runs_per_day = config.steward.runsPerDay;
+        }
+        if (config.steward.minSignals !== undefined) {
+          steward.min_signals = config.steward.minSignals;
+        }
+        wire.steward = steward;
+      }
+    }
+    if (config.hygienist !== undefined) {
+      if (typeof config.hygienist === "boolean") {
+        wire.hygienist = config.hygienist;
+      } else {
+        rejectUnknownKeys(
+          config.hygienist,
+          HYGIENIST_KEYS,
+          "agentMemory hygienist",
+        );
+        const hygienist: Record<string, unknown> = {};
+        if (config.hygienist.enabled !== undefined) {
+          hygienist.enabled = config.hygienist.enabled;
+        }
+        if (config.hygienist.runsPerDay !== undefined) {
+          hygienist.runs_per_day = config.hygienist.runsPerDay;
+        }
+        if (config.hygienist.model !== undefined) {
+          hygienist.model = config.hygienist.model;
+        }
+        wire.hygienist = hygienist;
+      }
     }
     this._config.agentMemoryConfig = wire;
     return this;
