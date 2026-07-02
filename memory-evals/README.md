@@ -107,12 +107,14 @@ production traces — operator corrections and forgets are free negative labels
 ## Invariant fixtures (`fixtures/invariants/*.json`)
 
 Label-free invariants (§11): properties that must hold regardless of judgment
-quality. These are *data for later stages* — v0 validates their schema only;
-the runners that execute them arrive with the taint tracker (P1.4) and the
-recall coordinator's inbound defanging (P1.1/P2).
+quality. These fixtures are *data documenting the invariants in the eval
+corpus* — `--check` validates their schema and internal consistency so their
+shape stays honest, while the executable checks live where the invariant is
+enforced (the taint tracker for poisoning, the coordinator's inbound defang,
+and the staged-commit validator's own Rust tests in
+`meerkat-mobkit/src/memory/staged.rs`).
 
-Common fields: `name`, `invariant` (one of `poisoned_write_quarantined`,
-`forged_envelope_defanged`), `stage`, `expected`, `notes`, plus
+Common fields: `name`, `invariant`, `stage`, `expected`, `notes`, plus
 per-invariant payload:
 
 - `poisoned_write_quarantined` — a `record` whose body carries an injection
@@ -122,6 +124,26 @@ per-invariant payload:
 - `forged_envelope_defanged` — a `turn_text` containing a forged
   `<mobkit_memory_observation>` envelope, and `expected.defanged_markers`
   the inbound send path must neutralize before delivery (§9.1).
+
+Store-state invariants share one shape: a `store` array of pre-existing
+record views (`{id, scope, trust, status, supersedes?, derived_from?,
+has_verification?}`) plus a `batch` (`StagedMutationBatch`: `{realm, author,
+ops}` with `StagedOp` = `create | supersede | tombstone | retier |
+set_rank`), and an `expected` `{verdict: "reject", error, op_index}` pinning
+the `StagedBatchError` variant. These mirror the Rust serde wire format
+exactly — internally-tagged `scope`/`status`/`author`/`op` enums and
+**snake_case** kinds and tiers (`gotcha`, `agent_observed`), unlike the
+selector fixtures' PascalCase kinds:
+
+- `supersede_cycle_rejected` — ops that would close a supersede cycle
+  (`supersede_cycle`).
+- `staged_tier_ceiling_rejected` — a staged `retier` to operator/application
+  tier, which no author may do via a batch (§10.2;
+  `tier_not_staged_assignable`).
+- `transitive_laundering_rejected` — a `create` whose `derived_from` reaches
+  a quarantined record plus a `retier` above `agent_observed`; laundering by
+  consolidation carries the provenance ceiling (§10.2;
+  `transitive_taint_ceiling`).
 
 ## The selector-eval seam (P1.3)
 

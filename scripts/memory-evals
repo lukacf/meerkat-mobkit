@@ -55,8 +55,38 @@ MEMORY_KINDS = (
     "OpenLoop",
     "Reference",
 )
-KNOWN_INVARIANTS = ("poisoned_write_quarantined", "forged_envelope_defanged")
+KNOWN_INVARIANTS = (
+    "poisoned_write_quarantined",
+    "forged_envelope_defanged",
+    "supersede_cycle_rejected",
+    "staged_tier_ceiling_rejected",
+    "transitive_laundering_rejected",
+)
 RECORD_META_KEYS = ("id", "kind", "title", "description", "age_days", "rank")
+
+# Staged-validator invariants mirror the Rust wire shapes exactly
+# (meerkat-mobkit/src/memory/records.rs + staged.rs serde): snake_case kinds
+# and tiers, internally-tagged scope/status/author/op enums. Each invariant
+# pins the StagedBatchError variant the validator must produce.
+STAGED_INVARIANT_ERRORS = {
+    "supersede_cycle_rejected": "supersede_cycle",
+    "staged_tier_ceiling_rejected": "tier_not_staged_assignable",
+    "transitive_laundering_rejected": "transitive_taint_ceiling",
+}
+STAGED_KINDS = (
+    "preference",
+    "fact",
+    "gotcha",
+    "procedure",
+    "relationship",
+    "open_loop",
+    "reference",
+)
+TRUST_TIERS = ("untrusted", "agent_observed", "agent_verified", "application", "operator")
+RECORD_STATUSES = ("active", "superseded", "quarantined", "tombstoned")
+SCOPE_KINDS = ("identity", "mob", "operator", "realm")
+AUTHOR_KINDS = ("operator", "application", "agent", "steward", "distiller")
+STAGED_OP_KINDS = ("create", "supersede", "tombstone", "retier", "set_rank")
 # Byte budgets from the record model (arch doc §7.1).
 TITLE_MAX_BYTES = 200
 DESCRIPTION_MAX_BYTES = 400
@@ -329,7 +359,167 @@ def validate_invariant_fixture(path, violations):
         if expected.get("delivered_verbatim") is not False:
             violations.append(f"{where}: expected.delivered_verbatim must be false")
 
+    if invariant in STAGED_INVARIANT_ERRORS:
+        validate_staged_invariant(fixture, invariant, expected, where, violations)
+
     return name
+
+
+def check_tagged_enum(value, tag, known, where, violations):
+    """Validate an internally-tagged serde enum mirror (`{"<tag>": variant}`).
+    Returns the variant name (or None)."""
+    if not isinstance(value, dict) or not isinstance(value.get(tag), str):
+        violations.append(f"{where}: must be an object with a `{tag}` variant tag")
+        return None
+    variant = value[tag]
+    if variant not in known:
+        violations.append(f"{where}: unknown {tag} `{variant}` (known: {', '.join(known)})")
+        return None
+    return variant
+
+
+def check_staged_payload(record, where, violations):
+    """NewMemoryRecord mirror: snake_case kind, non-empty title/body,
+    description present but allowed empty (records.rs field caps)."""
+    if not isinstance(record, dict):
+        violations.append(f"{where}: must be a NewMemoryRecord object")
+        return
+    kind = check_string(record, "kind", where, violations)
+    if kind is not None and kind not in STAGED_KINDS:
+        violations.append(
+            f"{where}: unknown kind `{kind}` (staged payloads use snake_case: "
+            f"{', '.join(STAGED_KINDS)})"
+        )
+    check_string(record, "title", where, violations)
+    check_string(record, "body", where, violations)
+    if not isinstance(record.get("description"), str):
+        violations.append(f"{where}: `description` must be a string (may be empty)")
+
+
+def validate_staged_invariant(fixture, invariant, expected, where, violations):
+    """Staged-validator invariant fixtures: pre-existing `store` state plus a
+    `StagedMutationBatch` the deterministic validator must reject. DATA for
+    the validator's own Rust tests (memory/staged.rs) — --check keeps the
+    wire shapes and referential integrity honest."""
+    known_ids = set()
+    store = fixture.get("store")
+    if not isinstance(store, list):
+        violations.append(f"{where}: staged fixture needs a `store` array (may be empty)")
+        store = []
+    for index, entry in enumerate(store):
+        entry_where = f"{where}: store[{index}]"
+        if not isinstance(entry, dict):
+            violations.append(f"{entry_where}: must be a record-view object")
+            continue
+        record_id = check_string(entry, "id", entry_where, violations)
+        if record_id is not None:
+            if record_id in known_ids:
+                violations.append(f"{entry_where}: duplicate store id `{record_id}`")
+            known_ids.add(record_id)
+        check_tagged_enum(entry.get("scope"), "scope", SCOPE_KINDS, f"{entry_where}.scope", violations)
+        tier = entry.get("trust")
+        if tier not in TRUST_TIERS:
+            violations.append(f"{entry_where}: trust must be one of {', '.join(TRUST_TIERS)}")
+        check_tagged_enum(
+            entry.get("status"), "status", RECORD_STATUSES, f"{entry_where}.status", violations
+        )
+
+    batch = fixture.get("batch")
+    ops = []
+    if not isinstance(batch, dict):
+        violations.append(f"{where}: staged fixture needs a `batch` object")
+    else:
+        check_string(batch, "realm", f"{where}: batch", violations)
+        check_tagged_enum(
+            batch.get("author"), "author", AUTHOR_KINDS, f"{where}: batch.author", violations
+        )
+        ops = batch.get("ops")
+        if not isinstance(ops, list) or not ops:
+            violations.append(f"{where}: batch.ops must be a non-empty array")
+            ops = []
+
+    for index, op in enumerate(ops):
+        op_where = f"{where}: batch.ops[{index}]"
+        op_kind = check_tagged_enum(op, "op", STAGED_OP_KINDS, op_where, violations)
+        if op_kind is None:
+            continue
+        # Referential integrity: every id an op reads must exist in the store
+        # or be created with an explicit id earlier in the batch.
+        reads = list(op.get("derived_from") or [])
+        if op_kind == "supersede":
+            reads.append(op.get("prior"))
+        if op_kind in ("tombstone", "retier", "set_rank"):
+            reads.append(op.get("id"))
+        for read_id in reads:
+            if not isinstance(read_id, str) or not read_id:
+                violations.append(f"{op_where}: referenced record ids must be strings")
+            elif read_id not in known_ids:
+                violations.append(
+                    f"{op_where}: references `{read_id}`, which is neither in the "
+                    "store nor created earlier in the batch"
+                )
+        if op_kind in ("create", "supersede"):
+            check_staged_payload(op.get("record"), f"{op_where}.record", violations)
+            if isinstance(op.get("id"), str) and op["id"]:
+                known_ids.add(op["id"])
+        if op_kind in ("create", "supersede", "retier"):
+            if op.get("trust") not in TRUST_TIERS:
+                violations.append(f"{op_where}: trust must be one of {', '.join(TRUST_TIERS)}")
+        if op_kind == "create":
+            check_tagged_enum(
+                op.get("scope"), "scope", SCOPE_KINDS, f"{op_where}.scope", violations
+            )
+
+    pinned_error = STAGED_INVARIANT_ERRORS[invariant]
+    if expected.get("verdict") != "reject":
+        violations.append(f"{where}: expected.verdict must be \"reject\"")
+    if expected.get("error") != pinned_error:
+        violations.append(
+            f"{where}: expected.error must be `{pinned_error}` for invariant `{invariant}`"
+        )
+    op_index = expected.get("op_index")
+    if not isinstance(op_index, int) or isinstance(op_index, bool) or not (
+        0 <= op_index < max(len(ops), 1)
+    ):
+        violations.append(f"{where}: expected.op_index must index into batch.ops")
+
+    # Cheap structural honesty checks: the fixture must actually carry the
+    # shape its invariant claims to exercise.
+    op_kinds = [op.get("op") for op in ops if isinstance(op, dict)]
+    if invariant == "supersede_cycle_rejected" and "supersede" not in op_kinds:
+        violations.append(f"{where}: supersede-cycle fixture carries no supersede op")
+    if invariant == "staged_tier_ceiling_rejected" and not any(
+        isinstance(op, dict)
+        and op.get("op") == "retier"
+        and op.get("trust") in ("operator", "application")
+        for op in ops
+    ):
+        violations.append(
+            f"{where}: tier-ceiling fixture needs a retier op to operator/application tier"
+        )
+    if invariant == "transitive_laundering_rejected":
+        tainted_store = any(
+            isinstance(entry, dict)
+            and (
+                entry.get("trust") == "untrusted"
+                or (isinstance(entry.get("status"), dict)
+                    and entry["status"].get("status") == "quarantined")
+            )
+            for entry in store
+        )
+        if not tainted_store:
+            violations.append(
+                f"{where}: laundering fixture needs an untrusted/quarantined store record"
+            )
+        if not any(
+            isinstance(op, dict)
+            and op.get("op") == "retier"
+            and op.get("trust") in ("agent_verified", "application", "operator")
+            for op in ops
+        ):
+            violations.append(
+                f"{where}: laundering fixture needs a retier op above agent_observed"
+            )
 
 
 # ── check mode ────────────────────────────────────────────────
