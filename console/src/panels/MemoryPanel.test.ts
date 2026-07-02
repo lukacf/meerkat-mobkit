@@ -22,8 +22,10 @@ const {
   buildRecordsQueryParams,
   hasActiveFilter,
   filtersEquivalent,
+  memorySectionOutcome,
   buildRecordsListView,
   createMemoryRecordsPager,
+  latticeFingerprint,
   recordUtility,
   sortRecordsByUtility,
   utilityLine,
@@ -185,9 +187,65 @@ test("filter bar builds the server's scope/identity/scope_key/status params", ()
     buildRecordsQueryParams({ status: "quarantined" }, { cursor: "123:m-1", limit: 200 }),
     { status: "quarantined", limit: 200, cursor: "123:m-1" },
   );
+  // Realm names the single realm whose keyset cursor makes paging honest.
+  assert.deepEqual(buildRecordsQueryParams({ realm: "homecore" }), { realm: "homecore" });
+  assert.deepEqual(
+    buildRecordsQueryParams({ scope: "mob", key: "research", realm: "homecore" }),
+    { scope: "mob", scope_key: "research", realm: "homecore" },
+  );
   assert.equal(hasActiveFilter({}), false);
   assert.equal(hasActiveFilter({ key: "  " }), false);
   assert.equal(hasActiveFilter({ status: "active" }), true);
+  assert.equal(hasActiveFilter({ realm: "homecore" }), true);
+  assert.equal(filtersEquivalent({ realm: "homecore" }, { realm: " homecore " }), true);
+  assert.equal(filtersEquivalent({ realm: "homecore" }, {}), false);
+});
+
+test("memory section outcomes classify -32030 as denied and -32601 as unavailable", () => {
+  // Mirror the transport contract: network.ts annotates thrown errors with
+  // `rpcError` (code/message/data) — the exact shape jsonRpcErrorCode reads.
+  const rpcError = (code: number): Error => {
+    const error = new Error(`RPC error ${code}`);
+    (error as Error & { rpcError?: { code?: unknown } }).rpcError = { code };
+    return error;
+  };
+  assert.equal(memorySectionOutcome(rpcError(-32030)), "denied");
+  assert.equal(memorySectionOutcome(rpcError(-32601)), "unavailable");
+  assert.equal(memorySectionOutcome(rpcError(-32000)), "error");
+  assert.equal(memorySectionOutcome(new Error("network down")), "error");
+  assert.equal(memorySectionOutcome(null), "error");
+  // A malformed annotation (non-numeric code) must not classify as denied.
+  const malformed = new Error("weird");
+  (malformed as Error & { rpcError?: unknown }).rpcError = { code: "-32030" };
+  assert.equal(memorySectionOutcome(malformed), "error");
+});
+
+test("a per-method capability miss classifies as denied (intersection under enforcement)", () => {
+  // Exact shape thrown by requireCapability (headless.ts): a plain Error,
+  // raised client-side before the RPC, with no rpcError annotation. Under an
+  // enforced view the server drops methods the principal cannot call from
+  // mobkit/capabilities — e.g. a scoped read grant loses panel/dreams — so
+  // the miss is denial by intersection, not a fatal panel error.
+  assert.equal(
+    memorySectionOutcome(new Error("MobKit capability missing for mobkit/memory/panel/dreams")),
+    "denied",
+  );
+  assert.equal(
+    memorySectionOutcome(
+      new Error("MobKit capability missing for mobkit/memory/panel/quarantine"),
+    ),
+    "denied",
+  );
+  // The prefix must anchor at the start: mentions elsewhere are not misses.
+  assert.equal(
+    memorySectionOutcome(new Error("saw 'MobKit capability missing for x' in logs")),
+    "error",
+  );
+  // Non-Error values with a matching-looking message do not classify.
+  assert.equal(
+    memorySectionOutcome("MobKit capability missing for mobkit/memory/panel/dreams"),
+    "error",
+  );
 });
 
 // ── Phase-1: recall utility mode ───────────────────────────────────────────
@@ -254,7 +312,7 @@ test("lattice invariants catch LLM-authored records above the ceiling", () => {
     provenance: { author: { author: "operator" } },
   });
   const result = latticeInvariants([ok, violation, operatorRecord], { complete: true });
-  assert.deepEqual(result.llmCeilingViolations, ["bad"]);
+  assert.deepEqual(result.llmCeilingViolations, [{ id: "bad", realm: "default" }]);
 });
 
 test("lattice invariants catch supersede cycles; dangling only when complete", () => {
@@ -266,12 +324,16 @@ test("lattice invariants catch supersede cycles; dangling only when complete", (
     supersedes: "missing",
   });
   const complete = latticeInvariants([a, b, dangling], { complete: true });
-  assert.deepEqual(complete.chainViolations.sort(), ["a", "b", "c"]);
+  assert.deepEqual(
+    complete.chainViolations.map((ref) => ref.id).sort(),
+    ["a", "b", "c"],
+  );
+  assert.equal(complete.chainViolations[0].realm, "default");
   const partial = latticeInvariants([dangling], { complete: false });
   assert.deepEqual(partial.chainViolations, []);
 });
 
-test("lattice walk pages with the keyset cursor and honors the cap", async () => {
+test("lattice walk pages a single realm with the keyset cursor", async () => {
   const pageA: MemoryPanelRecordsResult = {
     records: [record({ id: "r1", scope: { scope: "realm", realm: "default" } })],
     next_cursor: "cursor-2",
@@ -288,28 +350,93 @@ test("lattice walk pages with the keyset cursor and honors the cap", async () =>
       calls.push(params);
       return params.cursor ? pageB : pageA;
     },
-    { singleRealm: true },
+    { realms: ["default"] },
   );
   assert.equal(calls.length, 2);
+  // Single-realm gateways use the unscoped listing (already single-realm).
+  assert.equal(calls[0].realm, undefined);
   assert.equal(calls[1].cursor, "cursor-2");
   assert.equal(walk?.checked, 2);
   assert.equal(walk?.complete, true);
 
   // Access denial propagates as null → the tile renders "no grant".
-  const denied = await runLatticeWalk(async () => null, { singleRealm: true });
+  const denied = await runLatticeWalk(async () => null, { realms: ["default"] });
   assert.equal(denied, null);
+});
 
-  // Multi-realm listings cannot be walked past the first merged page.
-  const partialCalls: Array<Record<string, unknown>> = [];
-  const partial = await runLatticeWalk(
+test("lattice walk on multi-realm gateways walks each realm to exhaustion", async () => {
+  // Server-real shapes: an unscoped multi-realm merge NEVER carries a
+  // cursor; realm-scoped pages do. The walk must never call unscoped here.
+  const realmPages: Record<string, MemoryPanelRecordsResult[]> = {
+    alpha: [
+      {
+        records: [record({ id: "a-1", scope: { scope: "realm", realm: "alpha" } })],
+        next_cursor: "alpha-2",
+        realms: ["alpha"],
+      },
+      {
+        records: [record({ id: "a-2", scope: { scope: "realm", realm: "alpha" } })],
+        next_cursor: null,
+        realms: ["alpha"],
+      },
+    ],
+    beta: [
+      {
+        records: [record({ id: "b-1", scope: { scope: "realm", realm: "beta" } })],
+        next_cursor: null,
+        realms: ["beta"],
+      },
+    ],
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  const served: Record<string, number> = { alpha: 0, beta: 0 };
+  const walk = await runLatticeWalk(
     async (params) => {
-      partialCalls.push(params);
-      return pageA;
+      calls.push(params);
+      const realm = String(params.realm);
+      return realmPages[realm][served[realm]++];
     },
-    { singleRealm: false },
+    { realms: ["alpha", "beta"] },
   );
-  assert.equal(partialCalls.length, 1);
-  assert.equal(partial?.complete, false);
+  assert.deepEqual(
+    calls.map((call) => call.realm),
+    ["alpha", "alpha", "beta"],
+  );
+  assert.equal(calls[1].cursor, "alpha-2");
+  assert.equal(walk?.checked, 3);
+  // Every realm's cursor ran out under the cap → honestly complete.
+  assert.equal(walk?.complete, true);
+});
+
+test("lattice walk cap and cancellation keep the partial header honest", async () => {
+  const endless: MemoryPanelRecordsResult = {
+    records: Array.from({ length: 3 }, (_, index) =>
+      record({ id: `r-${index}`, scope: { scope: "realm", realm: "alpha" } }),
+    ),
+    next_cursor: "more",
+    realms: ["alpha"],
+  };
+  // Cap hit mid-realm with a live cursor → complete=false.
+  const capped = await runLatticeWalk(async () => endless, {
+    realms: ["alpha", "beta"],
+    maxRecords: 5,
+  });
+  assert.equal(capped?.checked, 5);
+  assert.equal(capped?.complete, false);
+
+  // A cancelled walk stops issuing page fetches instead of finishing.
+  let fetches = 0;
+  let cancelled = false;
+  const result = await runLatticeWalk(
+    async () => {
+      fetches += 1;
+      cancelled = true; // cancel after the first page lands
+      return endless;
+    },
+    { realms: ["alpha"], isCancelled: () => cancelled },
+  );
+  assert.equal(fetches, 1);
+  assert.equal(result, null);
 });
 
 // ── Phase-1: verdict tiles ─────────────────────────────────────────────────
@@ -359,13 +486,86 @@ test("lattice tile reports violations and the partial-walk header honestly", () 
   }).find((tile) => tile.id === "lattice");
   assert.equal(holding?.status, "holding");
   assert.match(holding?.lines[1] || "", /checked 3\/3/);
+  assert.deepEqual(holding?.evidence, []);
 
   const capped = computeVerdictTiles({
     ...emptyVerdictInputs,
-    lattice: { checked: 2000, complete: false, llmCeilingViolations: ["x"], chainViolations: [] },
+    lattice: {
+      checked: 2000,
+      complete: false,
+      llmCeilingViolations: [{ id: "x", realm: "default" }],
+      chainViolations: [],
+    },
   }).find((tile) => tile.id === "lattice");
   assert.equal(capped?.status, "violated");
   assert.match(capped?.lines[1] || "", /first 2000 — partial/);
+});
+
+test("violated lattice tile carries its evidence refs, capped with a +N more line", () => {
+  const violations = Array.from({ length: 7 }, (_, index) => ({
+    id: `bad-${index}`,
+    realm: "default",
+  }));
+  const tile = computeVerdictTiles({
+    ...emptyVerdictInputs,
+    lattice: {
+      checked: 100,
+      complete: true,
+      llmCeilingViolations: violations.slice(0, 4),
+      chainViolations: violations.slice(4),
+    },
+  }).find((candidate) => candidate.id === "lattice");
+  assert.equal(tile?.status, "violated");
+  assert.equal(tile?.evidence?.length, 5);
+  assert.deepEqual(tile?.evidence?.[0], { id: "bad-0", realm: "default" });
+  assert.ok(tile?.lines.some((line) => line === "+2 more violations"));
+});
+
+test("a settled lattice verdict is retained (with a re-checking line) during re-runs", () => {
+  const settled = {
+    checked: 10,
+    complete: true,
+    llmCeilingViolations: [],
+    chainViolations: [],
+  };
+  const tile = computeVerdictTiles({
+    ...emptyVerdictInputs,
+    lattice: settled,
+    latticeRunning: true,
+  }).find((candidate) => candidate.id === "lattice");
+  // No flicker to UNVERIFIABLE while the debounced refresh re-walks.
+  assert.equal(tile?.status, "holding");
+  assert.ok(tile?.lines.some((line) => line === "re-checking…"));
+
+  const cold = computeVerdictTiles({
+    ...emptyVerdictInputs,
+    lattice: null,
+    latticeRunning: true,
+  }).find((candidate) => candidate.id === "lattice");
+  assert.equal(cold?.status, "unverifiable");
+  assert.match(cold?.lines[0] || "", /page-walk running/);
+});
+
+test("lattice fingerprint is stable across content-identical refreshes", () => {
+  const rows = [
+    record({ id: "a", scope: { scope: "realm", realm: "default" }, updated_at_ms: 5 }),
+  ];
+  const again = [
+    record({ id: "a", scope: { scope: "realm", realm: "default" }, updated_at_ms: 5 }),
+  ];
+  assert.equal(
+    latticeFingerprint(rows, ["default"], "c-1"),
+    latticeFingerprint(again, ["default"], "c-1"),
+  );
+  assert.notEqual(
+    latticeFingerprint(rows, ["default"], "c-1"),
+    latticeFingerprint(rows, ["default"], "c-2"),
+  );
+  const changed = [{ ...rows[0], trust: "operator" as const }];
+  assert.notEqual(
+    latticeFingerprint(rows, ["default"], "c-1"),
+    latticeFingerprint(changed, ["default"], "c-1"),
+  );
 });
 
 test("recall and dreams tiles compute from loaded usage and dream recency", () => {
@@ -688,4 +888,80 @@ test("bug 3: unfiltered load-more rows render — grouped view reads the accumul
   });
   assert.equal(flat.mode, "flat");
   assert.deepEqual(flat.records.map((r) => r.id), ["a1", "a2"]);
+});
+
+// ── Gate fix round: denied propagation through the pager and list view ─────
+
+test("a denied filtered query renders no-grant, never an empty store", async () => {
+  const { state, pending, pager } = pagerHarness();
+
+  const filtered = pager.applyFilter({ scope: "operator" });
+  pending[0](null); // -32030 → the query callback resolves null
+  await filtered;
+  assert.deepEqual(state.paged, { records: [], nextCursor: null, denied: true });
+
+  const view = buildRecordsListView({
+    records: [],
+    paged: state.paged,
+    baseCursor: null,
+    filter: { scope: "operator" },
+    sortMode: "recency",
+  });
+  assert.equal(view.denied, true);
+  assert.equal(view.records.length, 0);
+
+  // Clearing the filter resets the denial.
+  await pager.applyFilter({});
+  assert.equal(state.paged, null);
+});
+
+test("a denied load-more continuation keeps the shown rows and flags the denial", async () => {
+  const { state, pending, pager } = pagerHarness();
+  const base = [record({ id: "base-1", scope: { scope: "realm", realm: "default" } })];
+
+  const more = pager.loadMore({
+    filter: {},
+    paged: null,
+    baseRecords: base,
+    baseCursor: "cursor-1",
+  });
+  pending[0](null);
+  await more;
+  assert.deepEqual(state.paged?.records.map((r) => r.id), ["base-1"]);
+  assert.equal(state.paged?.nextCursor, null);
+  assert.equal(state.paged?.denied, true);
+});
+
+test("a non-denial query error keeps the prior page instead of clobbering it", async () => {
+  const state: {
+    paged: { records: MemoryPanelRecord[]; nextCursor: string | null; denied?: boolean } | null;
+    loading: boolean;
+  } = { paged: null, loading: false };
+  let mode: "ok" | "fail" = "ok";
+  const pager = createMemoryRecordsPager({
+    query: async () => {
+      if (mode === "fail") throw new Error("gateway hiccup");
+      return {
+        records: [record({ id: "ok-1", scope: { scope: "realm", realm: "default" } })],
+        next_cursor: "cursor-2",
+        realms: ["default"],
+      };
+    },
+    setPaged: (paged) => {
+      state.paged = paged;
+    },
+    setLoading: (loading) => {
+      state.loading = loading;
+    },
+  });
+
+  await pager.applyFilter({ status: "active" });
+  assert.deepEqual(state.paged?.records.map((r) => r.id), ["ok-1"]);
+
+  mode = "fail";
+  await pager.applyFilter({ status: "quarantined" });
+  // The failed re-query neither cleared the page nor marked it denied.
+  assert.deepEqual(state.paged?.records.map((r) => r.id), ["ok-1"]);
+  assert.notEqual(state.paged?.denied, true);
+  assert.equal(state.loading, false);
 });

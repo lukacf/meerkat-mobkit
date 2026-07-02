@@ -1539,38 +1539,57 @@ async fn handle_unified_rpc_json_inner(
                     }
                 }
             } else if let (Some(profile), Some(meerkat_id)) = (profile, meerkat_id) {
-                // Mob agent spawn: {"profile": "default", "meerkat_id": "agent-1"}
-                let spec = meerkat_mob::SpawnMemberSpec::from_wire(
-                    profile.to_string(),
-                    meerkat_id.to_string(),
-                    request
-                        .params
-                        .get("initial_message")
-                        .and_then(Value::as_str)
-                        .map(|s| meerkat_core::ContentInput::from(s.to_string())),
-                    None,
-                    None,
-                );
-                match Box::pin(runtime.spawn(spec)).await {
-                    Ok(_member_ref) => JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: Some(serde_json::json!({
-                            "accepted": true,
-                            "meerkat_id": meerkat_id
-                        })),
-                        error: None,
-                    },
-                    Err(err) => JsonRpcResponse {
+                // The system identity is reserved for runtime-plane console
+                // events (memory.* sinks, bootstrap): the aggregator exempts
+                // it from the roster-visibility gate and namespacing, so a
+                // member bearing the name would bypass both. Reject loudly.
+                if meerkat_id == crate::console_contracts::SYSTEM_EVENT_IDENTITY {
+                    JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
-                            message: format!("Invalid params: {err}"),
+                            message: format!(
+                                "Invalid params: '{meerkat_id}' is a reserved runtime identity"
+                            ),
                             data: None,
                         }),
-                    },
+                    }
+                } else {
+                    // Mob agent spawn: {"profile": "default", "meerkat_id": "agent-1"}
+                    let spec = meerkat_mob::SpawnMemberSpec::from_wire(
+                        profile.to_string(),
+                        meerkat_id.to_string(),
+                        request
+                            .params
+                            .get("initial_message")
+                            .and_then(Value::as_str)
+                            .map(|s| meerkat_core::ContentInput::from(s.to_string())),
+                        None,
+                        None,
+                    );
+                    match Box::pin(runtime.spawn(spec)).await {
+                        Ok(_member_ref) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: Some(serde_json::json!({
+                                "accepted": true,
+                                "meerkat_id": meerkat_id
+                            })),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("Invalid params: {err}"),
+                                data: None,
+                            }),
+                        },
+                    }
                 }
             } else {
                 JsonRpcResponse {
@@ -4962,6 +4981,63 @@ shell = true
             backend: None,
             binding: None,
         }
+    }
+
+    /// `_system` is the reserved runtime-plane console identity: the
+    /// aggregator exempts it from the roster-visibility gate and identity
+    /// namespacing (memory.* sink attribution), so a member spawned under
+    /// that name would emit frames indistinguishable from runtime events
+    /// and bypass the per-member hidden gate. The spawn surface must
+    /// reject the name outright.
+    #[tokio::test]
+    async fn unified_rpc_spawn_rejects_reserved_system_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-reserved-identity-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/spawn_member",
+                    "params": {
+                        "profile": "worker",
+                        "meerkat_id": crate::console_contracts::SYSTEM_EVENT_IDENTITY,
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+
+        assert_eq!(response["error"]["code"], json!(-32602), "{response:#?}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("reserved")),
+            "rejection must name the reservation: {response:#?}"
+        );
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
     }
 
     #[tokio::test]

@@ -15,7 +15,10 @@
 //!   (default: fresh dir under the system temp dir)
 //! - `MOBKIT_MEMORY_E2E_ACCESS` `open` (default, no access controller —
 //!   the lane browser-e2e's reference proof runs in), `reader` (memory
-//!   read grants but no quarantine review), or `none` (console visible,
+//!   read grants but no quarantine review), `partial` (agent+mob reads,
+//!   no operator.memory.read — operator scope must render "no grant"),
+//!   `scoped` (agent.memory.read limited to one agent — panel/dreams
+//!   denies, DREAMS tile lands "no-grant"), or `none` (console visible,
 //!   no memory grants — `nav:memory` must not render)
 //! - `MOBKIT_MEMORY_E2E_SEED_ONLY=1` seed + verify readback + print the
 //!   summary, then exit without serving (fixture self-test lane)
@@ -703,6 +706,24 @@ fn access_controller(mode: &str) -> Option<AccessController> {
                 "operator.memory.read",
             ],
         )),
+        // Unscoped agent/mob reads but NO operator.memory.read: the panel's
+        // operator-scope probes and the scope=operator filter hit the entry
+        // gate (-32030) and must render "no grant", never the empty-store
+        // copy or leaked rows.
+        "partial" => rules.push(everyone(
+            "everyone-reads-agent-and-mob-memory",
+            &["agent.memory.read", "mob.memory.read"],
+        )),
+        // agent.memory.read scoped to a single agent: the unscoped listing
+        // row-filters fine (rows still render), but panel/dreams requires
+        // the UNSCOPED read grant and denies — the DREAMS verdict tile must
+        // land "no-grant".
+        "scoped" => rules.push(AccessRule {
+            id: "router-only-memory-read".to_string(),
+            actions: vec!["agent.memory.read".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        }),
         // The explicit deny both expresses intent and opts out of the
         // §10.3 memory-naive compat rewrite ("read rides view"), which
         // would otherwise extend the agent.view rule with

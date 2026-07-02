@@ -8890,13 +8890,33 @@ svg[data-svg=fit],
 .memory-tile__status[data-status=holding] {
   color: var(--ok);
 }
-.memory-tile__status[data-status=degraded],
+.memory-tile__status[data-status=degraded] {
+  color: var(--warn);
+}
 .memory-tile__status[data-status=violated] {
-  color: var(--warn, var(--ink));
+  color: var(--crit);
+}
+.memory-tile[data-status=violated] {
+  border-color: color-mix(in oklch, var(--crit) 30%, var(--line));
 }
 .memory-tile__status[data-status=unverifiable],
 .memory-tile__status[data-status=no-grant] {
   color: var(--ink-faint);
+}
+.memory-tile__evidence {
+  align-self: flex-start;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--crit);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.memory-tile__evidence:hover {
+  color: var(--ink);
 }
 .memory-tile__line {
   font-size: 10.5px;

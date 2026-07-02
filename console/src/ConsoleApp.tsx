@@ -81,7 +81,12 @@ import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
-import { MemoryPanel, memoryFramePivot, type MemoryRecordDetail } from "./panels/MemoryPanel";
+import {
+  MemoryPanel,
+  memoryFramePivot,
+  memorySectionOutcome,
+  type MemoryRecordDetail,
+} from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -131,6 +136,10 @@ type MemoryPanelData = {
   /// (never green) instead of an indistinguishable empty section.
   recordsDenied: boolean;
   dreamsDenied: boolean;
+  /// One-row scope-probe outcomes: the scope exists behind a grant this
+  /// principal lacks (the unfiltered listing row-filters them silently).
+  operatorScopeDenied: boolean;
+  mobScopeDenied: boolean;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
@@ -576,6 +585,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     nextCursor: null,
     recordsDenied: false,
     dreamsDenied: false,
+    operatorScopeDenied: false,
+    mobScopeDenied: false,
   });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
@@ -2057,8 +2068,33 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       } catch (err) {
         // Access denied to records leaves the section empty but flagged, so
         // the panel renders "no grant" instead of an empty store.
-        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        if (memorySectionOutcome(err) !== "denied") throw err;
         recordsDenied = true;
+      }
+
+      // The unfiltered listing row-filters restricted scopes silently, so a
+      // one-row probe per restricted scope kind is the only way to render
+      // the spec'd access-denied Holdings row instead of the scope silently
+      // not existing. Skipped when the listing itself was denied.
+      let operatorScopeDenied = false;
+      let mobScopeDenied = false;
+      if (!recordsDenied) {
+        const probeScope = async (scope: "operator" | "mob"): Promise<boolean> => {
+          try {
+            await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listMemoryRecords, memoryTarget, {
+              scope,
+              limit: 1,
+            });
+            return false;
+          } catch (err) {
+            if (memorySectionOutcome(err) === "denied") return true;
+            throw err;
+          }
+        };
+        [operatorScopeDenied, mobScopeDenied] = await Promise.all([
+          probeScope("operator"),
+          probeScope("mob"),
+        ]);
       }
 
       let quarantineRecords: MemoryPanelRecord[] = [];
@@ -2088,7 +2124,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         dreams = dreamsResult?.runs || [];
       } catch (err) {
         // Tolerate access-denied for dreams: leave the list empty but flagged.
-        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        if (memorySectionOutcome(err) !== "denied") throw err;
         dreamsDenied = true;
       }
 
@@ -2102,6 +2138,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         nextCursor,
         recordsDenied,
         dreamsDenied,
+        operatorScopeDenied,
+        mobScopeDenied,
         unavailable: false,
         error: null,
       }));
@@ -2117,8 +2155,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
 
   /// Filtered/paged panel/records query for the Records filter bar, the
-  /// keyset load-more, and the lattice page-walk. Resolves null on -32030 so
-  /// callers keep the per-section tolerance contract.
+  /// keyset load-more, and the lattice page-walk. Resolves null STRICTLY on
+  /// -32030 (denied — consumers render "no grant", never an empty store);
+  /// other failures surface via the panel error banner and rethrow so the
+  /// pager keeps the prior page instead of clobbering it.
   const queryMemoryRecords = React.useCallback(
     async (params: Record<string, unknown>): Promise<MemoryPanelRecordsResult | null> => {
       try {
@@ -2128,9 +2168,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           params,
         )) as MemoryPanelRecordsResult | null;
       } catch (err) {
-        if (jsonRpcErrorCode(err) === -32030) return null;
+        if (memorySectionOutcome(err) === "denied") return null;
         setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
-        return null;
+        throw err;
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3634,6 +3674,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           nextCursor={memoryData.nextCursor}
           recordsDenied={memoryData.recordsDenied}
           dreamsDenied={memoryData.dreamsDenied}
+          operatorScopeDenied={memoryData.operatorScopeDenied}
+          mobScopeDenied={memoryData.mobScopeDenied}
           liveFrames={activityRef.current}
           onRefresh={() => void refreshMemoryData()}
           onSelectRecord={(realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId)}
@@ -3642,7 +3684,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
           onQueryRecords={queryMemoryRecords}
           onLoadEvidence={loadMemoryEvidence}
-          onOpenGating={() => dock.openTarget(buildControlTarget("gating"), "replace_focused")}
+          onOpenGating={
+            // Only offered where the nav itself offers gating — on runtimes
+            // without a mob control surface (or with gating hidden) the
+            // target would land on a dead-end placeholder.
+            visibleControls.includes("gating")
+              ? () => dock.openTarget(buildControlTarget("gating"), "replace_focused")
+              : undefined
+          }
         />
       );
     return <div className="console-panel">Unsupported panel</div>;
@@ -3749,15 +3798,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
               emptyText={railConfig?.empty_text}
               watchedIdentities={watchedIdentities}
               onPresetChange={setActiveActivityPresetId}
-              onSelect={(frame) => {
+              onSelect={
                 // "State here" pivot: a live memory signal opens the Memory
                 // panel, and lands on the record's Biography when the frame
-                // names one.
-                if (!frame.event.startsWith("memory.")) return;
-                dock.openTarget(buildControlTarget("memory"), "replace_focused");
-                const pivot = memoryFramePivot(frame);
-                if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
-              }}
+                // names one. Offered only when the server-projected
+                // experience grants memory.can_read — the affordance must
+                // never outrun the nav gate.
+                experience?.memory?.can_read === true
+                  ? (frame) => {
+                      if (!frame.event.startsWith("memory.")) return;
+                      dock.openTarget(buildControlTarget("memory"), "replace_focused");
+                      const pivot = memoryFramePivot(frame);
+                      if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
+                    }
+                  : undefined
+              }
             />
           </>
         ) : null}

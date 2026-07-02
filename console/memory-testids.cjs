@@ -40,10 +40,15 @@ module.exports = {
   FILTER_INPUT: "memory-filter-input", // <input> identity / scope key (Enter or blur applies)
   FILTER_SCOPE: "memory-filter:scope", // <select> all|identity|mob|operator|realm
   FILTER_STATUS: "memory-filter:status", // <select> all|active|quarantined|superseded|tombstoned
+  FILTER_REALM: "memory-filter:realm", // <select>, renders only when realms.length > 1
   FILTER_CLEAR: "memory-filter-clear", // renders only while a filter is active
   SORT: "memory-sort", // <select> recency|utility (utility = Recall Utility mode)
   UTILITY_NOTE: "memory-utility-note", // approximation disclaimer, shows in utility mode
-  LOAD_MORE: "memory-load-more", // renders only while a keyset cursor exists (single-realm)
+  LOAD_MORE: "memory-load-more", // renders only while a keyset cursor exists (per-realm)
+  // Multi-realm without a realm picked: merged single page, no paging.
+  MULTI_REALM_NOTE: "memory-multi-realm-note",
+  RECORDS_EMPTY: "memory-records-empty", // says "no grant" for denied queries, never "empty"
+  RECORDS_DENIED_NOTE: "memory-records-denied-note", // denied load-more continuation
 
   // ── Record detail / Biography ──
   DETAIL: "memory-detail", // the Biography container (kept from P3b)
@@ -58,11 +63,14 @@ module.exports = {
   // non-current node loads that Biography in place; data-current / data-dimmed).
   chainEntry: (memoryId) => `memory-chain:${memoryId}`,
   // Evidence click-through: `memory-evidence:${index}` buttons per ref;
-  // result renders memory-evidence-excerpt (transcript window) or
-  // memory-evidence-degraded (session gone — label-only fallback).
+  // result renders memory-evidence-excerpt (transcript window),
+  // memory-evidence-degraded ("Session not found in the recent timeline
+  // window" — label-only fallback; the copy no longer claims the session is
+  // gone), or memory-evidence-empty (session found, range has no messages).
   evidenceRef: (index) => `memory-evidence:${index}`,
   EVIDENCE_EXCERPT: "memory-evidence-excerpt",
   EVIDENCE_DEGRADED: "memory-evidence-degraded",
+  EVIDENCE_EMPTY: "memory-evidence-empty",
 
   // ── Holdings tab ──
   HOLDINGS: "memory-holdings",
@@ -70,6 +78,11 @@ module.exports = {
   // `memory-holdings-scope:${scopeGroupKey}` — scope rows; click pivots to
   // Records pre-filtered to that scope.
   holdingsScope: (scopeKey) => `memory-holdings-scope:${scopeKey}`,
+  // Access-denied scope rows: the one-row probes ({scope, limit:1}) render
+  // these when the principal lacks the scope grant (spec §3.1 "no grant"
+  // operator row) — a denied scope must not be indistinguishable from an
+  // empty one. Ids: memory-holdings-scope-denied:operator / :mob.
+  holdingsScopeDenied: (kind) => `memory-holdings-scope-denied:${kind}`,
 
   // ── Verdict strip (Holdings header) ──
   VERDICT_STRIP: "memory-verdict-strip",
@@ -77,8 +90,14 @@ module.exports = {
   //   echo-safety | taint-wall | lattice | recall | dreams | store-floor.
   // The verdict state rides the `data-status` attribute:
   //   holding | degraded | violated | unverifiable | no-grant.
-  // Tiles are doors: clicking opens the tab holding the evidence.
+  // Tiles are doors: clicking opens the tab holding the evidence. Tiles are
+  // div[role=button]; a VIOLATED lattice tile additionally nests per-record
+  // evidence buttons (capped at 5) that open the offending Biography:
+  //   `memory-verdict-evidence:${tileId}:${memoryId}`.
+  // While a re-check runs, a settled tile keeps its verdict and shows a
+  // "re-checking…" line (never flickers back to UNVERIFIABLE).
   verdictTile: (id) => `memory-verdict:${id}`,
+  verdictEvidence: (tileId, memoryId) => `memory-verdict-evidence:${tileId}:${memoryId}`,
 
   // ── Pipeline tab (quarantine folded in) ──
   PIPELINE: "memory-pipeline",
@@ -89,6 +108,8 @@ module.exports = {
   quarantineRecord: (memoryId) => `memory-quarantine-record:${memoryId}`, // now a button → Biography
   pendingPromotion: (pendingId) => `memory-pending:${pendingId}`,
   // `memory-pipeline-decide:${pendingId}` — deep link into the Gating inbox.
+  // Renders ONLY when the nav offers gating (visibleControls) — on aggregator
+  // runtimes without a mob control surface the button is absent.
   pipelineDecide: (pendingId) => `memory-pipeline-decide:${pendingId}`,
 
   // ── Live memory-event strip (bottom of Pipeline tab) ──
@@ -121,6 +142,8 @@ module.exports = {
   // Memory panel and loads the record Biography when the frame payload
   // names a record_id. (Clicking the row body does the same via onSelect;
   // multi-item groups expand first, and their per-event buttons fire
-  // onSelect per item.)
+  // onSelect per item.) GATED: the pivot renders only when the projected
+  // experience grants memory.can_read — in denied modes the button must be
+  // absent even while memory.* signals are visible in the rail.
   SIGNAL_MEMORY_PIVOT: "signal-memory-pivot",
 };

@@ -75,6 +75,11 @@ jobs:
       - run: npm --prefix console exec -- playwright install --with-deps chromium
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent
+      # Seeded memory-console lane (deterministic; the LIVE lane
+      # e2e:memory:live is creds-gated acceptance and never runs in CI).
+      # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.
+      - run: CARGO_INCREMENTAL=0 scripts/repo-cargo build -p meerkat-mobkit --example memory_console_reference
+      - run: npm --prefix console run e2e:memory --silent
 
   flow-editor:
     name: flow-editor

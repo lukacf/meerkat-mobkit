@@ -9779,15 +9779,26 @@ function buildRecordsQueryParams(filter, options = {}) {
     params.scope = "realm";
   }
   if (filter.status) params.status = filter.status;
+  if (filter.realm?.trim()) params.realm = filter.realm.trim();
   if (options.limit) params.limit = options.limit;
   if (options.cursor) params.cursor = options.cursor;
   return params;
 }
 function hasActiveFilter(filter) {
-  return Boolean(filter.scope || filter.key?.trim() || filter.status);
+  return Boolean(filter.scope || filter.key?.trim() || filter.status || filter.realm?.trim());
 }
 function filtersEquivalent(a, b) {
-  return (a.scope || void 0) === (b.scope || void 0) && (a.key?.trim() || "") === (b.key?.trim() || "") && (a.status || void 0) === (b.status || void 0);
+  return (a.scope || void 0) === (b.scope || void 0) && (a.key?.trim() || "") === (b.key?.trim() || "") && (a.status || void 0) === (b.status || void 0) && (a.realm?.trim() || "") === (b.realm?.trim() || "");
+}
+var CAPABILITY_MISS_PREFIX = "MobKit capability missing for ";
+function memorySectionOutcome(error) {
+  const code = jsonRpcErrorCode(error);
+  if (code === -32030) return "denied";
+  if (code === -32601) return "unavailable";
+  if (error instanceof Error && error.message.startsWith(CAPABILITY_MISS_PREFIX)) {
+    return "denied";
+  }
+  return "error";
 }
 function buildRecordsListView(args) {
   const listed = args.paged ? args.paged.records : args.records;
@@ -9796,7 +9807,8 @@ function buildRecordsListView(args) {
     mode,
     records: args.sortMode === "utility" ? sortRecordsByUtility(listed) : listed,
     groups: mode === "grouped" ? groupRecordsByScope(listed) : [],
-    cursor: args.paged ? args.paged.nextCursor : args.baseCursor
+    cursor: args.paged ? args.paged.nextCursor : args.baseCursor,
+    denied: args.paged?.denied === true
   };
 }
 function createMemoryRecordsPager(deps) {
@@ -9818,10 +9830,15 @@ function createMemoryRecordsPager(deps) {
       try {
         const result = await deps.query(buildRecordsQueryParams(next));
         if (seq !== seqCounter) return;
-        deps.setPaged({
-          records: result?.records || [],
-          nextCursor: result?.next_cursor ?? null
-        });
+        if (result === null) {
+          deps.setPaged({ records: [], nextCursor: null, denied: true });
+        } else {
+          deps.setPaged({
+            records: result.records || [],
+            nextCursor: result.next_cursor ?? null
+          });
+        }
+      } catch {
       } finally {
         if (seq === seqCounter) deps.setLoading(false);
       }
@@ -9844,10 +9861,15 @@ function createMemoryRecordsPager(deps) {
         );
         if (seq !== seqCounter) return;
         const base = current.paged ? current.paged.records : current.baseRecords;
-        deps.setPaged({
-          records: [...base, ...result?.records || []],
-          nextCursor: result?.next_cursor ?? null
-        });
+        if (result === null) {
+          deps.setPaged({ records: base, nextCursor: null, denied: true });
+        } else {
+          deps.setPaged({
+            records: [...base, ...result.records || []],
+            nextCursor: result.next_cursor ?? null
+          });
+        }
+      } catch {
       } finally {
         if (seq === seqCounter) deps.setLoading(false);
       }
@@ -9900,21 +9922,23 @@ function latticeInvariants(records, options) {
     const author = record.provenance?.author?.author;
     const rank = record.trust ? TRUST_RANK[record.trust] : void 0;
     if ((author === "agent" || author === "distiller" || author === "steward") && typeof rank === "number" && rank > TRUST_RANK.agent_observed) {
-      llmCeilingViolations.push(record.id);
+      llmCeilingViolations.push({ id: record.id, realm: realmOfRecord(record) });
     }
   }
-  const chainViolations = /* @__PURE__ */ new Set();
+  const chainViolations = /* @__PURE__ */ new Map();
   for (const record of records) {
     const path = /* @__PURE__ */ new Set([record.id]);
     let cursor = record.supersedes;
     while (cursor) {
       if (path.has(cursor)) {
-        chainViolations.add(record.id);
+        chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
         break;
       }
       const parent = byId.get(cursor);
       if (!parent) {
-        if (options.complete) chainViolations.add(record.id);
+        if (options.complete) {
+          chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
+        }
         break;
       }
       path.add(cursor);
@@ -9923,35 +9947,50 @@ function latticeInvariants(records, options) {
   }
   return {
     llmCeilingViolations,
-    chainViolations: Array.from(chainViolations)
+    chainViolations: Array.from(chainViolations.values())
   };
 }
-async function runLatticeWalk(fetchPage, options = { singleRealm: true }) {
+function latticeFingerprint(records, realms, baseCursor) {
+  const rows = records.map(
+    (record) => `${record.id}:${record.supersedes || ""}:${record.trust}:${record.status?.status || ""}:${record.updated_at_ms || 0}`
+  ).join("|");
+  return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
+}
+async function runLatticeWalk(fetchPage, options) {
   const max = options.maxRecords ?? LATTICE_WALK_MAX_RECORDS;
+  const isCancelled = options.isCancelled || (() => false);
+  const realmParams = options.realms.length > 1 ? options.realms : [void 0];
   const all = [];
-  let cursor;
-  let exhausted = false;
-  for (; ; ) {
-    const params = { limit: LATTICE_WALK_PAGE_LIMIT };
-    if (cursor) params.cursor = cursor;
-    const page = await fetchPage(params);
-    if (page === null) return null;
-    all.push(...page.records || []);
-    if (!page.next_cursor || !options.singleRealm) {
-      exhausted = !page.next_cursor;
-      break;
+  let exhaustedEverywhere = true;
+  for (const realm of realmParams) {
+    let cursor;
+    for (; ; ) {
+      if (isCancelled()) return null;
+      if (all.length >= max) {
+        exhaustedEverywhere = false;
+        break;
+      }
+      const params = { limit: LATTICE_WALK_PAGE_LIMIT };
+      if (realm) params.realm = realm;
+      if (cursor) params.cursor = cursor;
+      const page = await fetchPage(params);
+      if (page === null) return null;
+      all.push(...page.records || []);
+      if (!page.next_cursor) break;
+      cursor = page.next_cursor;
     }
-    if (all.length >= max) break;
-    cursor = page.next_cursor;
+    if (!exhaustedEverywhere) break;
   }
   const checked = all.slice(0, max);
-  const invariants = latticeInvariants(checked, { complete: exhausted && all.length <= max });
+  const complete = exhaustedEverywhere && all.length <= max;
+  const invariants = latticeInvariants(checked, { complete });
   return {
     checked: checked.length,
-    complete: exhausted && all.length <= max,
+    complete,
     ...invariants
   };
 }
+var VERDICT_EVIDENCE_MAX = 5;
 var VERDICT_STATUS_LABEL = {
   holding: "HOLDING",
   degraded: "DEGRADED",
@@ -9987,7 +10026,7 @@ function computeVerdictTiles(inputs) {
       lines: ["records not readable by this principal"],
       targetTab: "records"
     });
-  } else if (inputs.latticeRunning || !inputs.lattice) {
+  } else if (!inputs.lattice) {
     tiles.push({
       id: "lattice",
       label: "LATTICE",
@@ -9997,17 +10036,20 @@ function computeVerdictTiles(inputs) {
     });
   } else {
     const walk = inputs.lattice;
-    const violations = walk.llmCeilingViolations.length + walk.chainViolations.length;
+    const violations = [...walk.llmCeilingViolations, ...walk.chainViolations];
     tiles.push({
       id: "lattice",
       label: "LATTICE",
-      status: violations > 0 ? "violated" : "holding",
+      status: violations.length > 0 ? "violated" : "holding",
       lines: [
-        violations > 0 ? `${violations} violation${violations === 1 ? "" : "s"}` : "0 violations",
+        violations.length > 0 ? `${violations.length} violation${violations.length === 1 ? "" : "s"}` : "0 violations",
         walk.complete ? `checked ${walk.checked}/${walk.checked}` : `checked first ${walk.checked} \u2014 partial (cap ${LATTICE_WALK_MAX_RECORDS})`,
-        "invariant (b) needs ever_quarantined (surface 2)"
+        "invariant (b) needs ever_quarantined (surface 2)",
+        ...inputs.latticeRunning ? ["re-checking\u2026"] : [],
+        ...violations.length > VERDICT_EVIDENCE_MAX ? [`+${violations.length - VERDICT_EVIDENCE_MAX} more violations`] : []
       ],
-      targetTab: "records"
+      targetTab: "records",
+      evidence: violations.slice(0, VERDICT_EVIDENCE_MAX)
     });
   }
   if (inputs.recordsDenied) {
@@ -10254,16 +10296,19 @@ function BiographyView({
   const lane = lineageLane(chain, record.id);
   const touchingRuns = dreamRunsTouching(dreams, record.id);
   const [evidenceState, setEvidenceState] = import_react20.default.useState(null);
+  const evidenceSeqRef = import_react20.default.useRef(0);
   const recordIdentity = record.scope.scope === "identity" ? record.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
   async function openEvidence(ref, index) {
     if (!onLoadEvidence) return;
     const key = evidenceKey(ref, index);
+    const seq = ++evidenceSeqRef.current;
     setEvidenceState({ key, status: "loading", lines: [] });
     const entries = await onLoadEvidence(recordIdentity, ref);
+    if (seq !== evidenceSeqRef.current) return;
     const lines = entries ? evidenceExcerptLines(entries, ref.range) : [];
     setEvidenceState({
       key,
-      status: entries && lines.length > 0 ? "loaded" : "unavailable",
+      status: entries === null ? "not-found" : lines.length > 0 ? "loaded" : "empty-range",
       lines
     });
   }
@@ -10304,7 +10349,7 @@ function BiographyView({
         },
         `ev-${index}`
       )) }) : null,
-      evidenceState ? evidenceState.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Loading transcript\u2026" }) : evidenceState.status === "unavailable" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-degraded", children: "Session is no longer in the timeline \u2014 evidence reference retained as label only." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-excerpt", "data-testid": "memory-evidence-excerpt", children: [
+      evidenceState ? evidenceState.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Loading transcript\u2026" }) : evidenceState.status === "not-found" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-degraded", children: "Session not found in the recent timeline window \u2014 evidence reference retained as label only." }) : evidenceState.status === "empty-range" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-empty", children: "Session found, but no message entries in the evidence range \u2014 the window is approximate against the console timeline." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-excerpt", "data-testid": "memory-evidence-excerpt", children: [
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line memory-excerpt__note", children: "Approximate window against the console timeline (evidence indexes a session generation)." }),
         evidenceState.lines.map((line) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-excerpt__line", children: [
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-excerpt__speaker", children: line.speaker }),
@@ -10365,20 +10410,39 @@ function BiographyView({
 }
 function VerdictStrip({
   tiles,
-  onOpen
+  onOpen,
+  onOpenRecord
 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-tiles", "data-testid": "memory-verdict-strip", children: tiles.map((tile) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-    "button",
+    "div",
     {
-      type: "button",
       className: "memory-tile",
+      role: "button",
+      tabIndex: 0,
       "data-status": tile.status,
       "data-testid": `memory-verdict:${tile.id}`,
       onClick: () => onOpen(tile),
+      onKeyDown: (event) => {
+        if (event.key === "Enter" || event.key === " ") onOpen(tile);
+      },
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__label", children: tile.label }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__status", "data-status": tile.status, children: verdictStatusLabel(tile.status) }),
-        tile.lines.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__line", children: line }, `l-${index}`))
+        tile.lines.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__line", children: line }, `l-${index}`)),
+        (tile.evidence || []).map((violation) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "memory-tile__evidence",
+            "data-testid": `memory-verdict-evidence:${tile.id}:${violation.id}`,
+            onClick: (event) => {
+              event.stopPropagation();
+              onOpenRecord(violation.realm, violation.id);
+            },
+            children: violation.id
+          },
+          violation.id
+        ))
       ]
     },
     tile.id
@@ -10404,7 +10468,7 @@ function MemoryLiveStrip({
   }
   function jumpToLive() {
     setFrozen(null);
-    listRef.current?.scrollTo({ top: 0 });
+    listRef.current?.scrollTo?.({ top: 0 });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group memory-live", "data-testid": "memory-live-strip", children: [
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group__label", children: [
@@ -10460,6 +10524,8 @@ function MemoryPanel({
   nextCursor = null,
   recordsDenied = false,
   dreamsDenied = false,
+  operatorScopeDenied = false,
+  mobScopeDenied = false,
   liveFrames = [],
   onRefresh,
   onSelectRecord,
@@ -10493,12 +10559,15 @@ function MemoryPanel({
   const latticeRanForRef = import_react20.default.useRef(null);
   import_react20.default.useEffect(() => {
     if (tab !== "holdings" || !onQueryRecords || recordsDenied) return;
-    if (latticeRanForRef.current === records) return;
-    latticeRanForRef.current = records;
-    setLattice(null);
+    const fingerprint = latticeFingerprint(records, realms, nextCursor);
+    if (latticeRanForRef.current === fingerprint) return;
+    latticeRanForRef.current = fingerprint;
     setLatticeRunning(true);
     let cancelled = false;
-    void runLatticeWalk((params) => onQueryRecords(params), { singleRealm: realms.length === 1 }).then((result) => {
+    void runLatticeWalk((params) => onQueryRecords(params), {
+      realms,
+      isCancelled: () => cancelled
+    }).then((result) => {
       if (!cancelled) setLattice(result);
     }).catch(() => {
       if (!cancelled) setLattice(null);
@@ -10508,7 +10577,7 @@ function MemoryPanel({
     return () => {
       cancelled = true;
     };
-  }, [tab, records, recordsDenied, realms.length]);
+  }, [tab, records, recordsDenied, realms, nextCursor]);
   const overviewRows = import_react20.default.useMemo(() => scopeOverviewRows(records), [records]);
   const tiles = import_react20.default.useMemo(
     () => computeVerdictTiles({
@@ -10599,14 +10668,21 @@ function MemoryPanel({
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating__list memory-panel__body", children: [
       tab === "holdings" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-groups", "data-testid": "memory-holdings", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(VerdictStrip, { tiles, onOpen: openTile }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+          VerdictStrip,
+          {
+            tiles,
+            onOpen: openTile,
+            onOpenRecord: (realm, memoryId) => onSelectRecord(realm, memoryId)
+          }
+        ),
         recordsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-holdings-denied", children: "Records are not readable by this principal (access denied)." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
           /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group__label", children: [
             "Scopes \u2014 counts over the ",
             records.length,
             " loaded records (full totals need panel/overview)"
           ] }),
-          overviewRows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+          overviewRows.length === 0 && !operatorScopeDenied && !mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
             "button",
             {
               type: "button",
@@ -10626,7 +10702,35 @@ function MemoryPanel({
               ]
             },
             row.key
-          ))
+          )),
+          mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static memory-scope-row",
+              "data-testid": "memory-holdings-scope-denied:mob",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: "Mob scopes" }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "no grant", tone: "warning" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: "requires mob.memory.read" })
+                ] })
+              ]
+            }
+          ) : null,
+          operatorScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static memory-scope-row",
+              "data-testid": "memory-holdings-scope-denied:operator",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: "Operator scope" }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "no grant", tone: "warning" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: "requires operator.memory.read" })
+                ] })
+              ]
+            }
+          ) : null
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "In transit" }),
@@ -10707,6 +10811,24 @@ function MemoryPanel({
               }
             )
           ] }),
+          realms.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "realm",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "select",
+              {
+                value: filter.realm || "",
+                "data-testid": "memory-filter:realm",
+                onChange: (event) => applyFilter({
+                  ...filter,
+                  realm: event.target.value || void 0
+                }),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "", children: "all (merged page)" }),
+                  realms.map((realm) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: realm, children: realm }, realm))
+                ]
+              }
+            )
+          ] }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
             "sort",
             /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
@@ -10738,8 +10860,10 @@ function MemoryPanel({
           DEAD_INJECTION_THRESHOLD,
           ", never judged useful."
         ] }) : null,
+        realms.length > 1 && !filter.realm?.trim() ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-multi-realm-note", children: "Multi-realm view is a single merged page (keyset paging is per-realm) \u2014 pick a realm above to page through its records." }) : null,
         pageLoading ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Loading records\u2026" }) : null,
-        !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: recordsDenied ? "Records: no grant." : "No memory records yet." }) : null,
+        !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", "data-testid": "memory-records-empty", children: recordsDenied || listView.denied ? "Records: no grant." : "No memory records yet." }) : null,
+        !pageLoading && listView.denied && listView.records.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-records-denied-note", children: "Further pages: no grant \u2014 the continuation of this query was denied for this principal." }) : null,
         !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group", children: listView.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
           RecordRow,
           {
@@ -15436,7 +15560,9 @@ function ConsoleApp({ baseUrl }) {
     error: null,
     nextCursor: null,
     recordsDenied: false,
-    dreamsDenied: false
+    dreamsDenied: false,
+    operatorScopeDenied: false,
+    mobScopeDenied: false
   });
   const [activeActivityPresetId, setActiveActivityPresetId] = import_react30.default.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react30.default.useState("");
@@ -16505,8 +16631,28 @@ function ConsoleApp({ baseUrl }) {
         realms = recordsResult?.realms || [];
         nextCursor = recordsResult?.next_cursor ?? null;
       } catch (err) {
-        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        if (memorySectionOutcome(err) !== "denied") throw err;
         recordsDenied = true;
+      }
+      let operatorScopeDenied = false;
+      let mobScopeDenied = false;
+      if (!recordsDenied) {
+        const probeScope = async (scope) => {
+          try {
+            await executeHeadlessCommand(CONSOLE_COMMAND_NAMES2.listMemoryRecords, memoryTarget, {
+              scope,
+              limit: 1
+            });
+            return false;
+          } catch (err) {
+            if (memorySectionOutcome(err) === "denied") return true;
+            throw err;
+          }
+        };
+        [operatorScopeDenied, mobScopeDenied] = await Promise.all([
+          probeScope("operator"),
+          probeScope("mob")
+        ]);
       }
       let quarantineRecords = [];
       let pendingPromotions = [];
@@ -16531,7 +16677,7 @@ function ConsoleApp({ baseUrl }) {
         );
         dreams = dreamsResult?.runs || [];
       } catch (err) {
-        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        if (memorySectionOutcome(err) !== "denied") throw err;
         dreamsDenied = true;
       }
       setMemoryData((current) => ({
@@ -16544,6 +16690,8 @@ function ConsoleApp({ baseUrl }) {
         nextCursor,
         recordsDenied,
         dreamsDenied,
+        operatorScopeDenied,
+        mobScopeDenied,
         unavailable: false,
         error: null
       }));
@@ -16564,9 +16712,9 @@ function ConsoleApp({ baseUrl }) {
           params
         );
       } catch (err) {
-        if (jsonRpcErrorCode(err) === -32030) return null;
+        if (memorySectionOutcome(err) === "denied") return null;
         setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
-        return null;
+        throw err;
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -17682,13 +17830,20 @@ function ConsoleApp({ baseUrl }) {
           nextCursor: memoryData.nextCursor,
           recordsDenied: memoryData.recordsDenied,
           dreamsDenied: memoryData.dreamsDenied,
+          operatorScopeDenied: memoryData.operatorScopeDenied,
+          mobScopeDenied: memoryData.mobScopeDenied,
           liveFrames: activityRef.current,
           onRefresh: () => void refreshMemoryData(),
           onSelectRecord: (realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId),
           onClearDetail: () => setMemoryData((current) => ({ ...current, detail: null, detailLoading: false })),
           onQueryRecords: queryMemoryRecords,
           onLoadEvidence: loadMemoryEvidence,
-          onOpenGating: () => dock.openTarget(buildControlTarget2("gating"), "replace_focused")
+          onOpenGating: (
+            // Only offered where the nav itself offers gating — on runtimes
+            // without a mob control surface (or with gating hidden) the
+            // target would land on a dead-end placeholder.
+            visibleControls.includes("gating") ? () => dock.openTarget(buildControlTarget2("gating"), "replace_focused") : void 0
+          )
         }
       );
     return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
@@ -17809,12 +17964,19 @@ function ConsoleApp({ baseUrl }) {
                     emptyText: railConfig?.empty_text,
                     watchedIdentities,
                     onPresetChange: setActiveActivityPresetId,
-                    onSelect: (frame) => {
-                      if (!frame.event.startsWith("memory.")) return;
-                      dock.openTarget(buildControlTarget2("memory"), "replace_focused");
-                      const pivot = memoryFramePivot(frame);
-                      if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
-                    }
+                    onSelect: (
+                      // "State here" pivot: a live memory signal opens the Memory
+                      // panel, and lands on the record's Biography when the frame
+                      // names one. Offered only when the server-projected
+                      // experience grants memory.can_read — the affordance must
+                      // never outrun the nav gate.
+                      experience?.memory?.can_read === true ? (frame) => {
+                        if (!frame.event.startsWith("memory.")) return;
+                        dock.openTarget(buildControlTarget2("memory"), "replace_focused");
+                        const pivot = memoryFramePivot(frame);
+                        if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
+                      } : void 0
+                    )
                   }
                 )
               ] }) : null

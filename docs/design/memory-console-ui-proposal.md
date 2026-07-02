@@ -76,7 +76,12 @@ Every new RPC pays the CI-enforced process tax: a `CONSOLE_RPC_METHODS` constant
 - **Today:** `mobkit/memory/panel/dreams` (last-dream strip); `mobkit/memory/panel/quarantine` (queue + pending-gate counts, only when `experience.memory.can_review_quarantine`).
 - **NEW RPC `mobkit/memory/panel/proposals`** over `pending_proposals()` (`sqlite_store.rs:1439`) — proposals counters incl. propose-time taint.
 - **Verdict tiles:** each computed by the corresponding view's logic (§5); tiles missing a surface render `UNVERIFIABLE — needs <RPC>`; tiles the principal cannot evidence render **no grant**.
-- **Live:** `memory.*` SSE frames trigger `refreshMemoryData` while a memory panel is docked — one client-only condition in `handleLiveFrame` (`ConsoleApp.tsx:2338`; `memory.*` frames already reach `activityRef` since `ACTIVITY_SKIP_EVENTS` omits them, `:484`).
+- **Live:** `memory.*` SSE frames trigger `refreshMemoryData` while a memory panel is docked — one client-only condition in `handleLiveFrame` (`ConsoleApp.tsx:2338`; `memory.*` frames already reach `activityRef` since `ACTIVITY_SKIP_EVENTS` omits them, `:484`). **As-built correction (55d1c442):** the
+client-side path was indeed fine, but `_system`-attributed `memory.*` frames
+were dropped SERVER-side by the roster-visibility gate
+(`frame_is_visible_cached`) and required an exact `_system` exemption plus a
+no-namespacing guard in `frame_from_console_event` — the feasibility claim
+here was verified against the client only.
 
 **Interactions.** Scope row → Records pre-filtered to that scope (the records RPC already accepts `scope/identity/scope_key/status` params that `refreshMemoryData` never passes, `http_console.rs:1912`). Verdict tile → its evidence view (§5). QUAR/GATE/PROPOSALS badges → Pipeline filtered to that stage. Trust-mix segment → Records filtered by trust (client-side; trust is on every row). Floor bar past 80% → warning tone (gpolicy chip vocabulary). Health footer expands (§3.6). Scope rows the principal cannot read render access-denied tone, mirroring the per-section `-32030` tolerance `refreshMemoryData` already implements (`ConsoleApp.tsx:2032`).
 
@@ -278,12 +283,12 @@ Every RPC below pays the contract-bijection + ABAC + embedded-bundle process tax
 
 ## 7. Phased implementation plan
 
-**Phase 1 — existing data only (client-only; standalone value, zero backend change).**
+**Phase 1 — existing data only (client-only except one aggregator visibility fix — the `_system` exemption in `console_aggregator/mod.rs`, see §3.1's as-built correction; standalone value).**
 - Records filter bar + realm-scoped load-more (server-ready `scope/identity/scope_key/status/limit/cursor` params, unused today).
 - Biography LINEAGE + LIFE from the existing `panel/record` chain + injections response; CopyButton in the detail pane.
 - Evidence click-through via existing `mobkit/console/query_timeline` (degrade to `evidenceLabel` text when the session is gone).
 - Dreams `memory_ids[]` → Biography links (data already returned, rendered as text today).
-- Live refresh: `frame.event.startsWith("memory.")` → `refreshMemoryData` while a memory panel is docked (one condition in `handleLiveFrame`, `ConsoleApp.tsx:2338`).
+- Live refresh: `frame.event.startsWith("memory.")` → `refreshMemoryData` while a memory panel is docked (one condition in `handleLiveFrame`, `ConsoleApp.tsx:2338`); the frames only ARRIVE because of the §3.1 as-built server fix.
 - SignalsRail memory-signal `onSelect` → dock `openTarget('memory')` + `loadMemoryRecordDetail` ("state here" pivots).
 - Recall Utility sort/flag mode over `UsageStats` (bytes-spent approximated as `injected_count × body_bytes`, labeled).
 - Lattice Audit invariants (a) LLM ceiling and (c) acyclic chains via the client page-walk, with the "checked N/M" header.

@@ -2,6 +2,7 @@ import React from "react";
 import { CopyButton } from "@console-components";
 import type { ConversationTimelineEntry } from "@console-core";
 import { describeMemoryTimelineEvent } from "../lib/adapters";
+import { jsonRpcErrorCode } from "../lib/errors";
 import type {
   ConsoleFrame,
   MemoryAuthor,
@@ -31,6 +32,9 @@ export interface MemoryRecordsFilter {
   /// Identity name when scope is identity; scope key for mob/operator.
   key?: string;
   status?: "active" | "quarantined" | "superseded" | "tombstoned";
+  /// Realm name. Keyset cursors are single-realm on the server, so picking a
+  /// realm is what makes load-more honest on multi-realm gateways.
+  realm?: string;
 }
 
 export interface MemoryPanelProps {
@@ -51,6 +55,12 @@ export interface MemoryPanelProps {
   /// evidence lives behind a denied section render "no grant", never green.
   recordsDenied?: boolean;
   dreamsDenied?: boolean;
+  /// Scope-probe outcomes (§3.1/§5 ABAC): the unfiltered listing row-filters
+  /// denied scopes silently, so a one-row probe per restricted scope kind is
+  /// the only honest way to know a scope exists but is not readable. When
+  /// set, Holdings renders the access-denied-tone scope row.
+  operatorScopeDenied?: boolean;
+  mobScopeDenied?: boolean;
   /// Live `memory.*` frames from the in-memory ring (lossy: 1024/identity,
   /// 4096 total). Used only as freshness signals and pivot points.
   liveFrames?: ConsoleFrame[];
@@ -341,21 +351,46 @@ export function buildRecordsQueryParams(
     params.scope = "realm";
   }
   if (filter.status) params.status = filter.status;
+  if (filter.realm?.trim()) params.realm = filter.realm.trim();
   if (options.limit) params.limit = options.limit;
   if (options.cursor) params.cursor = options.cursor;
   return params;
 }
 
 export function hasActiveFilter(filter: MemoryRecordsFilter): boolean {
-  return Boolean(filter.scope || filter.key?.trim() || filter.status);
+  return Boolean(filter.scope || filter.key?.trim() || filter.status || filter.realm?.trim());
 }
 
 export function filtersEquivalent(a: MemoryRecordsFilter, b: MemoryRecordsFilter): boolean {
   return (
     (a.scope || undefined) === (b.scope || undefined) &&
     (a.key?.trim() || "") === (b.key?.trim() || "") &&
-    (a.status || undefined) === (b.status || undefined)
+    (a.status || undefined) === (b.status || undefined) &&
+    (a.realm?.trim() || "") === (b.realm?.trim() || "")
   );
+}
+
+/// Message prefix of the error the headless layer throws when
+/// mobkit/capabilities omits a method (`requireCapability`, headless.ts) —
+/// raised client-side before any RPC is issued, so no rpcError code exists.
+const CAPABILITY_MISS_PREFIX = "MobKit capability missing for ";
+
+/// Classify a memory-section RPC failure: -32030 is an ABAC denial (render
+/// "no grant", never an empty store), -32601 means the panel is not wired on
+/// this runtime, anything else is a real error. A per-method capability miss
+/// also classifies as DENIED: under an enforced view the server intersects
+/// mobkit/capabilities per principal (a scoped read grant drops panel/dreams
+/// and panel/quarantine from the method list), so the miss IS denial by
+/// intersection — it must degrade that section, never abort the whole panel.
+/// Only the server's -32601 (store not configured) renders memory-unavailable.
+export function memorySectionOutcome(error: unknown): "denied" | "unavailable" | "error" {
+  const code = jsonRpcErrorCode(error);
+  if (code === -32030) return "denied";
+  if (code === -32601) return "unavailable";
+  if (error instanceof Error && error.message.startsWith(CAPABILITY_MISS_PREFIX)) {
+    return "denied";
+  }
+  return "error";
 }
 
 // ── Records list view + fetch orchestration ───────────────────────────────
@@ -363,6 +398,10 @@ export function filtersEquivalent(a: MemoryRecordsFilter, b: MemoryRecordsFilter
 export interface MemoryPagedState {
   records: MemoryPanelRecord[];
   nextCursor: string | null;
+  /// The query behind this page (or its load-more continuation) was denied
+  /// (-32030). Renders "no grant" — a denied scope must never be
+  /// indistinguishable from an empty store.
+  denied?: boolean;
 }
 
 export interface RecordsListView {
@@ -374,6 +413,7 @@ export interface RecordsListView {
   /// source load-more appends to, so appended rows always render.
   groups: MemoryScopeGroup[];
   cursor: string | null;
+  denied: boolean;
 }
 
 export function buildRecordsListView(args: {
@@ -390,10 +430,14 @@ export function buildRecordsListView(args: {
     records: args.sortMode === "utility" ? sortRecordsByUtility(listed) : listed,
     groups: mode === "grouped" ? groupRecordsByScope(listed) : [],
     cursor: args.paged ? args.paged.nextCursor : args.baseCursor,
+    denied: args.paged?.denied === true,
   };
 }
 
 export interface MemoryRecordsPagerDeps {
+  /// Resolves the page, or null when the query was DENIED (-32030). Other
+  /// failures must throw — the pager keeps the prior page for those (the
+  /// caller surfaces them via its own error banner).
   query: (params: Record<string, unknown>) => Promise<MemoryPanelRecordsResult | null>;
   setPaged: (paged: MemoryPagedState | null) => void;
   setLoading: (loading: boolean) => void;
@@ -424,10 +468,19 @@ export function createMemoryRecordsPager(deps: MemoryRecordsPagerDeps) {
       try {
         const result = await deps.query(buildRecordsQueryParams(next));
         if (seq !== seqCounter) return;
-        deps.setPaged({
-          records: result?.records || [],
-          nextCursor: result?.next_cursor ?? null,
-        });
+        if (result === null) {
+          // Denied filtered query: mark it so the view says "no grant",
+          // never "no memory records yet".
+          deps.setPaged({ records: [], nextCursor: null, denied: true });
+        } else {
+          deps.setPaged({
+            records: result.records || [],
+            nextCursor: result.next_cursor ?? null,
+          });
+        }
+      } catch {
+        // Non-denial error: keep whatever page was showing; the transport
+        // layer surfaces the error banner.
       } finally {
         if (seq === seqCounter) deps.setLoading(false);
       }
@@ -455,10 +508,18 @@ export function createMemoryRecordsPager(deps: MemoryRecordsPagerDeps) {
         );
         if (seq !== seqCounter) return;
         const base = current.paged ? current.paged.records : current.baseRecords;
-        deps.setPaged({
-          records: [...base, ...(result?.records || [])],
-          nextCursor: result?.next_cursor ?? null,
-        });
+        if (result === null) {
+          // Denied continuation: keep the rows already shown, drop the
+          // cursor, and flag the denial.
+          deps.setPaged({ records: base, nextCursor: null, denied: true });
+        } else {
+          deps.setPaged({
+            records: [...base, ...(result.records || [])],
+            nextCursor: result.next_cursor ?? null,
+          });
+        }
+      } catch {
+        // Non-denial error: keep the current page.
       } finally {
         if (seq === seqCounter) deps.setLoading(false);
       }
@@ -535,24 +596,30 @@ export function formatBytes(bytes: number): string {
 export const LATTICE_WALK_MAX_RECORDS = 2000;
 export const LATTICE_WALK_PAGE_LIMIT = 200;
 
+/// A violating record with enough context to open its Biography.
+export interface LatticeViolationRef {
+  id: string;
+  realm: string;
+}
+
 export interface LatticeWalkResult {
   checked: number;
-  /// True when the walk exhausted the store (no next_cursor left) rather
-  /// than hitting the cap or a multi-realm paging boundary.
+  /// True when the walk exhausted the store (every realm's keyset cursor
+  /// ran out) rather than hitting the shared cap.
   complete: boolean;
   /// Invariant (a): LLM-authored records (agent/distiller/steward) above the
   /// agent_observed ceiling. Design intent: permanently empty.
-  llmCeilingViolations: string[];
+  llmCeilingViolations: LatticeViolationRef[];
   /// Invariant (c): supersede cycles, plus dangling supersede targets when
   /// the walk is complete (dangling is only provable over the whole store).
-  chainViolations: string[];
+  chainViolations: LatticeViolationRef[];
 }
 
 export function latticeInvariants(
   records: MemoryPanelRecord[],
   options: { complete: boolean },
 ): Pick<LatticeWalkResult, "llmCeilingViolations" | "chainViolations"> {
-  const llmCeilingViolations: string[] = [];
+  const llmCeilingViolations: LatticeViolationRef[] = [];
   const byId = new Map(records.map((record) => [record.id, record]));
   for (const record of records) {
     const author = record.provenance?.author?.author;
@@ -562,10 +629,10 @@ export function latticeInvariants(
       typeof rank === "number" &&
       rank > TRUST_RANK.agent_observed
     ) {
-      llmCeilingViolations.push(record.id);
+      llmCeilingViolations.push({ id: record.id, realm: realmOfRecord(record) });
     }
   }
-  const chainViolations = new Set<string>();
+  const chainViolations = new Map<string, LatticeViolationRef>();
   for (const record of records) {
     // Follow supersede pointers; revisiting a node inside the current path
     // is a cycle. Pointers that leave the fetched set only count as dangling
@@ -574,12 +641,14 @@ export function latticeInvariants(
     let cursor = record.supersedes;
     while (cursor) {
       if (path.has(cursor)) {
-        chainViolations.add(record.id);
+        chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
         break;
       }
       const parent = byId.get(cursor);
       if (!parent) {
-        if (options.complete) chainViolations.add(record.id);
+        if (options.complete) {
+          chainViolations.set(record.id, { id: record.id, realm: realmOfRecord(record) });
+        }
         break;
       }
       path.add(cursor);
@@ -588,38 +657,75 @@ export function latticeInvariants(
   }
   return {
     llmCeilingViolations,
-    chainViolations: Array.from(chainViolations),
+    chainViolations: Array.from(chainViolations.values()),
   };
 }
 
+/// Cheap content fingerprint over the loaded base page. The lattice walk
+/// re-runs only when this changes, so content-identical debounced refreshes
+/// (memory.* bursts re-read every 250ms) skip the up-to-10-RPC walk.
+export function latticeFingerprint(
+  records: MemoryPanelRecord[],
+  realms: string[],
+  baseCursor: string | null,
+): string {
+  const rows = records
+    .map(
+      (record) =>
+        `${record.id}:${record.supersedes || ""}:${record.trust}:${record.status?.status || ""}:${record.updated_at_ms || 0}`,
+    )
+    .join("|");
+  return `${realms.join(",")}#${baseCursor || ""}#${records.length}#${rows}`;
+}
+
+/// Walk the store page by page. Single-realm gateways follow the keyset
+/// cursor directly; multi-realm gateways walk EACH realm independently via
+/// the server-supported `realm` param (merged multi-realm pages never carry
+/// a cursor and are truncated, so an unscoped walk can neither continue nor
+/// honestly claim completeness). `complete` = every realm exhausted its
+/// cursor within the shared cap.
 export async function runLatticeWalk(
   fetchPage: (params: Record<string, unknown>) => Promise<MemoryPanelRecordsResult | null>,
-  options: { singleRealm: boolean; maxRecords?: number } = { singleRealm: true },
+  options: {
+    realms: string[];
+    maxRecords?: number;
+    /// Probed before each page fetch so a superseded walk stops issuing
+    /// RPCs instead of merely having its result discarded.
+    isCancelled?: () => boolean;
+  },
 ): Promise<LatticeWalkResult | null> {
   const max = options.maxRecords ?? LATTICE_WALK_MAX_RECORDS;
+  const isCancelled = options.isCancelled || (() => false);
+  // With zero/one known realm the unscoped listing is already single-realm.
+  const realmParams: Array<string | undefined> =
+    options.realms.length > 1 ? options.realms : [undefined];
   const all: MemoryPanelRecord[] = [];
-  let cursor: string | undefined;
-  let exhausted = false;
-  for (;;) {
-    const params: Record<string, unknown> = { limit: LATTICE_WALK_PAGE_LIMIT };
-    if (cursor) params.cursor = cursor;
-    const page = await fetchPage(params);
-    if (page === null) return null; // access denied → tile renders no grant
-    all.push(...(page.records || []));
-    // Keyset continuation is single-realm only; multi-realm listings merge
-    // one bounded page per realm and cannot be walked further honestly.
-    if (!page.next_cursor || !options.singleRealm) {
-      exhausted = !page.next_cursor;
-      break;
+  let exhaustedEverywhere = true;
+  for (const realm of realmParams) {
+    let cursor: string | undefined;
+    for (;;) {
+      if (isCancelled()) return null;
+      if (all.length >= max) {
+        exhaustedEverywhere = false;
+        break;
+      }
+      const params: Record<string, unknown> = { limit: LATTICE_WALK_PAGE_LIMIT };
+      if (realm) params.realm = realm;
+      if (cursor) params.cursor = cursor;
+      const page = await fetchPage(params);
+      if (page === null) return null; // access denied → tile renders no grant
+      all.push(...(page.records || []));
+      if (!page.next_cursor) break; // this realm's cursor is exhausted
+      cursor = page.next_cursor;
     }
-    if (all.length >= max) break;
-    cursor = page.next_cursor;
+    if (!exhaustedEverywhere) break;
   }
   const checked = all.slice(0, max);
-  const invariants = latticeInvariants(checked, { complete: exhausted && all.length <= max });
+  const complete = exhaustedEverywhere && all.length <= max;
+  const invariants = latticeInvariants(checked, { complete });
   return {
     checked: checked.length,
-    complete: exhausted && all.length <= max,
+    complete,
     ...invariants,
   };
 }
@@ -635,7 +741,13 @@ export interface VerdictTile {
   lines: string[];
   /// Tiles are doors: clicking opens the tab holding the evidence.
   targetTab: MemoryTab;
+  /// The rows that made the verdict red — each opens its Biography directly
+  /// (capped; an "+N more" line accompanies when truncated).
+  evidence?: LatticeViolationRef[];
 }
+
+/// How many violating record ids render on a VIOLATED tile before "+N more".
+export const VERDICT_EVIDENCE_MAX = 5;
 
 const VERDICT_STATUS_LABEL: Record<VerdictStatus, string> = {
   holding: "HOLDING",
@@ -690,7 +802,7 @@ export function computeVerdictTiles(inputs: VerdictInputs): VerdictTile[] {
       lines: ["records not readable by this principal"],
       targetTab: "records",
     });
-  } else if (inputs.latticeRunning || !inputs.lattice) {
+  } else if (!inputs.lattice) {
     tiles.push({
       id: "lattice",
       label: "LATTICE",
@@ -699,22 +811,29 @@ export function computeVerdictTiles(inputs: VerdictInputs): VerdictTile[] {
       targetTab: "records",
     });
   } else {
+    // A settled verdict is retained while a re-check runs — the tile must
+    // not flicker to UNVERIFIABLE on every debounced live refresh.
     const walk = inputs.lattice;
-    const violations = walk.llmCeilingViolations.length + walk.chainViolations.length;
+    const violations = [...walk.llmCeilingViolations, ...walk.chainViolations];
     tiles.push({
       id: "lattice",
       label: "LATTICE",
-      status: violations > 0 ? "violated" : "holding",
+      status: violations.length > 0 ? "violated" : "holding",
       lines: [
-        violations > 0
-          ? `${violations} violation${violations === 1 ? "" : "s"}`
+        violations.length > 0
+          ? `${violations.length} violation${violations.length === 1 ? "" : "s"}`
           : "0 violations",
         walk.complete
           ? `checked ${walk.checked}/${walk.checked}`
           : `checked first ${walk.checked} — partial (cap ${LATTICE_WALK_MAX_RECORDS})`,
         "invariant (b) needs ever_quarantined (surface 2)",
+        ...(inputs.latticeRunning ? ["re-checking…"] : []),
+        ...(violations.length > VERDICT_EVIDENCE_MAX
+          ? [`+${violations.length - VERDICT_EVIDENCE_MAX} more violations`]
+          : []),
       ],
       targetTab: "records",
+      evidence: violations.slice(0, VERDICT_EVIDENCE_MAX),
     });
   }
 
@@ -1008,8 +1127,10 @@ export const __memoryTest = {
   buildRecordsQueryParams,
   hasActiveFilter,
   filtersEquivalent,
+  memorySectionOutcome,
   buildRecordsListView,
   createMemoryRecordsPager,
+  latticeFingerprint,
   recordUtility,
   sortRecordsByUtility,
   utilityLine,
@@ -1088,7 +1209,11 @@ function RecordRow({
 
 interface EvidenceState {
   key: string;
-  status: "loading" | "loaded" | "unavailable";
+  /// "not-found": the session did not appear in the recent timeline window
+  /// (it may merely be older than the window — never claim it is gone).
+  /// "empty-range": the session was found but the evidence range holds no
+  /// renderable message entries.
+  status: "loading" | "loaded" | "not-found" | "empty-range";
   lines: EvidenceExcerptLine[];
 }
 
@@ -1117,6 +1242,10 @@ function BiographyView({
   const lane = lineageLane(chain, record.id);
   const touchingRuns = dreamRunsTouching(dreams, record.id);
   const [evidenceState, setEvidenceState] = React.useState<EvidenceState | null>(null);
+  // Monotonic click sequence: a slow earlier evidence fetch must never
+  // overwrite the excerpt of a later click (same discipline as the records
+  // pager). Lives in a ref because openEvidence is re-created per render.
+  const evidenceSeqRef = React.useRef(0);
   const recordIdentity =
     record.scope.scope === "identity"
       ? record.scope.identity
@@ -1127,12 +1256,15 @@ function BiographyView({
   async function openEvidence(ref: MemoryEvidenceRef, index: number): Promise<void> {
     if (!onLoadEvidence) return;
     const key = evidenceKey(ref, index);
+    const seq = ++evidenceSeqRef.current;
     setEvidenceState({ key, status: "loading", lines: [] });
     const entries = await onLoadEvidence(recordIdentity, ref);
+    if (seq !== evidenceSeqRef.current) return;
     const lines = entries ? evidenceExcerptLines(entries, ref.range) : [];
     setEvidenceState({
       key,
-      status: entries && lines.length > 0 ? "loaded" : "unavailable",
+      status:
+        entries === null ? "not-found" : lines.length > 0 ? "loaded" : "empty-range",
       lines,
     });
   }
@@ -1193,9 +1325,15 @@ function BiographyView({
         {evidenceState ? (
           evidenceState.status === "loading" ? (
             <div className="memory-detail__line">Loading transcript…</div>
-          ) : evidenceState.status === "unavailable" ? (
+          ) : evidenceState.status === "not-found" ? (
             <div className="memory-detail__line" data-testid="memory-evidence-degraded">
-              Session is no longer in the timeline — evidence reference retained as label only.
+              Session not found in the recent timeline window — evidence reference retained
+              as label only.
+            </div>
+          ) : evidenceState.status === "empty-range" ? (
+            <div className="memory-detail__line" data-testid="memory-evidence-empty">
+              Session found, but no message entries in the evidence range — the window is
+              approximate against the console timeline.
             </div>
           ) : (
             <div className="memory-excerpt" data-testid="memory-evidence-excerpt">
@@ -1292,20 +1430,29 @@ function BiographyView({
 function VerdictStrip({
   tiles,
   onOpen,
+  onOpenRecord,
 }: {
   tiles: VerdictTile[];
   onOpen: (tile: VerdictTile) => void;
+  onOpenRecord: (realm: string | undefined, memoryId: string) => void;
 }): React.JSX.Element {
   return (
     <div className="memory-tiles" data-testid="memory-verdict-strip">
+      {/* Tiles are div-role-buttons (SignalsRail idiom) so violation-evidence
+          buttons can nest inside: a red tile is a door to the exact rows that
+          made it red, not just to a tab. */}
       {tiles.map((tile) => (
-        <button
-          type="button"
+        <div
           className="memory-tile"
           key={tile.id}
+          role="button"
+          tabIndex={0}
           data-status={tile.status}
           data-testid={`memory-verdict:${tile.id}`}
           onClick={() => onOpen(tile)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") onOpen(tile);
+          }}
         >
           <span className="memory-tile__label">{tile.label}</span>
           <span className="memory-tile__status" data-status={tile.status}>
@@ -1316,13 +1463,29 @@ function VerdictStrip({
               {line}
             </span>
           ))}
-        </button>
+          {(tile.evidence || []).map((violation) => (
+            <button
+              type="button"
+              className="memory-tile__evidence"
+              key={violation.id}
+              data-testid={`memory-verdict-evidence:${tile.id}:${violation.id}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenRecord(violation.realm, violation.id);
+              }}
+            >
+              {violation.id}
+            </button>
+          ))}
+        </div>
       ))}
     </div>
   );
 }
 
-function MemoryLiveStrip({
+/// Exported for the jsdom component-interaction lane, which pins the
+/// pause-on-scroll / N-behind / auto-unfreeze discipline.
+export function MemoryLiveStrip({
   frames,
   onPivot,
 }: {
@@ -1350,7 +1513,8 @@ function MemoryLiveStrip({
 
   function jumpToLive(): void {
     setFrozen(null);
-    listRef.current?.scrollTo({ top: 0 });
+    // Optional call: jsdom (the component-interaction lane) has no scrolling.
+    listRef.current?.scrollTo?.({ top: 0 });
   }
 
   return (
@@ -1424,6 +1588,8 @@ export function MemoryPanel({
   nextCursor = null,
   recordsDenied = false,
   dreamsDenied = false,
+  operatorScopeDenied = false,
+  mobScopeDenied = false,
   liveFrames = [],
   onRefresh,
   onSelectRecord,
@@ -1459,17 +1625,25 @@ export function MemoryPanel({
     if (detail) setTab("records");
   }, [detail]);
 
-  // Lattice invariants (a)+(c) via the client page-walk, re-run per refresh.
-  const latticeRanForRef = React.useRef<MemoryPanelRecord[] | null>(null);
+  // Lattice invariants (a)+(c) via the client page-walk. Deduped by a
+  // CONTENT fingerprint (not array identity): content-identical debounced
+  // live refreshes skip the walk entirely. While a re-check runs, the prior
+  // result is retained so a settled tile never flickers to UNVERIFIABLE.
+  const latticeRanForRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (tab !== "holdings" || !onQueryRecords || recordsDenied) return;
-    if (latticeRanForRef.current === records) return;
-    latticeRanForRef.current = records;
-    setLattice(null);
+    const fingerprint = latticeFingerprint(records, realms, nextCursor);
+    if (latticeRanForRef.current === fingerprint) return;
+    latticeRanForRef.current = fingerprint;
     setLatticeRunning(true);
     let cancelled = false;
-    void runLatticeWalk((params) => onQueryRecords(params), { singleRealm: realms.length === 1 })
+    void runLatticeWalk((params) => onQueryRecords(params), {
+      realms,
+      isCancelled: () => cancelled,
+    })
       .then((result) => {
+        // null means denied or cancelled; keep the prior verdict on cancel,
+        // clear it on a real walk that came back denied.
         if (!cancelled) setLattice(result);
       })
       .catch(() => {
@@ -1482,7 +1656,7 @@ export function MemoryPanel({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, records, recordsDenied, realms.length]);
+  }, [tab, records, recordsDenied, realms, nextCursor]);
 
   // Holdings stays anchored on the base page (its label says "over the N
   // loaded records"); the Records list renders from the accumulated view.
@@ -1601,7 +1775,11 @@ export function MemoryPanel({
       <div className="gating__list memory-panel__body">
         {tab === "holdings" ? (
           <div className="memory-groups" data-testid="memory-holdings">
-            <VerdictStrip tiles={tiles} onOpen={openTile} />
+            <VerdictStrip
+              tiles={tiles}
+              onOpen={openTile}
+              onOpenRecord={(realm, memoryId) => onSelectRecord(realm, memoryId)}
+            />
             {recordsDenied ? (
               <SectionNote testid="memory-holdings-denied">
                 Records are not readable by this principal (access denied).
@@ -1612,7 +1790,7 @@ export function MemoryPanel({
                   Scopes — counts over the {records.length} loaded records (full totals need
                   panel/overview)
                 </div>
-                {overviewRows.length === 0 ? (
+                {overviewRows.length === 0 && !operatorScopeDenied && !mobScopeDenied ? (
                   <div className="gating__empty">No memory records yet.</div>
                 ) : (
                   overviewRows.map((row) => (
@@ -1643,6 +1821,33 @@ export function MemoryPanel({
                     </button>
                   ))
                 )}
+                {/* Denied scopes vanish from the row-filtered listing; the
+                    one-row probes make them render as access-denied rows
+                    instead of silently not existing (§3.1 / §5 ABAC). */}
+                {mobScopeDenied ? (
+                  <div
+                    className="memory-row memory-row--static memory-scope-row"
+                    data-testid="memory-holdings-scope-denied:mob"
+                  >
+                    <span className="memory-row__title">Mob scopes</span>
+                    <span className="memory-row__meta">
+                      <Chip label="no grant" tone="warning" />
+                      <span className="memory-row__reason">requires mob.memory.read</span>
+                    </span>
+                  </div>
+                ) : null}
+                {operatorScopeDenied ? (
+                  <div
+                    className="memory-row memory-row--static memory-scope-row"
+                    data-testid="memory-holdings-scope-denied:operator"
+                  >
+                    <span className="memory-row__title">Operator scope</span>
+                    <span className="memory-row__meta">
+                      <Chip label="no grant" tone="warning" />
+                      <span className="memory-row__reason">requires operator.memory.read</span>
+                    </span>
+                  </div>
+                ) : null}
               </div>
             )}
             <div className="memory-group">
@@ -1739,6 +1944,28 @@ export function MemoryPanel({
                       <option value="tombstoned">tombstoned</option>
                     </select>
                   </label>
+                  {realms.length > 1 ? (
+                    <label>
+                      realm
+                      <select
+                        value={filter.realm || ""}
+                        data-testid="memory-filter:realm"
+                        onChange={(event) =>
+                          applyFilter({
+                            ...filter,
+                            realm: event.target.value || undefined,
+                          })
+                        }
+                      >
+                        <option value="">all (merged page)</option>
+                        {realms.map((realm) => (
+                          <option key={realm} value={realm}>
+                            {realm}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <label>
                     sort
                     <select
@@ -1771,11 +1998,25 @@ export function MemoryPanel({
                   never judged useful.
                 </SectionNote>
               ) : null}
+              {realms.length > 1 && !filter.realm?.trim() ? (
+                <SectionNote testid="memory-multi-realm-note">
+                  Multi-realm view is a single merged page (keyset paging is
+                  per-realm) — pick a realm above to page through its records.
+                </SectionNote>
+              ) : null}
               {pageLoading ? <div className="gating__empty">Loading records…</div> : null}
               {!pageLoading && listView.records.length === 0 ? (
-                <div className="gating__empty">
-                  {recordsDenied ? "Records: no grant." : "No memory records yet."}
+                <div className="gating__empty" data-testid="memory-records-empty">
+                  {recordsDenied || listView.denied
+                    ? "Records: no grant."
+                    : "No memory records yet."}
                 </div>
+              ) : null}
+              {!pageLoading && listView.denied && listView.records.length > 0 ? (
+                <SectionNote testid="memory-records-denied-note">
+                  Further pages: no grant — the continuation of this query was
+                  denied for this principal.
+                </SectionNote>
               ) : null}
               {!pageLoading && listView.records.length > 0 ? (
                 listView.mode === "flat" ? (
