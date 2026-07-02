@@ -12357,7 +12357,7 @@ function ChatPane({
   const olderHistoryScrollHeightRef = import_react26.default.useRef(0);
   const olderHistoryScrollTopRef = import_react26.default.useRef(0);
   const activeTurnFrameRef = import_react26.default.useRef(0);
-  const [activeTurnIndex, setActiveTurnIndex] = import_react26.default.useState(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react26.default.useState([]);
   const messages = import_react26.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
@@ -12413,31 +12413,42 @@ function ChatPane({
     activeTurnFrameRef.current = 0;
     const body = bodyRef.current;
     if (!body || turns.length <= 1) {
-      setActiveTurnIndex(0);
+      setVisibleTurnIndexes([]);
       return;
     }
     const turnNodes = Array.from(
       body.querySelectorAll("[data-chat-turn-index]")
     );
     if (turnNodes.length === 0) {
-      setActiveTurnIndex(0);
+      setVisibleTurnIndexes([]);
       return;
     }
     const bodyRect = body.getBoundingClientRect();
+    const visibleTop = bodyRect.top;
+    const visibleBottom = bodyRect.bottom;
     const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
     let nextIndex = 0;
+    const nextVisibleIndexes = [];
     for (const turnNode of turnNodes) {
       const rawIndex = Number(turnNode.dataset.chatTurnIndex);
       if (!Number.isFinite(rawIndex)) {
         continue;
       }
-      if (turnNode.getBoundingClientRect().top <= targetY) {
-        nextIndex = rawIndex;
-        continue;
+      const turnRect = turnNode.getBoundingClientRect();
+      if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
+        nextVisibleIndexes.push(rawIndex);
       }
-      break;
+      if (turnRect.top <= targetY) {
+        nextIndex = rawIndex;
+      }
     }
-    setActiveTurnIndex((current) => current === nextIndex ? current : nextIndex);
+    const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
+    setVisibleTurnIndexes((current) => {
+      if (current.length === nextIndexes.length && current.every((value, index) => value === nextIndexes[index])) {
+        return current;
+      }
+      return nextIndexes;
+    });
   }, [turns.length]);
   const scheduleActiveTurnUpdate = import_react26.default.useCallback(() => {
     if (activeTurnFrameRef.current) {
@@ -12483,15 +12494,21 @@ function ChatPane({
   const resolvedDraftBlobRefs = import_react26.default.useRef("");
   const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("ol", { className: "conv-turn-rail__list", children: turns.map((turn, turnIndex) => {
     const preview = chatTurnPreview(turn);
+    const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
     return /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)("li", { className: "conv-turn-rail__item", children: [
       /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
         "button",
         {
-          "aria-current": activeTurnIndex === turnIndex ? "true" : void 0,
+          "aria-current": isVisibleTurn ? "true" : void 0,
           "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
-          className: `conv-turn-rail__button${activeTurnIndex === turnIndex ? " is-active" : ""}`,
+          className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
           "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
-          onClick: () => scrollToTurn(turnIndex),
+          onClick: (event) => {
+            scrollToTurn(turnIndex);
+            if (event.detail > 0) {
+              event.currentTarget.blur();
+            }
+          },
           type: "button",
           children: /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
         }
