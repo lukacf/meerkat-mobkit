@@ -57,6 +57,16 @@ pub enum MemoryTimelineEvent {
         verdict: String,
         rationale: Option<String>,
     },
+    /// A quarantine release/promotion verdict was blocked before staging:
+    /// the record's content matches a §10.4 secret pattern class, which
+    /// the staged chokepoint refuses. The record stays quarantined — this
+    /// event is why the queue never drains it (tombstone is the exit).
+    QuarantineReleaseBlocked {
+        realm: String,
+        record_id: String,
+        verdict: String,
+        class: String,
+    },
     /// A dream contradiction finding with operational consequence was
     /// bridged into the operational ledger (§8.5).
     ConflictSignal {
@@ -156,6 +166,7 @@ impl MemoryTimelineEvent {
             Self::DreamSkipped { .. } => "memory.dream.skipped",
             Self::RecordPromoted { .. } => "memory.record.promoted",
             Self::QuarantineVerdict { .. } => "memory.quarantine.verdict",
+            Self::QuarantineReleaseBlocked { .. } => "memory.quarantine.release_blocked",
             Self::ConflictSignal { .. } => "memory.conflict.signal",
             Self::QuarantinedWrite { .. } => "memory.write.quarantined",
             Self::TaintTransition { .. } => "memory.taint.transition",
@@ -235,6 +246,17 @@ impl MemoryTimelineEvent {
                 "record_id": record_id,
                 "verdict": verdict,
                 "rationale": rationale,
+            }),
+            Self::QuarantineReleaseBlocked {
+                realm,
+                record_id,
+                verdict,
+                class,
+            } => json!({
+                "realm": realm,
+                "record_id": record_id,
+                "verdict": verdict,
+                "class": class,
             }),
             Self::ConflictSignal {
                 realm,

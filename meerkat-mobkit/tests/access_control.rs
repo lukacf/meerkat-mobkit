@@ -1149,6 +1149,7 @@ async fn seeded_memory_store(
         fn quarantine_reason(
             &self,
             author: &MemoryAuthor,
+            _kind: meerkat_mobkit::memory::staged::StagedBatchKind,
             _evidence: &[meerkat_mobkit::memory::records::EvidenceRef],
         ) -> Option<String> {
             author.is_llm().then(|| "test taint".to_string())
@@ -1268,6 +1269,7 @@ async fn seeded_memory_store(
     // One steward dream commit → audit rows for the dreams surface.
     let token = store
         .stage(StagedMutationBatch {
+            kind: meerkat_mobkit::memory::staged::StagedBatchKind::FreshWrite,
             realm: "default".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "run-dream-1".to_string(),
@@ -1298,6 +1300,7 @@ async fn seeded_memory_store(
         async move {
             store
                 .stage(StagedMutationBatch {
+                    kind: meerkat_mobkit::memory::staged::StagedBatchKind::FreshWrite,
                     realm: "default".to_string(),
                     author: MemoryAuthor::Steward {
                         run_id: "run-gate-1".to_string(),

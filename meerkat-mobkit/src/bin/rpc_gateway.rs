@@ -111,6 +111,21 @@ enum GatewayAgentMemoryStoreKind {
     Sqlite,
 }
 
+/// §7.2: `operator_scope = "provisional"` composes operator-scope recall
+/// only when an `OperatorResolver` is installed; the shipped gateway
+/// installs none, so a provisional deployment without one runs steward
+/// proposal-routing while recall composition is INERT. True exactly when
+/// the startup warning about that half-activation must fire.
+fn operator_scope_recall_inert(
+    agent_memory: Option<&GatewayAgentMemoryOptions>,
+    resolver_installed: bool,
+) -> bool {
+    !resolver_installed
+        && agent_memory.is_some_and(|memory| {
+            memory.config.operator_scope == meerkat_mobkit::AgentMemoryOperatorScope::Provisional
+        })
+}
+
 impl Default for GatewayRuntimeOptions {
     fn default() -> Self {
         Self {
@@ -833,6 +848,76 @@ actions = ["agent.view"]
         };
 
         assert!(err.contains("'markdown' or 'sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_budgeted_injection_requires_sqlite() {
+        // The §9.1 compaction budget-reset sink is wired only in the sqlite
+        // arm; markdown + budgeted would silently stop injecting once the
+        // session budget is spent — the config must fail loudly instead.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "per_turn_injection": "budgeted" }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + budgeted injection should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("per_turn_injection='budgeted' requires store='sqlite'"),
+            "{err}"
+        );
+
+        // Both knobs stay valid apart: sqlite + budgeted, markdown + off.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "per_turn_injection": "budgeted" }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("sqlite + budgeted should parse");
+        assert_eq!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .config
+                .per_turn_injection,
+            meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+        );
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "per_turn_injection": "off" }
+            }
+        });
+        parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("markdown + off should parse");
+    }
+
+    #[test]
+    fn operator_scope_warning_fires_exactly_when_provisional_without_resolver() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let parse = |scope: &str| {
+            let params = json!({
+                "runtime_options": {
+                    "agent_memory": { "operator_scope": scope }
+                }
+            });
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("parse")
+                .agent_memory
+                .expect("agent memory options")
+        };
+        let provisional = parse("provisional");
+        let off = parse("off");
+
+        assert!(operator_scope_recall_inert(Some(&provisional), false));
+        assert!(!operator_scope_recall_inert(Some(&provisional), true));
+        assert!(!operator_scope_recall_inert(Some(&off), false));
+        assert!(!operator_scope_recall_inert(Some(&off), true));
+        assert!(!operator_scope_recall_inert(None, false));
+        assert!(!operator_scope_recall_inert(None, true));
     }
 
     #[test]
@@ -2378,6 +2463,19 @@ fn parse_gateway_agent_memory_config(
     {
         return Err(
             "runtime_options.agent_memory.operator_scope requires store='sqlite'".to_string(),
+        );
+    }
+    // And for budgeted per-turn injection: the §9.1 compaction reset sink
+    // (which restores the session injection budget and dedup set when a
+    // session compacts) is wired only in the sqlite arm, so a markdown
+    // deployment would silently stop injecting once a session's cumulative
+    // budget is spent — fail loud instead.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && per_turn_injection == meerkat_mobkit::AgentMemoryPerTurnInjection::Budgeted
+    {
+        return Err(
+            "runtime_options.agent_memory.per_turn_injection='budgeted' requires store='sqlite'"
+                .to_string(),
         );
     }
     let path = persistent_state
@@ -4362,12 +4460,10 @@ external_addressable = true
         // needs BOTH the knob and a resolver (coordinator.rs scope_set), so a
         // resolver-less provisional deployment gets steward proposal-routing
         // only. Without this warning that half-activation is invisible.
-        if agent_memory_operator_resolver.is_none()
-            && gateway_options.agent_memory.as_ref().is_some_and(|memory| {
-                memory.config.operator_scope
-                    == meerkat_mobkit::AgentMemoryOperatorScope::Provisional
-            })
-        {
+        if operator_scope_recall_inert(
+            gateway_options.agent_memory.as_ref(),
+            agent_memory_operator_resolver.is_some(),
+        ) {
             tracing::warn!(
                 "agent_memory.operator_scope=\"provisional\" is configured but this gateway \
                  installs no operator resolver: operator-scope recall composition is INERT \

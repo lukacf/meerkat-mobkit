@@ -323,6 +323,7 @@ async fn main() {
             &MemoryAuthor::Distiller {
                 run_id: "distiller-eval".to_string(),
             },
+            meerkat_mobkit::memory::staged::StagedBatchKind::FreshWrite,
             &evidence,
         )
         .is_some()

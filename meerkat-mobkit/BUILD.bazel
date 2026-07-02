@@ -2592,7 +2592,10 @@ rust_test(
         "fast",
     ],
     size = "small",
-    data = [],
+    data = [
+        ":package_runfiles",
+        "//:repo_governance_files",
+    ],
     env = {
         "RUST_MIN_STACK": "16777216",
     },

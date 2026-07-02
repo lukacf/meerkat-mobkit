@@ -380,10 +380,12 @@ that the steward commits (§8.5). Realm scope is application/SDK-only.
 > `agent_memory.operator_scope = "off" | "provisional"` — the value name
 > says PROVISIONAL on purpose (§16 Q1 stays open; the enum leaves room for a
 > final keying). Recall composition activates on config **and** an
-> `OperatorResolver` (the §16 Q1 provisional keying: the console auth
-> principal, resolved through a trait seam so the keying stays swappable;
-> the console-principal implementation is one line of glue where console
-> auth lives). Steward routing activates on the config knob alone, because
+> `OperatorResolver` (a trait seam so the §16 Q1 keying stays swappable).
+> **No shipped host installs a resolver**: the stock gateway pins it to
+> `None` and logs a loud startup warning when `provisional` is configured
+> without one — recall composition is INERT there because the intended
+> console-auth-principal keying needs session-to-principal plumbing that
+> has not landed (a library embedder can install a resolver today). Steward routing activates on the config knob alone, because
 > operator-scope *proposals carry their own operator key*. The un-hold
 > ships as specified for proposals: pre-activation, an accept verdict on an
 > operator-scope proposal is deterministically downgraded to a hold, and
@@ -1166,7 +1168,8 @@ initiative scope; hub work is the roadmap's.
   off by default with `budgeted` opt-in (D1 fixed by construction, D2 fixed in
   the opt-in path via the budget ladder + session dedup); provider trait v2 with
   supersede + tiered manifest; SQLite store at
-  `agent-memory/<realm>.sqlite3` with markdown export/import; content-hash write
+  `agent-memory/<realm>.sqlite3` with markdown import (one-shot migration;
+  export has not shipped — §7.3 as-built note); content-hash write
   guard (D4); deprecate + honestly rename the "Elephant" ledger backend with
   config compat (D5); re-verify and fix the SDK/docs drift list (§7.3); file
   upstream asks 1–3; land the bright-line CI ratchet (§12).
@@ -1179,7 +1182,8 @@ initiative scope; hub work is the roadmap's.
   Recorder** (§10.1): content-trust config + observe-stream session-sticky taint
   + the `memory.llm_writes` posture knob — a poisonable memory tool must not
   precede its firewall. All LLM-authored writes cap at `AgentObserved`;
-  quarantined records are write-only (surfaced via memory export) until P3's
+  quarantined records are write-only (inspectable via the panel RPCs and
+  sqlite tooling) until P3's
   review surfaces.
 - **P2 — Distiller + lifecycle hooks + taint completion.** Detached bounded
   extraction (the fork harness stays a documented seam until a
@@ -1197,10 +1201,11 @@ initiative scope; hub work is the roadmap's.
   ranking; console Memory panel + timeline events; the §10.3 action additions.
 - **P4 — Operator scope + Hygienist.** Operator profiles (realm-keyed; once
   `OperatorId` keying is settled); transcript-revision curation at compaction
-  boundaries with the span-reference validator rules. *Status: shipped under
-  the §16 Q1 provisional keying (`operator_scope = "provisional"`, resolver
-  seam for the console auth principal) — see the §7.2 and §8.6 as-built
-  notes for the precise activation semantics and the two deliberate
+  boundaries with the span-reference validator rules. *Status: shipped as the
+  resolver SEAM only under §16 Q1 provisional keying — no shipped host
+  installs a resolver, so operator recall composition is inert in stock
+  deployments (steward proposal-routing is active); see the §7.2 and §8.6
+  as-built notes for precise activation semantics and the two deliberate
   Hygienist narrowings.*
 
 Definition of done for the initiative: an identity in a mob accumulates,

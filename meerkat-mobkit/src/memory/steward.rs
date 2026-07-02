@@ -89,7 +89,7 @@ use crate::memory::selector::FactorySelectorHandle;
 use crate::memory::sqlite_store::{
     EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, SqliteAgentMemoryStore,
 };
-use crate::memory::staged::{StagedMemoryStore, StagedMutationBatch, StagedOp};
+use crate::memory::staged::{StagedBatchKind, StagedMemoryStore, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
 
@@ -799,6 +799,9 @@ pub struct DreamVerdicts {
     pub quarantine_tombstoned: usize,
     pub quarantine_held: usize,
     pub quarantine_gated: usize,
+    /// Release/promotion verdicts blocked before staging because the
+    /// record's content matches a §10.4 secret pattern class.
+    pub quarantine_release_blocked: usize,
     pub usage_load_bearing: usize,
     pub usage_dead_weight: usize,
     pub contradictions_emitted: usize,
@@ -831,6 +834,7 @@ impl DreamRun {
                 "quarantine_tombstoned": self.verdicts.quarantine_tombstoned,
                 "quarantine_held": self.verdicts.quarantine_held,
                 "quarantine_gated": self.verdicts.quarantine_gated,
+                "quarantine_release_blocked": self.verdicts.quarantine_release_blocked,
                 "usage_load_bearing": self.verdicts.usage_load_bearing,
                 "usage_dead_weight": self.verdicts.usage_dead_weight,
                 "contradictions_emitted": self.verdicts.contradictions_emitted,
@@ -1225,7 +1229,13 @@ impl StewardEngine {
             .collect();
         let (ops, created_ids) = self.map_consolidate_ops(reply.ops, &known_ids, &run_id, &mut run);
         let committed = self
-            .commit_group(ops, &run_id, "consolidate", &mut run)
+            .commit_group(
+                ops,
+                StagedBatchKind::FreshWrite,
+                &run_id,
+                "consolidate",
+                &mut run,
+            )
             .await;
         run.ops_committed += committed;
 
@@ -1337,7 +1347,15 @@ impl StewardEngine {
                 rank: Some((rank_ops.len() + 1) as u32),
             });
         }
-        let ranked = self.commit_group(rank_ops, &run_id, "rank", &mut run).await;
+        let ranked = self
+            .commit_group(
+                rank_ops,
+                StagedBatchKind::FreshWrite,
+                &run_id,
+                "rank",
+                &mut run,
+            )
+            .await;
         run.ops_committed += ranked;
 
         Ok(run)
@@ -2226,9 +2244,15 @@ impl StewardEngine {
     /// drop the whole group loudly (the group is a semantic unit; §8.4
     /// crash semantics guarantee nothing partial lands). Returns committed
     /// op count.
+    ///
+    /// `kind` is the §10.1 posture key: review-verdict groups (quarantine
+    /// releases/tombstones, proposal accepts) commit at their reviewed
+    /// status, while fresh steward LLM output (consolidate/harvest/rank)
+    /// respects `llm_writes = "quarantined"`.
     async fn commit_group(
         &self,
         ops: Vec<StagedOp>,
+        kind: StagedBatchKind,
         run_id: &str,
         group: &str,
         run: &mut DreamRun,
@@ -2237,6 +2261,7 @@ impl StewardEngine {
             return 0;
         }
         let batch = StagedMutationBatch {
+            kind,
             realm: self.realm.clone(),
             author: MemoryAuthor::Steward {
                 run_id: run_id.to_string(),
@@ -2412,6 +2437,7 @@ impl StewardEngine {
                     let committed = self
                         .commit_group(
                             vec![op],
+                            StagedBatchKind::ReviewVerdict,
                             run_id,
                             &format!("proposal:{}", proposal.proposal_id),
                             run,
@@ -2533,6 +2559,44 @@ impl StewardEngine {
                 verdict: verdict.verdict.clone(),
                 rationale: Some(verdict.rationale.clone()),
             });
+            // §10.4: a release/promotion re-stages the origin content
+            // verbatim, and the staged chokepoint refuses secret-shaped
+            // payloads all-or-nothing — the group would drop every dream
+            // with a generic validation skip. Pre-scan and skip loudly with
+            // the class named (mirroring the markdown-import loud skip) so
+            // the operator can see why the queue never drains this record;
+            // tombstone remains its only exit. The chokepoint refusal law
+            // stays untouched for fresh writes.
+            if matches!(verdict.verdict.as_str(), "release" | "promote_pending_gate")
+                && let Some(class) = crate::memory::secrets::detect_record_secret(
+                    &record.title,
+                    &record.description,
+                    &record.body,
+                    &record.tags,
+                )
+            {
+                tracing::warn!(
+                    run_id,
+                    record_id = %record.id,
+                    class,
+                    "agent memory steward: quarantine {} blocked — record content matches \
+                     secret pattern; tombstone is the only exit",
+                    verdict.verdict
+                );
+                run.skips.push(format!(
+                    "quarantine {} of '{}' blocked: content matches secret pattern \
+                     '{class}' (refused at the write seam; tombstone is the only exit)",
+                    verdict.verdict, record.id
+                ));
+                run.verdicts.quarantine_release_blocked += 1;
+                self.emit(MemoryTimelineEvent::QuarantineReleaseBlocked {
+                    realm: self.realm.clone(),
+                    record_id: record.id.clone(),
+                    verdict: verdict.verdict.clone(),
+                    class: class.to_string(),
+                });
+                continue;
+            }
             match verdict.verdict.as_str() {
                 // Release into the SAME scope: create (derived_from carries
                 // the §10.2 ceiling forever) + tombstone the original.
@@ -2556,7 +2620,13 @@ impl StewardEngine {
                         },
                     ];
                     let committed = self
-                        .commit_group(ops, run_id, &format!("quarantine:{}", record.id), run)
+                        .commit_group(
+                            ops,
+                            StagedBatchKind::ReviewVerdict,
+                            run_id,
+                            &format!("quarantine:{}", record.id),
+                            run,
+                        )
                         .await;
                     if committed > 0 {
                         run.ops_committed += committed;
@@ -2569,7 +2639,13 @@ impl StewardEngine {
                         rationale: Some(format!("quarantine tombstone: {}", verdict.rationale)),
                     }];
                     let committed = self
-                        .commit_group(ops, run_id, &format!("quarantine:{}", record.id), run)
+                        .commit_group(
+                            ops,
+                            StagedBatchKind::ReviewVerdict,
+                            run_id,
+                            &format!("quarantine:{}", record.id),
+                            run,
+                        )
                         .await;
                     if committed > 0 {
                         run.ops_committed += committed;
@@ -2684,6 +2760,10 @@ impl StewardEngine {
             });
         }
         let batch = StagedMutationBatch {
+            // The gate's approval IS the review (§10.2): the batch commits
+            // only after the operator decides, so the posture must not
+            // re-quarantine it.
+            kind: StagedBatchKind::ReviewVerdict,
             realm: self.realm.clone(),
             author: MemoryAuthor::Steward {
                 run_id: run_id.to_string(),
@@ -3070,7 +3150,13 @@ impl StewardEngine {
             }
         }
         let committed = self
-            .commit_group(ops, run_id, &format!("harvest:{}", harvest.identity), run)
+            .commit_group(
+                ops,
+                StagedBatchKind::FreshWrite,
+                run_id,
+                &format!("harvest:{}", harvest.identity),
+                run,
+            )
             .await;
         run.ops_committed += committed;
         run.verdicts.harvests_completed += 1;
@@ -3336,8 +3422,8 @@ pub mod eval {
     use super::{ConsolidateReply, DreamRun, map_consolidate_ops_impl, parse_object};
     use crate::memory::records::{MemoryAuthor, MemoryScope, RecordStatus, TrustTier};
     use crate::memory::staged::{
-        DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StagedBatchView, StagedMutationBatch, StagedOp,
-        StagedRecordView, validate_batch,
+        DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StagedBatchKind, StagedBatchView,
+        StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,
     };
 
     /// The mapped consolidate output plus verdict projections.
@@ -3446,6 +3532,7 @@ pub mod eval {
             return Ok(0);
         }
         let batch = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: realm.to_string(),
             author: MemoryAuthor::Steward {
                 run_id: run_id.to_string(),
@@ -3640,6 +3727,7 @@ mod tests {
         fn quarantine_reason(
             &self,
             author: &MemoryAuthor,
+            _kind: StagedBatchKind,
             evidence: &[EvidenceRef],
         ) -> Option<String> {
             if !author.is_llm() {
@@ -3760,6 +3848,7 @@ mod tests {
         body: &str,
     ) {
         let batch = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: REALM.to_string(),
             author: MemoryAuthor::Application,
             ops: vec![StagedOp::Create {
@@ -4667,6 +4756,7 @@ mod tests {
         // First-pass Distiller writes still posture-quarantine — the
         // exemption is review-authorship only.
         let batch = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: REALM.to_string(),
             author: MemoryAuthor::Distiller {
                 run_id: "d1".to_string(),
@@ -4691,6 +4781,168 @@ mod tests {
             .expect("read")
             .remove(0);
         assert!(matches!(distilled.status, RecordStatus::Quarantined { .. }));
+    }
+
+    /// §10.1 posture, fresh-write side: the review-verdict exemption must
+    /// NOT cover fresh steward LLM output — all dream groups carry
+    /// `MemoryAuthor::Steward`, but a consolidate create is first-pass
+    /// content, so under `llm_writes = "quarantined"` it lands Quarantined
+    /// pending a later review (releasable by a subsequent dream's
+    /// quarantine verdict or operator review).
+    #[tokio::test]
+    async fn quarantined_posture_quarantines_fresh_consolidate_creates() {
+        use crate::identity_first::agent_memory::AgentMemoryLlmWrites;
+        use crate::memory::taint::TaintLlmWriteGate;
+        let fixture = build_fixture_with_gate(
+            vec![
+                empty_gather(),
+                json_reply(serde_json::json!({
+                    "ops": [{
+                        "op": "create", "kind": "fact",
+                        "scope": {"kind": "identity", "key": "identity:worker"},
+                        "title": "Fresh steward insight",
+                        "body": "first-pass steward LLM output, never reviewed"
+                    }],
+                    "proposal_verdicts": [], "quarantine_verdicts": [],
+                    "open_loop_escalations": [], "contradictions": [], "working_set": []
+                })),
+            ],
+            vec![],
+            Arc::new(TaintLlmWriteGate::new(
+                None,
+                AgentMemoryLlmWrites::Quarantined,
+            )),
+        );
+        fixture.engine.note_session_completed();
+        let outcome = fixture.engine.dream_now().await;
+        let DreamOutcome::Completed(run) = outcome else {
+            panic!("dream must complete: {outcome:?}");
+        };
+        assert_eq!(run.ops_committed, 1, "{:?}", run.skips);
+        let recent = fixture
+            .store
+            .recent_records(REALM, 8)
+            .await
+            .expect("recent");
+        let created = recent
+            .iter()
+            .find(|record| record.title == "Fresh steward insight")
+            .expect("consolidate create must land");
+        assert!(
+            matches!(created.status, RecordStatus::Quarantined { .. }),
+            "fresh consolidate creates must respect llm_writes=quarantined: {:?}",
+            created.status
+        );
+    }
+
+    /// §10.4: a quarantined record whose content matches a secret pattern
+    /// can never re-stage (release/promotion copies are refused at the
+    /// staged chokepoint), so the steward pre-scans and skips the verdict
+    /// loudly with the class named — and other verdicts in the same dream
+    /// still commit — instead of dropping the group with a generic
+    /// validation skip every dream forever.
+    #[tokio::test]
+    async fn secret_shaped_quarantine_release_skips_loudly_and_others_commit() {
+        let fixture = build_fixture(
+            vec![empty_gather(), "PLACEHOLDER-CONSOLIDATE".to_string()],
+            vec![],
+        );
+        let clean = seed_quarantined(
+            &fixture.store,
+            "identity:worker",
+            "Clean incident note",
+            "a benign body worth releasing",
+        )
+        .await;
+        let secret = seed_quarantined(
+            &fixture.store,
+            "identity:worker",
+            "AWS key incident notes",
+            "placeholder body",
+        )
+        .await;
+        // Mimic a record written before the secret scanner existed (the
+        // scanner refuses such bodies at every staged write path now):
+        // overwrite the body under the scanner's radar with direct SQL.
+        {
+            let conn = rusqlite::Connection::open(fixture.store.path_for_realm(REALM))
+                .expect("open realm db");
+            let updated = conn
+                .execute(
+                    "UPDATE records SET body = ?1 WHERE memory_id = ?2",
+                    rusqlite::params![
+                        "the docs example key AKIAIOSFODNN7EXAMPLE, quoted in a note",
+                        secret
+                    ],
+                )
+                .expect("update body");
+            assert_eq!(updated, 1);
+        }
+        let consolidate = json_reply(serde_json::json!({
+            "ops": [], "proposal_verdicts": [],
+            "quarantine_verdicts": [
+                {"record_id": clean, "verdict": "release", "rationale": "benign"},
+                {"record_id": secret, "verdict": "release", "rationale": "looks fine"}
+            ],
+            "open_loop_escalations": [], "contradictions": [], "working_set": []
+        }));
+        {
+            let mut replies = fixture.llm.replies.lock().unwrap();
+            let slot = replies
+                .iter_mut()
+                .find(|reply| reply.as_str() == "PLACEHOLDER-CONSOLIDATE")
+                .expect("slot");
+            *slot = consolidate;
+        }
+        fixture.engine.note_session_completed();
+        let outcome = fixture.engine.dream_now().await;
+        let DreamOutcome::Completed(run) = outcome else {
+            panic!("dream must complete: {outcome:?}");
+        };
+        assert_eq!(run.verdicts.quarantine_released, 1, "{:?}", run.skips);
+        assert_eq!(
+            run.verdicts.quarantine_release_blocked, 1,
+            "{:?}",
+            run.skips
+        );
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains("aws-access-key-id") && skip.contains(&secret)),
+            "the skip must name the pattern class and the record: {:?}",
+            run.skips
+        );
+        assert!(
+            fixture
+                .events
+                .types()
+                .iter()
+                .any(|kind| *kind == "memory.quarantine.release_blocked"),
+            "{:?}",
+            fixture.events.types()
+        );
+        // The clean record's release group still committed: Active copy,
+        // tombstoned origin.
+        let recent = fixture
+            .store
+            .recent_records(REALM, 16)
+            .await
+            .expect("recent");
+        let copy = recent
+            .iter()
+            .find(|record| record.derived_from.contains(&clean))
+            .expect("clean release copy exists");
+        assert_eq!(copy.status, RecordStatus::Active);
+        // The secret-shaped record stays quarantined — visible in the
+        // queue, with the events/skips above explaining why it never
+        // drains (tombstone is its only exit).
+        let blocked = fixture
+            .store
+            .records_by_ids(REALM, std::slice::from_ref(&secret))
+            .await
+            .expect("read")
+            .remove(0);
+        assert!(matches!(blocked.status, RecordStatus::Quarantined { .. }));
     }
 
     /// §10.1 proposal firewall pin: a proposal tainted at propose time is
@@ -5097,6 +5349,7 @@ mod tests {
             .await
             .expect("seed");
         let retier = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: REALM.to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-test".to_string(),
@@ -5145,6 +5398,7 @@ mod tests {
             .await
             .expect("seed");
         let retier = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: REALM.to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-test".to_string(),
@@ -5360,6 +5614,7 @@ mod tests {
             let mut record = new_record("Operator wants EU clusters", "operator said: eu-west");
             record.tags = vec!["epistemic:operator_said".to_string()];
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: REALM.to_string(),
                 author: MemoryAuthor::Application,
                 ops: vec![StagedOp::Create {

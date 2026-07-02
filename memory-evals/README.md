@@ -65,8 +65,10 @@ shuffle_manifest = true
 ```
 
 Records and staged batches carry the profile that produced them
-(`CalibrationRef` in the record model, §7.1). Profile changes gate on scorecard
-non-regression in CI once live mode exists.
+(`CalibrationRef` in the record model, §7.1). Live mode exists for every stage;
+profile changes gate on the deterministic lanes in CI today, and on live
+scorecard non-regression wherever provider auth resolves (no CI lane supplies
+credentials yet — see the design doc's §11 as-built note).
 
 ## Selector fixtures (`fixtures/selector/*.json`)
 

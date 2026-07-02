@@ -36,8 +36,9 @@ use super::records::{
     TrustTier, UsageEvent, UsageStats, age_days, content_hash, validate_record_fields,
 };
 use super::staged::{
-    CommitReceipt, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StageToken, StagedBatchView,
-    StagedMemoryStore, StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,
+    CommitReceipt, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, StageToken, StagedBatchKind,
+    StagedBatchView, StagedMemoryStore, StagedMutationBatch, StagedOp, StagedRecordView,
+    validate_batch,
 };
 
 /// Per-scope retention floors (§7.3): exceeded floors WARN the steward via
@@ -319,7 +320,20 @@ impl SqliteAgentMemoryStore {
             )
             .map_err(sql_err)?;
         }
-        ensure_column(&conn, "proposals", "taint", "TEXT")?;
+        if ensure_column(&conn, "proposals", "taint", "TEXT")? {
+            // Conservative backfill (mirrors ever_quarantined above): the
+            // propose-time taint fact for pre-migration proposals lived only
+            // in the in-memory SessionTaintTracker and is unrecoverable, so
+            // still-live proposals route through the operator-gated
+            // promotion path instead of reading as clean. Terminal statuses
+            // (accepted/rejected) are never re-verdicted and stay untouched.
+            conn.execute(
+                "UPDATE proposals SET taint = 'pre-migration proposal: propose-time \
+                 taint fact unrecoverable' WHERE status IN ('pending', 'held')",
+                [],
+            )
+            .map_err(sql_err)?;
+        }
         let now = now_ms();
         // Stage GC spares tokens referenced by a still-pending gated
         // promotion (§10.2) — the operator's decision window outranks the
@@ -483,6 +497,7 @@ impl SqliteAgentMemoryStore {
         let imported = ops.len();
         if !ops.is_empty() {
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: realm.to_string(),
                 author: MemoryAuthor::Agent {
                     identity: identity.as_str().to_string(),
@@ -570,6 +585,7 @@ impl SqliteAgentMemoryStore {
                 return Ok(project_record(row.into_record(scope.realm())?));
             }
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: realm.to_string(),
                 // RPC/SDK writes are application-principal writes (§7.2);
                 // the P1 Recorder threads real agent authorship.
@@ -654,6 +670,7 @@ impl SqliteAgentMemoryStore {
                 });
             }
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: scope.realm().to_string(),
                 author,
                 ops: vec![StagedOp::Tombstone {
@@ -712,6 +729,7 @@ impl SqliteAgentMemoryStore {
                 )));
             }
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: realm.clone(),
                 author,
                 ops: vec![StagedOp::Supersede {
@@ -792,6 +810,7 @@ impl SqliteAgentMemoryStore {
                 });
             }
             let batch = StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: realm.clone(),
                 author,
                 ops: vec![StagedOp::Create {
@@ -1010,9 +1029,9 @@ impl SqliteAgentMemoryStore {
         // reset boundary, eviction) and over-quarantine (identity tainted
         // later by an unrelated ingestion). The persisted fact makes the
         // steward's accept downgrade deterministic shell law.
-        let taint = self
-            .gate()
-            .and_then(|gate| gate.quarantine_reason(&author, &record.evidence));
+        let taint = self.gate().and_then(|gate| {
+            gate.quarantine_reason(&author, StagedBatchKind::FreshWrite, &record.evidence)
+        });
         if let Some(reason) = taint.as_deref() {
             tracing::warn!(
                 realm = scope.realm(),
@@ -2471,7 +2490,8 @@ fn apply_batch_tx(
             _ => Vec::new(),
         })
         .collect();
-    let quarantine = gate.and_then(|gate| gate.quarantine_reason(&batch.author, &evidence));
+    let quarantine =
+        gate.and_then(|gate| gate.quarantine_reason(&batch.author, batch.kind, &evidence));
     if let Some(reason) = quarantine.as_deref() {
         tracing::warn!(
             realm = %batch.realm,
@@ -3411,6 +3431,7 @@ mod tests {
         // Steward ranks the record, then the RPC update path supersedes it.
         let token = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
@@ -3482,6 +3503,7 @@ mod tests {
         // ranked records leave the recent/unranked slice.
         let token = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
@@ -3536,6 +3558,7 @@ mod tests {
 
         let token = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-crash".to_string(),
@@ -3680,11 +3703,93 @@ mod tests {
         Ok(())
     }
 
+    /// The proposals `taint` migration conservatively marks still-live
+    /// (pending/held) proposals tainted: the propose-time taint fact lived
+    /// only in the in-memory tracker and is unrecoverable after the restart
+    /// that accompanies the upgrade, so a plain steward accept downgrades
+    /// to the operator gate instead of clean-accepting a possibly-tainted
+    /// pre-migration proposal.
+    #[tokio::test]
+    async fn proposal_taint_migration_marks_live_proposals_tainted() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let db_path = {
+            let store = SqliteAgentMemoryStore::open(dir.path())?;
+            store.path_for_realm("family")
+        };
+        {
+            let conn = Connection::open(&db_path)?;
+            conn.execute_batch(
+                "CREATE TABLE proposals (
+                    proposal_id   TEXT PRIMARY KEY,
+                    scope_kind    TEXT NOT NULL,
+                    scope_key     TEXT NOT NULL,
+                    record        TEXT NOT NULL,
+                    author        TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    created_at_ms INTEGER NOT NULL
+                );",
+            )?;
+            let record = serde_json::to_string(&NewMemoryRecord {
+                kind: MemoryKind::Fact,
+                title: "Shared gotcha".to_string(),
+                description: String::new(),
+                body: "proposed before the taint column existed".to_string(),
+                tags: Vec::new(),
+                evidence: Vec::new(),
+                verification: None,
+            })?;
+            let author = serde_json::to_string(&MemoryAuthor::Agent {
+                identity: "identity:luka".to_string(),
+            })?;
+            let insert = |id: &str, status: &str| {
+                conn.execute(
+                    "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, \
+                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:home', ?2, ?3, \
+                     ?4, 1)",
+                    params![id, record, author, status],
+                )
+            };
+            insert("prop-pending", "pending")?;
+            insert("prop-held", "held")?;
+            insert("prop-accepted", "accepted")?;
+            insert("prop-rejected", "rejected")?;
+        }
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let proposals = store.pending_proposals("family", 8).await?;
+        assert_eq!(proposals.len(), 2, "{proposals:?}");
+        for proposal in &proposals {
+            let taint = proposal.taint.as_deref().unwrap_or_else(|| {
+                panic!(
+                    "live pre-migration proposal '{}' must be conservatively tainted",
+                    proposal.proposal_id
+                )
+            });
+            assert!(taint.contains("pre-migration"), "{taint}");
+        }
+        // Terminal statuses are never re-verdicted: the backfill leaves them
+        // alone.
+        let conn = store.realm_connection("family")?;
+        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        for id in ["prop-accepted", "prop-rejected"] {
+            let taint: Option<String> = guard.query_row(
+                "SELECT taint FROM proposals WHERE proposal_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            assert!(
+                taint.is_none(),
+                "terminal proposal '{id}' must stay untouched: {taint:?}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stale_stage_tokens_gc_on_open() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
         let stage_create = |title: &str| StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Application,
             ops: vec![StagedOp::Create {
@@ -3774,6 +3879,7 @@ mod tests {
         // Agent author above the LLM ceiling.
         let above_ceiling = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Agent {
                     identity: identity()?.as_str().to_string(),
@@ -3798,6 +3904,7 @@ mod tests {
         // Operator tier is never staged-assignable, for any author.
         let operator_tier = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Operator,
                 ops: vec![StagedOp::Create {
@@ -3829,6 +3936,7 @@ mod tests {
         // record, then try to retier the merge product upward.
         let seed = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-1".to_string(),
@@ -3868,6 +3976,7 @@ mod tests {
 
         let launder = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: MemoryAuthor::Steward {
                     run_id: "dream-2".to_string(),
@@ -3954,6 +4063,7 @@ mod tests {
         fn quarantine_reason(
             &self,
             author: &MemoryAuthor,
+            _kind: StagedBatchKind,
             evidence: &[crate::memory::records::EvidenceRef],
         ) -> Option<String> {
             if !author.is_llm() {
@@ -4013,6 +4123,7 @@ mod tests {
             evidence: Vec::new(),
         });
         let release = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-1".to_string(),
@@ -4073,6 +4184,7 @@ mod tests {
         // agent_verified must be rejected even though the quarantined
         // origin is now tombstoned.
         let retier = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-2".to_string(),
@@ -4431,6 +4543,7 @@ mod tests {
         fn quarantine_reason(
             &self,
             author: &MemoryAuthor,
+            _kind: StagedBatchKind,
             _evidence: &[crate::memory::records::EvidenceRef],
         ) -> Option<String> {
             author
@@ -4648,6 +4761,7 @@ mod tests {
 
         let token = store
             .stage(StagedMutationBatch {
+                kind: StagedBatchKind::FreshWrite,
                 realm: "family".to_string(),
                 author: agent_author()?,
                 ops: vec![StagedOp::Create {

@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity_first::agent_memory::AgentMemoryLlmWrites;
 use crate::memory::records::{EvidenceRef, MemoryAuthor};
+use crate::memory::staged::StagedBatchKind;
 
 /// Builtin web-facing tool names: ALWAYS untrusted for memory purposes, not
 /// overridable by `trusted_tools` (§10.1 "web/fetch always untrusted").
@@ -544,26 +545,38 @@ impl SessionTaintTracker {
 pub trait LlmWriteGate: Send + Sync {
     /// `Some(reason)` when this LLM-authored write must land
     /// `RecordStatus::Quarantined`. Non-LLM principals are never gated.
+    /// `kind` is the batch's semantic kind (§10.1): review verdicts are
+    /// the review the quarantine posture defers to, fresh writes are not.
     /// `evidence` is the union of `EvidenceRef`s the write cites (P2
     /// evidence-range taint, §10.1); empty for writes that cite nothing.
-    fn quarantine_reason(&self, author: &MemoryAuthor, evidence: &[EvidenceRef]) -> Option<String>;
+    fn quarantine_reason(
+        &self,
+        author: &MemoryAuthor,
+        kind: StagedBatchKind,
+        evidence: &[EvidenceRef],
+    ) -> Option<String>;
 }
 
 /// The taint/posture gate: `llm_writes = "quarantined"` forces every
-/// first-pass LLM-authored write (Agent, Distiller) into quarantine
-/// regardless of taint; agent-authored writes quarantine when the author's
-/// session is tainted; and ANY LLM-authored write (Steward and Distiller
-/// included) quarantines when its evidence cites a tainted session or a
-/// reset boundary (§8.4/§10.1 — coarse: session-tainted ⇒ range-tainted).
+/// first-pass LLM-authored write (Agent, Distiller, and the steward's own
+/// consolidate/harvest/rank output) into quarantine regardless of taint;
+/// agent-authored writes quarantine when the author's session is tainted;
+/// and ANY LLM-authored write (Steward and Distiller included) quarantines
+/// when its evidence cites a tainted session or a reset boundary
+/// (§8.4/§10.1 — coarse: session-tainted ⇒ range-tainted).
 ///
-/// Steward-authored batches are exempt from the *posture* branch only:
-/// steward staged output IS the review the posture defers to (§10.1
-/// "quarantined until steward/operator review") — quarantine releases and
-/// gating-approved promotions commit as Steward batches, and
-/// re-quarantining them would make review unable to ever produce an Active
-/// record under the conservative posture. The evidence-taint branch still
-/// applies to the steward, so a consolidation citing a tainted session
-/// quarantines like any other write.
+/// Review-verdict batches (`StagedBatchKind::ReviewVerdict`) are exempt
+/// from the *posture* branch only: a review verdict IS the review the
+/// posture defers to (§10.1 "quarantined until steward/operator review") —
+/// quarantine releases, gating-approved promotions, and proposal accepts
+/// commit as review verdicts, and re-quarantining them would make review
+/// unable to ever produce an Active record under the conservative posture.
+/// The exemption is keyed on the batch's semantic kind, NOT on the Steward
+/// author: all dream groups carry `MemoryAuthor::Steward`, but fresh
+/// steward LLM output (consolidate creates, harvest copies, rank batches)
+/// is first-pass content and respects the posture knob. The evidence-taint
+/// branch still applies to every batch, so a consolidation citing a
+/// tainted session quarantines like any other write.
 pub struct TaintLlmWriteGate {
     tracker: Option<SessionTaintTracker>,
     llm_writes: AgentMemoryLlmWrites,
@@ -579,12 +592,17 @@ impl TaintLlmWriteGate {
 }
 
 impl LlmWriteGate for TaintLlmWriteGate {
-    fn quarantine_reason(&self, author: &MemoryAuthor, evidence: &[EvidenceRef]) -> Option<String> {
+    fn quarantine_reason(
+        &self,
+        author: &MemoryAuthor,
+        kind: StagedBatchKind,
+        evidence: &[EvidenceRef],
+    ) -> Option<String> {
         if !author.is_llm() {
             return None;
         }
         if self.llm_writes == AgentMemoryLlmWrites::Quarantined
-            && !matches!(author, MemoryAuthor::Steward { .. })
+            && kind != StagedBatchKind::ReviewVerdict
         {
             return Some("llm_writes=quarantined policy".to_string());
         }
@@ -1019,35 +1037,40 @@ mod tests {
         let agent = MemoryAuthor::Agent {
             identity: "identity:a".to_string(),
         };
-        assert!(gate.quarantine_reason(&agent, &[]).is_none());
         assert!(
-            gate.quarantine_reason(&MemoryAuthor::Application, &[])
+            gate.quarantine_reason(&agent, StagedBatchKind::FreshWrite, &[])
+                .is_none()
+        );
+        assert!(
+            gate.quarantine_reason(&MemoryAuthor::Application, StagedBatchKind::FreshWrite, &[])
                 .is_none()
         );
 
         tracker.observe_agent_event("identity:a", &tool_result("web_search"));
         let reason = gate
-            .quarantine_reason(&agent, &[])
+            .quarantine_reason(&agent, StagedBatchKind::FreshWrite, &[])
             .expect("tainted quarantines");
         assert!(reason.contains("session tainted"), "{reason}");
         // Non-LLM principals are never gated, tainted or not.
         assert!(
-            gate.quarantine_reason(&MemoryAuthor::Application, &[])
+            gate.quarantine_reason(&MemoryAuthor::Application, StagedBatchKind::FreshWrite, &[])
                 .is_none()
         );
         assert!(
-            gate.quarantine_reason(&MemoryAuthor::Operator, &[])
+            gate.quarantine_reason(&MemoryAuthor::Operator, StagedBatchKind::FreshWrite, &[])
                 .is_none()
         );
 
         // llm_writes=quarantined forces quarantine with no taint at all —
-        // for first-pass LLM authors (Agent, Distiller).
+        // for every first-pass LLM write (Agent, Distiller, and the
+        // steward's own fresh consolidate/harvest/rank output).
         let strict = TaintLlmWriteGate::new(None, AgentMemoryLlmWrites::Quarantined);
         let reason = strict
             .quarantine_reason(
                 &MemoryAuthor::Agent {
                     identity: "identity:clean".to_string(),
                 },
+                StagedBatchKind::FreshWrite,
                 &[],
             )
             .expect("policy quarantines untainted writes");
@@ -1058,33 +1081,39 @@ mod tests {
                     &MemoryAuthor::Distiller {
                         run_id: "run-1".to_string()
                     },
+                    StagedBatchKind::FreshWrite,
                     &[]
                 )
                 .is_some()
         );
-        // Steward staged output IS the review the posture defers to: the
-        // posture branch must not re-quarantine releases and approved
-        // promotions (they would otherwise never produce an Active record).
+        let steward = MemoryAuthor::Steward {
+            run_id: "run-1".to_string(),
+        };
         assert!(
             strict
-                .quarantine_reason(
-                    &MemoryAuthor::Steward {
-                        run_id: "run-1".to_string()
-                    },
-                    &[]
-                )
+                .quarantine_reason(&steward, StagedBatchKind::FreshWrite, &[])
+                .is_some(),
+            "fresh steward LLM output (consolidate/harvest/rank) respects the posture"
+        );
+        // A review verdict IS the review the posture defers to: the posture
+        // branch must not re-quarantine releases, approved promotions, and
+        // proposal accepts (they would otherwise never produce an Active
+        // record). Keyed on the batch kind, not the Steward author.
+        assert!(
+            strict
+                .quarantine_reason(&steward, StagedBatchKind::ReviewVerdict, &[])
                 .is_none()
         );
         assert!(
             strict
-                .quarantine_reason(&MemoryAuthor::Operator, &[])
+                .quarantine_reason(&MemoryAuthor::Operator, StagedBatchKind::FreshWrite, &[])
                 .is_none()
         );
     }
 
     #[test]
-    fn quarantined_posture_still_gates_steward_on_tainted_evidence() {
-        // The steward's posture exemption is posture-branch-only: a steward
+    fn quarantined_posture_still_gates_review_verdicts_on_tainted_evidence() {
+        // The review-verdict exemption is posture-branch-only: a review
         // batch citing a tainted session still quarantines through the
         // evidence-range branch (§10.1).
         let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
@@ -1096,10 +1125,17 @@ mod tests {
         let steward = MemoryAuthor::Steward {
             run_id: "run-1".to_string(),
         };
-        assert!(gate.quarantine_reason(&steward, &[]).is_none());
+        assert!(
+            gate.quarantine_reason(&steward, StagedBatchKind::ReviewVerdict, &[])
+                .is_none()
+        );
         let reason = gate
-            .quarantine_reason(&steward, &evidence_for(&session))
-            .expect("tainted evidence still quarantines steward output");
+            .quarantine_reason(
+                &steward,
+                StagedBatchKind::ReviewVerdict,
+                &evidence_for(&session),
+            )
+            .expect("tainted evidence still quarantines review verdicts");
         assert!(reason.contains("evidence session tainted"), "{reason}");
     }
 
@@ -1128,18 +1164,30 @@ mod tests {
             run_id: "run-1".to_string(),
         };
         let reason = gate
-            .quarantine_reason(&distiller, &evidence_for(&session))
+            .quarantine_reason(
+                &distiller,
+                StagedBatchKind::FreshWrite,
+                &evidence_for(&session),
+            )
             .expect("tainted evidence range quarantines (session-tainted ⇒ range-tainted)");
         assert!(reason.contains("evidence session tainted"), "{reason}");
         // Clean evidence does not.
         assert!(
-            gate.quarantine_reason(&distiller, &evidence_for(&fresh))
-                .is_none()
+            gate.quarantine_reason(
+                &distiller,
+                StagedBatchKind::FreshWrite,
+                &evidence_for(&fresh)
+            )
+            .is_none()
         );
         // Non-LLM authors are never evidence-gated.
         assert!(
-            gate.quarantine_reason(&MemoryAuthor::Operator, &evidence_for(&session))
-                .is_none()
+            gate.quarantine_reason(
+                &MemoryAuthor::Operator,
+                StagedBatchKind::FreshWrite,
+                &evidence_for(&session)
+            )
+            .is_none()
         );
     }
 
@@ -1160,6 +1208,7 @@ mod tests {
                 &MemoryAuthor::Distiller {
                     run_id: "run-1".to_string(),
                 },
+                StagedBatchKind::FreshWrite,
                 &evidence_for(&session),
             )
             .expect("reset boundary quarantines distillates");

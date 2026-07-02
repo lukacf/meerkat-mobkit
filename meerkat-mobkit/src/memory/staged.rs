@@ -93,6 +93,24 @@ impl StagedOp {
     }
 }
 
+/// Semantic kind of a staged batch (§10.1). The `llm_writes =
+/// "quarantined"` posture keys off this, not off authorship: ALL steward
+/// dream groups carry `MemoryAuthor::Steward`, but only some of them ARE
+/// the review the posture defers to. Review verdicts (quarantine releases,
+/// gated-promotion commits, proposal accepts) commit at their reviewed
+/// status; fresh writes (consolidate/harvest/rank output, agent and
+/// distiller records) respect the posture knob.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedBatchKind {
+    /// First-pass content: no reviewer has judged it yet.
+    #[default]
+    FreshWrite,
+    /// A steward/operator review verdict over existing content — the
+    /// review itself, so the quarantine posture must not re-defer it.
+    ReviewVerdict,
+}
+
 /// A staged batch. Carries the realm (the store is per-realm; id-only ops
 /// like `Tombstone` have no scope to infer it from) and one author for the
 /// whole batch — a batch is one principal's proposal, and the lattice rules
@@ -101,6 +119,12 @@ impl StagedOp {
 pub struct StagedMutationBatch {
     pub realm: String,
     pub author: MemoryAuthor,
+    /// §10.1 posture keying. `serde(default)`: batches staged before this
+    /// field existed deserialize as fresh writes — the conservative
+    /// direction (a pre-upgrade gated promotion re-quarantines under the
+    /// posture rather than silently landing Active).
+    #[serde(default)]
+    pub kind: StagedBatchKind,
     pub ops: Vec<StagedOp>,
 }
 
@@ -832,6 +856,7 @@ mod tests {
 
     fn agent_batch(ops: Vec<StagedOp>) -> StagedMutationBatch {
         StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Agent {
                 identity: "identity:luka".to_string(),
@@ -842,6 +867,7 @@ mod tests {
 
     fn steward_batch(ops: Vec<StagedOp>) -> StagedMutationBatch {
         StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Steward {
                 run_id: "dream-1".to_string(),
@@ -886,6 +912,7 @@ mod tests {
         ] {
             for tier in [TrustTier::Operator, TrustTier::Application] {
                 let batch = StagedMutationBatch {
+                    kind: StagedBatchKind::FreshWrite,
                     realm: "family".to_string(),
                     author: author.clone(),
                     ops: vec![create_op(identity_scope(), tier)],
@@ -1224,6 +1251,7 @@ mod tests {
             },
         );
         let launder_by_supersede = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Application,
             ops: vec![StagedOp::Supersede {
@@ -1313,6 +1341,7 @@ mod tests {
         // A non-LLM supersede over the released copy asking agent_verified
         // is capped the same way.
         let supersede = StagedMutationBatch {
+            kind: StagedBatchKind::FreshWrite,
             realm: "family".to_string(),
             author: MemoryAuthor::Application,
             ops: vec![StagedOp::Supersede {
