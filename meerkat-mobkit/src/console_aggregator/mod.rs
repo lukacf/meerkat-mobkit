@@ -3627,7 +3627,15 @@ fn frame_from_console_event(
         "interaction_complete" | "run_completed" => ConsoleFrameStatus::Completed,
         _ => ConsoleFrameStatus::Delivered,
     };
-    let identity = apply_namespace(&envelope.identity, &entry.identity_namespace);
+    // The system identity is runtime-plane, not agent-plane: namespacing it
+    // would defeat the global-timeline visibility exemption in
+    // `frame_is_visible_cached` on namespaced runtimes (memory.* events
+    // attributed to `_system` would become `ns/_system` and vanish again).
+    let identity = if envelope.identity == SYSTEM_EVENT_IDENTITY {
+        envelope.identity
+    } else {
+        apply_namespace(&envelope.identity, &entry.identity_namespace)
+    };
     let dedupe_key = reasoning_payload_text(&event_type, &payload)
         .map(|reasoning_text| {
             // Reasoning hashes assume console events carry full/cumulative text; if deltas become
@@ -4328,7 +4336,14 @@ async fn frame_is_visible_cached(
         };
         entry.clone()
     };
-    if frame.identity != "__console__" {
+    // Runtime-plane frames aren't agent frames: `__console__` (synthetic
+    // gap markers) and `_system` (ConsoleMemoryEventSink attributes
+    // identity-less §9.3 memory.* events here) have no roster record to
+    // resolve, so the per-identity gate below would hide them from every
+    // global timeline query. They skip straight to the visibility policy;
+    // ABAC still filters them per-caller in the RPC layer
+    // (`retain_visible_timeline_frames`).
+    if frame.identity != "__console__" && frame.identity != SYSTEM_EVENT_IDENTITY {
         let cache_key = (frame.runtime_key.clone(), frame.identity.clone());
         let identity_visibility =
             if let Some(cached) = identity_visibility_cache.get(&cache_key).copied() {
@@ -7016,6 +7031,97 @@ comms = true
             .expect("query timeline");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].kind, "text_delta");
+    }
+
+    /// §9.3: memory.* events with no affected identity are attributed to
+    /// `_system` by the ConsoleMemoryEventSink. `_system` has no roster
+    /// record, so without an explicit exemption the per-identity visibility
+    /// gate hides them from every GLOBAL timeline query (the pre-fix bug:
+    /// the rail and the Memory panel live strip never saw dream/quarantine/
+    /// promotion events). The exemption must be exact — an arbitrary
+    /// unknown identity stays hidden — and must survive identity
+    /// namespacing (`frame_from_console_event` must not rewrite `_system`
+    /// to `ns/_system`). ABAC is unaffected: under an enforced config the
+    /// RPC layer still filters `_system` frames per caller via
+    /// `retain_visible_timeline_frames` (covered in tests/access_control.rs).
+    #[tokio::test]
+    async fn system_identity_frames_are_visible_on_global_timeline_queries() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let runtime = build_single_member_runtime().await;
+        // Register a runtime so the per-identity visibility gate engages
+        // (an empty registry short-circuits every frame to visible). The
+        // test entry carries the "test" identity namespace on purpose.
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+
+        let envelope = |event_id: &str, identity: &str, event_type: &str| {
+            crate::console_contracts::ConsoleIdentityEventEnvelope {
+                event_id: event_id.to_string(),
+                interaction_id: None,
+                identity: identity.to_string(),
+                event_type: event_type.to_string(),
+                timestamp_ms: 1_000,
+                data: json!({ "realm": "default" }),
+            }
+        };
+
+        let system_frame = frame_from_console_event(
+            &entry,
+            envelope("evt-mem-1", SYSTEM_EVENT_IDENTITY, "memory.dream.completed"),
+        );
+        assert_eq!(
+            system_frame.identity, SYSTEM_EVENT_IDENTITY,
+            "projection must not namespace the system identity"
+        );
+        let ghost_frame = frame_from_console_event(
+            &entry,
+            envelope("evt-ghost-1", "ghost-agent", "memory.dream.completed"),
+        );
+        assert_eq!(
+            ghost_frame.identity, "test/ghost-agent",
+            "ordinary identities keep the namespace"
+        );
+        for frame in [system_frame, ghost_frame] {
+            aggregator
+                .store()
+                .append_if_absent(frame)
+                .await
+                .expect("append frame");
+        }
+
+        // GLOBAL query: no identity requested, so allow_historical_identity
+        // never applies — exactly the lane the pre-fix bug hid frames from.
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: None,
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+        let identities: Vec<&str> = page
+            .frames
+            .iter()
+            .map(|frame| frame.identity.as_str())
+            .collect();
+        assert!(
+            identities.contains(&SYSTEM_EVENT_IDENTITY),
+            "system-attributed memory event must be globally visible: {identities:?}"
+        );
+        assert!(
+            !identities.contains(&"test/ghost-agent"),
+            "unknown identities must stay hidden — the exemption is exact: {identities:?}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test]

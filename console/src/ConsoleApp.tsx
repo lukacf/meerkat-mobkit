@@ -69,6 +69,7 @@ import type {
   ConsoleTimelinePage,
   ConsoleTopologyNode,
   MemoryDreamRun,
+  MemoryEvidenceRef,
   MemoryPanelDreamsResult,
   MemoryPanelQuarantineResult,
   MemoryPanelRecord,
@@ -80,7 +81,7 @@ import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
-import { MemoryPanel, type MemoryRecordDetail } from "./panels/MemoryPanel";
+import { MemoryPanel, memoryFramePivot, type MemoryRecordDetail } from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -124,6 +125,12 @@ type MemoryPanelData = {
   detailLoading: boolean;
   unavailable: boolean;
   error: string | null;
+  /// Keyset cursor from the base records page (single-realm only).
+  nextCursor: string | null;
+  /// Per-section -32030 outcomes so the panel can render "no grant"
+  /// (never green) instead of an indistinguishable empty section.
+  recordsDenied: boolean;
+  dreamsDenied: boolean;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
@@ -566,6 +573,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     detailLoading: false,
     unavailable: false,
     error: null,
+    nextCursor: null,
+    recordsDenied: false,
+    dreamsDenied: false,
   });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
@@ -2032,12 +2042,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const refreshMemoryData = React.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
-      const recordsResult = (await executeHeadlessCommand(
-        CONSOLE_COMMAND_NAMES.listMemoryRecords,
-        memoryTarget,
-      )) as MemoryPanelRecordsResult | null;
-      const records = recordsResult?.records || [];
-      const realms = recordsResult?.realms || [];
+      let records: MemoryPanelRecord[] = [];
+      let realms: string[] = [];
+      let nextCursor: string | null = null;
+      let recordsDenied = false;
+      try {
+        const recordsResult = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.listMemoryRecords,
+          memoryTarget,
+        )) as MemoryPanelRecordsResult | null;
+        records = recordsResult?.records || [];
+        realms = recordsResult?.realms || [];
+        nextCursor = recordsResult?.next_cursor ?? null;
+      } catch (err) {
+        // Access denied to records leaves the section empty but flagged, so
+        // the panel renders "no grant" instead of an empty store.
+        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        recordsDenied = true;
+      }
 
       let quarantineRecords: MemoryPanelRecord[] = [];
       let pendingPromotions: MemoryPendingPromotion[] = [];
@@ -2057,6 +2079,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
 
       let dreams: MemoryDreamRun[] = [];
+      let dreamsDenied = false;
       try {
         const dreamsResult = (await executeHeadlessCommand(
           CONSOLE_COMMAND_NAMES.listMemoryDreams,
@@ -2064,8 +2087,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         )) as MemoryPanelDreamsResult | null;
         dreams = dreamsResult?.runs || [];
       } catch (err) {
-        // Tolerate access-denied for dreams: leave the list empty.
+        // Tolerate access-denied for dreams: leave the list empty but flagged.
         if (jsonRpcErrorCode(err) !== -32030) throw err;
+        dreamsDenied = true;
       }
 
       setMemoryData((current) => ({
@@ -2075,6 +2099,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         quarantineRecords,
         pendingPromotions,
         dreams,
+        nextCursor,
+        recordsDenied,
+        dreamsDenied,
         unavailable: false,
         error: null,
       }));
@@ -2088,6 +2115,58 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
+
+  /// Filtered/paged panel/records query for the Records filter bar, the
+  /// keyset load-more, and the lattice page-walk. Resolves null on -32030 so
+  /// callers keep the per-section tolerance contract.
+  const queryMemoryRecords = React.useCallback(
+    async (params: Record<string, unknown>): Promise<MemoryPanelRecordsResult | null> => {
+      try {
+        return (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.listMemoryRecords,
+          controlWorkbenchTarget("memory"),
+          params,
+        )) as MemoryPanelRecordsResult | null;
+      } catch (err) {
+        if (jsonRpcErrorCode(err) === -32030) return null;
+        setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
+        return null;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl],
+  );
+
+  /// Evidence click-through: resolve a MemoryEvidenceRef against the
+  /// contracted query_timeline surface. Resolves null when the session is no
+  /// longer in the timeline — the Biography degrades to the evidenceLabel text.
+  const loadMemoryEvidence = React.useCallback(
+    async (
+      identity: string | undefined,
+      evidence: MemoryEvidenceRef,
+    ): Promise<ConversationTimelineEntry[] | null> => {
+      if (!evidence.session_id) return null;
+      try {
+        const pageFact = await consoleController.timeline.query({
+          ...(identity ? { identity } : {}),
+          mode: "recent",
+          limit: 1000,
+        });
+        const page = pageFact.value;
+        if (!page.available) return null;
+        const frames = page.frames.filter(
+          (frame) => frame.sessionId === evidence.session_id,
+        );
+        if (frames.length === 0) return null;
+        return mapFramesToTimelineEntries(null, frames, {
+          renderInteractionStartsAsUser: true,
+        });
+      } catch {
+        return null;
+      }
+    },
+    [consoleController],
+  );
 
   const loadMemoryRecordDetail = React.useCallback(
     async (realm: string | undefined, memoryId: string) => {
@@ -2330,6 +2409,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
   const scheduleExperienceRefreshRef = React.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
+  // Memory panels anchor on durable SQLite state; live memory.* frames are
+  // freshness signals only. Debounced so dream-commit bursts coalesce into
+  // one re-read, and gated on a memory panel actually being docked.
+  const refreshMemoryDataRef = React.useRef(refreshMemoryData);
+  refreshMemoryDataRef.current = refreshMemoryData;
+  const memoryPanelDockedRef = React.useRef(false);
+  memoryPanelDockedRef.current = dock.viewState.panels.some(
+    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
+  );
+  const memoryRefreshTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     // Seed activity with recent history (only on mount) — apply same
@@ -2383,6 +2472,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefreshRef.current();
       }
+      if (
+        frame.event.startsWith("memory.") &&
+        memoryPanelDockedRef.current &&
+        memoryRefreshTimerRef.current === null
+      ) {
+        memoryRefreshTimerRef.current = window.setTimeout(() => {
+          memoryRefreshTimerRef.current = null;
+          void refreshMemoryDataRef.current().catch(() => {});
+        }, 250);
+      }
     };
 
     let stopped = false;
@@ -2418,6 +2517,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         window.clearTimeout(timer);
       if (experienceTimerRef.current !== null)
         window.clearTimeout(experienceTimerRef.current);
+      if (memoryRefreshTimerRef.current !== null)
+        window.clearTimeout(memoryRefreshTimerRef.current);
     };
   }, []);
 
@@ -3530,11 +3631,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           canReviewQuarantine={experience?.memory?.can_review_quarantine === true}
           unavailable={memoryData.unavailable}
           error={memoryData.error}
+          nextCursor={memoryData.nextCursor}
+          recordsDenied={memoryData.recordsDenied}
+          dreamsDenied={memoryData.dreamsDenied}
+          liveFrames={activityRef.current}
           onRefresh={() => void refreshMemoryData()}
           onSelectRecord={(realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId)}
           onClearDetail={() =>
             setMemoryData((current) => ({ ...current, detail: null, detailLoading: false }))
           }
+          onQueryRecords={queryMemoryRecords}
+          onLoadEvidence={loadMemoryEvidence}
+          onOpenGating={() => dock.openTarget(buildControlTarget("gating"), "replace_focused")}
         />
       );
     return <div className="console-panel">Unsupported panel</div>;
@@ -3641,6 +3749,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
               emptyText={railConfig?.empty_text}
               watchedIdentities={watchedIdentities}
               onPresetChange={setActiveActivityPresetId}
+              onSelect={(frame) => {
+                // "State here" pivot: a live memory signal opens the Memory
+                // panel, and lands on the record's Biography when the frame
+                // names one.
+                if (!frame.event.startsWith("memory.")) return;
+                dock.openTarget(buildControlTarget("memory"), "replace_focused");
+                const pivot = memoryFramePivot(frame);
+                if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
+              }}
             />
           </>
         ) : null}

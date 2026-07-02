@@ -17,6 +17,7 @@ import {
   stripPeerTransportScaffold,
   systemNoticeClearsBusyState,
 } from "./adapters";
+import { describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
 function typedCommsNotice(args: {
   peer: string;
@@ -6460,6 +6461,7 @@ test("describeMemoryTimelineEvent produces clean lines for every documented subt
     ["memory.dream.skipped", { reason: "no changes" }, /Dream skipped — no changes/],
     ["memory.record.promoted", { scope_kind: "identity", scope_key: "luka", gated: true }, /promoted to identity:luka \(gated\)/],
     ["memory.quarantine.verdict", { verdict: "reject", rationale: "duplicate" }, /Quarantine verdict: reject — duplicate/],
+    ["memory.quarantine.release_blocked", { record_id: "rec-9", verdict: "release", class: "private-key" }, /Quarantine release blocked for rec-9 — matches secret pattern private-key/],
     ["memory.conflict.signal", { entity: "user", topic: "tz", reason: "mismatch" }, /Conflict signal on user \/ tz — mismatch/],
     ["memory.budget.denied", { stage: "harvest", reason: "over cap" }, /Budget denied at harvest — over cap/],
     ["memory.promotion.pending_gate", { scope_kind: "mob", scope_key: "main" }, /awaiting gate for mob:main/],
@@ -6472,5 +6474,61 @@ test("describeMemoryTimelineEvent produces clean lines for every documented subt
     const line = describeMemoryTimelineEvent(event, data);
     assert.match(line, expected, `${event}: ${line}`);
     assert.ok(!line.includes("{") && !line.includes("}"), `${event} leaked JSON: ${line}`);
+  }
+});
+
+test("describeMemoryTimelineEvent renders exact copy for quarantine release_blocked", () => {
+  assert.equal(
+    describeMemoryTimelineEvent("memory.quarantine.release_blocked", {
+      realm: "main",
+      record_id: "rec-9",
+      verdict: "release",
+      class: "private-key",
+    }),
+    "Quarantine release blocked for rec-9 — matches secret pattern private-key",
+  );
+  assert.equal(
+    describeMemoryTimelineEvent("memory.quarantine.release_blocked", {
+      realm: "main",
+      record_id: "rec-12",
+      verdict: "promote_pending_gate",
+      class: "credential-assignment",
+    }),
+    "Quarantine promotion blocked for rec-12 — matches secret pattern credential-assignment",
+  );
+  // Degraded payload still yields a clean line, never the humanized fallback.
+  assert.equal(
+    describeMemoryTimelineEvent("memory.quarantine.release_blocked", {}),
+    "Quarantine release blocked",
+  );
+});
+
+test("describeMemoryTimelineEvent stays in sync with the console-core mirror", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["memory.dream.started", { run_id: "run-1" }],
+    ["memory.dream.completed", { run_id: "run-1", ops_committed: 3, detail: "2 promoted" }],
+    ["memory.dream.skipped", { reason: "no changes" }],
+    ["memory.record.promoted", { record_id: "rec-1", scope_kind: "identity", scope_key: "luka", gated: true }],
+    ["memory.quarantine.verdict", { record_id: "rec-2", verdict: "reject", rationale: "duplicate" }],
+    ["memory.quarantine.release_blocked", { record_id: "rec-9", verdict: "release", class: "private-key" }],
+    ["memory.conflict.signal", { entity: "user", topic: "tz", reason: "mismatch" }],
+    ["memory.write.quarantined", { author: "distiller", reason: "tainted session" }],
+    ["memory.taint.transition", { session_key: "s-1", kind: "tainted", source: "web_fetch" }],
+    ["memory.budget.denied", { stage: "harvest", reason: "over cap" }],
+    ["memory.promotion.pending_gate", { pending_id: "p-1", record_id: "rec-3", scope_kind: "mob", scope_key: "main" }],
+    ["memory.harvest.completed", { identity: "scout", promoted: 2, tombstoned: 1 }],
+    ["memory.distill.timed_out", { session_key: "s-2", cause: "slow" }],
+    ["memory.hygiene.proposed", { session_key: "s-3", cause: "reset", ops: 2 }],
+    ["memory.hygiene.applied", { session_key: "s-3", cause: "reset", ops: 4 }],
+    ["memory.hygiene.blocked", { session_key: "s-3", cause: "reset", reason: "revision drift" }],
+    ["memory.hygiene.skipped", { session_key: "s-3", cause: "reset", reason: "mid-turn" }],
+    ["memory.future.event", { reason: "unknown subtype" }],
+  ];
+  for (const [event, data] of cases) {
+    assert.equal(
+      describeMemoryTimelineEvent(event, data),
+      describeMemoryTimelineEventCore(event, data),
+      `copies diverge for ${event}`,
+    );
   }
 });

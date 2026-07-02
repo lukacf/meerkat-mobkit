@@ -104,8 +104,60 @@ async function copyTextToClipboard(text) {
 // ../packages/console-components/src/activity/console-activity-rail.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
 
-// ../packages/console-components/src/conversation/conversation-empty-state.tsx
+// ../packages/console-components/src/copy-button.tsx
+var import_react = require("react");
 var import_jsx_runtime2 = require("react/jsx-runtime");
+function CopyButton({
+  text,
+  label,
+  copiedLabel = "Copied",
+  className,
+  Icon: Icon3
+}) {
+  const [copied, setCopied] = (0, import_react.useState)(false);
+  const resetTimerRef = (0, import_react.useRef)(null);
+  const disabled = !text.trim();
+  (0, import_react.useEffect)(() => () => {
+    if (resetTimerRef.current != null) {
+      window.clearTimeout(resetTimerRef.current);
+    }
+  }, []);
+  async function handleClick() {
+    if (disabled) {
+      return;
+    }
+    const wasCopied = await copyTextToClipboard(text);
+    if (!wasCopied) {
+      return;
+    }
+    setCopied(true);
+    if (resetTimerRef.current != null) {
+      window.clearTimeout(resetTimerRef.current);
+    }
+    resetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      resetTimerRef.current = null;
+    }, 1600);
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+    "button",
+    {
+      className: clsx_default("cc-copy-btn", className),
+      type: "button",
+      "aria-label": copied ? copiedLabel : label,
+      title: copied ? copiedLabel : label,
+      "data-copied": copied ? "true" : void 0,
+      disabled,
+      onClick: () => {
+        void handleClick();
+      },
+      children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon3, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
+    }
+  );
+}
+
+// ../packages/console-components/src/conversation/conversation-empty-state.tsx
+var import_jsx_runtime3 = require("react/jsx-runtime");
 
 // ../packages/console-core/src/control-plane.ts
 function trimString(value) {
@@ -2176,7 +2228,7 @@ function isNamespacedKind(kind) {
 }
 
 // ../packages/console-components/src/composer/console-composer.tsx
-var import_jsx_runtime3 = require("react/jsx-runtime");
+var import_jsx_runtime4 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/conversation/conversation-pane.tsx
 var import_react4 = require("react");
@@ -2188,74 +2240,22 @@ var import_react3 = require("react");
 var import_react2 = require("react");
 
 // ../packages/console-components/src/conversation/change-stat-pair.tsx
-var import_jsx_runtime4 = require("react/jsx-runtime");
+var import_jsx_runtime5 = require("react/jsx-runtime");
 function ChangeStatPair({
   plus,
   minus,
   className
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: clsx_default("cc-change-stat", className), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "cc-change-stat__value is-plus", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: clsx_default("cc-change-stat", className), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-change-stat__value is-plus", children: [
       "+",
       formatCount(plus)
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { className: "cc-change-stat__value is-minus", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-change-stat__value is-minus", children: [
       "-",
       formatCount(minus)
     ] })
   ] });
-}
-
-// ../packages/console-components/src/copy-button.tsx
-var import_react = require("react");
-var import_jsx_runtime5 = require("react/jsx-runtime");
-function CopyButton({
-  text,
-  label,
-  copiedLabel = "Copied",
-  className,
-  Icon: Icon3
-}) {
-  const [copied, setCopied] = (0, import_react.useState)(false);
-  const resetTimerRef = (0, import_react.useRef)(null);
-  const disabled = !text.trim();
-  (0, import_react.useEffect)(() => () => {
-    if (resetTimerRef.current != null) {
-      window.clearTimeout(resetTimerRef.current);
-    }
-  }, []);
-  async function handleClick() {
-    if (disabled) {
-      return;
-    }
-    const wasCopied = await copyTextToClipboard(text);
-    if (!wasCopied) {
-      return;
-    }
-    setCopied(true);
-    if (resetTimerRef.current != null) {
-      window.clearTimeout(resetTimerRef.current);
-    }
-    resetTimerRef.current = window.setTimeout(() => {
-      setCopied(false);
-      resetTimerRef.current = null;
-    }, 1600);
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-    "button",
-    {
-      className: clsx_default("cc-copy-btn", className),
-      type: "button",
-      "aria-label": copied ? copiedLabel : label,
-      title: copied ? copiedLabel : label,
-      "data-copied": copied ? "true" : void 0,
-      disabled,
-      onClick: () => {
-        void handleClick();
-      },
-      children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(Icon3, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
-    }
-  );
 }
 
 // ../packages/console-components/src/conversation/conversation-rich-content.tsx
@@ -3293,6 +3293,13 @@ function describeMemoryTimelineEvent2(event, data) {
       const verdict = memoryString(data, "verdict") || "decided";
       const rationale = memoryString(data, "rationale");
       return `Quarantine verdict: ${verdict}${rationale ? ` \u2014 ${rationale}` : ""}`;
+    }
+    case "memory.quarantine.release_blocked": {
+      const verdict = memoryString(data, "verdict");
+      const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
+      const record = memoryString(data, "record_id");
+      const cls = memoryString(data, "class");
+      return `Quarantine ${action} blocked${record ? ` for ${record}` : ""}${cls ? ` \u2014 matches secret pattern ${cls}` : ""}`;
     }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
@@ -9560,6 +9567,27 @@ function AccessPanel({
 // src/panels/MemoryPanel.tsx
 var import_react20 = __toESM(require("react"));
 var import_jsx_runtime28 = require("react/jsx-runtime");
+var MEMORY_TABS = [
+  "holdings",
+  "records",
+  "knowledge",
+  "pipeline",
+  "dreams"
+];
+var TAB_LABEL = {
+  holdings: "Holdings",
+  records: "Records",
+  knowledge: "Knowledge",
+  pipeline: "Pipeline",
+  dreams: "Dreams"
+};
+function memoryTabLabel(tab) {
+  return TAB_LABEL[tab];
+}
+function resolveMemoryTabAlias(tab) {
+  if (tab === "quarantine") return "pipeline";
+  return MEMORY_TABS.includes(tab) ? tab : null;
+}
 function realmOfRecord(record) {
   return record.scope.realm;
 }
@@ -9627,6 +9655,13 @@ var TRUST_LABEL = {
   agent_verified: "verified",
   application: "application",
   operator: "operator"
+};
+var TRUST_RANK = {
+  untrusted: 0,
+  agent_observed: 1,
+  agent_verified: 2,
+  application: 3,
+  operator: 4
 };
 function trustLabel(trust) {
   return trust && TRUST_LABEL[trust] || String(trust || "unknown");
@@ -9731,13 +9766,455 @@ function injectionLine(injection, now = Date.now()) {
   const surface = injection.surface === "build" ? "build" : "turn";
   return `${surface} \u2022 ${injection.identity} \u2022 ${relativeAge(injection.at_ms, now)}`;
 }
+function buildRecordsQueryParams(filter, options = {}) {
+  const params = {};
+  const key = filter.key?.trim();
+  if (filter.scope === "identity" || !filter.scope && key) {
+    if (key) params.identity = key;
+    else params.scope = "identity";
+  } else if (filter.scope === "mob" || filter.scope === "operator") {
+    params.scope = filter.scope;
+    if (key) params.scope_key = key;
+  } else if (filter.scope === "realm") {
+    params.scope = "realm";
+  }
+  if (filter.status) params.status = filter.status;
+  if (options.limit) params.limit = options.limit;
+  if (options.cursor) params.cursor = options.cursor;
+  return params;
+}
+function hasActiveFilter(filter) {
+  return Boolean(filter.scope || filter.key?.trim() || filter.status);
+}
+function filtersEquivalent(a, b) {
+  return (a.scope || void 0) === (b.scope || void 0) && (a.key?.trim() || "") === (b.key?.trim() || "") && (a.status || void 0) === (b.status || void 0);
+}
+function buildRecordsListView(args) {
+  const listed = args.paged ? args.paged.records : args.records;
+  const mode = hasActiveFilter(args.filter) || args.sortMode === "utility" ? "flat" : "grouped";
+  return {
+    mode,
+    records: args.sortMode === "utility" ? sortRecordsByUtility(listed) : listed,
+    groups: mode === "grouped" ? groupRecordsByScope(listed) : [],
+    cursor: args.paged ? args.paged.nextCursor : args.baseCursor
+  };
+}
+function createMemoryRecordsPager(deps) {
+  let seqCounter = 0;
+  let applied = {};
+  const pager = {
+    appliedFilter() {
+      return applied;
+    },
+    async applyFilter(next) {
+      applied = next;
+      const seq = ++seqCounter;
+      if (!hasActiveFilter(next)) {
+        deps.setPaged(null);
+        deps.setLoading(false);
+        return;
+      }
+      deps.setLoading(true);
+      try {
+        const result = await deps.query(buildRecordsQueryParams(next));
+        if (seq !== seqCounter) return;
+        deps.setPaged({
+          records: result?.records || [],
+          nextCursor: result?.next_cursor ?? null
+        });
+      } finally {
+        if (seq === seqCounter) deps.setLoading(false);
+      }
+    },
+    /// Blur-path re-apply: only when the value actually changed. A blur
+    /// caused by clicking load-more must not re-issue the query and race
+    /// the append.
+    async applyFilterIfChanged(next) {
+      if (filtersEquivalent(next, applied)) return;
+      await pager.applyFilter(next);
+    },
+    async loadMore(current) {
+      const cursor = current.paged ? current.paged.nextCursor : current.baseCursor;
+      if (!cursor) return;
+      const seq = ++seqCounter;
+      deps.setLoading(true);
+      try {
+        const result = await deps.query(
+          buildRecordsQueryParams(current.filter, { cursor })
+        );
+        if (seq !== seqCounter) return;
+        const base = current.paged ? current.paged.records : current.baseRecords;
+        deps.setPaged({
+          records: [...base, ...result?.records || []],
+          nextCursor: result?.next_cursor ?? null
+        });
+      } finally {
+        if (seq === seqCounter) deps.setLoading(false);
+      }
+    }
+  };
+  return pager;
+}
+var DEAD_INJECTION_THRESHOLD = 3;
+function recordUtility(record) {
+  const injected = record.usage?.injected_count ?? 0;
+  const recalled = record.usage?.explicit_recall_count ?? 0;
+  const useful = record.usage?.judged_useful_count ?? 0;
+  return {
+    injected,
+    recalled,
+    useful,
+    ratio: injected > 0 ? useful / injected : null,
+    bytesSpent: injected * (record.body_bytes ?? 0),
+    dead: injected >= DEAD_INJECTION_THRESHOLD && useful === 0
+  };
+}
+function sortRecordsByUtility(records) {
+  return [...records].sort((a, b) => {
+    const ua = recordUtility(a);
+    const ub = recordUtility(b);
+    if (ua.dead !== ub.dead) return ua.dead ? -1 : 1;
+    const ra = ua.ratio ?? Number.POSITIVE_INFINITY;
+    const rb = ub.ratio ?? Number.POSITIVE_INFINITY;
+    if (ra !== rb) return ra - rb;
+    return ub.bytesSpent - ua.bytesSpent;
+  });
+}
+function utilityLine(record) {
+  const u = recordUtility(record);
+  const ratio = u.ratio === null ? "\u2014" : u.ratio.toFixed(2);
+  return `inj ${u.injected} \xB7 recall ${u.recalled} \xB7 useful ${u.useful} \xB7 ratio ${ratio} \xB7 ~${formatBytes(u.bytesSpent)} spent`;
+}
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0B";
+  if (bytes < 1024) return `${Math.round(bytes)}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+var LATTICE_WALK_MAX_RECORDS = 2e3;
+var LATTICE_WALK_PAGE_LIMIT = 200;
+function latticeInvariants(records, options) {
+  const llmCeilingViolations = [];
+  const byId = new Map(records.map((record) => [record.id, record]));
+  for (const record of records) {
+    const author = record.provenance?.author?.author;
+    const rank = record.trust ? TRUST_RANK[record.trust] : void 0;
+    if ((author === "agent" || author === "distiller" || author === "steward") && typeof rank === "number" && rank > TRUST_RANK.agent_observed) {
+      llmCeilingViolations.push(record.id);
+    }
+  }
+  const chainViolations = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    const path = /* @__PURE__ */ new Set([record.id]);
+    let cursor = record.supersedes;
+    while (cursor) {
+      if (path.has(cursor)) {
+        chainViolations.add(record.id);
+        break;
+      }
+      const parent = byId.get(cursor);
+      if (!parent) {
+        if (options.complete) chainViolations.add(record.id);
+        break;
+      }
+      path.add(cursor);
+      cursor = parent.supersedes;
+    }
+  }
+  return {
+    llmCeilingViolations,
+    chainViolations: Array.from(chainViolations)
+  };
+}
+async function runLatticeWalk(fetchPage, options = { singleRealm: true }) {
+  const max = options.maxRecords ?? LATTICE_WALK_MAX_RECORDS;
+  const all = [];
+  let cursor;
+  let exhausted = false;
+  for (; ; ) {
+    const params = { limit: LATTICE_WALK_PAGE_LIMIT };
+    if (cursor) params.cursor = cursor;
+    const page = await fetchPage(params);
+    if (page === null) return null;
+    all.push(...page.records || []);
+    if (!page.next_cursor || !options.singleRealm) {
+      exhausted = !page.next_cursor;
+      break;
+    }
+    if (all.length >= max) break;
+    cursor = page.next_cursor;
+  }
+  const checked = all.slice(0, max);
+  const invariants = latticeInvariants(checked, { complete: exhausted && all.length <= max });
+  return {
+    checked: checked.length,
+    complete: exhausted && all.length <= max,
+    ...invariants
+  };
+}
+var VERDICT_STATUS_LABEL = {
+  holding: "HOLDING",
+  degraded: "DEGRADED",
+  violated: "VIOLATED",
+  unverifiable: "UNVERIFIABLE",
+  "no-grant": "NO GRANT"
+};
+function verdictStatusLabel(status) {
+  return VERDICT_STATUS_LABEL[status];
+}
+function computeVerdictTiles(inputs) {
+  const now = inputs.now ?? Date.now();
+  const tiles = [];
+  tiles.push({
+    id: "echo-safety",
+    label: "ECHO-SAFETY",
+    status: "unverifiable",
+    lines: ["needs mobkit/memory/panel/injections (surface 6)"],
+    targetTab: "knowledge"
+  });
+  tiles.push({
+    id: "taint-wall",
+    label: "TAINT WALL",
+    status: inputs.recordsDenied ? "no-grant" : "unverifiable",
+    lines: inputs.recordsDenied ? ["records not readable by this principal"] : ["needs panel/proposals (surface 4)", "+ ever_quarantined field (surface 2)"],
+    targetTab: "pipeline"
+  });
+  if (inputs.recordsDenied) {
+    tiles.push({
+      id: "lattice",
+      label: "LATTICE",
+      status: "no-grant",
+      lines: ["records not readable by this principal"],
+      targetTab: "records"
+    });
+  } else if (inputs.latticeRunning || !inputs.lattice) {
+    tiles.push({
+      id: "lattice",
+      label: "LATTICE",
+      status: "unverifiable",
+      lines: [inputs.latticeRunning ? "page-walk running\u2026" : "page-walk not run"],
+      targetTab: "records"
+    });
+  } else {
+    const walk = inputs.lattice;
+    const violations = walk.llmCeilingViolations.length + walk.chainViolations.length;
+    tiles.push({
+      id: "lattice",
+      label: "LATTICE",
+      status: violations > 0 ? "violated" : "holding",
+      lines: [
+        violations > 0 ? `${violations} violation${violations === 1 ? "" : "s"}` : "0 violations",
+        walk.complete ? `checked ${walk.checked}/${walk.checked}` : `checked first ${walk.checked} \u2014 partial (cap ${LATTICE_WALK_MAX_RECORDS})`,
+        "invariant (b) needs ever_quarantined (surface 2)"
+      ],
+      targetTab: "records"
+    });
+  }
+  if (inputs.recordsDenied) {
+    tiles.push({
+      id: "recall",
+      label: "RECALL",
+      status: "no-grant",
+      lines: ["records not readable by this principal"],
+      targetTab: "records"
+    });
+  } else {
+    const dead = inputs.records.filter((record) => recordUtility(record).dead);
+    const deadBytes = dead.reduce((sum, record) => sum + recordUtility(record).bytesSpent, 0);
+    tiles.push({
+      id: "recall",
+      label: "RECALL",
+      status: dead.length > 0 ? "degraded" : "holding",
+      lines: [
+        `${dead.length} dead weight of ${inputs.records.length} loaded`,
+        `~${formatBytes(deadBytes)} spent (approx)`
+      ],
+      targetTab: "records"
+    });
+  }
+  if (inputs.dreamsDenied) {
+    tiles.push({
+      id: "dreams",
+      label: "DREAMS",
+      status: "no-grant",
+      lines: ["dream audit not readable by this principal"],
+      targetTab: "dreams"
+    });
+  } else if (inputs.dreams.length === 0) {
+    tiles.push({
+      id: "dreams",
+      label: "DREAMS",
+      status: "unverifiable",
+      lines: ["no dream runs in the durable audit yet"],
+      targetTab: "dreams"
+    });
+  } else {
+    const lastOp = Math.max(
+      ...inputs.dreams.map((run) => run.last_op_at_ms || run.first_op_at_ms || 0)
+    );
+    const quarantined = inputs.dreams.reduce((sum, run) => sum + (run.quarantined_ops || 0), 0);
+    tiles.push({
+      id: "dreams",
+      label: "DREAMS",
+      status: "holding",
+      lines: [
+        `last run ${relativeAge(lastOp, now)}`,
+        quarantined > 0 ? `\u26A0 ${quarantined} quarantined ops` : "0 quarantined ops",
+        "verdict sheet needs persisted DreamRun (surface 11)"
+      ],
+      targetTab: "dreams"
+    });
+  }
+  tiles.push({
+    id: "store-floor",
+    label: "STORE FLOOR",
+    status: "unverifiable",
+    lines: ["needs mobkit/memory/panel/overview (surface 1)"],
+    targetTab: "holdings"
+  });
+  return tiles;
+}
+function scopeOverviewRows(records) {
+  return groupRecordsByScope(records).map((group) => {
+    const counts = { active: 0, quarantined: 0, superseded: 0, tombstoned: 0 };
+    let bytes = 0;
+    const trustCounts = /* @__PURE__ */ new Map();
+    for (const record of group.records) {
+      const status = record.status?.status;
+      if (status && status in counts) counts[status] += 1;
+      bytes += record.body_bytes ?? 0;
+      const trust = trustLabel(record.trust);
+      trustCounts.set(trust, (trustCounts.get(trust) || 0) + 1);
+    }
+    const trustMix = Array.from(trustCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([trust, count]) => `${count} ${trust}`).join(" \xB7 ");
+    return {
+      key: group.key,
+      label: group.label,
+      scope: group.scope,
+      ...counts,
+      bytes,
+      trustMix
+    };
+  });
+}
+function filterForScope(scope) {
+  switch (scope.scope) {
+    case "identity":
+      return { scope: "identity", key: scope.identity };
+    case "mob":
+      return { scope: "mob", key: scope.mob };
+    case "operator":
+      return { scope: "operator", key: scope.operator };
+    case "realm":
+      return { scope: "realm" };
+  }
+}
+function lineageLane(chain, currentId) {
+  return [...chain].reverse().map((record) => ({
+    record,
+    current: record.id === currentId
+  }));
+}
+function dreamRunsTouching(dreams, recordId) {
+  return dreams.filter((run) => (run.memory_ids || []).includes(recordId));
+}
+function evidenceExcerptLines(entries, range, maxLines = 30) {
+  let window2 = entries;
+  if (range && range.length === 2) {
+    const [start, end] = range;
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+      const from = Math.max(0, Math.min(start, entries.length));
+      const to = Math.max(from, Math.min(end + 1, entries.length));
+      const sliced = entries.slice(from, to);
+      if (sliced.length > 0) window2 = sliced;
+    }
+  }
+  const lines = [];
+  for (const entry of window2) {
+    if (entry.kind !== "message") continue;
+    const text = (entry.text || entry.copyText || "").trim();
+    if (!text) continue;
+    lines.push({ id: entry.id, speaker: entry.identity.label, text });
+    if (lines.length >= maxLines) break;
+  }
+  return lines;
+}
+function identityOptions(records) {
+  const identities = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    if (record.scope.scope === "identity") identities.add(record.scope.identity);
+  }
+  return Array.from(identities).sort((a, b) => a.localeCompare(b));
+}
+function knowledgeComposition(records, identity) {
+  const count = (predicate) => records.filter(predicate).length;
+  return [
+    {
+      label: `identity:${identity}`,
+      count: count(
+        (record) => record.scope.scope === "identity" && record.scope.identity === identity
+      ),
+      filter: { scope: "identity", key: identity },
+      approximate: false
+    },
+    {
+      label: "mob (all mobs)",
+      count: count((record) => record.scope.scope === "mob"),
+      filter: { scope: "mob" },
+      approximate: true
+    },
+    {
+      label: "operator",
+      count: count((record) => record.scope.scope === "operator"),
+      filter: { scope: "operator" },
+      approximate: true
+    },
+    {
+      label: "realm",
+      count: count((record) => record.scope.scope === "realm"),
+      filter: { scope: "realm" },
+      approximate: true
+    }
+  ];
+}
+function dedupeFramesById(frames) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const frame of frames) {
+    const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(frame);
+  }
+  return result;
+}
+function countFramesBehind(live, frozen) {
+  const frozenIds = new Set(frozen.map((frame) => frame.id));
+  return live.filter((frame) => !frozenIds.has(frame.id)).length;
+}
+function memoryFramePivot(frame) {
+  if (!frame.event.startsWith("memory.")) return null;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const recordId = typeof data.record_id === "string" && data.record_id.trim() ? data.record_id.trim() : null;
+  if (!recordId) return null;
+  const realm = typeof data.realm === "string" && data.realm.trim() ? data.realm.trim() : void 0;
+  return { recordId, realm };
+}
 function Chip({ label, tone }) {
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "chip memory-chip", "data-tone": tone || "neutral", children: label });
 }
+function SectionNote({
+  children,
+  testid
+}) {
+  return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-note", "data-testid": testid, children });
+}
 function RecordRow({
   record,
+  utilityMode,
   onSelect
 }) {
+  const utility = utilityMode ? recordUtility(record) : null;
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
     "button",
     {
@@ -9751,21 +10228,45 @@ function RecordRow({
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: record.kind }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: statusLabel(record.status), tone: statusTone(record.status) }),
+          utility?.dead ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "DEAD", tone: "warning" }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(record.updated_at_ms) })
-        ] })
+        ] }),
+        utility ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__meta memory-row__utility", children: utilityLine(record) }) : null
       ]
     }
   );
 }
-function DetailView({
+function evidenceKey(evidence, index) {
+  return `${index}:${evidence.session_id || ""}:${evidence.generation ?? ""}`;
+}
+function BiographyView({
   detail,
-  onBack
+  dreams,
+  onBack,
+  onSelectRecord,
+  onLoadEvidence
 }) {
   const { record, chain, injections } = detail;
   const provenance = record.provenance;
   const evidence = provenance?.evidence || [];
   const verification = provenance?.verification;
   const usage = record.usage;
+  const lane = lineageLane(chain, record.id);
+  const touchingRuns = dreamRunsTouching(dreams, record.id);
+  const [evidenceState, setEvidenceState] = import_react20.default.useState(null);
+  const recordIdentity = record.scope.scope === "identity" ? record.scope.identity : provenance?.author?.author === "agent" ? provenance.author.identity : void 0;
+  async function openEvidence(ref, index) {
+    if (!onLoadEvidence) return;
+    const key = evidenceKey(ref, index);
+    setEvidenceState({ key, status: "loading", lines: [] });
+    const entries = await onLoadEvidence(recordIdentity, ref);
+    const lines = entries ? evidenceExcerptLines(entries, ref.range) : [];
+    setEvidenceState({
+      key,
+      status: entries && lines.length > 0 ? "loaded" : "unavailable",
+      lines
+    });
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail", "data-testid": "memory-detail", children: [
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { type: "button", className: "memory-back", onClick: onBack, "data-testid": "memory-detail-back", children: "\u2190 Back" }),
@@ -9774,51 +10275,175 @@ function DetailView({
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: record.kind }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: statusLabel(record.status), tone: statusTone(record.status) })
-      ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+        CopyButton,
+        {
+          text: JSON.stringify(record, null, 2),
+          label: "Copy record JSON",
+          className: "memory-copy-json"
+        }
+      )
     ] }),
     record.description ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("p", { className: "memory-detail__description", children: record.description }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("pre", { className: "memory-detail__body", "data-testid": "memory-detail-body", children: record.body }),
     record.tags && record.tags.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__tags", children: record.tags.map((tag) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: tag, tone: "muted" }, tag)) }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Provenance" }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-born", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Born" }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: authorLine(provenance?.author) }),
-      evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-evidence", children: evidence.map((ref, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-evidence__ref", children: evidenceLabel(ref) }, `ev-${index}`)) }) : null,
+      evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-evidence", children: evidence.map((ref, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "memory-evidence__ref",
+          "data-testid": `memory-evidence:${index}`,
+          onClick: () => void openEvidence(ref, index),
+          disabled: !onLoadEvidence,
+          title: onLoadEvidence ? "Open transcript window" : void 0,
+          children: evidenceLabel(ref)
+        },
+        `ev-${index}`
+      )) }) : null,
+      evidenceState ? evidenceState.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Loading transcript\u2026" }) : evidenceState.status === "unavailable" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", "data-testid": "memory-evidence-degraded", children: "Session is no longer in the timeline \u2014 evidence reference retained as label only." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-excerpt", "data-testid": "memory-evidence-excerpt", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line memory-excerpt__note", children: "Approximate window against the console timeline (evidence indexes a session generation)." }),
+        evidenceState.lines.map((line) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-excerpt__line", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-excerpt__speaker", children: line.speaker }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-excerpt__text", children: line.text })
+        ] }, line.id))
+      ] }) : null,
       verification?.checked ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line memory-detail__verification", children: [
         "verified: ",
         verification.checked
       ] }) : null
     ] }),
-    usage ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Usage" }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
-        "injected ",
-        usage.injected_count ?? 0,
-        " \xB7 recalled ",
-        usage.explicit_recall_count ?? 0,
-        " \xB7 judged useful ",
-        usage.judged_useful_count ?? 0
-      ] })
-    ] }) : null,
-    injections.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Injections" }),
-      injections.map((injection, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: injectionLine(injection) }, `inj-${index}`))
-    ] }) : null,
-    chain.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Supersede chain" }),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-chain", children: chain.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-        "div",
+    lane.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-lineage", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Lineage" }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-chain", children: lane.map(({ record: entry, current }) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+        "button",
         {
+          type: "button",
           className: "memory-chain__row",
-          "data-current": entry.id === record.id ? "true" : void 0,
+          "data-current": current ? "true" : void 0,
+          "data-dimmed": current ? void 0 : "true",
           "data-testid": `memory-chain:${entry.id}`,
+          onClick: () => {
+            if (!current) onSelectRecord(realmOfRecord(entry), entry.id);
+          },
           children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-chain__marker", children: current ? "\u25CF" : "\u25CB" }),
             /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-chain__title", children: entry.title || entry.id }),
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: trustLabel(entry.trust), tone: trustTone(entry.trust) }),
             /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: statusLabel(entry.status), tone: statusTone(entry.status) })
           ]
         },
         entry.id
       )) })
-    ] }) : null
+    ] }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-life", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Life" }),
+      usage ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
+        "injected ",
+        usage.injected_count ?? 0,
+        " \xB7 recalled ",
+        usage.explicit_recall_count ?? 0,
+        " \xB7 judged useful ",
+        usage.judged_useful_count ?? 0,
+        usage.last_injected_at_ms ? ` \xB7 last injected ${relativeAge(usage.last_injected_at_ms)}` : ""
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "no usage recorded" }),
+      injections.length > 0 ? injections.map((injection, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: injectionLine(injection) }, `inj-${index}`)) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "no injections recorded for this record" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__section", "data-testid": "memory-detail-dreams", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-detail__label", children: "Dreams" }),
+      touchingRuns.length > 0 ? touchingRuns.map((run) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
+        run.run_id,
+        " \xB7 ",
+        dreamTimeRange(run),
+        run.quarantined_ops ? ` \xB7 \u26A0 ${run.quarantined_ops} quarantined` : ""
+      ] }, run.run_id)) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "no sampled dream runs reference this record (sample is \u226412 ids per run \u2014 exact history needs the record history[] surface)" })
+    ] })
+  ] });
+}
+function VerdictStrip({
+  tiles,
+  onOpen
+}) {
+  return /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-tiles", "data-testid": "memory-verdict-strip", children: tiles.map((tile) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+    "button",
+    {
+      type: "button",
+      className: "memory-tile",
+      "data-status": tile.status,
+      "data-testid": `memory-verdict:${tile.id}`,
+      onClick: () => onOpen(tile),
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__label", children: tile.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__status", "data-status": tile.status, children: verdictStatusLabel(tile.status) }),
+        tile.lines.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-tile__line", children: line }, `l-${index}`))
+      ]
+    },
+    tile.id
+  )) });
+}
+function MemoryLiveStrip({
+  frames,
+  onPivot
+}) {
+  const deduped = import_react20.default.useMemo(() => dedupeFramesById(frames), [frames]);
+  const [frozen, setFrozen] = import_react20.default.useState(null);
+  const listRef = import_react20.default.useRef(null);
+  const shown = frozen ?? deduped;
+  const behind = frozen ? countFramesBehind(deduped, frozen) : 0;
+  function handleScroll() {
+    const el = listRef.current;
+    if (!el) return;
+    if (el.scrollTop > 4) {
+      setFrozen((current) => current ?? deduped);
+    } else if (frozen && behind === 0) {
+      setFrozen(null);
+    }
+  }
+  function jumpToLive() {
+    setFrozen(null);
+    listRef.current?.scrollTo({ top: 0 });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group memory-live", "data-testid": "memory-live-strip", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group__label", children: [
+      "Live memory events (in-memory ring \u2014 lossy)",
+      behind > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+        "button",
+        {
+          type: "button",
+          className: "memory-live__jump",
+          "data-testid": "memory-live-jump",
+          onClick: jumpToLive,
+          children: [
+            behind,
+            " behind \xB7 jump to live"
+          ]
+        }
+      ) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-live__list", ref: listRef, onScroll: handleScroll, children: [
+      shown.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "No memory events in the ring." }) : shown.map((frame) => {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const pivot = memoryFramePivot(frame);
+        return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-live__row", "data-testid": `memory-live-row:${frame.id}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(frame.timestampMs) }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-live__text", children: describeMemoryTimelineEvent2(frame.event, data) }),
+          pivot ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "memory-live__pivot",
+              "data-testid": `memory-live-pivot:${frame.id}`,
+              onClick: () => onPivot(pivot.realm, pivot.recordId),
+              children: "state here"
+            }
+          ) : null
+        ] }, frame.id);
+      }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-live__seam", "data-testid": "memory-live-seam", children: "\u2014 ring history starts here \u2014" })
+    ] })
   ] });
 }
 function MemoryPanel({
@@ -9832,19 +10457,108 @@ function MemoryPanel({
   canReviewQuarantine = false,
   unavailable = false,
   error,
+  nextCursor = null,
+  recordsDenied = false,
+  dreamsDenied = false,
+  liveFrames = [],
   onRefresh,
   onSelectRecord,
-  onClearDetail
+  onClearDetail,
+  onQueryRecords,
+  onLoadEvidence,
+  onOpenGating
 }) {
-  const [tab, setTab] = import_react20.default.useState("records");
-  const tabs = canReviewQuarantine ? ["records", "quarantine", "dreams"] : ["records", "dreams"];
-  const groups = import_react20.default.useMemo(() => groupRecordsByScope(records), [records]);
+  const [tab, setTab] = import_react20.default.useState("holdings");
+  const [filter, setFilter] = import_react20.default.useState({});
+  const [sortMode, setSortMode] = import_react20.default.useState("recency");
+  const [paged, setPaged] = import_react20.default.useState(null);
+  const [pageLoading, setPageLoading] = import_react20.default.useState(false);
+  const queryRecordsRef = import_react20.default.useRef(onQueryRecords);
+  queryRecordsRef.current = onQueryRecords;
+  const pagerRef = import_react20.default.useRef(null);
+  if (!pagerRef.current) {
+    pagerRef.current = createMemoryRecordsPager({
+      query: (params) => queryRecordsRef.current ? queryRecordsRef.current(params) : Promise.resolve(null),
+      setPaged,
+      setLoading: setPageLoading
+    });
+  }
+  const pager = pagerRef.current;
+  const [lattice, setLattice] = import_react20.default.useState(null);
+  const [latticeRunning, setLatticeRunning] = import_react20.default.useState(false);
+  const [knowledgeIdentity, setKnowledgeIdentity] = import_react20.default.useState("");
+  import_react20.default.useEffect(() => {
+    if (detail) setTab("records");
+  }, [detail]);
+  const latticeRanForRef = import_react20.default.useRef(null);
+  import_react20.default.useEffect(() => {
+    if (tab !== "holdings" || !onQueryRecords || recordsDenied) return;
+    if (latticeRanForRef.current === records) return;
+    latticeRanForRef.current = records;
+    setLattice(null);
+    setLatticeRunning(true);
+    let cancelled = false;
+    void runLatticeWalk((params) => onQueryRecords(params), { singleRealm: realms.length === 1 }).then((result) => {
+      if (!cancelled) setLattice(result);
+    }).catch(() => {
+      if (!cancelled) setLattice(null);
+    }).finally(() => {
+      if (!cancelled) setLatticeRunning(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, records, recordsDenied, realms.length]);
+  const overviewRows = import_react20.default.useMemo(() => scopeOverviewRows(records), [records]);
+  const tiles = import_react20.default.useMemo(
+    () => computeVerdictTiles({
+      records,
+      recordsDenied,
+      dreams,
+      dreamsDenied,
+      lattice,
+      latticeRunning
+    }),
+    [records, recordsDenied, dreams, dreamsDenied, lattice, latticeRunning]
+  );
+  const identities = import_react20.default.useMemo(() => identityOptions(records), [records]);
+  const selectedIdentity = knowledgeIdentity || identities[0] || "";
+  const memoryFrames = import_react20.default.useMemo(
+    () => liveFrames.filter((frame) => frame.event.startsWith("memory.")),
+    [liveFrames]
+  );
+  function applyFilter(next) {
+    setFilter(next);
+    if (!onQueryRecords) return;
+    void pager.applyFilter(next);
+  }
+  function loadMore() {
+    if (!onQueryRecords) return;
+    void pager.loadMore({ filter, paged, baseRecords: records, baseCursor: nextCursor });
+  }
+  function openRecordsFiltered(next) {
+    setTab("records");
+    onClearDetail();
+    applyFilter(next);
+  }
+  function openTile(tile) {
+    if (tile.id === "recall") setSortMode("utility");
+    setTab(tile.targetTab);
+  }
   if (unavailable) {
     return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating memory-panel", "data-testid": "memory-panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__head", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("h2", { children: "Memory" }) }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", "data-testid": "memory-unavailable", children: "The memory panel is not configured on this runtime." })
     ] });
   }
+  const listView = buildRecordsListView({
+    records,
+    paged,
+    baseCursor: nextCursor,
+    filter,
+    sortMode
+  });
+  const quarantineCount = quarantineRecords.length + pendingPromotions.length;
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating memory-panel", "data-testid": "memory-panel", children: [
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("h2", { children: "Memory" }),
@@ -9856,86 +10570,330 @@ function MemoryPanel({
     ] }),
     error ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", "data-testid": "memory-error", children: error }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating__tabs", children: [
-      tabs.map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+      MEMORY_TABS.map((candidate) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
         "button",
         {
           className: `gating__tab ${tab === candidate ? "is-active" : ""}`,
           onClick: () => setTab(candidate),
           "data-testid": `memory-tab:${candidate}`,
           children: [
-            candidate === "records" ? "Records" : candidate === "quarantine" ? "Quarantine" : "Dreams",
-            candidate === "quarantine" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "n", children: quarantineRecords.length }) : null,
-            candidate === "dreams" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "n", children: dreams.length }) : null
+            memoryTabLabel(candidate),
+            candidate === "pipeline" && quarantineCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "n", children: quarantineCount }) : null,
+            candidate === "dreams" && dreams.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "n", children: dreams.length }) : null
           ]
         },
         candidate
       )),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+        "button",
+        {
+          className: "gating__tab memory-tab-alias",
+          onClick: () => setTab(resolveMemoryTabAlias("quarantine") || "pipeline"),
+          "data-testid": "memory-tab:quarantine",
+          "aria-hidden": "true",
+          tabIndex: -1,
+          children: "Quarantine"
+        }
+      ),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: "gating__tab", onClick: onRefresh, "data-testid": "memory-refresh", children: "Refresh" })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating__list memory-panel__body", children: [
-      tab === "records" ? detail ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(DetailView, { detail, onBack: onClearDetail }) : detailLoading ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Loading record\u2026" }) : groups.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-groups", children: groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: group.label }),
-        group.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+      tab === "holdings" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-groups", "data-testid": "memory-holdings", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(VerdictStrip, { tiles, onOpen: openTile }),
+        recordsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-holdings-denied", children: "Records are not readable by this principal (access denied)." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group__label", children: [
+            "Scopes \u2014 counts over the ",
+            records.length,
+            " loaded records (full totals need panel/overview)"
+          ] }),
+          overviewRows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "button",
+            {
+              type: "button",
+              className: "memory-row memory-scope-row",
+              "data-testid": `memory-holdings-scope:${row.key}`,
+              onClick: () => openRecordsFiltered(filterForScope(row.scope)),
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: row.label }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${row.active} active`, tone: "positive" }),
+                  row.quarantined > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${row.quarantined} quarantined`, tone: "warning" }) : null,
+                  row.superseded > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${row.superseded} superseded`, tone: "muted" }) : null,
+                  row.tombstoned > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${row.tombstoned} tombstoned`, tone: "muted" }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: formatBytes(row.bytes) })
+                ] }),
+                row.trustMix ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__meta memory-row__reason", children: row.trustMix }) : null
+              ]
+            },
+            row.key
+          ))
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "In transit" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: dreams.length > 0 ? `Last dream ${dreamTimeRange(dreams[0])} \xB7 ${dreams[0].ops ?? "\u2014"} ops` : dreamsDenied ? "Dream audit: no grant" : "No dream runs recorded yet" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: canReviewQuarantine ? `Quarantine queue ${quarantineRecords.length} \xB7 pending gate ${pendingPromotions.length}` : "Quarantine queue: requires memory.quarantine.review" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Proposals: needs mobkit/memory/panel/proposals (surface 4)" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Health (taint \xB7 budgets \xB7 cursors): needs mobkit/memory/panel/health (surface 8)" })
+        ] })
+      ] }) : null,
+      tab === "records" ? detail ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+        BiographyView,
+        {
+          detail,
+          dreams,
+          onBack: onClearDetail,
+          onSelectRecord,
+          onLoadEvidence
+        }
+      ) : detailLoading ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Loading record\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-groups", children: [
+        onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-filterbar", "data-testid": "memory-filter", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "scope",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "select",
+              {
+                value: filter.scope || "",
+                "data-testid": "memory-filter:scope",
+                onChange: (event) => applyFilter({
+                  ...filter,
+                  scope: event.target.value || void 0
+                }),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "", children: "all" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "identity", children: "identity" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "mob", children: "mob" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "operator", children: "operator" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "realm", children: "realm" })
+                ]
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "identity / key",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+              "input",
+              {
+                value: filter.key || "",
+                "data-testid": "memory-filter-input",
+                placeholder: "identity or scope key",
+                onChange: (event) => setFilter({ ...filter, key: event.target.value }),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter") applyFilter(filter);
+                },
+                onBlur: () => {
+                  void pager.applyFilterIfChanged(filter);
+                }
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "status",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "select",
+              {
+                value: filter.status || "",
+                "data-testid": "memory-filter:status",
+                onChange: (event) => applyFilter({
+                  ...filter,
+                  status: event.target.value || void 0
+                }),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "", children: "all" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "active", children: "active" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "quarantined", children: "quarantined" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "superseded", children: "superseded" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "tombstoned", children: "tombstoned" })
+                ]
+              }
+            )
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "sort",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "select",
+              {
+                value: sortMode,
+                "data-testid": "memory-sort",
+                onChange: (event) => setSortMode(event.target.value === "utility" ? "utility" : "recency"),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "recency", children: "recency" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: "utility", children: "utility" })
+                ]
+              }
+            )
+          ] }),
+          hasActiveFilter(filter) ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "memory-back",
+              "data-testid": "memory-filter-clear",
+              onClick: () => applyFilter({}),
+              children: "clear"
+            }
+          ) : null
+        ] }) : null,
+        sortMode === "utility" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(SectionNote, { testid: "memory-utility-note", children: [
+          "Utility mode \u2014 bytes-spent is approximated as injected_count \xD7 body_bytes until panel/injections lands. DEAD = injected \u2265 ",
+          DEAD_INJECTION_THRESHOLD,
+          ", never judged useful."
+        ] }) : null,
+        pageLoading ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Loading records\u2026" }) : null,
+        !pageLoading && listView.records.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: recordsDenied ? "Records: no grant." : "No memory records yet." }) : null,
+        !pageLoading && listView.records.length > 0 ? listView.mode === "flat" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group", children: listView.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
           RecordRow,
           {
             record,
+            utilityMode: sortMode === "utility",
             onSelect: () => onSelectRecord(realmOfRecord(record), record.id)
           },
           record.id
-        ))
-      ] }, group.key)) }) : null,
-      tab === "quarantine" && canReviewQuarantine ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-quarantine", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: "Read-only. Verdicts are decided by the memory steward's dream and the gating flow \u2014 this queue cannot be actioned here." }),
-        quarantineRecords.length === 0 && pendingPromotions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Quarantine queue is empty." }) : null,
-        quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Quarantined records" }),
-          quarantineRecords.map((record) => {
-            const reason = record.status.status === "quarantined" ? record.status.reason : void 0;
-            return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-              "div",
+        )) }) : listView.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": `memory-group:${group.key}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: group.label }),
+          group.records.map((record) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            RecordRow,
+            {
+              record,
+              onSelect: () => onSelectRecord(realmOfRecord(record), record.id)
+            },
+            record.id
+          ))
+        ] }, group.key)) : null,
+        listView.cursor && onQueryRecords ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "memory-back memory-load-more",
+            "data-testid": "memory-load-more",
+            disabled: pageLoading,
+            onClick: loadMore,
+            children: "load more"
+          }
+        ) : null
+      ] }) : null,
+      tab === "knowledge" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-groups", "data-testid": "memory-knowledge", children: [
+        identities.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: recordsDenied ? "Records: no grant." : "No identity-scoped records loaded yet." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-filterbar", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("label", { children: [
+            "identity",
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+              "select",
               {
-                className: "memory-row memory-row--static",
-                "data-testid": `memory-quarantine-record:${record.id}`,
+                value: selectedIdentity,
+                "data-testid": "memory-knowledge-identity",
+                onChange: (event) => setKnowledgeIdentity(event.target.value),
+                children: identities.map((identity) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("option", { value: identity, children: identity }, identity))
+              }
+            )
+          ] }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Composition (scope union over loaded records)" }),
+            knowledgeComposition(records, selectedIdentity).map((segment) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "button",
+              {
+                type: "button",
+                className: "memory-row",
+                "data-testid": `memory-knowledge-segment:${segment.label}`,
+                onClick: () => openRecordsFiltered(segment.filter),
                 children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: record.title || record.id }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: segment.label }),
                   /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
-                    reason ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: reason }) : null,
-                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
-                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(record.created_at_ms) })
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${segment.count} records` }),
+                    segment.approximate ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__reason", children: [
+                      "all ",
+                      segment.label.split(" ")[0],
+                      "-scope rows \u2014 membership resolution needs panel/context (surface 10)"
+                    ] }) : null
                   ] })
                 ]
               },
-              record.id
-            );
-          })
-        ] }) : null,
-        pendingPromotions.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Pending gated promotions" }),
-          pendingPromotions.map((pending) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-            "div",
-            {
-              className: "memory-row memory-row--static",
-              "data-testid": `memory-pending:${pending.pending_id}`,
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__title", children: [
-                  pending.record_id,
-                  " \u2192 ",
-                  pending.scope_kind,
-                  ":",
-                  pending.scope_key
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
-                  pending.rationale ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: pending.rationale }) : null,
-                  pending.status ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: pending.status, tone: "muted" }) : null,
-                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(pending.created_at_ms) })
-                ] })
-              ]
-            },
-            pending.pending_id
-          ))
-        ] }) : null
+              segment.label
+            ))
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-knowledge-as-injected", children: "AS-INJECTED is unverifiable in phase 1 \u2014 the composed injection block requires mobkit/memory/panel/context (surface 10)." }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-knowledge-history", children: "INJECTION HISTORY (DUP badges, consecutive-build overlap) requires mobkit/memory/panel/injections (surface 6). Session budget gauge requires panel/health (surface 8)." })
       ] }) : null,
-      tab === "dreams" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dreams", children: dreams.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No dream runs recorded yet." }) : dreams.map((run) => {
+      tab === "pipeline" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-quarantine", "data-testid": "memory-pipeline", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line memory-pipeline__stages", "data-testid": "memory-pipeline-stages", children: [
+          "PROPOSED (needs surface 4) \u2500\u25B6 PENDING GATE (",
+          pendingPromotions.length,
+          ") \u2500\u25B6 COMMITTED \xB7 QUAR (",
+          canReviewQuarantine ? quarantineRecords.length : "no grant",
+          ")"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: "Read-only. Verdicts are decided by the memory steward's dream and the gating flow \u2014 this queue cannot be actioned here." }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-pipeline-proposals", children: "Proposals (with propose-time taint) are invisible until mobkit/memory/panel/proposals (surface 4) lands." }),
+        canReviewQuarantine ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+          quarantineRecords.length === 0 && pendingPromotions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Quarantine queue is empty." }) : null,
+          pendingPromotions.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Pending gated promotions" }),
+            pendingPromotions.map((pending) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "div",
+              {
+                className: "memory-row memory-row--static",
+                "data-testid": `memory-pending:${pending.pending_id}`,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__title", children: [
+                    pending.record_id,
+                    " \u2192 ",
+                    pending.scope_kind,
+                    ":",
+                    pending.scope_key
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                    pending.rationale ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: pending.rationale }) : null,
+                    pending.status ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: pending.status, tone: "muted" }) : null,
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(pending.created_at_ms) }),
+                    onOpenGating ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                      "button",
+                      {
+                        type: "button",
+                        className: "memory-back",
+                        "data-testid": `memory-pipeline-decide:${pending.pending_id}`,
+                        onClick: onOpenGating,
+                        children: "\u2192 decide in Gating inbox"
+                      }
+                    ) : null
+                  ] })
+                ]
+              },
+              pending.pending_id
+            ))
+          ] }) : null,
+          quarantineRecords.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Quarantined records" }),
+            quarantineRecords.map((record) => {
+              const reason = record.status.status === "quarantined" ? record.status.reason : void 0;
+              return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+                "button",
+                {
+                  type: "button",
+                  className: "memory-row",
+                  "data-testid": `memory-quarantine-record:${record.id}`,
+                  onClick: () => onSelectRecord(realmOfRecord(record), record.id),
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: record.title || record.id }),
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                      reason ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: reason }) : null,
+                      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: trustLabel(record.trust), tone: trustTone(record.trust) }),
+                      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(record.created_at_ms) })
+                    ] })
+                  ]
+                },
+                record.id
+              );
+            })
+          ] }) : null
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-pipeline-no-grant", children: "Quarantine queue: no grant \u2014 rows require memory.quarantine.review." }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+          MemoryLiveStrip,
+          {
+            frames: memoryFrames,
+            onPivot: (realm, recordId) => void onSelectRecord(realm, recordId)
+          }
+        )
+      ] }) : null,
+      tab === "dreams" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dreams", children: dreams.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: dreamsDenied ? "Dream audit: no grant." : "No dream runs recorded yet." }) : dreams.map((run) => {
         const summary = dreamOpKindsSummary(run.op_kinds);
         return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy memory-dream", "data-testid": `memory-dream:${run.run_id}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy__head", children: [
@@ -9947,6 +10905,20 @@ function MemoryPanel({
             typeof run.ops === "number" ? `${run.ops} ops` : "\u2014",
             summary ? ` \xB7 ${summary}` : ""
           ] }),
+          (run.memory_ids || []).length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-dream__touched", children: [
+            "touched:",
+            (run.memory_ids || []).map((memoryId) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "memory-dream__record",
+                "data-testid": `memory-dream-record:${run.run_id}:${memoryId}`,
+                onClick: () => onSelectRecord(run.realm, memoryId),
+                children: memoryId
+              },
+              memoryId
+            ))
+          ] }) : null,
           (run.rationales || []).map((rationale, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dream__rationale", children: rationale }, `r-${index}`))
         ] }, run.run_id);
       }) }) : null
@@ -12263,6 +13235,8 @@ function memorySignal(frame, data, base) {
       return warning("Memory budget denied");
     case "memory.hygiene.blocked":
       return warning("Memory hygiene blocked");
+    case "memory.quarantine.release_blocked":
+      return warning("Quarantine release blocked");
     case "memory.conflict.signal":
       return warning("Memory conflict");
     case "memory.dream.completed":
@@ -12486,6 +13460,19 @@ function SignalsRail({
                 ] }),
                 /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "signal__detail", children: s.detail }),
                 /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "signal__agent", children: s.agent }),
+                s.items.length === 1 && s.items[0].raw.event.startsWith("memory.") && onSelect ? /* @__PURE__ */ (0, import_jsx_runtime34.jsx)(
+                  "button",
+                  {
+                    type: "button",
+                    className: "signal__memory-pivot",
+                    "data-testid": "signal-memory-pivot",
+                    onClick: (event) => {
+                      event.stopPropagation();
+                      onSelect(s.items[0].raw);
+                    },
+                    children: "state here"
+                  }
+                ) : null,
                 s.items.length > 1 && expanded && /* @__PURE__ */ (0, import_jsx_runtime34.jsx)("span", { className: "signal__events", children: s.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime34.jsxs)(
                   "button",
                   {
@@ -14446,7 +15433,10 @@ function ConsoleApp({ baseUrl }) {
     detail: null,
     detailLoading: false,
     unavailable: false,
-    error: null
+    error: null,
+    nextCursor: null,
+    recordsDenied: false,
+    dreamsDenied: false
   });
   const [activeActivityPresetId, setActiveActivityPresetId] = import_react30.default.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react30.default.useState("");
@@ -15502,12 +16492,22 @@ function ConsoleApp({ baseUrl }) {
   const refreshMemoryData = import_react30.default.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
-      const recordsResult = await executeHeadlessCommand(
-        CONSOLE_COMMAND_NAMES2.listMemoryRecords,
-        memoryTarget
-      );
-      const records = recordsResult?.records || [];
-      const realms = recordsResult?.realms || [];
+      let records = [];
+      let realms = [];
+      let nextCursor = null;
+      let recordsDenied = false;
+      try {
+        const recordsResult = await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES2.listMemoryRecords,
+          memoryTarget
+        );
+        records = recordsResult?.records || [];
+        realms = recordsResult?.realms || [];
+        nextCursor = recordsResult?.next_cursor ?? null;
+      } catch (err) {
+        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        recordsDenied = true;
+      }
       let quarantineRecords = [];
       let pendingPromotions = [];
       if (experience?.memory?.can_review_quarantine === true) {
@@ -15523,6 +16523,7 @@ function ConsoleApp({ baseUrl }) {
         }
       }
       let dreams = [];
+      let dreamsDenied = false;
       try {
         const dreamsResult = await executeHeadlessCommand(
           CONSOLE_COMMAND_NAMES2.listMemoryDreams,
@@ -15531,6 +16532,7 @@ function ConsoleApp({ baseUrl }) {
         dreams = dreamsResult?.runs || [];
       } catch (err) {
         if (jsonRpcErrorCode(err) !== -32030) throw err;
+        dreamsDenied = true;
       }
       setMemoryData((current) => ({
         ...current,
@@ -15539,6 +16541,9 @@ function ConsoleApp({ baseUrl }) {
         quarantineRecords,
         pendingPromotions,
         dreams,
+        nextCursor,
+        recordsDenied,
+        dreamsDenied,
         unavailable: false,
         error: null
       }));
@@ -15550,6 +16555,47 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
+  const queryMemoryRecords = import_react30.default.useCallback(
+    async (params) => {
+      try {
+        return await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES2.listMemoryRecords,
+          controlWorkbenchTarget("memory"),
+          params
+        );
+      } catch (err) {
+        if (jsonRpcErrorCode(err) === -32030) return null;
+        setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
+        return null;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl]
+  );
+  const loadMemoryEvidence = import_react30.default.useCallback(
+    async (identity, evidence) => {
+      if (!evidence.session_id) return null;
+      try {
+        const pageFact = await consoleController.timeline.query({
+          ...identity ? { identity } : {},
+          mode: "recent",
+          limit: 1e3
+        });
+        const page = pageFact.value;
+        if (!page.available) return null;
+        const frames = page.frames.filter(
+          (frame) => frame.sessionId === evidence.session_id
+        );
+        if (frames.length === 0) return null;
+        return mapFramesToTimelineEntries2(null, frames, {
+          renderInteractionStartsAsUser: true
+        });
+      } catch {
+        return null;
+      }
+    },
+    [consoleController]
+  );
   const loadMemoryRecordDetail = import_react30.default.useCallback(
     async (realm, memoryId) => {
       setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
@@ -15738,6 +16784,13 @@ function ConsoleApp({ baseUrl }) {
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
   const scheduleExperienceRefreshRef = import_react30.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
+  const refreshMemoryDataRef = import_react30.default.useRef(refreshMemoryData);
+  refreshMemoryDataRef.current = refreshMemoryData;
+  const memoryPanelDockedRef = import_react30.default.useRef(false);
+  memoryPanelDockedRef.current = dock.viewState.panels.some(
+    (panel) => panel.target?.kind === "memory"
+  );
+  const memoryRefreshTimerRef = import_react30.default.useRef(null);
   import_react30.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
@@ -15763,6 +16816,13 @@ function ConsoleApp({ baseUrl }) {
       }
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefreshRef.current();
+      }
+      if (frame.event.startsWith("memory.") && memoryPanelDockedRef.current && memoryRefreshTimerRef.current === null) {
+        memoryRefreshTimerRef.current = window.setTimeout(() => {
+          memoryRefreshTimerRef.current = null;
+          void refreshMemoryDataRef.current().catch(() => {
+          });
+        }, 250);
       }
     };
     let stopped = false;
@@ -15791,6 +16851,8 @@ function ConsoleApp({ baseUrl }) {
         window.clearTimeout(timer);
       if (experienceTimerRef.current !== null)
         window.clearTimeout(experienceTimerRef.current);
+      if (memoryRefreshTimerRef.current !== null)
+        window.clearTimeout(memoryRefreshTimerRef.current);
     };
   }, []);
   function openAgentChat(agent, intent = "replace_focused") {
@@ -16617,9 +17679,16 @@ function ConsoleApp({ baseUrl }) {
           canReviewQuarantine: experience?.memory?.can_review_quarantine === true,
           unavailable: memoryData.unavailable,
           error: memoryData.error,
+          nextCursor: memoryData.nextCursor,
+          recordsDenied: memoryData.recordsDenied,
+          dreamsDenied: memoryData.dreamsDenied,
+          liveFrames: activityRef.current,
           onRefresh: () => void refreshMemoryData(),
           onSelectRecord: (realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId),
-          onClearDetail: () => setMemoryData((current) => ({ ...current, detail: null, detailLoading: false }))
+          onClearDetail: () => setMemoryData((current) => ({ ...current, detail: null, detailLoading: false })),
+          onQueryRecords: queryMemoryRecords,
+          onLoadEvidence: loadMemoryEvidence,
+          onOpenGating: () => dock.openTarget(buildControlTarget2("gating"), "replace_focused")
         }
       );
     return /* @__PURE__ */ (0, import_jsx_runtime38.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
@@ -16739,7 +17808,13 @@ function ConsoleApp({ baseUrl }) {
                     activePresetId: activeActivityPresetId || railConfig?.active_preset_id,
                     emptyText: railConfig?.empty_text,
                     watchedIdentities,
-                    onPresetChange: setActiveActivityPresetId
+                    onPresetChange: setActiveActivityPresetId,
+                    onSelect: (frame) => {
+                      if (!frame.event.startsWith("memory.")) return;
+                      dock.openTarget(buildControlTarget2("memory"), "replace_focused");
+                      const pivot = memoryFramePivot(frame);
+                      if (pivot) void loadMemoryRecordDetail(pivot.realm, pivot.recordId);
+                    }
                   }
                 )
               ] }) : null

@@ -457,6 +457,13 @@ export function describeMemoryTimelineEvent(
       const rationale = memoryString(data, "rationale");
       return `Quarantine verdict: ${verdict}${rationale ? ` — ${rationale}` : ""}`;
     }
+    case "memory.quarantine.release_blocked": {
+      const verdict = memoryString(data, "verdict");
+      const action = verdict === "promote_pending_gate" ? "promotion" : verdict || "release";
+      const record = memoryString(data, "record_id");
+      const cls = memoryString(data, "class");
+      return `Quarantine ${action} blocked${record ? ` for ${record}` : ""}${cls ? ` — matches secret pattern ${cls}` : ""}`;
+    }
     case "memory.conflict.signal": {
       const entity = memoryString(data, "entity");
       const topic = memoryString(data, "topic");

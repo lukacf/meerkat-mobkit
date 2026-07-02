@@ -1060,6 +1060,90 @@ async fn timeline_rpc_is_filtered_per_caller() {
     let _ = runtime.mob_handle().stop().await;
 }
 
+/// §9.3 memory.* events with no affected identity land on the timeline
+/// attributed to `_system`. The aggregator exempts that identity from the
+/// per-roster visibility gate (it has no roster record), so the ABAC
+/// boundary for those frames is the RPC layer's
+/// `retain_visible_timeline_frames`: an unscoped `agent.view` grant sees
+/// them, while a grant scoped to specific agents must not.
+#[tokio::test]
+async fn system_memory_frames_respect_timeline_access_filtering() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    runtime.memory_event_sink().emit(
+        meerkat_mobkit::memory::events::MemoryTimelineEvent::DreamCompleted {
+            realm: "default".to_string(),
+            run_id: "run-acl-dream-1".to_string(),
+            ops_committed: 1,
+            detail: json!({ "phase": "test" }),
+        },
+    );
+
+    let system_frames = |page: &Value| -> Vec<Value> {
+        page["result"]["frames"]
+            .as_array()
+            .expect("frames")
+            .iter()
+            .filter(|frame| frame["identity"] == json!("_system"))
+            .cloned()
+            .collect()
+    };
+
+    // Unscoped viewer first: proves the `_system` frame actually reaches
+    // the timeline (so the scoped assertion below cannot pass vacuously).
+    // The sink append + aggregator projection are async — poll briefly.
+    let open_controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "everyone-views-everything".to_string(),
+            actions: vec!["agent.view".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("open controller");
+    runtime.set_access_controller(open_controller);
+    let open_app = runtime.build_reference_app_router(decision_state(false));
+    let mut seen = Vec::new();
+    for _ in 0..80 {
+        let page = rpc(
+            &open_app,
+            "mobkit/console/query_timeline",
+            json!({ "mode": "recent", "limit": 200 }),
+        )
+        .await;
+        seen = system_frames(&page);
+        if !seen.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        seen.iter()
+            .any(|frame| frame["kind"] == json!("memory.dream.completed")),
+        "unscoped agent.view must see the _system memory event: {seen:#?}"
+    );
+
+    // Scoped viewer: agent.view limited to "router" — `_system` frames are
+    // filtered per-caller even though they are aggregator-visible.
+    let scoped_controller =
+        AccessController::new(anonymous_router_only_config()).expect("scoped controller");
+    runtime.set_access_controller(scoped_controller);
+    let scoped_app = runtime.build_reference_app_router(decision_state(false));
+    let page = rpc(
+        &scoped_app,
+        "mobkit/console/query_timeline",
+        json!({ "mode": "recent", "limit": 200 }),
+    )
+    .await;
+    assert!(
+        system_frames(&page).is_empty(),
+        "agent-scoped viewers must not see _system frames: {page:#?}"
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
 /// `mob.observe` opens the whole-mob event surface, but per-agent
 /// `agent.view` still filters which agents' events flow through it — a
 /// mob.observe grant must not reveal the events/lifecycle of an agent the
