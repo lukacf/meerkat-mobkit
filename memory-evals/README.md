@@ -25,15 +25,26 @@ memory-evals/
 ```bash
 scripts/memory-evals --check                  # schema/consistency validation (CI gate; default)
 scripts/memory-evals --stage selector --mode mock   # deterministic mock scorecard (plumbing check)
-scripts/memory-evals --stage selector --mode live   # real Selector — not wired until P1.3
+scripts/memory-evals --stage selector --mode live   # real Selector via selector-eval
 make memory-evals                             # = --check
 ```
 
 `--check` is deterministic and fast; it is what `make ci` gates on in v0.
 `--mode mock` runs a trivial title-word-overlap selector purely to exercise the
 scorecard plumbing — mock misses are expected and never fail the run.
-`--mode live` will invoke the calibration profile against the real Selector and
-gate on scorecard non-regression (§11).
+
+`--mode live` drives the real Selector through the `selector-eval` binary
+(`cargo run --bin selector-eval`; override the command with the
+`MEMORY_EVALS_SELECTOR_EVAL` environment variable, e.g. a prebuilt binary
+path). Each fixture runs 3 times with independently shuffled manifests and is
+scored on `must_select`, `must_not_select`, and shuffle stability (identical
+`selected_ids` across the runs — a §11 label-free invariant). Provider auth
+resolves through meerkat's factory seam from the process environment; when no
+auth is resolvable (`selector-eval` exit 3) the run prints a SKIP notice and
+falls back to `selector-eval --mock`, which pushes a deterministic scripted
+model through the full prompt-render/shuffle/JSON-parse plumbing —
+informational only. Scorecard regressions exit nonzero ONLY when live
+actually ran.
 
 ## Profile format
 
@@ -112,13 +123,28 @@ per-invariant payload:
   `<mobkit_memory_observation>` envelope, and `expected.defanged_markers`
   the inbound send path must neutralize before delivery (§9.1).
 
-## Wiring the real Selector (P1.3)
+## The selector-eval seam (P1.3)
 
-`--mode live` expects the Selector to expose a single entry point the harness
-can drive per fixture: manifest + turn text + suppression list in, structured
-`{selected_ids, coverage}` out, under the profile's prompt bundle and params.
-The harness renders `prompts/selector-v0.md` (placeholders `{{manifest}}`,
-`{{turn_text}}`, `{{suppression_list}}`), shuffles the manifest per fixture
-(stability under shuffle is itself an invariant, §11), and scores exactly as
-mock mode does — the only change is swapping the mock function for the live
-call.
+`--mode live` drives the Selector's single entry point
+(`memory::selector::select` — manifest + turn text + suppression list in,
+structured `{selected_ids, coverage}` out) through the `selector-eval`
+binary, one fixture-shaped JSON object on stdin per invocation:
+
+```json
+{"manifest": [...], "turn_text": "...", "suppressed_ids": [],
+ "profile_path": "memory-evals/profiles/selector-v0.toml"}
+```
+
+stdout is `{"selected_ids": [...], "coverage": "..."}`. Prompt rendering,
+manifest shuffling (per call, inside `select`), strict JSON parsing, and the
+single JSON-repair retry all live in the Rust stage; the harness only
+shuffles the fixture's manifest order across the 3 runs and scores. Exit
+codes: 0 ok, 1 selector error, 2 usage error, 3 live-requested-but-no-auth
+(SKIP). `--mock` replaces the live model with a deterministic scripted
+client so the plumbing is testable without credentials.
+
+The embedded default profile (`SelectorProfile::embedded_default()`) and
+this directory's `profiles/selector-v0.toml` + `prompts/selector-v0.md` are
+the same artifact; a unit test in `memory/selector.rs` keeps the prompt
+byte-identical, and profile changes bump `version` and gate on scorecard
+non-regression (§11).

@@ -70,6 +70,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 integration-real-tests = []
 
+# Calibration-harness seam for the memory Selector (§8.3/§11):
+# `scripts/memory-evals --mode live` drives this binary per fixture. Named
+# explicitly so the CLI name is hyphenated.
+[[bin]]
+name = "selector-eval"
+path = "src/bin/selector_eval.rs"
+
 [[example]]
 name = "incident_command_center"
 path = "../examples/001-incident-command-center-pack/server.rs"

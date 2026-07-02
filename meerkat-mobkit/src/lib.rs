@@ -110,14 +110,16 @@ pub use http_sse::{
     mob_structural_events_sse_router, mob_structural_events_sse_router_with_access,
 };
 pub use identity_first::{
-    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryPerTurnInjection,
-    AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
-    AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection, MarkdownAgentMemoryStore,
-    NewAgentMemory,
+    AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryLlmWrites,
+    AgentMemoryPerTurnInjection, AgentMemoryProvider, AgentMemoryRecallFailurePolicy,
+    AgentMemoryRecallRequest, AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection,
+    AuthoredWriteReceipt, MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use memory::{
-    ManifestTier, MemoryKind, MemoryRecord, MemoryScope, NewMemoryRecord, RecordMeta,
-    SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp, TrustTier,
+    ContentTrustConfig, ManifestTier, MemoryKind, MemoryRecord, MemoryScope, NewMemoryRecord,
+    RecordMeta, SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore,
+    StagedMutationBatch, StagedOp, TaintLlmWriteGate, TaintObserverGuard, TrustTier,
+    spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,

@@ -24,10 +24,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::identity_first::AgentIdentity;
 use crate::identity_first::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryProvider, AgentMemoryRecallRequest,
-    AgentMemoryRecord, NewAgentMemory, compact_whitespace, decode_path_segment,
-    encode_path_segment, new_memory_id, normalize_tags, read_markdown_records,
+    AgentMemoryRecord, AuthoredWriteReceipt, NewAgentMemory, compact_whitespace,
+    decode_path_segment, encode_path_segment, new_memory_id, normalize_tags, read_markdown_records,
     select_recall_records,
 };
+use crate::memory::taint::LlmWriteGate;
 
 use super::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor, MemoryId, MemoryKind,
@@ -134,6 +135,12 @@ pub struct SqliteAgentMemoryStore {
     scope_floor_records: usize,
     scope_floor_bytes: usize,
     connections: Arc<Mutex<HashMap<String, Arc<Mutex<Connection>>>>>,
+    /// §10.1 write-seam enforcement: consulted for every LLM-authored
+    /// create/supersede across ALL write paths (direct and staged commits),
+    /// so taint/posture quarantine holds for any caller — the Recorder
+    /// tool, staged batches, and future stages alike. Shared across clones
+    /// so wiring the gate once covers every handle.
+    llm_write_gate: Arc<Mutex<Option<Arc<dyn LlmWriteGate>>>>,
 }
 
 impl SqliteAgentMemoryStore {
@@ -150,7 +157,24 @@ impl SqliteAgentMemoryStore {
             scope_floor_records: DEFAULT_SCOPE_FLOOR_RECORDS,
             scope_floor_bytes: DEFAULT_SCOPE_FLOOR_BYTES,
             connections: Arc::new(Mutex::new(HashMap::new())),
+            llm_write_gate: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Install the §10.1 LLM write gate. Wiring installs it at startup,
+    /// before any member can dispatch a write.
+    pub fn set_llm_write_gate(&self, gate: Arc<dyn LlmWriteGate>) {
+        *self
+            .llm_write_gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(gate);
+    }
+
+    fn gate(&self) -> Option<Arc<dyn LlmWriteGate>> {
+        self.llm_write_gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 
     #[cfg(test)]
@@ -290,7 +314,9 @@ impl SqliteAgentMemoryStore {
                 ops,
             };
             let token = mint_token("import");
-            apply_batch_tx(conn, &batch, &token, now_ms()).map_err(|err| {
+            // Gate deliberately absent: the import migrates records the
+            // markdown store already accepted; it is not a new LLM write.
+            apply_batch_tx(conn, &batch, None, &token, now_ms()).map_err(|err| {
                 AgentMemoryError::InvalidRecord(format!(
                     "markdown import of '{}' failed: {err}",
                     path.display()
@@ -345,6 +371,7 @@ impl SqliteAgentMemoryStore {
         let hash = content_hash(&title, &body);
         let floor_records = self.scope_floor_records;
         let floor_bytes = self.scope_floor_bytes;
+        let gate = self.gate();
         self.with_realm_conn(realm, |conn| {
             // Deterministic write guard (§7.3): an exact content-hash
             // duplicate short-circuits to the existing id — no new row.
@@ -388,7 +415,13 @@ impl SqliteAgentMemoryStore {
                     updated_at_ms: None,
                 }],
             };
-            let receipt = apply_batch_tx(conn, &batch, &mint_token("direct"), now_ms())?;
+            let receipt = apply_batch_tx(
+                conn,
+                &batch,
+                gate.as_deref(),
+                &mint_token("direct"),
+                now_ms(),
+            )?;
             warn_if_scope_floors_exceeded(conn, &scope, floor_records, floor_bytes)?;
             let memory_id = receipt.memory_ids.first().cloned().ok_or_else(|| {
                 AgentMemoryError::Io("remember commit returned no record id".to_string())
@@ -416,10 +449,23 @@ impl SqliteAgentMemoryStore {
             realm: realm.to_string(),
             identity: identity.as_str().to_string(),
         };
-        self.with_realm_conn(realm, |conn| {
+        self.forget_in_scope_blocking(&scope, &memory_id, MemoryAuthor::Application)
+    }
+
+    /// Shared tombstone path for the wire `forget` (Application principal)
+    /// and the Recorder's `forget_authored` (Agent principal).
+    fn forget_in_scope_blocking(
+        &self,
+        scope: &MemoryScope,
+        memory_id: &str,
+        author: MemoryAuthor,
+    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
+        let memory_id = memory_id.to_string();
+        let gate = self.gate();
+        self.with_realm_conn(scope.realm(), |conn| {
             let record = load_record(conn, scope.realm(), &memory_id)?;
             let deletable = record.is_some_and(|record| {
-                record.scope == scope && record.status != RecordStatus::Tombstoned
+                record.scope == *scope && record.status != RecordStatus::Tombstoned
             });
             if !deletable {
                 return Ok(AgentMemoryForgetResult {
@@ -428,14 +474,20 @@ impl SqliteAgentMemoryStore {
                 });
             }
             let batch = StagedMutationBatch {
-                realm: realm.to_string(),
-                author: MemoryAuthor::Application,
+                realm: scope.realm().to_string(),
+                author,
                 ops: vec![StagedOp::Tombstone {
                     id: memory_id.clone(),
                     rationale: None,
                 }],
             };
-            apply_batch_tx(conn, &batch, &mint_token("direct"), now_ms())?;
+            apply_batch_tx(
+                conn,
+                &batch,
+                gate.as_deref(),
+                &mint_token("direct"),
+                now_ms(),
+            )?;
             Ok(AgentMemoryForgetResult {
                 memory_id,
                 deleted: true,
@@ -449,6 +501,17 @@ impl SqliteAgentMemoryStore {
         prior: &str,
         record: NewMemoryRecord,
     ) -> Result<MemoryId, AgentMemoryError> {
+        self.supersede_with_author_blocking(scope, prior, record, MemoryAuthor::Application)
+            .map(|receipt| receipt.memory_id)
+    }
+
+    fn supersede_with_author_blocking(
+        &self,
+        scope: &MemoryScope,
+        prior: &str,
+        record: NewMemoryRecord,
+        author: MemoryAuthor,
+    ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
         let title = compact_whitespace(&record.title);
         let body = record.body.trim().to_string();
         validate_record_fields(&title, &record.description, &body)
@@ -456,6 +519,7 @@ impl SqliteAgentMemoryStore {
         let tags = normalize_tags(record.tags)?;
         let realm = scope.realm().to_string();
         let expected_scope = scope.clone();
+        let gate = self.gate();
         self.with_realm_conn(&realm, |conn| {
             let existing = load_record(conn, &realm, prior)?.ok_or_else(|| {
                 AgentMemoryError::InvalidRecord(format!("record '{prior}' does not exist"))
@@ -467,7 +531,7 @@ impl SqliteAgentMemoryStore {
             }
             let batch = StagedMutationBatch {
                 realm: realm.clone(),
-                author: MemoryAuthor::Application,
+                author,
                 ops: vec![StagedOp::Supersede {
                     id: None,
                     prior: prior.to_string(),
@@ -482,9 +546,105 @@ impl SqliteAgentMemoryStore {
                     rationale: None,
                 }],
             };
-            let receipt = apply_batch_tx(conn, &batch, &mint_token("direct"), now_ms())?;
-            receipt.memory_ids.first().cloned().ok_or_else(|| {
+            let receipt = apply_batch_tx(
+                conn,
+                &batch,
+                gate.as_deref(),
+                &mint_token("direct"),
+                now_ms(),
+            )?;
+            let memory_id = receipt.memory_ids.first().cloned().ok_or_else(|| {
                 AgentMemoryError::Io("supersede commit returned no record id".to_string())
+            })?;
+            let record = load_record(conn, &realm, &memory_id)?.ok_or_else(|| {
+                AgentMemoryError::Io("superseding record vanished mid-commit".to_string())
+            })?;
+            Ok(AuthoredWriteReceipt {
+                memory_id,
+                status: record.status,
+            })
+        })
+    }
+
+    /// §8.2 Recorder create: agent-authored, gate-enforced, dedup-guarded.
+    fn remember_authored_blocking(
+        &self,
+        scope: &MemoryScope,
+        record: NewMemoryRecord,
+        author: MemoryAuthor,
+    ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
+        let title = compact_whitespace(&record.title);
+        let body = record.body.trim().to_string();
+        validate_record_fields(&title, &record.description, &body)
+            .map_err(AgentMemoryError::InvalidRecord)?;
+        let tags = normalize_tags(record.tags)?;
+        let hash = content_hash(&title, &body);
+        let realm = scope.realm().to_string();
+        let scope = scope.clone();
+        let floor_records = self.scope_floor_records;
+        let floor_bytes = self.scope_floor_bytes;
+        let gate = self.gate();
+        self.with_realm_conn(&realm, |conn| {
+            // Deterministic write guard (§7.3): an exact content-hash
+            // duplicate short-circuits to the existing active record.
+            let existing: Option<MemoryRecordRow> = conn
+                .query_row(
+                    &format!(
+                        "SELECT {RECORD_COLUMNS} FROM records \
+                         WHERE scope_kind = ?1 AND scope_key = ?2 AND content_hash = ?3 \
+                           AND status_kind = 'active' \
+                         ORDER BY created_at_ms ASC LIMIT 1"
+                    ),
+                    params![scope.kind_str(), scope.key(), hash],
+                    row_to_record_row,
+                )
+                .optional()
+                .map_err(sql_err)?;
+            if let Some(row) = existing {
+                let record = row.into_record(scope.realm())?;
+                return Ok(AuthoredWriteReceipt {
+                    memory_id: record.id,
+                    status: record.status,
+                });
+            }
+            let batch = StagedMutationBatch {
+                realm: realm.clone(),
+                author,
+                ops: vec![StagedOp::Create {
+                    id: None,
+                    scope: scope.clone(),
+                    record: NewMemoryRecord {
+                        title,
+                        body,
+                        tags,
+                        ..record
+                    },
+                    // §10.2: LLM writes enter at the ceiling; the staged
+                    // validator rejects anything higher.
+                    trust: TrustTier::AgentObserved,
+                    derived_from: Vec::new(),
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            };
+            let receipt = apply_batch_tx(
+                conn,
+                &batch,
+                gate.as_deref(),
+                &mint_token("direct"),
+                now_ms(),
+            )?;
+            warn_if_scope_floors_exceeded(conn, &scope, floor_records, floor_bytes)?;
+            let memory_id = receipt.memory_ids.first().cloned().ok_or_else(|| {
+                AgentMemoryError::Io("remember commit returned no record id".to_string())
+            })?;
+            let record = load_record(conn, scope.realm(), &memory_id)?.ok_or_else(|| {
+                AgentMemoryError::Io("remembered record vanished mid-commit".to_string())
+            })?;
+            Ok(AuthoredWriteReceipt {
+                memory_id,
+                status: record.status,
             })
         })
     }
@@ -641,6 +801,7 @@ impl SqliteAgentMemoryStore {
         &self,
         scope: &MemoryScope,
         record: NewMemoryRecord,
+        author: MemoryAuthor,
     ) -> Result<ProposalId, AgentMemoryError> {
         validate_record_fields(&record.title, &record.description, &record.body)
             .map_err(AgentMemoryError::InvalidRecord)?;
@@ -654,7 +815,7 @@ impl SqliteAgentMemoryStore {
                     scope.kind_str(),
                     scope.key(),
                     json_string(&record)?,
-                    json_string(&MemoryAuthor::Application)?,
+                    json_string(&author)?,
                     now_ms() as i64,
                 ],
             )
@@ -694,6 +855,7 @@ impl SqliteAgentMemoryStore {
     }
 
     fn commit_blocking(&self, token: StageToken) -> Result<CommitReceipt, AgentMemoryError> {
+        let gate = self.gate();
         self.with_realm_conn(&token.realm, |conn| {
             let batch_json: Option<String> = conn
                 .query_row(
@@ -711,7 +873,7 @@ impl SqliteAgentMemoryStore {
             };
             let batch: StagedMutationBatch = serde_json::from_str(&batch_json)
                 .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
-            apply_batch_tx(conn, &batch, &token.token, now_ms())
+            apply_batch_tx(conn, &batch, gate.as_deref(), &token.token, now_ms())
         })
     }
 
@@ -832,13 +994,60 @@ impl AgentMemoryProvider for SqliteAgentMemoryStore {
         &self,
         scope: &MemoryScope,
         record: NewMemoryRecord,
+        author: MemoryAuthor,
     ) -> Result<ProposalId, AgentMemoryError> {
         let store = self.clone();
         let scope = scope.clone();
-        run_blocking(move || store.propose_blocking(&scope, record)).await
+        run_blocking(move || store.propose_blocking(&scope, record, author)).await
     }
 
     fn supports_propose(&self) -> bool {
+        true
+    }
+
+    async fn remember_authored(
+        &self,
+        scope: &MemoryScope,
+        record: NewMemoryRecord,
+        author: MemoryAuthor,
+    ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
+        let store = self.clone();
+        let scope = scope.clone();
+        run_blocking(move || store.remember_authored_blocking(&scope, record, author)).await
+    }
+
+    async fn supersede_authored(
+        &self,
+        scope: &MemoryScope,
+        prior: &str,
+        record: NewMemoryRecord,
+        author: MemoryAuthor,
+    ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
+        let store = self.clone();
+        let scope = scope.clone();
+        let prior = prior.to_string();
+        run_blocking(move || store.supersede_with_author_blocking(&scope, &prior, record, author))
+            .await
+    }
+
+    async fn forget_authored(
+        &self,
+        scope: &MemoryScope,
+        memory_id: &str,
+        author: MemoryAuthor,
+    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
+        let memory_id = memory_id.trim().to_string();
+        if memory_id.is_empty() {
+            return Err(AgentMemoryError::InvalidRecord(
+                "memory_id must not be empty".to_string(),
+            ));
+        }
+        let store = self.clone();
+        let scope = scope.clone();
+        run_blocking(move || store.forget_in_scope_blocking(&scope, &memory_id, author)).await
+    }
+
+    fn supports_authored_writes(&self) -> bool {
         true
     }
 }
@@ -856,6 +1065,42 @@ impl StagedMemoryStore for SqliteAgentMemoryStore {
     }
 }
 
+/// Body fetch for selector-chosen ids (§8.3): a plain by-id read over the
+/// composed scopes, wire-compat projected, returned in `ids` order. Only
+/// active records in the requested scopes qualify — the selector judged a
+/// manifest of exactly those.
+#[async_trait]
+impl crate::memory::selector::SelectedRecordFetch for SqliteAgentMemoryStore {
+    async fn fetch_records(
+        &self,
+        scopes: &[MemoryScope],
+        ids: &[String],
+    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let scopes = scopes.to_vec();
+        let ids = ids.to_vec();
+        run_blocking(move || {
+            let mut records = Vec::new();
+            for id in &ids {
+                for scope in &scopes {
+                    let found = store.with_realm_conn(scope.realm(), |conn| {
+                        load_record(conn, scope.realm(), id)
+                    })?;
+                    if let Some(record) = found
+                        && record.scope == *scope
+                        && matches!(record.status, RecordStatus::Active)
+                    {
+                        records.push(project_record(record));
+                        break;
+                    }
+                }
+            }
+            Ok(records)
+        })
+        .await
+    }
+}
+
 // ---- blocking internals ----
 
 async fn run_blocking<T: Send + 'static>(
@@ -868,12 +1113,30 @@ async fn run_blocking<T: Send + 'static>(
 
 /// Validates (against the live transaction) and applies a batch atomically:
 /// one SQLite transaction, one audit row per op (§8.5).
+///
+/// `gate` is the §10.1 LLM write gate: consulted once per batch (the
+/// quarantine decision is a property of the author's session/posture, not of
+/// individual ops) and applied to every create/supersede in the batch.
+/// `None` only for the markdown import, which migrates already-accepted
+/// records rather than writing new LLM output.
 fn apply_batch_tx(
     conn: &mut Connection,
     batch: &StagedMutationBatch,
+    gate: Option<&dyn LlmWriteGate>,
     token: &str,
     now: u64,
 ) -> Result<CommitReceipt, AgentMemoryError> {
+    let quarantine = gate.and_then(|gate| gate.quarantine_reason(&batch.author));
+    if let Some(reason) = quarantine.as_deref() {
+        // TODO(P3b): emit a timeline event for the quarantined write; the
+        // tracing warn is the P1 visibility surface.
+        tracing::warn!(
+            realm = %batch.realm,
+            author = ?batch.author,
+            reason,
+            "agent memory: LLM-authored write landing quarantined (write-only until review)"
+        );
+    }
     let tx = conn.transaction().map_err(sql_err)?;
     {
         let view = ConnBatchView {
@@ -885,11 +1148,12 @@ fn apply_batch_tx(
     }
     let mut memory_ids = Vec::with_capacity(batch.ops.len());
     for (op_index, op) in batch.ops.iter().enumerate() {
-        let memory_id = apply_op(&tx, batch, op, now)?;
+        let memory_id = apply_op(&tx, batch, op, quarantine.as_deref(), now)?;
         let detail = serde_json::json!({
             "op": op.kind_str(),
             "author": batch.author,
             "rationale": op_rationale(op),
+            "quarantined": quarantine,
         });
         tx.execute(
             "INSERT INTO audit (stage_token, op_index, op_kind, memory_id, detail, \
@@ -930,6 +1194,7 @@ fn apply_op(
     conn: &Connection,
     batch: &StagedMutationBatch,
     op: &StagedOp,
+    quarantine: Option<&str>,
     now: u64,
 ) -> Result<MemoryId, AgentMemoryError> {
     match op {
@@ -957,6 +1222,7 @@ fn apply_op(
                 None,
                 None,
                 None,
+                quarantine,
                 created_at_ms.unwrap_or(now),
                 updated_at_ms.unwrap_or(now),
             )?;
@@ -997,15 +1263,31 @@ fn apply_op(
                 Some(prior.clone()),
                 prior_row.2,
                 None,
+                quarantine,
                 now,
                 now,
             )?;
-            conn.execute(
-                "UPDATE records SET status_kind = 'superseded', status_detail = ?1, \
-                 updated_at_ms = ?2 WHERE memory_id = ?3",
-                params![memory_id, now as i64, prior],
-            )
-            .map_err(sql_err)?;
+            if quarantine.is_none() {
+                conn.execute(
+                    "UPDATE records SET status_kind = 'superseded', status_detail = ?1, \
+                     updated_at_ms = ?2 WHERE memory_id = ?3",
+                    params![memory_id, now as i64, prior],
+                )
+                .map_err(sql_err)?;
+            } else {
+                // A quarantined supersede must not retire the active prior:
+                // otherwise a tainted session could silently blank a good
+                // record by "updating" it. The quarantined successor keeps
+                // its `supersedes` lineage edge; the steward resolves the
+                // fork at review (promote → prior superseded; tombstone →
+                // lineage unchanged).
+                tracing::warn!(
+                    prior,
+                    successor = %memory_id,
+                    "agent memory: quarantined supersede leaves the prior record active \
+                     pending review"
+                );
+            }
             Ok(memory_id)
         }
         StagedOp::Tombstone { id, .. } => {
@@ -1052,6 +1334,7 @@ fn insert_record(
     supersedes: Option<MemoryId>,
     working_set_rank: Option<i64>,
     rank_set_at_ms: Option<i64>,
+    quarantine: Option<&str>,
     created_at_ms: u64,
     updated_at_ms: u64,
 ) -> Result<(), AgentMemoryError> {
@@ -1062,13 +1345,19 @@ fn insert_record(
         profile: None,
         verification: record.verification.clone(),
     };
+    // §10.1: the gate's verdict lands as row status. Quarantined records are
+    // write-only — every read surface filters on status_kind = 'active'.
+    let (status_kind, status_detail) = match quarantine {
+        Some(reason) => ("quarantined", Some(reason)),
+        None => ("active", None),
+    };
     conn.execute(
         "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, description, \
          body, tags, provenance, trust, status_kind, status_detail, supersedes, derived_from, \
          working_set_rank, rank_set_at_ms, content_hash, created_at_ms, updated_at_ms, \
          usage_stats, tombstoned_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'active', NULL, ?11, ?12, ?13, \
-         ?14, ?15, ?16, ?17, ?18, NULL)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+         ?16, ?17, ?18, ?19, ?20, NULL)",
         params![
             memory_id,
             scope.kind_str(),
@@ -1080,6 +1369,8 @@ fn insert_record(
             json_string(&tags)?,
             json_string(&provenance)?,
             trust.as_str(),
+            status_kind,
+            status_detail,
             supersedes,
             json_string(&derived_from.to_vec())?,
             working_set_rank,
@@ -2161,7 +2452,13 @@ mod tests {
             mob: "mob:home".to_string(),
         };
         let proposal_id = store
-            .propose(&scope, payload("Shared fact", "For the mob store"))
+            .propose(
+                &scope,
+                payload("Shared fact", "For the mob store"),
+                MemoryAuthor::Agent {
+                    identity: identity()?.as_str().to_string(),
+                },
+            )
             .await?;
         assert!(proposal_id.starts_with("prop-"));
 
@@ -2174,6 +2471,234 @@ mod tests {
         )?;
         assert_eq!(status, "pending");
         assert_eq!(scope_kind, "mob");
+
+        let author_json: String = guard.query_row(
+            "SELECT author FROM proposals WHERE proposal_id = ?1",
+            params![proposal_id],
+            |row| row.get(0),
+        )?;
+        let author: MemoryAuthor = serde_json::from_str(&author_json)?;
+        assert_eq!(
+            author,
+            MemoryAuthor::Agent {
+                identity: identity()?.as_str().to_string()
+            },
+            "proposals carry real authorship (§8.2)"
+        );
+        Ok(())
+    }
+
+    // ---- §10.1 write gate ----
+
+    /// Gate that quarantines every LLM-authored write (the
+    /// `llm_writes = "quarantined"` posture / a permanently tainted session).
+    struct AlwaysQuarantine;
+
+    impl LlmWriteGate for AlwaysQuarantine {
+        fn quarantine_reason(&self, author: &MemoryAuthor) -> Option<String> {
+            author
+                .is_llm()
+                .then(|| "session tainted by web tool 'web_search'".to_string())
+        }
+    }
+
+    fn agent_author() -> Result<MemoryAuthor, Box<dyn Error>> {
+        Ok(MemoryAuthor::Agent {
+            identity: identity()?.as_str().to_string(),
+        })
+    }
+
+    #[tokio::test]
+    async fn gated_agent_write_lands_quarantined_and_stays_unreadable() -> Result<(), Box<dyn Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
+        let id = identity()?;
+        let scope = identity_scope("family")?;
+
+        let receipt = store
+            .remember_authored(
+                &scope,
+                payload("Poisoned", "Attacker fact"),
+                agent_author()?,
+            )
+            .await?;
+        let RecordStatus::Quarantined { reason } = &receipt.status else {
+            return Err(format!("expected quarantined status, got {:?}", receipt.status).into());
+        };
+        assert!(reason.contains("session tainted"), "{reason}");
+
+        // Quarantined records are write-only: recall and manifest (the
+        // coordinator's two read surfaces) must never return them.
+        assert!(
+            store
+                .recall(recall_all(id.clone(), "family"))
+                .await?
+                .is_empty(),
+            "quarantined bodies must never reach recall"
+        );
+        assert!(
+            store
+                .manifest(&[scope.clone()], ManifestTier::Full)
+                .await?
+                .is_empty(),
+            "quarantined records must never reach the manifest"
+        );
+
+        // Non-LLM principals are not gated: the RPC remember path
+        // (Application author) lands active through the same gate.
+        let record = store
+            .remember("family", &id, new_memory("App fact", "App body"))
+            .await?;
+        let records = store.recall(recall_all(id, "family")).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].memory_id, record.memory_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn quarantined_supersede_leaves_prior_active() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let scope = identity_scope("family")?;
+        let prior = store
+            .remember("family", &id, new_memory("DB host", "Use db-good.example."))
+            .await?;
+
+        store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
+        let receipt = store
+            .supersede_authored(
+                &scope,
+                &prior.memory_id,
+                payload("DB host", "Use db-evil.example."),
+                agent_author()?,
+            )
+            .await?;
+        assert!(matches!(receipt.status, RecordStatus::Quarantined { .. }));
+
+        // A tainted "update" must not blank the good record.
+        let records = store.recall(recall_all(id, "family")).await?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].memory_id, prior.memory_id);
+        assert!(records[0].body.contains("db-good"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gate_covers_staged_commits_not_just_direct_writes() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        store.set_llm_write_gate(Arc::new(AlwaysQuarantine));
+        let id = identity()?;
+        let scope = identity_scope("family")?;
+
+        let token = store
+            .stage(StagedMutationBatch {
+                realm: "family".to_string(),
+                author: agent_author()?,
+                ops: vec![StagedOp::Create {
+                    id: None,
+                    scope,
+                    record: payload("Staged fact", "Via staged path"),
+                    trust: TrustTier::AgentObserved,
+                    derived_from: Vec::new(),
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            })
+            .await?;
+        store.commit(token).await?;
+        assert!(
+            store.recall(recall_all(id, "family")).await?.is_empty(),
+            "the write gate must hold at the store seam for staged commits too"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ungated_authored_write_lands_active_with_agent_author() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let scope = identity_scope("family")?;
+
+        let mut record = payload("Observed fact", "Seen in session");
+        record.verification = Some(super::super::records::VerificationClaim {
+            checked: "ran the smoke test and watched it pass".to_string(),
+            evidence: Vec::new(),
+        });
+        let receipt = store
+            .remember_authored(&scope, record, agent_author()?)
+            .await?;
+        assert_eq!(receipt.status, RecordStatus::Active);
+
+        // The verification is a CLAIM in provenance; the tier stays at the
+        // LLM ceiling (§10.2).
+        let conn = store.realm_connection("family")?;
+        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let (trust, provenance_json): (String, String) = guard.query_row(
+            "SELECT trust, provenance FROM records WHERE memory_id = ?1",
+            params![receipt.memory_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(trust, "agent_observed");
+        let provenance: MemoryProvenance = serde_json::from_str(&provenance_json)?;
+        assert_eq!(provenance.author, agent_author()?);
+        assert!(
+            provenance
+                .verification
+                .as_ref()
+                .is_some_and(|claim| claim.checked.contains("smoke test"))
+        );
+        drop(guard);
+
+        // Recall sees it (identity scope, active).
+        let records = store.recall(recall_all(id, "family")).await?;
+        assert_eq!(records.len(), 1);
+
+        // forget_authored tombstones it with agent authorship.
+        let scope = identity_scope("family")?;
+        let result = store
+            .forget_authored(&scope, &receipt.memory_id, agent_author()?)
+            .await?;
+        assert!(result.deleted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authored_update_rejects_cross_identity_scope() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let prior = store
+            .remember("family", &id, new_memory("Fact", "Body"))
+            .await?;
+
+        // An agent may only supersede within its OWN identity scope: the
+        // staged validator rejects the batch even when the caller lies
+        // about the scope (single-lineage supersede stays with the record's
+        // own writers, §8.2).
+        let other_scope = MemoryScope::Identity {
+            realm: "family".to_string(),
+            identity: "identity:other".to_string(),
+        };
+        let cross = store
+            .supersede_authored(
+                &other_scope,
+                &prior.memory_id,
+                payload("Fact", "Hijacked body"),
+                MemoryAuthor::Agent {
+                    identity: "identity:other".to_string(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(cross, Err(AgentMemoryError::InvalidRecord(_))),
+            "cross-identity update must be rejected, got {cross:?}"
+        );
         Ok(())
     }
 }

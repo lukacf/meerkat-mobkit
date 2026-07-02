@@ -15,16 +15,26 @@ Modes:
                              to exercise the scorecard plumbing; its misses
                              never fail the run.
   --stage selector --mode live
-                             Reserved for the real Selector (P1.3); exits
-                             unwired for now.
+                             Drive the real Selector through the
+                             `selector-eval` binary, N=3 runs per fixture
+                             with shuffled manifests; score must_select /
+                             must_not_select and shuffle stability (§11).
+                             Without resolvable provider auth the run SKIPs
+                             live scoring (selector-eval exit 3) and falls
+                             back to `selector-eval --mock`, which exercises
+                             the full prompt/parse plumbing deterministically
+                             and never gates.
 
-Exit codes: 0 clean, 1 validation violations, 2 configuration error / unwired
-mode.
+Exit codes: 0 clean, 1 validation/scorecard violations, 2 configuration
+error.
 """
 
 import argparse
 import json
+import os
+import random
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -57,6 +67,24 @@ SELECTOR_PROMPT_PLACEHOLDERS = ("{{manifest}}", "{{turn_text}}", "{{suppression_
 # appears verbatim in the turn text. Crude on purpose — it exists to exercise
 # the scorecard, not to select well.
 MOCK_MIN_TOKEN_LEN = 4
+
+# Live mode: runs per fixture with independently shuffled manifests; the §11
+# label-free invariant requires identical selections across all of them.
+LIVE_RUNS_PER_FIXTURE = 3
+# selector-eval exit code that means "live requested but no auth resolvable"
+# — the harness treats it as SKIP-with-notice, not failure.
+EXIT_NO_AUTH = 3
+# Command used to invoke selector-eval; override with the
+# MEMORY_EVALS_SELECTOR_EVAL environment variable (whitespace-split), e.g.
+# a prebuilt binary path in CI.
+DEFAULT_SELECTOR_EVAL_CMD = (
+    str(REPO_ROOT / "scripts" / "repo-cargo"),
+    "run",
+    "--quiet",
+    "--bin",
+    "selector-eval",
+    "--",
+)
 
 
 def fail_config(message):
@@ -411,6 +439,144 @@ def run_selector_mock():
     print("  MOCK run complete (informational only, always exit 0).")
 
 
+# ── live selector (P1.3) ─────────────────────────────────────
+
+
+def selector_eval_cmd():
+    override = os.environ.get("MEMORY_EVALS_SELECTOR_EVAL")
+    if override:
+        return tuple(override.split())
+    return DEFAULT_SELECTOR_EVAL_CMD
+
+
+def selector_profile_path():
+    """The selector-stage calibration profile the live run scores against."""
+    for path in sorted(PROFILES_DIR.glob("*.toml")):
+        try:
+            profile = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError:
+            continue
+        if profile.get("stage") == "selector":
+            return path
+    fail_config("no selector-stage profile in memory-evals/profiles/")
+
+
+def invoke_selector_eval(payload, mock):
+    """One selector-eval invocation. Returns (exit_code, parsed_or_None,
+    stderr_text)."""
+    cmd = list(selector_eval_cmd())
+    if mock:
+        cmd.append("--mock")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=REPO_ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_config(f"cannot run selector-eval ({' '.join(cmd)}): {exc}")
+    if proc.returncode != 0:
+        return proc.returncode, None, proc.stderr
+    try:
+        return 0, json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
+    except (json.JSONDecodeError, IndexError) as exc:
+        fail_config(f"selector-eval produced unparseable output: {exc}\n{proc.stdout}")
+
+
+def run_selector_live():
+    run_check(quiet=True)
+    profile_path = selector_profile_path()
+    fixtures = sorted(SELECTOR_FIXTURES_DIR.glob("*.json"))
+
+    if os.environ.get("MEMORY_EVALS_FORCE_MOCK") == "1":
+        # Deterministic plumbing lane for tests: never attempts a live call
+        # (a dev machine with resolvable auth would otherwise burn real
+        # model calls inside a test run).
+        live = False
+        print("memory-evals: LIVE selector forced to --mock (MEMORY_EVALS_FORCE_MOCK=1)\n")
+    else:
+        # Auth probe: one tiny live call decides live-vs-SKIP for the run.
+        probe = {
+            "manifest": [
+                {
+                    "id": "probe-1",
+                    "kind": "Fact",
+                    "title": "auth probe",
+                    "description": "",
+                    "age_days": 0,
+                    "rank": None,
+                }
+            ],
+            "turn_text": "auth probe",
+            "profile_path": str(profile_path),
+        }
+        code, _, stderr = invoke_selector_eval(probe, mock=False)
+        live = code == 0
+        if code == EXIT_NO_AUTH:
+            print("memory-evals: LIVE selector SKIPPED — no resolvable provider auth")
+            print("  (selector-eval exit 3; running the --mock plumbing path instead;")
+            print("   informational only, never gates)\n")
+        elif code != 0:
+            fail_config(f"selector-eval live probe failed (exit {code}):\n{stderr}")
+
+    label = "LIVE" if live else "MOCK-fallback"
+    print(f"memory-evals: {label} selector scorecard")
+    print(f"  profile: {rel(profile_path)}")
+    print(f"  {LIVE_RUNS_PER_FIXTURE} runs per fixture, manifest shuffled per run;")
+    print("  §11 invariant: identical selected_ids across runs\n")
+
+    regressions = 0
+    for path in fixtures:
+        fixture = json.loads(path.read_text())
+        runs = []
+        for run_index in range(LIVE_RUNS_PER_FIXTURE):
+            manifest = list(fixture["manifest"])
+            random.Random(f"{fixture['name']}-{run_index}").shuffle(manifest)
+            payload = {
+                "manifest": manifest,
+                "turn_text": fixture["turn_text"],
+                "suppressed_ids": fixture.get("suppressed_ids", []),
+                "profile_path": str(profile_path),
+            }
+            code, result, stderr = invoke_selector_eval(payload, mock=not live)
+            if code == EXIT_NO_AUTH and live:
+                fail_config("provider auth disappeared mid-run; rerun the harness")
+            if code != 0:
+                fail_config(f"selector-eval failed on {fixture['name']} (exit {code}):\n{stderr}")
+            runs.append(sorted(result["selected_ids"]))
+
+        selected = set(runs[0])
+        must = set(fixture["expected"]["must_select"])
+        must_not = set(fixture["expected"]["must_not_select"])
+        misses = must - selected
+        violated = must_not & selected
+        unstable = any(run != runs[0] for run in runs[1:])
+        failed = bool(misses or violated or unstable)
+        regressions += failed
+
+        status = ("FAIL" if live else "MOCK-MISS") if failed else "ok"
+        print(f"  [{status:9}] {fixture['name']}")
+        print(f"              selected: {runs[0] or '[]'}")
+        if misses:
+            print(f"              missed must_select: {sorted(misses)}")
+        if violated:
+            print(f"              selected must_not_select: {sorted(violated)}")
+        if unstable:
+            print(f"              UNSTABLE under shuffle: {runs}")
+
+    print(f"\n  totals: {regressions} fixture(s) failing of {len(fixtures)}")
+    if live and regressions:
+        print("  LIVE run FAILED — scorecard regression (§11).", file=sys.stderr)
+        sys.exit(1)
+    if live:
+        print("  LIVE run clean.")
+    else:
+        print("  MOCK-fallback run complete (informational only, exit 0).")
+
+
 # ── entry point ───────────────────────────────────────────────
 
 
@@ -433,11 +599,8 @@ def main():
     if args.mode and not args.stage:
         parser.error("--mode requires --stage")
     if args.mode == "live":
-        print(
-            "memory-evals: live mode requires the Selector stage (P1.3); not yet wired",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        run_selector_live()
+        return
     if args.mode == "mock":
         run_selector_mock()
         return

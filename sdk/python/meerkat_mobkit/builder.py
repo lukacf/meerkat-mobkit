@@ -195,6 +195,20 @@ class MobKitBuilder:
             wire["defang_inbound"] = config["defangInbound"]
         if "store" in config:
             wire["store"] = config["store"]
+        if "llm_writes" in config:
+            wire["llm_writes"] = config["llm_writes"]
+        elif "llmWrites" in config:
+            wire["llm_writes"] = config["llmWrites"]
+        if "recorder_tool" in config:
+            wire["recorder_tool"] = config["recorder_tool"]
+        elif "recorderTool" in config:
+            wire["recorder_tool"] = config["recorderTool"]
+        if "content_trust" in config:
+            wire["content_trust"] = config["content_trust"]
+        elif "contentTrust" in config:
+            wire["content_trust"] = config["contentTrust"]
+        if "selector" in config:
+            wire["selector"] = config["selector"]
         self._config.agent_memory_config = wire
         return self
 

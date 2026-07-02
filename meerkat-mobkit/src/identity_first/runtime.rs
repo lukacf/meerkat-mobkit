@@ -2532,6 +2532,12 @@ impl IdentityRuntime {
         } else {
             match self.agent_memory.read().await.clone() {
                 Some(injector) => {
+                    // §10.1 taint hook: authoritative session attribution
+                    // ahead of the async observe stream — the run this send
+                    // triggers belongs to this session.
+                    if let Some(session_key) = memory_session_key.as_deref() {
+                        injector.note_current_session(identity, session_key);
+                    }
                     let defanged = injector.defang_inbound(identity, content);
                     injector
                         .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
@@ -3537,6 +3543,13 @@ impl IdentityRuntime {
                 session_id = %new_record.session_id,
                 "reset completed",
             );
+            drop(entries);
+            // §10.1: reset is the deliberate clean-slate boundary — clear
+            // session taint explicitly (rotation clears implicitly; this
+            // also drops pending pre-attribution taint).
+            if let Some(injector) = self.agent_memory.read().await.as_ref() {
+                injector.clear_taint_for_identity(identity);
+            }
             return Ok(new_record);
         }
 
@@ -3560,6 +3573,10 @@ impl IdentityRuntime {
         entry.lease = Some(Self::lease_entry_from_grant(&grant));
         entry.state = IdentityLifecycleState::Active;
         entry.checkpoint_version = CheckpointVersion::new(0);
+        drop(entries);
+        if let Some(injector) = self.agent_memory.read().await.as_ref() {
+            injector.clear_taint_for_identity(identity);
+        }
 
         Ok(new_record)
     }

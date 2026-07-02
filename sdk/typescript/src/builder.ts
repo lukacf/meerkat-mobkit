@@ -229,6 +229,14 @@ export class MobKitBuilder {
       perTurnInjection?: "off" | "budgeted";
       defangInbound?: boolean;
       store?: "sqlite" | "markdown";
+      llmWrites?: "observed" | "quarantined";
+      recorderTool?: boolean;
+      contentTrust?: {
+        trustedMcpServers?: string[];
+        untrustedTools?: string[];
+        trustedTools?: string[];
+      };
+      selector?: "off" | "default" | `profile:${string}`;
     } = true,
   ): this {
     if (config !== true && config.enabled === false) {
@@ -260,6 +268,24 @@ export class MobKitBuilder {
       wire.defang_inbound = config.defangInbound;
     }
     if (config.store !== undefined) wire.store = config.store;
+    if (config.llmWrites !== undefined) wire.llm_writes = config.llmWrites;
+    if (config.recorderTool !== undefined) {
+      wire.recorder_tool = config.recorderTool;
+    }
+    if (config.contentTrust !== undefined) {
+      const contentTrust: Record<string, unknown> = {};
+      if (config.contentTrust.trustedMcpServers !== undefined) {
+        contentTrust.trusted_mcp_servers = config.contentTrust.trustedMcpServers;
+      }
+      if (config.contentTrust.untrustedTools !== undefined) {
+        contentTrust.untrusted_tools = config.contentTrust.untrustedTools;
+      }
+      if (config.contentTrust.trustedTools !== undefined) {
+        contentTrust.trusted_tools = config.contentTrust.trustedTools;
+      }
+      wire.content_trust = contentTrust;
+    }
+    if (config.selector !== undefined) wire.selector = config.selector;
     this._config.agentMemoryConfig = wire;
     return this;
   }

@@ -84,6 +84,10 @@ struct GatewayAgentMemoryOptions {
     config: meerkat_mobkit::AgentMemoryConfig,
     path: std::path::PathBuf,
     store: GatewayAgentMemoryStoreKind,
+    /// §8.3 selector switch from `agent_memory.selector`. `None` = not
+    /// configured; the wiring then falls back to the
+    /// `MOBKIT_AGENT_MEMORY_SELECTOR` env var (config takes precedence).
+    selector: Option<meerkat_mobkit::memory::selector::SelectorSpec>,
 }
 
 /// Which bundled store backs agent memory. SQLite is the default now that
@@ -822,6 +826,192 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_parse_agent_memory_taint_knobs() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "llm_writes": "quarantined",
+                    "recorder_tool": false,
+                    "content_trust": {
+                        "trusted_mcp_servers": ["knowledge_graph"],
+                        "untrusted_tools": ["scrape_page"],
+                        "trusted_tools": ["safe_calc"],
+                    }
+                }
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("taint knobs should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.config.llm_writes,
+            meerkat_mobkit::AgentMemoryLlmWrites::Quarantined
+        );
+        assert!(!agent_memory.config.recorder_tool);
+        assert_eq!(
+            agent_memory.config.content_trust.trusted_mcp_servers,
+            vec!["knowledge_graph"]
+        );
+        assert_eq!(
+            agent_memory.config.content_trust.untrusted_tools,
+            vec!["scrape_page"]
+        );
+
+        // Defaults: observed writes, recorder on, empty trust lists.
+        let params = json!({
+            "runtime_options": { "agent_memory": true }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("boolean agent memory config should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.config.llm_writes,
+            meerkat_mobkit::AgentMemoryLlmWrites::Observed
+        );
+        assert!(agent_memory.config.recorder_tool);
+        assert_eq!(
+            agent_memory.config.content_trust,
+            meerkat_mobkit::ContentTrustConfig::default()
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_bad_taint_knobs() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        for (block, needle) in [
+            (
+                json!({ "llm_writes": "yolo" }),
+                "'observed' or 'quarantined'",
+            ),
+            (json!({ "llm_writes": true }), "'observed' or 'quarantined'"),
+            (json!({ "recorder_tool": "yes" }), "must be a boolean"),
+            (
+                json!({ "content_trust": { "servers": [] } }),
+                "unsupported content_trust fields",
+            ),
+            (
+                json!({ "content_trust": { "trusted_mcp_servers": "kg" } }),
+                "must be an array",
+            ),
+            (
+                json!({ "store": "markdown", "llm_writes": "quarantined" }),
+                "require store='sqlite'",
+            ),
+            (
+                json!({ "store": "markdown", "content_trust": {} }),
+                "require store='sqlite'",
+            ),
+        ] {
+            let params = json!({ "runtime_options": { "agent_memory": block } });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("config must fail loudly: {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err} (wanted '{needle}')");
+        }
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_agent_memory_selector() {
+        use meerkat_mobkit::memory::selector::SelectorSpec;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        // Default: not configured — the env var stays the fallback.
+        for params in [
+            json!({ "runtime_options": { "agent_memory": true } }),
+            json!({ "runtime_options": { "agent_memory": {} } }),
+        ] {
+            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("agent memory config should parse");
+            let agent_memory = options.agent_memory.expect("agent memory options");
+            assert_eq!(agent_memory.selector, None);
+        }
+
+        for (value, want) in [
+            ("off", SelectorSpec::Off),
+            ("default", SelectorSpec::Default),
+            (
+                "profile:/etc/mobkit/selector.toml",
+                SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml")),
+            ),
+        ] {
+            let params = json!({
+                "runtime_options": { "agent_memory": { "selector": value } }
+            });
+            let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("selector value should parse");
+            let agent_memory = options.agent_memory.expect("agent memory options");
+            assert_eq!(agent_memory.selector, Some(want), "selector '{value}'");
+        }
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_bad_agent_memory_selector() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        for (block, needle) in [
+            (json!({ "selector": "on" }), "'off', 'default'"),
+            (json!({ "selector": "profile:" }), "'off', 'default'"),
+            (json!({ "selector": true }), "must be a string"),
+            (
+                // The markdown provider has no manifest; a configured
+                // selector would silently do nothing.
+                json!({ "store": "markdown", "selector": "default" }),
+                "selector requires store='sqlite'",
+            ),
+        ] {
+            let params = json!({ "runtime_options": { "agent_memory": block } });
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("selector config must fail loudly: {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err} (wanted '{needle}')");
+        }
+
+        // Explicit off with markdown is fine (nothing to enforce).
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "selector": "off" }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("selector=off with markdown should parse");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert_eq!(
+            agent_memory.selector,
+            Some(meerkat_mobkit::memory::selector::SelectorSpec::Off)
+        );
+    }
+
+    #[test]
+    fn selector_config_takes_precedence_over_env_fallback() {
+        use meerkat_mobkit::memory::selector::SelectorSpec;
+
+        // The crate denies `unsafe`, so the env var cannot be mutated in a
+        // test; precedence is shown structurally instead. With the env
+        // unset (nextest never sets MOBKIT_AGENT_MEMORY_SELECTOR), the env
+        // fallback alone resolves to Off — so a non-Off result for a
+        // configured spec proves the config path won, not the env.
+        assert_eq!(
+            resolve_selector_spec(Some(&SelectorSpec::Default)).expect("configured spec resolves"),
+            SelectorSpec::Default,
+            "agent_memory.selector must be used ahead of the env fallback"
+        );
+        let profile = SelectorSpec::Profile(std::path::PathBuf::from("/etc/mobkit/selector.toml"));
+        assert_eq!(
+            resolve_selector_spec(Some(&profile)).expect("configured profile resolves"),
+            profile
+        );
+        assert_eq!(
+            resolve_selector_spec(None).expect("env fallback resolves"),
+            SelectorSpec::Off,
+            "unset config must fall back to MOBKIT_AGENT_MEMORY_SELECTOR (unset ⇒ off)"
+        );
+    }
+
+    #[test]
     fn gateway_runtime_options_reject_zero_max_sessions() {
         let params = json!({
             "runtime_options": {
@@ -1375,6 +1565,7 @@ fn parse_gateway_agent_memory_config(
             config: meerkat_mobkit::AgentMemoryConfig::default(),
             path,
             store: GatewayAgentMemoryStoreKind::default(),
+            selector: None,
         }));
     }
 
@@ -1392,6 +1583,10 @@ fn parse_gateway_agent_memory_config(
         "per_turn_injection",
         "defang_inbound",
         "store",
+        "llm_writes",
+        "recorder_tool",
+        "content_trust",
+        "selector",
     ];
     let unsupported = object
         .keys()
@@ -1531,6 +1726,82 @@ fn parse_gateway_agent_memory_config(
             ));
         }
     };
+    let llm_writes = match object.get("llm_writes") {
+        None => meerkat_mobkit::AgentMemoryLlmWrites::Observed,
+        Some(value) => match value.as_str().map(str::trim) {
+            Some("observed") => meerkat_mobkit::AgentMemoryLlmWrites::Observed,
+            Some("quarantined") => meerkat_mobkit::AgentMemoryLlmWrites::Quarantined,
+            _ => {
+                return Err(format!(
+                    "runtime_options.agent_memory.llm_writes must be 'observed' or 'quarantined' \
+                     (got '{value}')"
+                ));
+            }
+        },
+    };
+    let recorder_tool = match object.get("recorder_tool") {
+        None => true,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.recorder_tool must be a boolean".to_string()
+        })?,
+    };
+    let content_trust = match object.get("content_trust") {
+        None => meerkat_mobkit::ContentTrustConfig::default(),
+        Some(value) => meerkat_mobkit::ContentTrustConfig::from_json_value(value)
+            .map_err(|err| format!("runtime_options.agent_memory.{err}"))?,
+    };
+    // §8.3 selector switch. When set it takes precedence over the
+    // MOBKIT_AGENT_MEMORY_SELECTOR env var; when absent the env var stays
+    // the fallback.
+    let selector = match object.get("selector") {
+        None => None,
+        Some(value) => {
+            let value = value.as_str().map(str::trim).ok_or_else(|| {
+                "runtime_options.agent_memory.selector must be a string \
+                 ('off', 'default', or 'profile:<path>')"
+                    .to_string()
+            })?;
+            match value {
+                "off" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Off),
+                "default" => Some(meerkat_mobkit::memory::selector::SelectorSpec::Default),
+                other => match other.strip_prefix("profile:") {
+                    Some(path) if !path.trim().is_empty() => {
+                        Some(meerkat_mobkit::memory::selector::SelectorSpec::Profile(
+                            std::path::PathBuf::from(path.trim()),
+                        ))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "runtime_options.agent_memory.selector must be 'off', 'default', \
+                             or 'profile:<path>' (got '{other}'); this option overrides the \
+                             MOBKIT_AGENT_MEMORY_SELECTOR environment variable"
+                        ));
+                    }
+                },
+            }
+        }
+    };
+    // The write gate and taint tracker are store-seam machinery; only the
+    // sqlite store has the seam. Accepting these knobs with the markdown
+    // store would silently enforce nothing — fail loud instead.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && (llm_writes != meerkat_mobkit::AgentMemoryLlmWrites::Observed
+            || object.contains_key("content_trust"))
+    {
+        return Err(
+            "runtime_options.agent_memory.llm_writes/content_trust require store='sqlite'"
+                .to_string(),
+        );
+    }
+    // Same rationale for the selector: the markdown provider has no
+    // manifest, so a configured selector would silently do nothing.
+    if store == GatewayAgentMemoryStoreKind::Markdown
+        && selector
+            .as_ref()
+            .is_some_and(|spec| *spec != meerkat_mobkit::memory::selector::SelectorSpec::Off)
+    {
+        return Err("runtime_options.agent_memory.selector requires store='sqlite'".to_string());
+    }
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
         .join("agent-memory");
@@ -1545,10 +1816,29 @@ fn parse_gateway_agent_memory_config(
             instruction_header,
             per_turn_injection,
             defang_inbound,
+            llm_writes,
+            recorder_tool,
+            content_trust,
         },
         path,
         store,
+        selector,
     }))
+}
+
+/// §8.3 selector precedence: `agent_memory.selector` config wins; the
+/// `MOBKIT_AGENT_MEMORY_SELECTOR` env var stays as the fallback for
+/// deployments that have not migrated to the config option.
+fn resolve_selector_spec(
+    configured: Option<&meerkat_mobkit::memory::selector::SelectorSpec>,
+) -> Result<
+    meerkat_mobkit::memory::selector::SelectorSpec,
+    meerkat_mobkit::memory::selector::SelectorError,
+> {
+    match configured {
+        Some(spec) => Ok(spec.clone()),
+        None => meerkat_mobkit::memory::selector::spec_from_env(),
+    }
 }
 
 /// Original single-shot mode: reads request from env, runs once, prints response.
@@ -2790,6 +3080,68 @@ external_addressable = true
         .with_runtime_services(AgentRuntimeServices::new(mob_handle));
         irt.set_error_hook(Some(gateway_error_hook.clone()));
 
+        // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
+        // customizer/injector are constructed below, so their coordinators
+        // snapshot the stage. Operator switch is
+        // `agent_memory.selector = "off" | "default" | "profile:<path>"`;
+        // the MOBKIT_AGENT_MEMORY_SELECTOR env var remains a fallback for
+        // unmigrated deployments, with config taking precedence.
+        {
+            use meerkat_mobkit::memory::selector as memory_selector;
+            let configured = gateway_options
+                .agent_memory
+                .as_ref()
+                .and_then(|agent_memory| agent_memory.selector.as_ref());
+            let spec = resolve_selector_spec(configured).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            let profile = memory_selector::profile_for_spec(&spec).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            if let Some(profile) = profile {
+                let Some(agent_memory) = gateway_options.agent_memory.as_ref() else {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "agent memory selector requires runtime_options.agent_memory".to_string(),
+                    );
+                };
+                if agent_memory.store != GatewayAgentMemoryStoreKind::Sqlite {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "agent memory selector requires the sqlite agent-memory store".to_string(),
+                    );
+                }
+                // Second handle on the same per-realm database files, used
+                // only for selected-body fetch; WAL keeps this safe.
+                let fetch = meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                    .unwrap_or_else(|e| {
+                        fail_init(
+                            &request_id,
+                            -32603,
+                            format!("agent memory selector store: {e}"),
+                        );
+                    });
+                let factory_state = persistent_state.clone().unwrap_or_else(std::env::temp_dir);
+                let handle = memory_selector::FactorySelectorHandle::new(
+                    factory_state,
+                    meerkat::Config::default(),
+                    agent_memory.config.realm.clone(),
+                    &profile,
+                );
+                let model = profile.model.clone();
+                memory_selector::install(Arc::new(memory_selector::SelectorRuntime {
+                    stage: Arc::new(memory_selector::SelectorStage::new(
+                        profile,
+                        Arc::new(handle),
+                    )),
+                    fetch: Arc::new(fetch),
+                }));
+                tracing::info!(model = %model, "agent memory selector installed");
+            }
+        }
+
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
             Arc::new(GatewayRosterProvider::new(bridge.clone()));
@@ -2808,6 +3160,7 @@ external_addressable = true
         } else {
             None
         };
+        let mut agent_memory_taint: Option<meerkat_mobkit::SessionTaintTracker> = None;
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
                 match agent_memory.store {
@@ -2822,16 +3175,36 @@ external_addressable = true
                             }),
                     )
                         as Arc<dyn meerkat_mobkit::AgentMemoryProvider>),
-                    GatewayAgentMemoryStoreKind::Sqlite => Some(Arc::new(
-                        meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
-                            .unwrap_or_else(|e| {
-                                fail_init(
-                                    &request_id,
-                                    -32603,
-                                    format!("failed to open agent memory store: {e}"),
-                                );
-                            }),
-                    )),
+                    GatewayAgentMemoryStoreKind::Sqlite => {
+                        let store =
+                            meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                                .unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32603,
+                                        format!("failed to open agent memory store: {e}"),
+                                    );
+                                });
+                        // §10.1 taint firewall: the Recorder must not ship
+                        // without it. Content-trust classification feeds a
+                        // session-sticky tracker; the write gate applies
+                        // taint/posture quarantine at the store seam.
+                        let tracker = meerkat_mobkit::SessionTaintTracker::new(
+                            agent_memory.config.content_trust.clone(),
+                        );
+                        store.set_llm_write_gate(Arc::new(meerkat_mobkit::TaintLlmWriteGate::new(
+                            Some(tracker.clone()),
+                            agent_memory.config.llm_writes,
+                        )));
+                        // Observe-stream feed lives for the gateway process;
+                        // forgetting the guard keeps the task running.
+                        std::mem::forget(meerkat_mobkit::spawn_taint_observer(
+                            runtime.mob_handle(),
+                            tracker.clone(),
+                        ));
+                        agent_memory_taint = Some(tracker);
+                        Some(Arc::new(store) as Arc<dyn meerkat_mobkit::AgentMemoryProvider>)
+                    }
                 }
             } else {
                 None
@@ -2854,10 +3227,14 @@ external_addressable = true
             gateway_options.agent_memory.as_ref(),
             agent_memory_provider.clone(),
         ) {
-            Some(meerkat_mobkit::AgentMemoryRuntimeInjector::new(
+            let mut injector = meerkat_mobkit::AgentMemoryRuntimeInjector::new(
                 provider,
                 agent_memory.config.clone(),
-            ))
+            );
+            if let Some(tracker) = agent_memory_taint.clone() {
+                injector = injector.with_taint_tracker(tracker);
+            }
+            Some(injector)
         } else {
             None
         };

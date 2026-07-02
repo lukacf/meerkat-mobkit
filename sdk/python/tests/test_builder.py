@@ -88,6 +88,48 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["agent_memory"] == {"enabled": False}
 
+    def test_agent_memory_taint_knobs_serialize_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            llm_writes="quarantined",
+            recorder_tool=False,
+            content_trust={
+                "trusted_mcp_servers": ["knowledge_graph"],
+                "untrusted_tools": ["scrape_page"],
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "llm_writes": "quarantined",
+            "recorder_tool": False,
+            "content_trust": {
+                "trusted_mcp_servers": ["knowledge_graph"],
+                "untrusted_tools": ["scrape_page"],
+            },
+        }
+
+    def test_agent_memory_taint_knobs_accept_camel_case(self):
+        b = MobKit.builder().agent_memory(
+            llmWrites="quarantined",
+            recorderTool=True,
+            contentTrust={"trusted_tools": ["safe_calc"]},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "llm_writes": "quarantined",
+            "recorder_tool": True,
+            "content_trust": {"trusted_tools": ["safe_calc"]},
+        }
+
+    def test_agent_memory_selector_serializes_to_gateway_wire_key(self):
+        b = MobKit.builder().agent_memory(selector="profile:/etc/mobkit/selector.toml")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "selector": "profile:/etc/mobkit/selector.toml",
+        }
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

@@ -29,6 +29,10 @@ use crate::identity_first::agent_memory::{
 use crate::memory::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryScope, RecordMeta, UsageEvent,
 };
+use crate::memory::selector::{
+    Coverage, FULL_SWEEP_HARD_CEILING_RECORDS, FULL_SWEEP_SOFT_CEILING_RECORDS, SelectorRuntime,
+    chunk_manifest, truncate_full_manifest,
+};
 
 pub(crate) const DEFAULT_INSTRUCTION_HEADER: &str = "Agent memory";
 
@@ -51,6 +55,11 @@ pub(crate) const BUILD_INDEX_BUDGET_BYTES: usize = 8 * 1024;
 /// before the byte budget applies.
 const BUILD_INDEX_WORKING_SET_K: usize = 24;
 const MAX_INDEX_DESCRIPTION_BYTES: usize = 400;
+/// Total wall-clock bound on a detached full-sweep escalation (§8.3). The
+/// sweep never runs on the blocking path, but it still terminates: chunked
+/// Full-tier selection over a large store is "slower and costlier", not
+/// unbounded.
+const FULL_SWEEP_TIMEOUT_MS: u64 = 30_000;
 
 /// Reserved envelope markers (§9.1 anti-spoofing). Inbound content matching
 /// any of these is neutralized before delivery; keep this list in sync with
@@ -163,6 +172,14 @@ struct NonceState {
     nonce: String,
 }
 
+/// Per-session escalation state (§8.3): a full-store sweep runs detached
+/// and its selected ids feed the NEXT assembly, never the blocking path.
+#[derive(Default)]
+struct SweepState {
+    in_flight: bool,
+    ready: Option<Vec<String>>,
+}
+
 /// Deterministic recall coordinator (§9). Cheap to clone; per-session state
 /// is shared across clones on purpose (budgets are per session, not per
 /// clone).
@@ -178,6 +195,13 @@ pub struct RecallCoordinator {
     // Per-(identity, session) envelope nonce (§9.1). Same wholesale-clear
     // bound as session_state; a cleared nonce simply re-mints on next use.
     nonces: Arc<Mutex<HashMap<String, NonceState>>>,
+    // The LLM Selector (§8.3), when configured. None (the default when no
+    // selector is installed) keeps every path byte-identical to the
+    // pre-selector coordinator.
+    selector: Option<Arc<SelectorRuntime>>,
+    // Escalation results keyed by session key. Same wholesale-clear bound
+    // as session_state; a cleared entry just costs one re-escalation.
+    sweeps: Arc<Mutex<HashMap<String, SweepState>>>,
 }
 
 impl RecallCoordinator {
@@ -187,7 +211,16 @@ impl RecallCoordinator {
             config: normalize_config(config),
             session_state: Arc::new(Mutex::new(HashMap::new())),
             nonces: Arc::new(Mutex::new(HashMap::new())),
+            selector: crate::memory::selector::installed(),
+            sweeps: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Explicit selector injection for embedders and tests; the process-wide
+    /// install (`memory::selector::install`) is what `new` snapshots.
+    pub fn with_selector(mut self, selector: Option<Arc<SelectorRuntime>>) -> Self {
+        self.selector = selector;
+        self
     }
 
     pub fn provider(&self) -> Arc<dyn AgentMemoryProvider> {
@@ -267,19 +300,33 @@ impl RecallCoordinator {
         if budget < MIN_INJECTION_BUDGET_BYTES {
             return Ok(content.clone());
         }
-        let records = recall_for_injection(
-            &self.provider,
-            &self.config,
-            AgentMemoryRecallRequest {
-                identity: identity.clone(),
-                realm: self.config.realm.clone(),
-                query_text: (!query_text.is_empty()).then_some(query_text),
-                query_terms,
-                selection: self.config.selection.clone(),
-                max_entries: self.config.max_entries,
-            },
-        )
-        .await?;
+        let selected = self
+            .selector_records(
+                identity,
+                session_key,
+                &query_text,
+                skip_ids.as_ref(),
+                self.config.recall_timeout_ms,
+            )
+            .await?;
+        let records = match selected {
+            Some(records) => records,
+            None => {
+                recall_for_injection(
+                    &self.provider,
+                    &self.config,
+                    AgentMemoryRecallRequest {
+                        identity: identity.clone(),
+                        realm: self.config.realm.clone(),
+                        query_text: (!query_text.is_empty()).then_some(query_text),
+                        query_terms,
+                        selection: self.config.selection.clone(),
+                        max_entries: self.config.max_entries,
+                    },
+                )
+                .await?
+            }
+        };
         if records.is_empty() {
             return Ok(content.clone());
         }
@@ -320,6 +367,175 @@ impl RecallCoordinator {
     }
 
     // -----------------------------------------------------------------------
+    // Selector path (§8.3)
+    // -----------------------------------------------------------------------
+
+    /// Selector-chosen records for one assembly, or `None` when the stage
+    /// does not apply (no selector configured, provider without manifests,
+    /// empty turn text) or failed under the `skip` policy — the caller then
+    /// falls back to the lexical recall path. `Ok(Some(vec![]))` is a real
+    /// verdict: the selector judged nothing certain to be helpful, so
+    /// nothing is injected.
+    async fn selector_records(
+        &self,
+        identity: &AgentIdentity,
+        session_key: Option<&str>,
+        turn_text: &str,
+        skip_ids: Option<&HashSet<String>>,
+        budget_ms: u64,
+    ) -> Result<Option<Vec<AgentMemoryRecord>>, AgentMemoryError> {
+        let Some(runtime) = self.selector.as_ref() else {
+            return Ok(None);
+        };
+        if turn_text.is_empty() || !self.provider.supports_manifest() {
+            return Ok(None);
+        }
+        let scopes = compose_identity_scope_set(&self.config.realm, identity);
+        let suppressed = skip_ids.cloned().unwrap_or_default();
+        let ready_sweep = session_key
+            .map(|key| self.take_ready_sweep(key))
+            .unwrap_or_default();
+        let stage = runtime.stage.clone();
+        let working_set_k = stage.profile().params.working_set_k;
+        let attempt = async {
+            let manifest = self
+                .provider
+                .manifest(&scopes, ManifestTier::WorkingSet(working_set_k))
+                .await?;
+            stage
+                .select(&manifest, turn_text, &suppressed)
+                .await
+                .map_err(|err| AgentMemoryError::Io(format!("selector failed: {err}")))
+        };
+        let selection = match tokio::time::timeout(Duration::from_millis(budget_ms), attempt).await
+        {
+            Ok(Ok(selection)) => selection,
+            Ok(Err(err)) => {
+                return match self.config.recall_failure_policy {
+                    AgentMemoryRecallFailurePolicy::Skip => {
+                        tracing::debug!(error = %err, "selector failed; falling back to lexical recall");
+                        Ok(None)
+                    }
+                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
+                };
+            }
+            Err(_) => {
+                let err =
+                    AgentMemoryError::Timeout(format!("selector exceeded {budget_ms} ms budget"));
+                return match self.config.recall_failure_policy {
+                    AgentMemoryRecallFailurePolicy::Skip => {
+                        tracing::debug!(error = %err, "selector timed out; falling back to lexical recall");
+                        Ok(None)
+                    }
+                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
+                };
+            }
+        };
+        // Escalation is detached: the sweep result feeds the NEXT assembly
+        // through the session sweep cache, never this blocking path.
+        if selection.coverage == Coverage::NeedDeeperSweep
+            && let Some(key) = session_key
+        {
+            self.spawn_full_sweep(key, identity, turn_text, &suppressed);
+        }
+        let mut ids = selection.selected_ids;
+        for id in ready_sweep {
+            if !ids.contains(&id) && !suppressed.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let records = match runtime.fetch.fetch_records(&scopes, &ids).await {
+            Ok(records) => records,
+            Err(err) => {
+                return match self.config.recall_failure_policy {
+                    AgentMemoryRecallFailurePolicy::Skip => {
+                        tracing::debug!(error = %err, "selected-body fetch failed; falling back to lexical recall");
+                        Ok(None)
+                    }
+                    AgentMemoryRecallFailurePolicy::Fail => Err(err),
+                };
+            }
+        };
+        // Bodies render in selection order; the ladder/dedup/ledger
+        // machinery downstream is unchanged.
+        let order: HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        let mut records = records;
+        records.sort_by_key(|record| {
+            order
+                .get(record.memory_id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        Ok(Some(records))
+    }
+
+    fn take_ready_sweep(&self, session_key: &str) -> Vec<String> {
+        let mut guard = self.sweeps.lock().unwrap_or_else(|err| err.into_inner());
+        guard
+            .get_mut(session_key)
+            .and_then(|state| state.ready.take())
+            .unwrap_or_default()
+    }
+
+    /// Spawn the §8.3 full-store escalation for this session, unless one is
+    /// already in flight. Runs detached over `ManifestTier::Full`, chunked
+    /// per the scale posture; the result lands in the session sweep cache.
+    fn spawn_full_sweep(
+        &self,
+        session_key: &str,
+        identity: &AgentIdentity,
+        turn_text: &str,
+        suppressed: &HashSet<String>,
+    ) {
+        let Some(runtime) = self.selector.clone() else {
+            return;
+        };
+        {
+            let mut guard = self.sweeps.lock().unwrap_or_else(|err| err.into_inner());
+            if !guard.contains_key(session_key) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
+                guard.clear();
+            }
+            let state = guard.entry(session_key.to_string()).or_default();
+            if state.in_flight {
+                return;
+            }
+            state.in_flight = true;
+        }
+        let provider = self.provider.clone();
+        let scopes = compose_identity_scope_set(&self.config.realm, identity);
+        let turn_text = turn_text.to_string();
+        let suppressed = suppressed.clone();
+        let sweeps = Arc::clone(&self.sweeps);
+        let key = session_key.to_string();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_millis(FULL_SWEEP_TIMEOUT_MS),
+                run_full_sweep(provider, runtime, scopes, turn_text, suppressed),
+            )
+            .await;
+            let mut guard = sweeps.lock().unwrap_or_else(|err| err.into_inner());
+            let state = guard.entry(key).or_default();
+            state.in_flight = false;
+            match result {
+                Ok(Ok(ids)) => state.ready = Some(ids),
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "agent memory full-sweep escalation failed");
+                }
+                Err(_) => {
+                    tracing::debug!("agent memory full-sweep escalation timed out");
+                }
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Build-time assembly (§9.1 echo-safe surface)
     // -----------------------------------------------------------------------
 
@@ -335,19 +551,40 @@ impl RecallCoordinator {
         query_text: Option<String>,
         query_terms: Vec<String>,
     ) -> Result<Option<String>, AgentMemoryError> {
-        let records = recall_for_injection(
-            &self.provider,
-            &self.config,
-            AgentMemoryRecallRequest {
-                identity: identity.clone(),
-                realm: self.config.realm.clone(),
-                query_text,
-                query_terms,
-                selection: self.config.selection.clone(),
-                max_entries: self.config.max_entries,
-            },
-        )
-        .await?;
+        // Build-time materialization is not turn-latency-critical, so the
+        // selector gets a more generous budget (2× recall_timeout_ms). No
+        // session exists yet, so no escalation state is kept here.
+        let selected = match query_text.as_deref() {
+            Some(text) => {
+                self.selector_records(
+                    identity,
+                    None,
+                    text,
+                    None,
+                    self.config.recall_timeout_ms.saturating_mul(2),
+                )
+                .await?
+            }
+            None => None,
+        };
+        let records = match selected {
+            Some(records) => records,
+            None => {
+                recall_for_injection(
+                    &self.provider,
+                    &self.config,
+                    AgentMemoryRecallRequest {
+                        identity: identity.clone(),
+                        realm: self.config.realm.clone(),
+                        query_text,
+                        query_terms,
+                        selection: self.config.selection.clone(),
+                        max_entries: self.config.max_entries,
+                    },
+                )
+                .await?
+            }
+        };
         let index_section = if self.provider.supports_manifest() {
             self.render_scope_index(identity).await?
         } else {
@@ -498,6 +735,53 @@ impl RecallCoordinator {
             tracing::debug!(error = %err, "agent memory usage marking skipped");
         }
     }
+}
+
+/// The detached full-sweep body (§8.3 scale posture): Full-tier manifest,
+/// chunked into ~100 KB description slices per side-model call, selections
+/// unioned in encounter order. Above the soft ceiling the chunked sweep
+/// says so loudly; at the hard ceiling the manifest truncates
+/// oldest-least-used with an event naming what was dropped (timeline-event
+/// emission proper arrives with P3b; `tracing::warn!` is the loud interim).
+async fn run_full_sweep(
+    provider: Arc<dyn AgentMemoryProvider>,
+    runtime: Arc<SelectorRuntime>,
+    scopes: Vec<MemoryScope>,
+    turn_text: String,
+    suppressed: HashSet<String>,
+) -> Result<Vec<String>, AgentMemoryError> {
+    let manifest = provider.manifest(&scopes, ManifestTier::Full).await?;
+    if manifest.len() > FULL_SWEEP_SOFT_CEILING_RECORDS {
+        tracing::warn!(
+            records = manifest.len(),
+            soft_ceiling = FULL_SWEEP_SOFT_CEILING_RECORDS,
+            "full-sweep manifest above the §8.3 soft ceiling; chunked selection is correct but slower and costlier — the supported answer at this scale is hub candidate generation"
+        );
+    }
+    let (manifest, dropped) = truncate_full_manifest(manifest, FULL_SWEEP_HARD_CEILING_RECORDS);
+    if !dropped.is_empty() {
+        tracing::warn!(
+            dropped = dropped.len(),
+            hard_ceiling = FULL_SWEEP_HARD_CEILING_RECORDS,
+            dropped_ids = ?&dropped[..dropped.len().min(32)],
+            "full-sweep manifest truncated oldest-least-used at the §8.3 hard ceiling; this scope needs steward retention pressure"
+        );
+    }
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for chunk in chunk_manifest(&manifest) {
+        let selection = runtime
+            .stage
+            .select(chunk, &turn_text, &suppressed)
+            .await
+            .map_err(|err| AgentMemoryError::Io(format!("selector full sweep failed: {err}")))?;
+        for id in selection.selected_ids {
+            if seen.insert(id.clone()) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -895,6 +1179,9 @@ mod tests {
         records: Vec<AgentMemoryRecord>,
         identity_manifest: Vec<RecordMeta>,
         realm_manifest: Vec<RecordMeta>,
+        /// Metadata visible only at `ManifestTier::Full` — models records
+        /// beyond the working set so §8.3 escalation is testable.
+        full_tier_extra: Vec<RecordMeta>,
         with_manifest: bool,
         usage_events: StdMutex<Vec<(Vec<String>, UsageEvent)>>,
         injections: StdMutex<Vec<InjectionLogEntry>>,
@@ -906,6 +1193,7 @@ mod tests {
                 records,
                 identity_manifest: Vec::new(),
                 realm_manifest: Vec::new(),
+                full_tier_extra: Vec::new(),
                 with_manifest: false,
                 usage_events: StdMutex::new(Vec::new()),
                 injections: StdMutex::new(Vec::new()),
@@ -921,10 +1209,16 @@ mod tests {
                 records,
                 identity_manifest,
                 realm_manifest,
+                full_tier_extra: Vec::new(),
                 with_manifest: true,
                 usage_events: StdMutex::new(Vec::new()),
                 injections: StdMutex::new(Vec::new()),
             }
+        }
+
+        fn full_tier_extra(mut self, extra: Vec<RecordMeta>) -> Self {
+            self.full_tier_extra = extra;
+            self
         }
 
         fn captured_usage(&self) -> Vec<(Vec<String>, UsageEvent)> {
@@ -970,7 +1264,7 @@ mod tests {
         async fn manifest(
             &self,
             scopes: &[MemoryScope],
-            _tier: ManifestTier,
+            tier: ManifestTier,
         ) -> Result<Vec<RecordMeta>, AgentMemoryError> {
             if !self.with_manifest {
                 return Err(AgentMemoryError::Unsupported(
@@ -984,6 +1278,9 @@ mod tests {
                     MemoryScope::Realm { .. } => out.extend(self.realm_manifest.clone()),
                     _ => {}
                 }
+            }
+            if matches!(tier, ManifestTier::Full) {
+                out.extend(self.full_tier_extra.clone());
             }
             Ok(out)
         }
@@ -1470,6 +1767,394 @@ mod tests {
             1,
             "deduped records must not re-mark usage"
         );
+        Ok(())
+    }
+
+    // ---- selector integration (§8.3) ----
+
+    use crate::memory::selector::{
+        SelectedRecordFetch, SelectorError, SelectorHandle, SelectorProfile, SelectorRuntime,
+        SelectorStage,
+    };
+    use futures::stream;
+    use meerkat_client::types::LlmStream;
+    use meerkat_client::{LlmClient, LlmDoneOutcome, LlmEvent, LlmRequest};
+
+    /// Queue-scripted LLM: replies in order, repeating the last reply once
+    /// the queue drains (assembly polling in tests re-invokes the stage).
+    struct QueueLlm {
+        replies: StdMutex<Vec<String>>,
+    }
+
+    impl QueueLlm {
+        fn new(replies: Vec<&str>) -> Self {
+            Self {
+                replies: StdMutex::new(replies.into_iter().map(str::to_string).collect()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for QueueLlm {
+        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
+            let reply = {
+                let mut replies = self.replies.lock().unwrap_or_else(|err| err.into_inner());
+                if replies.len() > 1 {
+                    replies.remove(0)
+                } else {
+                    replies.first().cloned().unwrap_or_default()
+                }
+            };
+            Box::pin(stream::iter(vec![
+                Ok(LlmEvent::TextDelta {
+                    delta: reply,
+                    meta: None,
+                }),
+                Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: meerkat_core::StopReason::EndTurn,
+                    },
+                }),
+            ]))
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::Other
+        }
+
+        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+            Ok(())
+        }
+    }
+
+    struct StaticHandle {
+        client: Arc<dyn LlmClient>,
+    }
+
+    #[async_trait]
+    impl SelectorHandle for StaticHandle {
+        async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
+            Ok(self.client.clone())
+        }
+
+        fn invalidate(&self) {}
+    }
+
+    /// Handle that never resolves: forces the selector path to blow the
+    /// recall budget.
+    struct HangingHandle;
+
+    #[async_trait]
+    impl SelectorHandle for HangingHandle {
+        async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Err(SelectorError::Client("unreachable".to_string()))
+        }
+
+        fn invalidate(&self) {}
+    }
+
+    struct FakeFetch {
+        records: Vec<AgentMemoryRecord>,
+    }
+
+    #[async_trait]
+    impl SelectedRecordFetch for FakeFetch {
+        async fn fetch_records(
+            &self,
+            _scopes: &[MemoryScope],
+            ids: &[String],
+        ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+            Ok(ids
+                .iter()
+                .filter_map(|id| {
+                    self.records
+                        .iter()
+                        .find(|record| &record.memory_id == id)
+                        .cloned()
+                })
+                .collect())
+        }
+    }
+
+    fn selector_runtime(
+        handle: Arc<dyn SelectorHandle>,
+        bodies: Vec<AgentMemoryRecord>,
+    ) -> Arc<SelectorRuntime> {
+        Arc::new(SelectorRuntime {
+            stage: Arc::new(SelectorStage::new(
+                SelectorProfile::embedded_default(),
+                handle,
+            )),
+            fetch: Arc::new(FakeFetch { records: bodies }),
+        })
+    }
+
+    fn selector_config() -> AgentMemoryConfig {
+        AgentMemoryConfig {
+            selection: AgentMemorySelection::Always,
+            per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
+            ..AgentMemoryConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn selector_chosen_bodies_replace_lexical_recall() -> Result<(), Box<dyn Error>> {
+        // Lexical recall would return mem-lex; the selector chooses
+        // mem-sel-2 then mem-sel-1 and that order must win.
+        let provider = Arc::new(FakeProvider::with_manifest(
+            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
+            vec![
+                meta("mem-sel-1", "First fact", "", 1),
+                meta("mem-sel-2", "Second fact", "", 2),
+            ],
+            Vec::new(),
+        ));
+        let client = Arc::new(QueueLlm::new(vec![
+            r#"{"selected_ids": ["mem-sel-2", "mem-sel-1"], "coverage": "sufficient"}"#,
+        ]));
+        let runtime = selector_runtime(
+            Arc::new(StaticHandle { client }),
+            vec![
+                record("mem-sel-1", "First fact", "Body one."),
+                record("mem-sel-2", "Second fact", "Body two."),
+            ],
+        );
+        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
+            .with_selector(Some(runtime));
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = coordinator
+            .inject_for_turn(&id, Some("session-a"), &content)
+            .await?;
+        let text = injected.text_content();
+
+        assert!(text.contains("Body two."), "{text}");
+        assert!(text.contains("Body one."), "{text}");
+        assert!(!text.contains("Lexical body."), "{text}");
+        assert!(
+            text.find("Body two.").unwrap() < text.find("Body one.").unwrap(),
+            "bodies must render in selection order: {text}"
+        );
+        let ledger_ids: Vec<String> = provider
+            .captured_injections()
+            .into_iter()
+            .map(|entry| entry.record_id)
+            .collect();
+        assert_eq!(ledger_ids, vec!["mem-sel-2", "mem-sel-1"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn selector_empty_verdict_injects_nothing() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::with_manifest(
+            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
+            vec![meta("mem-1", "A fact", "", 1)],
+            Vec::new(),
+        ));
+        let client = Arc::new(QueueLlm::new(vec![
+            r#"{"selected_ids": [], "coverage": "sufficient"}"#,
+        ]));
+        let runtime = selector_runtime(Arc::new(StaticHandle { client }), Vec::new());
+        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
+            .with_selector(Some(runtime));
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = coordinator
+            .inject_for_turn(&id, Some("session-a"), &content)
+            .await?;
+
+        assert_eq!(
+            injected.text_content(),
+            "hello",
+            "an empty selection is a verdict, not a fallback"
+        );
+        assert!(provider.captured_injections().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn selector_timeout_falls_back_to_lexical_recall() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::with_manifest(
+            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
+            vec![meta("mem-1", "A fact", "", 1)],
+            Vec::new(),
+        ));
+        let runtime = selector_runtime(Arc::new(HangingHandle), Vec::new());
+        let coordinator = RecallCoordinator::new(
+            provider.clone(),
+            AgentMemoryConfig {
+                recall_timeout_ms: 25,
+                ..selector_config()
+            },
+        )
+        .with_selector(Some(runtime));
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = coordinator
+            .inject_for_turn(&id, Some("session-a"), &content)
+            .await?;
+
+        assert!(
+            injected.text_content().contains("Lexical body."),
+            "skip policy must fall back to the lexical path: {}",
+            injected.text_content()
+        );
+        Ok(())
+    }
+
+    /// Routes on prompt content: manifests containing the Full-tier-only
+    /// record select it; working-set manifests come up empty and request
+    /// the deeper sweep. The deep body can therefore ONLY arrive through
+    /// the detached sweep's session cache.
+    struct RoutedLlm;
+
+    #[async_trait]
+    impl LlmClient for RoutedLlm {
+        fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+            let prompt = request
+                .messages
+                .iter()
+                .map(|message| match message {
+                    meerkat_core::Message::User(user) => user.text_content(),
+                    _ => String::new(),
+                })
+                .collect::<String>();
+            let reply = if prompt.contains("mem-deep") {
+                r#"{"selected_ids": ["mem-deep"], "coverage": "sufficient"}"#
+            } else {
+                r#"{"selected_ids": [], "coverage": "need_deeper_sweep"}"#
+            };
+            Box::pin(stream::iter(vec![
+                Ok(LlmEvent::TextDelta {
+                    delta: reply.to_string(),
+                    meta: None,
+                }),
+                Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: meerkat_core::StopReason::EndTurn,
+                    },
+                }),
+            ]))
+        }
+
+        fn provider(&self) -> meerkat_core::Provider {
+            meerkat_core::Provider::Other
+        }
+
+        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn need_deeper_sweep_feeds_next_assembly() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(
+            FakeProvider::with_manifest(
+                Vec::new(),
+                vec![meta("mem-ws", "Working set fact", "", 1)],
+                Vec::new(),
+            )
+            .full_tier_extra(vec![meta(
+                "mem-deep",
+                "Deep fact",
+                "Only in the full tier",
+                40,
+            )]),
+        );
+        let runtime = selector_runtime(
+            Arc::new(StaticHandle {
+                client: Arc::new(RoutedLlm),
+            }),
+            vec![record("mem-deep", "Deep fact", "The deep body.")],
+        );
+        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
+            .with_selector(Some(runtime));
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let first = coordinator
+            .inject_for_turn(&id, Some("session-a"), &content)
+            .await?;
+        assert_eq!(
+            first.text_content(),
+            "hello",
+            "the escalating turn itself must not block on the sweep"
+        );
+
+        // The sweep is detached; poll subsequent assemblies until its
+        // result lands (bounded).
+        let mut injected_text = String::new();
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let next = coordinator
+                .inject_for_turn(&id, Some("session-a"), &content)
+                .await?;
+            let text = next.text_content();
+            if text != "hello" {
+                injected_text = text;
+                break;
+            }
+        }
+        assert!(
+            injected_text.contains("The deep body."),
+            "sweep-selected body must reach the next assembly: {injected_text}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_assembly_uses_selector_when_query_present() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::with_manifest(
+            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
+            vec![meta("mem-sel", "Selected fact", "", 1)],
+            Vec::new(),
+        ));
+        let client = Arc::new(QueueLlm::new(vec![
+            r#"{"selected_ids": ["mem-sel"], "coverage": "sufficient"}"#,
+        ]));
+        let runtime = selector_runtime(
+            Arc::new(StaticHandle { client }),
+            vec![record("mem-sel", "Selected fact", "Selected body.")],
+        );
+        let coordinator = RecallCoordinator::new(provider.clone(), selector_config())
+            .with_selector(Some(runtime));
+        let id = identity()?;
+
+        let text = coordinator
+            .assemble_build_injection(&id, Some("query".to_string()), vec!["query".to_string()])
+            .await?
+            .ok_or("build assembly should produce an injection")?;
+
+        assert!(text.contains("Selected body."), "{text}");
+        assert!(!text.contains("Lexical body."), "{text}");
+        assert!(
+            text.contains("Memory index"),
+            "index section unchanged: {text}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn selector_none_keeps_lexical_path() -> Result<(), Box<dyn Error>> {
+        let provider = Arc::new(FakeProvider::with_manifest(
+            vec![record("mem-lex", "Lexical pick", "Lexical body.")],
+            vec![meta("mem-1", "A fact", "", 1)],
+            Vec::new(),
+        ));
+        let coordinator =
+            RecallCoordinator::new(provider.clone(), selector_config()).with_selector(None);
+        let id = identity()?;
+        let content = meerkat_core::ContentInput::Text("hello".to_string());
+
+        let injected = coordinator
+            .inject_for_turn(&id, Some("session-a"), &content)
+            .await?;
+
+        assert!(injected.text_content().contains("Lexical body."));
         Ok(())
     }
 

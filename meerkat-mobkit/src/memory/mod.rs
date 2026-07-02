@@ -8,8 +8,10 @@
 
 pub mod coordinator;
 pub mod records;
+pub mod selector;
 pub mod sqlite_store;
 pub mod staged;
+pub mod taint;
 
 pub use coordinator::{
     RecallCoordinator, ScopeBudget, compose_identity_scope_set, compose_scope_budgets,
@@ -19,8 +21,17 @@ pub use records::{
     MemoryId, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId,
     RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
 };
+pub use selector::{
+    Coverage, FactorySelectorHandle, SELECTOR_ENV_VAR, SelectedRecordFetch, Selection,
+    SelectorError, SelectorHandle, SelectorProfile, SelectorRuntime, SelectorSpec, SelectorStage,
+    select,
+};
 pub use sqlite_store::SqliteAgentMemoryStore;
 pub use staged::{
     CommitReceipt, StageToken, StagedBatchError, StagedBatchView, StagedMemoryStore,
     StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,
+};
+pub use taint::{
+    ContentTrustConfig, LlmWriteGate, SessionTaintTracker, TaintLlmWriteGate, TaintObserverGuard,
+    TaintState, ToolContentTrust, spawn_taint_observer,
 };

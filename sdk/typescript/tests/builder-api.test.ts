@@ -67,6 +67,38 @@ describe("MobKitBuilder.agentMemory()", () => {
       instruction_header: "Remember",
     });
   });
+
+  it("serializes taint knobs to gateway wire keys", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({
+      llmWrites: "quarantined",
+      recorderTool: false,
+      contentTrust: {
+        trustedMcpServers: ["knowledge_graph"],
+        untrustedTools: ["scrape_page"],
+        trustedTools: ["safe_calc"],
+      },
+    });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      llm_writes: "quarantined",
+      recorder_tool: false,
+      content_trust: {
+        trusted_mcp_servers: ["knowledge_graph"],
+        untrusted_tools: ["scrape_page"],
+        trusted_tools: ["safe_calc"],
+      },
+    });
+  });
+
+  it("serializes the selector switch to the gateway wire key", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({ selector: "profile:/etc/mobkit/selector.toml" });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      selector: "profile:/etc/mobkit/selector.toml",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
