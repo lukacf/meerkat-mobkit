@@ -72,6 +72,16 @@ interface Msg {
   workedForCopyText?: string;
 }
 
+interface ChatTurn {
+  id: string;
+  messages: Msg[];
+}
+
+interface ChatTurnPreview {
+  title: string;
+  body: string;
+}
+
 function phaseLabel(_phase: "waiting" | "tool-executing" | "generating"): string {
   // Single label across all phases. The phase distinction is still
   // surfaced in the composer footer chip; the inline typing indicator
@@ -123,6 +133,50 @@ function msgHasTextualPayload(message: Msg): boolean {
     || block.type === "code"
     || block.type === "command"
   )));
+}
+
+function buildChatTurns(messages: Msg[]): ChatTurn[] {
+  const turns: ChatTurn[] = [];
+  for (const message of messages) {
+    const current = turns.at(-1);
+    if (!current || message.kind === "user") {
+      turns.push({
+        id: `turn-${message.id}`,
+        messages: [message],
+      });
+      continue;
+    }
+    current.messages.push(message);
+  }
+  return turns;
+}
+
+function chatTurnPreview(turn: ChatTurn): ChatTurnPreview {
+  let title = "";
+  let body = "";
+
+  for (const message of turn.messages) {
+    const text = msgCopyText(message);
+    if (!text) {
+      continue;
+    }
+    if (!title && message.kind === "user") {
+      title = text;
+      continue;
+    }
+    if (!body && message.kind !== "user") {
+      body = text;
+    }
+  }
+
+  if (!title) {
+    title = msgCopyText(turn.messages[0]) || "Turn";
+  }
+  if (!body) {
+    body = "No response yet.";
+  }
+
+  return { title, body };
 }
 
 function isScaffoldUserText(text: string): boolean {
@@ -343,6 +397,8 @@ function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
 
 export const __chatPaneTest = {
   buildChatMessages,
+  buildChatTurns,
+  chatTurnPreview,
   isScaffoldUserText,
 };
 
@@ -507,10 +563,13 @@ export function ChatPane({
   const preserveOlderHistoryScrollRef = React.useRef(false);
   const olderHistoryScrollHeightRef = React.useRef(0);
   const olderHistoryScrollTopRef = React.useRef(0);
+  const activeTurnFrameRef = React.useRef(0);
+  const [activeTurnIndex, setActiveTurnIndex] = React.useState(0);
 
   const messages = React.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
+  const turns = React.useMemo(() => buildChatTurns(messages), [messages]);
   // The id of the in-progress (latest) agent turn. While `phase` is non-null the
   // turn is still working, so we suppress that turn's "Worked for Ns" summary —
   // otherwise it renders alongside the "working…" indicator (the done + working
@@ -567,6 +626,69 @@ export function ChatPane({
     }
   }, [loadingOlderHistory]);
 
+  const updateActiveTurn = React.useCallback(() => {
+    activeTurnFrameRef.current = 0;
+    const body = bodyRef.current;
+    if (!body || turns.length <= 1) {
+      setActiveTurnIndex(0);
+      return;
+    }
+
+    const turnNodes = Array.from(
+      body.querySelectorAll<HTMLElement>("[data-chat-turn-index]"),
+    );
+    if (turnNodes.length === 0) {
+      setActiveTurnIndex(0);
+      return;
+    }
+
+    const bodyRect = body.getBoundingClientRect();
+    const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
+    let nextIndex = 0;
+    for (const turnNode of turnNodes) {
+      const rawIndex = Number(turnNode.dataset.chatTurnIndex);
+      if (!Number.isFinite(rawIndex)) {
+        continue;
+      }
+      if (turnNode.getBoundingClientRect().top <= targetY) {
+        nextIndex = rawIndex;
+        continue;
+      }
+      break;
+    }
+    setActiveTurnIndex((current) => current === nextIndex ? current : nextIndex);
+  }, [turns.length]);
+
+  const scheduleActiveTurnUpdate = React.useCallback(() => {
+    if (activeTurnFrameRef.current) {
+      return;
+    }
+    activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
+  }, [updateActiveTurn]);
+
+  React.useEffect(() => {
+    scheduleActiveTurnUpdate();
+  }, [scheduleActiveTurnUpdate, scrollSignature]);
+
+  React.useEffect(() => {
+    updateActiveTurn();
+    window.addEventListener("resize", scheduleActiveTurnUpdate);
+    return () => {
+      if (activeTurnFrameRef.current) {
+        window.cancelAnimationFrame(activeTurnFrameRef.current);
+        activeTurnFrameRef.current = 0;
+      }
+      window.removeEventListener("resize", scheduleActiveTurnUpdate);
+    };
+  }, [scheduleActiveTurnUpdate, updateActiveTurn]);
+
+  function scrollToTurn(turnIndex: number) {
+    const turnNode = bodyRef.current?.querySelector<HTMLElement>(
+      `[data-chat-turn-index="${turnIndex}"]`,
+    );
+    turnNode?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
   function requestOlderHistory() {
     if (bodyRef.current) {
       preserveOlderHistoryScrollRef.current = true;
@@ -586,6 +708,34 @@ export function ChatPane({
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const resolvedDraftBlobRefs = React.useRef("");
+
+  const turnRail = turns.length > 1 ? (
+    <nav className="conv-turn-rail" aria-label="Conversation turns">
+      <ol className="conv-turn-rail__list">
+        {turns.map((turn, turnIndex) => {
+          const preview = chatTurnPreview(turn);
+          return (
+            <li className="conv-turn-rail__item" key={turn.id}>
+              <button
+                aria-current={activeTurnIndex === turnIndex ? "true" : undefined}
+                aria-label={`Jump to turn ${turnIndex + 1}: ${preview.title}`}
+                className={`conv-turn-rail__button${activeTurnIndex === turnIndex ? " is-active" : ""}`}
+                data-testid={`chat-turn-rail:${identity}:${turnIndex}`}
+                onClick={() => scrollToTurn(turnIndex)}
+                type="button"
+              >
+                <span className="conv-turn-rail__tick" aria-hidden="true" />
+              </button>
+              <div className="conv-turn-preview" role="presentation">
+                <div className="conv-turn-preview__title">{preview.title}</div>
+                <div className="conv-turn-preview__body">{preview.body}</div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  ) : null;
 
   function addFiles(fileList: FileList | File[]) {
     if (readOnly || !canAttachImages) return;
@@ -725,6 +875,7 @@ export function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          scheduleActiveTurnUpdate();
           if (
             event.currentTarget.scrollTop <= 32 &&
             hasOlderHistory &&
@@ -774,29 +925,39 @@ export function ChatPane({
             <div className="msg__bubble"><span className="msg__text">No messages yet. Say hello to {agentLabel}.</span></div>
           </div>
         )}
-        {messages.map((m) => (
-          <div className={`msg msg--${m.kind}`} key={m.id}>
-            <div className="msg__time">{m.time}</div>
-            <div className="msg__bubble">
-              {(m.kind === "user" || m.kind === "agent") && (
-                <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
-              )}
-              {m.blocks && m.blocks.length > 0 ? (
-                <ConversationRichContent blocks={m.blocks} />
-              ) : (
-                m.text && <span className="msg__text">{m.text}</span>
-              )}
-              {m.workedFor && !(phase && m.id === lastAgentMessageId) && (
-                <div className="msg__worked">
-                  <span>Worked for {m.workedFor}</span>
-                  <CopyInlineButton
-                    className="msg__copy--inline"
-                    label="Copy work time"
-                    text={m.workedForCopyText || `Worked for ${m.workedFor}`}
-                  />
+        {turns.map((turn, turnIndex) => (
+          <div
+            aria-label={`Turn ${turnIndex + 1}`}
+            className="conv-turn"
+            data-chat-turn-index={turnIndex}
+            data-testid={`chat-turn:${identity}:${turnIndex}`}
+            key={turn.id}
+          >
+            {turn.messages.map((m) => (
+              <div className={`msg msg--${m.kind}`} key={m.id}>
+                <div className="msg__time">{m.time}</div>
+                <div className="msg__bubble">
+                  {(m.kind === "user" || m.kind === "agent") && (
+                    <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
+                  )}
+                  {m.blocks && m.blocks.length > 0 ? (
+                    <ConversationRichContent blocks={m.blocks} />
+                  ) : (
+                    m.text && <span className="msg__text">{m.text}</span>
+                  )}
+                  {m.workedFor && !(phase && m.id === lastAgentMessageId) && (
+                    <div className="msg__worked">
+                      <span>Worked for {m.workedFor}</span>
+                      <CopyInlineButton
+                        className="msg__copy--inline"
+                        label="Copy work time"
+                        text={m.workedForCopyText || `Worked for ${m.workedFor}`}
+                      />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </div>
+            ))}
           </div>
         ))}
         {phase && (
@@ -818,6 +979,7 @@ export function ChatPane({
           </div>
         )}
       </div>
+      {turnRail}
       {stackSlot}
       <div className="composer">
         <div

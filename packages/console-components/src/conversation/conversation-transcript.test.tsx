@@ -120,4 +120,56 @@ describe("ConversationTranscript", () => {
     expect(screen.getByText("implementation")).toBeInTheDocument();
     expect(screen.getByText("I normalized the view model for MobKit.")).toBeInTheDocument();
   });
+
+  test("groups timeline entries into scrollable user turns", () => {
+    const entries: ConversationTimelineEntry[] = [
+      {
+        id: "user-1",
+        kind: "message",
+        variant: "plain",
+        identity: { id: "user", label: "You", role: "user" },
+        text: "First request.",
+      },
+      {
+        id: "assistant-1",
+        kind: "message",
+        variant: "plain",
+        identity: { id: "assistant", label: "Assistant", role: "assistant" },
+        text: "First response.",
+      },
+      {
+        id: "user-2",
+        kind: "message",
+        variant: "plain",
+        identity: { id: "user", label: "You", role: "user" },
+        text: "Second request.",
+      },
+      {
+        id: "assistant-2",
+        kind: "message",
+        variant: "plain",
+        identity: { id: "assistant", label: "Assistant", role: "assistant" },
+        text: "Second response.",
+      },
+    ];
+
+    render(
+      <ConversationTranscript
+        viewState={{
+          conversationId: "thread-turns",
+          entries,
+          groups: groupConversationTimelineEntries(entries),
+          turnDiff: null,
+          emptyState: null,
+        }}
+      />,
+    );
+
+    const turns = screen.getAllByTestId(/conversation-turn:/);
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toHaveTextContent("First request.");
+    expect(turns[0]).toHaveTextContent("First response.");
+    expect(turns[1]).toHaveTextContent("Second request.");
+    expect(turns[1]).toHaveTextContent("Second response.");
+  });
 });
