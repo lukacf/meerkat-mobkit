@@ -10576,6 +10576,9 @@ function MemoryPanel({
     });
     return () => {
       cancelled = true;
+      if (latticeRanForRef.current === fingerprint) {
+        latticeRanForRef.current = null;
+      }
     };
   }, [tab, records, recordsDenied, realms, nextCursor]);
   const overviewRows = import_react20.default.useMemo(() => scopeOverviewRows(records), [records]);

@@ -1654,6 +1654,16 @@ export function MemoryPanel({
       });
     return () => {
       cancelled = true;
+      // A cancelled walk never covered this fingerprint — un-mark it so the
+      // dep change that cancelled us starts a fresh walk instead of
+      // skipping. Without this, a refresh landing mid-walk (re-dock, the
+      // 250ms memory.* debounce) leaves the tile on "page-walk running…"
+      // forever: the fingerprint reads as already-checked while lattice is
+      // still null and latticeRunning was never cleared (its finally is
+      // cancellation-guarded).
+      if (latticeRanForRef.current === fingerprint) {
+        latticeRanForRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, records, recordsDenied, realms, nextCursor]);

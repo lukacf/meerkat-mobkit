@@ -507,13 +507,16 @@ const openAccessFlows = [
       await page.getByTestId(T.VERDICT_STRIP).waitFor({ timeout: 10_000 });
 
       // Six stable tiles; the lattice page-walk (74 rows, single realm)
-      // completes and lands HOLDING.
+      // completes and lands HOLDING. The walk restarts when a refresh lands
+      // mid-flight (cancellation un-marks the fingerprint), so on a loaded
+      // CI runner this may take a couple of walk generations — give it
+      // slow-runner headroom.
       await page.waitForFunction(
         ([testid]) =>
           document.querySelector(`[data-testid="${testid}"]`)?.getAttribute("data-status") ===
           "holding",
         [T.verdictTile("lattice")],
-        { timeout: 20_000 },
+        { timeout: 45_000 },
       );
       const expected = {
         "echo-safety": "unverifiable",
