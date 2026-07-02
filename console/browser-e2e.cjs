@@ -1758,6 +1758,109 @@ async function runChatPaneAutoScrollProof() {
   }
 }
 
+async function runChatPaneTurnRailProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T21:35:00.000Z");
+  const frames = [];
+  for (let index = 1; index <= 6; index += 1) {
+    frames.push({
+      id: `turn-rail-user-${index}`,
+      kind: "user_input",
+      identity: "person-worker-alpha",
+      interaction_id: `turn-rail-${index}`,
+      timestamp_ms: baseTs + index * 2_000,
+      cursor: `console:turn-rail:${index}:user`,
+      payload: {
+        content: `Turn rail request ${index}: verify invoice drift and owner follow-up with enough text to create a visible row.`,
+      },
+    });
+    frames.push({
+      id: `turn-rail-agent-${index}`,
+      kind: "interaction_complete",
+      identity: "person-worker-alpha",
+      interaction_id: `turn-rail-${index}`,
+      timestamp_ms: baseTs + index * 2_000 + 800,
+      cursor: `console:turn-rail:${index}:agent`,
+      payload: {
+        text: `Turn rail answer ${index}: the billing owner should reconcile source totals, confirm due dates, and record the outcome.`,
+      },
+    });
+  }
+
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 520, height: 540 } });
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByTestId("chat-turn:person-worker-alpha:5").getByText("Turn rail answer 6").waitFor({ timeout: 10_000 });
+    await pane.getByTestId("chat-turn-rail:person-worker-alpha:5").waitFor({ timeout: 10_000 });
+
+    const body = pane.locator(".conv__body");
+    const initial = await body.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+    }));
+    const initialRail = await pane.evaluate((node) => ({
+      railCount: node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]').length,
+      active: [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')]
+        .map((rail) => rail.getAttribute("aria-current")),
+    }));
+    assert.equal(initialRail.railCount, 6, `expected 6 turn rail markers: ${JSON.stringify(initialRail)}`);
+    assert(
+      initial.scrollHeight > initial.clientHeight,
+      `expected overflowing chat body for turn rail proof: ${JSON.stringify(initial)}`,
+    );
+
+    await pane.getByTestId("chat-turn-rail:person-worker-alpha:0").click();
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      const firstRail = paneNode?.querySelector('[data-testid="chat-turn-rail:person-worker-alpha:0"]');
+      return firstRail?.getAttribute("aria-current") === "true";
+    }, null, { timeout: 3_000 });
+
+    const afterClick = await pane.evaluate((node) => {
+      const body = node.querySelector(".conv__body");
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const visiblePreview = [...node.querySelectorAll(".conv-turn-preview")]
+        .find((preview) => getComputedStyle(preview).opacity === "1");
+      return {
+        scrollTop: body?.scrollTop ?? 0,
+        active: rails.map((rail) => rail.getAttribute("aria-current")),
+        firstTurnTop: node.querySelector('[data-testid="chat-turn:person-worker-alpha:0"]')?.getBoundingClientRect().top,
+        previewTitle: visiblePreview?.querySelector(".conv-turn-preview__title")?.textContent || "",
+        firstRailLabel: rails[0]?.getAttribute("aria-label") || "",
+      };
+    });
+
+    assert(
+      afterClick.scrollTop < initial.scrollTop,
+      `clicking first turn marker should move the scroll position upward; initial=${JSON.stringify(initial)} after=${JSON.stringify(afterClick)}`,
+    );
+    assert.equal(afterClick.active[0], "true", `first turn marker should become active: ${JSON.stringify(afterClick)}`);
+    assert.match(afterClick.previewTitle, /Turn rail request 1/);
+    assert.match(afterClick.firstRailLabel, /Turn rail request 1/);
+
+    process.stdout.write("browser chat pane turn rail ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runGlobalTimelineRecentSeedProof() {
   const port = await reservePort();
   const baseTs = Date.now() - 60_000;
@@ -2504,6 +2607,7 @@ async function main() {
   await runNonCommsSystemNoticeDoesNotClearBusyProof();
   await runSidebarSearchExpandsCollapsedWorkerSectionProof();
   await runChatPaneAutoScrollProof();
+  await runChatPaneTurnRailProof();
   await runGlobalTimelineRecentSeedProof();
   await runChatPaneRecentFirstPageProof();
   await runChatPaneOlderHistoryDemandPagingProof();

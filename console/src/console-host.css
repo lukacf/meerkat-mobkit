@@ -2306,6 +2306,7 @@ svg[data-svg="fit"],
 .conv {
   display: flex; flex-direction: column; height: 100%;
   min-width: 0; min-height: 0;
+  position: relative;
   overflow: hidden;
   background: var(--bg-elev-1);
 }
@@ -2314,6 +2315,8 @@ svg[data-svg="fit"],
   border-bottom: 1px solid var(--line);
   display: flex; align-items: center; gap: 12px;
   flex: none;
+  position: relative;
+  z-index: 30;
 }
 .conv__avatar {
   width: 28px; height: 28px;
@@ -2343,7 +2346,155 @@ svg[data-svg="fit"],
   display: flex; flex-direction: column; gap: 14px;
   min-height: 0;
   position: relative;
+  z-index: 0;
+  scroll-padding-block: 26px 36px;
+  scroll-snap-type: y proximity;
 }
+
+.conv-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  scroll-margin-block: 26px;
+  scroll-snap-align: start;
+}
+
+.conv-turn-rail {
+  position: absolute;
+  z-index: 100;
+  top: 72px;
+  bottom: 150px;
+  left: 10px;
+  width: 58px;
+  overflow: visible;
+  pointer-events: none;
+  display: grid;
+  align-content: center;
+}
+
+.conv-turn-rail__list {
+  display: grid;
+  gap: clamp(6px, 1.16vh, 12px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(560px, calc(100vh - 180px));
+  overflow: visible;
+}
+
+.conv-turn-rail__item {
+  position: relative;
+  z-index: 8;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.conv-turn-rail__button {
+  position: relative;
+  z-index: 9;
+  width: 58px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  cursor: pointer;
+}
+
+.conv-turn-rail__tick {
+  width: 12px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ink) 24%, transparent);
+  transition: width var(--motion-hover), background var(--motion-hover);
+}
+
+.conv-turn-rail__button:hover .conv-turn-rail__tick,
+.conv-turn-rail__button:focus-visible .conv-turn-rail__tick {
+  width: 34px;
+  background: color-mix(in oklch, var(--ink) 52%, transparent);
+}
+
+.conv-turn-rail__button.is-active .conv-turn-rail__tick,
+.conv-turn-rail__button[aria-current="true"] .conv-turn-rail__tick {
+  width: 52px;
+  background: var(--ink);
+}
+
+.conv-turn-preview {
+  position: absolute;
+  left: 72px;
+  top: 50%;
+  width: min(640px, calc(100vw - 112px));
+  min-height: 92px;
+  padding: 20px 18px 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(33, 34, 36, 0.96);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  color: rgba(246, 247, 249, 0.96);
+  display: grid;
+  gap: 12px;
+  opacity: 0;
+  transform: translateY(-50%) translateX(-6px);
+  pointer-events: none;
+  transition: opacity var(--motion-hover), transform var(--motion-hover);
+}
+
+.conv-turn-rail__item:hover .conv-turn-preview,
+.conv-turn-rail__item:focus-within .conv-turn-preview {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.conv-turn-preview__title {
+  min-width: 0;
+  color: rgba(248, 249, 251, 0.98);
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-turn-preview__body {
+  min-width: 0;
+  color: rgba(190, 195, 204, 0.72);
+  font-size: 18px;
+  line-height: 1.46;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .conv-turn-rail {
+    left: 6px;
+  }
+
+  .conv-turn-rail__button {
+    width: 40px;
+  }
+
+  .conv-turn-rail__button:hover .conv-turn-rail__tick,
+  .conv-turn-rail__button:focus-visible .conv-turn-rail__tick,
+  .conv-turn-rail__button.is-active .conv-turn-rail__tick,
+  .conv-turn-rail__button[aria-current="true"] .conv-turn-rail__tick {
+    width: 32px;
+  }
+
+  .conv-turn-preview {
+    display: none;
+  }
+}
+
 .conv__history {
   align-self: center;
   padding: 4px 10px;
@@ -2578,6 +2729,8 @@ svg[data-svg="fit"],
   border-top: 1px solid var(--line);
   background: var(--bg-elev-1);
   flex: none;
+  position: relative;
+  z-index: 30;
 }
 .composer__shell {
   border: 1px solid var(--line);
