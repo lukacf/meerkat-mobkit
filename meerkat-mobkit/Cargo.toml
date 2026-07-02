@@ -88,6 +88,12 @@ path = "src/bin/selector_eval.rs"
 name = "distiller-eval"
 path = "src/bin/distiller_eval.rs"
 
+# Calibration-harness seam for the memory Steward's consolidate phase
+# (§8.5/§11): fixture in / mapped ops + staged-validator verdict out.
+[[bin]]
+name = "steward-eval"
+path = "src/bin/steward_eval.rs"
+
 [[example]]
 name = "incident_command_center"
 path = "../examples/001-incident-command-center-pack/server.rs"

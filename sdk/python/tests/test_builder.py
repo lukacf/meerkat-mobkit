@@ -163,6 +163,43 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {"distiller": True}
 
+    def test_agent_memory_steward_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            steward={
+                "enabled": True,
+                "cadence": "*/6h",
+                "model": "claude-sonnet-4-6",
+                "per_mob": False,
+                "runs_per_day": 4,
+                "min_signals": 3,
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "steward": {
+                "enabled": True,
+                "cadence": "*/6h",
+                "model": "claude-sonnet-4-6",
+                "per_mob": False,
+                "runs_per_day": 4,
+                "min_signals": 3,
+            },
+        }
+
+    def test_agent_memory_steward_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            steward={"runsPerDay": 2, "minSignals": 5, "perMob": True},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "steward": {"per_mob": True, "runs_per_day": 2, "min_signals": 5},
+        }
+
+        b = MobKit.builder().agent_memory(steward=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"steward": True}
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

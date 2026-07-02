@@ -124,6 +124,35 @@ describe("MobKitBuilder.agentMemory()", () => {
     boolBuilder.agentMemory({ distiller: true });
     assert.deepEqual(boolBuilder._config.agentMemoryConfig, { distiller: true });
   });
+
+  it("serializes the steward block to gateway wire keys", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({
+      steward: {
+        enabled: true,
+        cadence: "*/6h",
+        model: "claude-sonnet-4-6",
+        perMob: false,
+        runsPerDay: 4,
+        minSignals: 3,
+      },
+    });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      steward: {
+        enabled: true,
+        cadence: "*/6h",
+        model: "claude-sonnet-4-6",
+        per_mob: false,
+        runs_per_day: 4,
+        min_signals: 3,
+      },
+    });
+
+    const boolBuilder = MobKit.builder();
+    boolBuilder.agentMemory({ steward: true });
+    assert.deepEqual(boolBuilder._config.agentMemoryConfig, { steward: true });
+  });
 });
 
 // ---------------------------------------------------------------------------

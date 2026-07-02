@@ -91,6 +91,10 @@ struct GatewayAgentMemoryOptions {
     /// §8.4 distiller block from `agent_memory.distiller`. Disabled by
     /// default (flipping it is a calibration decision, §11).
     distiller: meerkat_mobkit::memory::distiller::DistillerConfig,
+    /// §8.5 steward block from `agent_memory.steward`. Disabled by
+    /// default; enablement is the application's call (mechanism from
+    /// MobKit, policy from the app).
+    steward: meerkat_mobkit::memory::steward::StewardConfig,
 }
 
 /// Which bundled store backs agent memory. SQLite is the default now that
@@ -933,6 +937,128 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn gateway_runtime_options_agent_memory_steward_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Defaults: disabled, */6h cadence, per-realm, 4 runs/day.
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("defaults parse");
+        let steward = options.agent_memory.expect("agent memory").steward;
+        assert!(!steward.enabled);
+        assert_eq!(steward.cadence, "*/6h");
+        assert!(!steward.per_mob);
+        assert_eq!(steward.runs_per_day, 4);
+        assert_eq!(steward.min_signals, 3);
+        assert_eq!(steward.model, None);
+
+        // Full object form.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "steward": {
+                        "enabled": true,
+                        "cadence": "*/30m",
+                        "model": "claude-sonnet-4-6",
+                        "per_mob": true,
+                        "runs_per_day": 8,
+                        "min_signals": 5
+                    }
+                }
+            }
+        });
+        let steward = parse_gateway_runtime_options(&params, Some(tmp.path()))
+            .expect("object form parses")
+            .agent_memory
+            .expect("agent memory")
+            .steward;
+        assert!(steward.enabled);
+        assert_eq!(steward.cadence, "*/30m");
+        assert_eq!(steward.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert!(steward.per_mob);
+        assert_eq!(steward.runs_per_day, 8);
+        assert_eq!(steward.min_signals, 5);
+
+        // Bare true / bare object are opt-ins.
+        let params = json!({
+            "runtime_options": { "agent_memory": { "steward": true } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("bool form parses")
+                .agent_memory
+                .expect("agent memory")
+                .steward
+                .enabled
+        );
+        let params = json!({
+            "runtime_options": { "agent_memory": { "steward": { "runs_per_day": 2 } } }
+        });
+        assert!(
+            parse_gateway_runtime_options(&params, Some(tmp.path()))
+                .expect("object without enabled parses")
+                .agent_memory
+                .expect("agent memory")
+                .steward
+                .enabled
+        );
+
+        // Fail-loud matrix.
+        for (params, needle) in [
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "tempo": 5 } } } }),
+                "unsupported runtime_options.agent_memory.steward fields",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": "on" } } }),
+                "must be a boolean or object",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "cadence": "0 9 * * *" } } } }),
+                "not an interval marker",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "cadence": "" } } } }),
+                "cadence must be a non-empty string",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "runs_per_day": 0 } } } }),
+                "runs_per_day must be between 1 and 96",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "min_signals": 0 } } } }),
+                "min_signals must be between 1 and 1000",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "model": "" } } } }),
+                "model must be a non-empty string",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "steward": { "per_mob": "yes" } } } }),
+                "per_mob must be a boolean",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+        }
+
+        // Staging/proposals/harvest tables are sqlite-store machinery.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "steward": { "enabled": true } }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + steward should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("steward requires store='sqlite'"), "{err}");
+    }
+
+    #[test]
     fn gateway_runtime_options_parse_agent_memory_taint_knobs() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let params = json!({
@@ -1674,6 +1800,7 @@ fn parse_gateway_agent_memory_config(
             store: GatewayAgentMemoryStoreKind::default(),
             selector: None,
             distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
+            steward: meerkat_mobkit::memory::steward::StewardConfig::default(),
         }));
     }
 
@@ -1696,6 +1823,7 @@ fn parse_gateway_agent_memory_config(
         "content_trust",
         "selector",
         "distiller",
+        "steward",
     ];
     let unsupported = object
         .keys()
@@ -1895,6 +2023,11 @@ fn parse_gateway_agent_memory_config(
         None => meerkat_mobkit::memory::distiller::DistillerConfig::default(),
         Some(value) => parse_gateway_distiller_config(value)?,
     };
+    // §8.5 steward block: fail-loud parse; enabled defaults false.
+    let steward = match object.get("steward") {
+        None => meerkat_mobkit::memory::steward::StewardConfig::default(),
+        Some(value) => parse_gateway_steward_config(value)?,
+    };
     // The write gate and taint tracker are store-seam machinery; only the
     // sqlite store has the seam. Accepting these knobs with the markdown
     // store would silently enforce nothing — fail loud instead.
@@ -1921,6 +2054,11 @@ fn parse_gateway_agent_memory_config(
     if store == GatewayAgentMemoryStoreKind::Markdown && distiller.enabled {
         return Err("runtime_options.agent_memory.distiller requires store='sqlite'".to_string());
     }
+    // And for the steward: staging, proposals, quarantine review, and the
+    // pending-harvest/promotion tables are all sqlite-store machinery.
+    if store == GatewayAgentMemoryStoreKind::Markdown && steward.enabled {
+        return Err("runtime_options.agent_memory.steward requires store='sqlite'".to_string());
+    }
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
         .join("agent-memory");
@@ -1943,6 +2081,7 @@ fn parse_gateway_agent_memory_config(
         store,
         selector,
         distiller,
+        steward,
     }))
 }
 
@@ -2016,6 +2155,105 @@ fn parse_gateway_distiller_config(
                     .to_string()
             })?;
         config.model = Some(model.to_string());
+    }
+    Ok(config)
+}
+
+/// Fail-loud parse of `runtime_options.agent_memory.steward` (§8.5):
+/// `{enabled, cadence, model, per_mob, runs_per_day, min_signals}`;
+/// unknown fields and wrong types are errors, never silently ignored. The
+/// cadence uses the scheduling subsystem's interval-marker grammar.
+fn parse_gateway_steward_config(
+    value: &Value,
+) -> Result<meerkat_mobkit::memory::steward::StewardConfig, String> {
+    let mut config = meerkat_mobkit::memory::steward::StewardConfig::default();
+    if let Some(enabled) = value.as_bool() {
+        config.enabled = enabled;
+        return Ok(config);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.agent_memory.steward must be a boolean or object".to_string()
+    })?;
+    let supported = [
+        "enabled",
+        "cadence",
+        "model",
+        "per_mob",
+        "runs_per_day",
+        "min_signals",
+    ];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory.steward fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        config.enabled = enabled.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.enabled must be a boolean".to_string()
+        })?;
+    } else {
+        // An object block without `enabled` is an explicit opt-in.
+        config.enabled = true;
+    }
+    if let Some(value) = object.get("cadence") {
+        let cadence = value
+            .as_str()
+            .map(str::trim)
+            .filter(|cadence| !cadence.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.steward.cadence must be a non-empty string"
+                    .to_string()
+            })?;
+        meerkat_mobkit::memory::steward::StewardConfig::parse_cadence(cadence)
+            .map_err(|err| format!("runtime_options.agent_memory.steward.cadence: {err}"))?;
+        config.cadence = cadence.to_string();
+    }
+    if let Some(value) = object.get("model") {
+        let model = value
+            .as_str()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.steward.model must be a non-empty string".to_string()
+            })?;
+        config.model = Some(model.to_string());
+    }
+    if let Some(value) = object.get("per_mob") {
+        config.per_mob = value.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.per_mob must be a boolean".to_string()
+        })?;
+    }
+    if let Some(value) = object.get("runs_per_day") {
+        let runs = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.runs_per_day must be a positive integer"
+                .to_string()
+        })?;
+        if runs == 0 || runs > 96 {
+            return Err(
+                "runtime_options.agent_memory.steward.runs_per_day must be between 1 and 96"
+                    .to_string(),
+            );
+        }
+        config.runs_per_day = runs as u32;
+    }
+    if let Some(value) = object.get("min_signals") {
+        let min = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.steward.min_signals must be a positive integer"
+                .to_string()
+        })?;
+        if min == 0 || min > 1000 {
+            return Err(
+                "runtime_options.agent_memory.steward.min_signals must be between 1 and 1000"
+                    .to_string(),
+            );
+        }
+        config.min_signals = min as u32;
     }
     Ok(config)
 }
@@ -3219,6 +3457,17 @@ external_addressable = true
     runtime.set_error_hook(gateway_error_hook.clone());
 
     // 5c. Build identity-first runtime if providers are configured
+    // §8.5 steward late-bound seams: the gating/conflict bridges need the
+    // Arc'd UnifiedRuntime, which exists only after identity-first init; a
+    // OnceCell defers the binding without restructuring bootstrap. The
+    // roster slot feeds mob-purpose context once restore_flow has run.
+    let steward_late_runtime = StewardLateRuntime::default();
+    let steward_roster_slot: Arc<
+        std::sync::Mutex<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
+    > = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut agent_memory_steward: Option<Arc<meerkat_mobkit::memory::steward::StewardEngine>> =
+        None;
+
     let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
         use meerkat_mobkit::identity_first::{
             AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
@@ -3393,6 +3642,46 @@ external_addressable = true
                             Some(tracker.clone()),
                             agent_memory.config.llm_writes,
                         )));
+                        // §9.3: memory-plane events project onto the
+                        // console timeline through this sink.
+                        let memory_events = runtime.memory_event_sink();
+                        store.set_event_sink(memory_events.clone());
+                        tracker.set_event_sink(memory_events.clone());
+                        // Shared read handle on the persistent session
+                        // store for the Distiller's evidence windows and
+                        // the steward's gather/usage/resolvability reads.
+                        let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
+                            if agent_memory.distiller.enabled || agent_memory.steward.enabled {
+                                let Some(state) = persistent_state.clone() else {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        "agent memory distiller/steward require persistent_state"
+                                            .to_string(),
+                                    );
+                                };
+                                Some(
+                                    if let Some(adapter) = identity_session_store_adapter.clone() {
+                                        adapter
+                                    } else {
+                                        // Second handle on the same session
+                                        // database the mob bridge persists to;
+                                        // WAL keeps the read-side safe.
+                                        match meerkat_store::SqliteSessionStore::open(
+                                            state.join("sessions.db"),
+                                        ) {
+                                            Ok(store) => Arc::new(store),
+                                            Err(e) => fail_init(
+                                                &request_id,
+                                                -32603,
+                                                format!("agent memory session store: {e}"),
+                                            ),
+                                        }
+                                    },
+                                )
+                            } else {
+                                None
+                            };
                         // §8.4 Distiller: shares the tracker's observe loop.
                         let mut sinks: Vec<Arc<dyn meerkat_mobkit::MemberAgentEventSink>> =
                             vec![Arc::new(tracker.clone())];
@@ -3417,23 +3706,9 @@ external_addressable = true
                                 );
                             };
                             let transcript_store: Arc<dyn meerkat::SessionStore> =
-                                if let Some(adapter) = identity_session_store_adapter.clone() {
-                                    adapter
-                                } else {
-                                    // Second handle on the same session
-                                    // database the mob bridge persists to;
-                                    // WAL keeps the read-side safe.
-                                    match meerkat_store::SqliteSessionStore::open(
-                                        state.join("sessions.db"),
-                                    ) {
-                                        Ok(store) => Arc::new(store),
-                                        Err(e) => fail_init(
-                                            &request_id,
-                                            -32603,
-                                            format!("agent memory distiller session store: {e}"),
-                                        ),
-                                    }
-                                };
+                                memory_transcript_store
+                                    .clone()
+                                    .expect("transcript store built when distiller enabled");
                             let handle = memory_distiller::FactoryDistillerHandle::new(
                                 state.clone(),
                                 meerkat::Config::default(),
@@ -3459,11 +3734,98 @@ external_addressable = true
                                 Some(tracker.clone()),
                                 agent_memory.config.realm.clone(),
                             ));
+                            engine.set_event_sink(memory_events.clone());
                             sinks.push(Arc::new(memory_distiller::DistillerTriggers::new(
                                 engine.clone(),
                             )));
                             agent_memory_distiller = Some(engine);
                             tracing::info!(model = %model, "agent memory distiller installed");
+                        }
+                        // §8.5 Steward: scheduled dreams over this realm's
+                        // store. Provisioning is app-side opt-in; the
+                        // gating/conflict bridges bind late (post-Arc).
+                        if agent_memory.steward.enabled {
+                            use meerkat_mobkit::memory::distiller as memory_distiller;
+                            use meerkat_mobkit::memory::steward as memory_steward;
+                            let mut profile = memory_steward::StewardProfile::embedded_default();
+                            if let Some(model) = agent_memory.steward.model.as_deref() {
+                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        format!("agent memory steward: {e}"),
+                                    );
+                                });
+                            }
+                            let Some(state) = persistent_state.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory steward requires persistent_state".to_string(),
+                                );
+                            };
+                            let transcript_store: Arc<dyn meerkat::SessionStore> =
+                                memory_transcript_store
+                                    .clone()
+                                    .expect("transcript store built when steward enabled");
+                            let transcripts: Arc<
+                                dyn meerkat_mobkit::memory::distiller::TranscriptSource,
+                            > = Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
+                                transcript_store,
+                            ));
+                            // §10.2 P3 validator extension: agent_verified
+                            // retiers must cite evidence that resolves
+                            // against the session store, from now on.
+                            store.set_evidence_resolver(Arc::new(
+                                memory_steward::SessionStoreEvidenceResolver::new(
+                                    transcripts.clone(),
+                                    tokio::runtime::Handle::current(),
+                                ),
+                            ));
+                            let handle = memory_steward::FactoryStewardHandle::new(
+                                state,
+                                meerkat::Config::default(),
+                                agent_memory.config.realm.clone(),
+                                &profile,
+                            );
+                            let model = profile.model.clone();
+                            let engine = memory_steward::StewardEngine::new(
+                                profile,
+                                agent_memory.steward.clone(),
+                                Arc::new(handle),
+                                Arc::new(store.clone()),
+                                transcripts,
+                                agent_memory.config.realm.clone(),
+                            )
+                            .with_events(memory_events.clone())
+                            .with_mob_context(Arc::new(GatewayMobPurposeSource {
+                                mob: mob_definition.id.to_string(),
+                                roster: steward_roster_slot.clone(),
+                            }))
+                            .with_gating(Arc::new(GatewayMemoryGatingBridge {
+                                runtime: steward_late_runtime.clone(),
+                            }))
+                            .with_conflicts(Arc::new(
+                                GatewayMemoryConflictBridge {
+                                    runtime: steward_late_runtime.clone(),
+                                    handle: tokio::runtime::Handle::current(),
+                                },
+                            ));
+                            let engine = Arc::new(engine);
+                            sinks.push(Arc::new(memory_steward::StewardTriggers::new(
+                                engine.clone(),
+                            )));
+                            // The dream loop runs for the gateway process;
+                            // forgetting the handle keeps it alive (same
+                            // pattern as the member-event observer).
+                            std::mem::forget(engine.spawn_dream_loop());
+                            agent_memory_steward = Some(engine);
+                            tracing::info!(
+                                model = %model,
+                                cadence = %agent_memory.steward.cadence,
+                                per_mob = agent_memory.steward.per_mob,
+                                "agent memory steward installed"
+                            );
                         }
                         // Observe-stream feed lives for the gateway process;
                         // forgetting the guard keeps the task running.
@@ -3506,6 +3868,9 @@ external_addressable = true
             if let Some(distiller) = agent_memory_distiller.clone() {
                 injector = injector.with_distiller(distiller);
             }
+            if let Some(steward) = agent_memory_steward.clone() {
+                injector = injector.with_steward(steward);
+            }
             Some(injector)
         } else {
             None
@@ -3522,6 +3887,13 @@ external_addressable = true
             .unwrap_or_else(|e| {
                 fail_init(&request_id, -32603, format!("roster provider failed: {e}"));
             });
+
+        // Mob-purpose context for the steward's promotion judgment: no
+        // mob-level purpose field exists (verified — `MobDefinition` is
+        // structural only), so the roster's labels are the source.
+        *steward_roster_slot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = roster_specs.clone();
 
         if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
             &irt,
@@ -3599,6 +3971,19 @@ external_addressable = true
     };
 
     let runtime = Arc::new(runtime);
+    // Bind the steward's late runtime seams and wire gating decisions back
+    // to staged promotion commits (§10.2).
+    steward_late_runtime.bind(runtime.clone());
+    if let Some(steward) = agent_memory_steward.clone() {
+        runtime
+            .register_gating_resolution_observer(Arc::new(
+                meerkat_mobkit::PromotionGateResolver::new(
+                    steward,
+                    tokio::runtime::Handle::current(),
+                ),
+            ))
+            .await;
+    }
     let event_drain_task = runtime.clone().spawn_event_drain_task();
 
     // 6. Bind HTTP server on ephemeral port
@@ -3716,5 +4101,146 @@ fn main() {
         run_persistent();
     } else {
         run_single_shot();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §8.5 steward runtime bridges
+// ---------------------------------------------------------------------------
+
+/// Late-bound Arc'd runtime for the steward's gating/conflict bridges: the
+/// engine is constructed during identity-first init, before
+/// `Arc::new(runtime)` exists; the cell binds right after.
+#[derive(Clone, Default)]
+struct StewardLateRuntime(Arc<tokio::sync::OnceCell<Arc<UnifiedRuntime>>>);
+
+impl StewardLateRuntime {
+    fn bind(&self, runtime: Arc<UnifiedRuntime>) {
+        let _ = self.0.set(runtime);
+    }
+
+    fn get(&self) -> Option<Arc<UnifiedRuntime>> {
+        self.0.get().cloned()
+    }
+}
+
+/// Mob-purpose context from the hosted mob's id plus the restored roster's
+/// labels (no mob-level purpose field exists — verified; a `mob_purpose`
+/// or `purpose` label on any member spec is adopted as the mob's purpose).
+struct GatewayMobPurposeSource {
+    mob: String,
+    roster: Arc<std::sync::Mutex<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>>,
+}
+
+impl meerkat_mobkit::MobPurposeSource for GatewayMobPurposeSource {
+    fn mob_contexts(&self) -> Vec<meerkat_mobkit::memory::steward::MobContext> {
+        let roster = self.roster.lock().unwrap_or_else(|err| err.into_inner());
+        let purpose = roster.iter().find_map(|spec| {
+            spec.labels
+                .get("mob_purpose")
+                .or_else(|| spec.labels.get("purpose"))
+                .cloned()
+        });
+        let member_labels = roster
+            .iter()
+            .map(|spec| (spec.identity.as_str().to_string(), spec.labels.clone()))
+            .collect();
+        vec![meerkat_mobkit::memory::steward::MobContext {
+            mob: self.mob.clone(),
+            purpose,
+            member_labels,
+        }]
+    }
+}
+
+/// Quarantine-promotion gate enqueue over the runtime's gating engine
+/// (§10.2): risk tier R3, so the evaluation mints a pending entry the
+/// operator decides through the existing console/RPC gating flow.
+struct GatewayMemoryGatingBridge {
+    runtime: StewardLateRuntime,
+}
+
+#[async_trait]
+impl meerkat_mobkit::MemoryGatingBridge for GatewayMemoryGatingBridge {
+    async fn enqueue_promotion_gate(
+        &self,
+        realm: &str,
+        description: &str,
+        entity: &str,
+        topic: &str,
+    ) -> Result<String, String> {
+        let Some(runtime) = self.runtime.get() else {
+            return Err("runtime not yet bound".to_string());
+        };
+        let result = runtime
+            .evaluate_gating_action(meerkat_mobkit::runtime::GatingEvaluateRequest {
+                action: description.to_string(),
+                actor_id: format!("memory-steward:{realm}"),
+                risk_tier: meerkat_mobkit::runtime::GatingRiskTier::R3,
+                rationale: Some(
+                    "memory steward quarantine promotion (agent-memory §10.2)".to_string(),
+                ),
+                requested_approver: None,
+                approval_recipient: None,
+                approval_channel: None,
+                approval_timeout_ms: None,
+                entity: Some(entity.to_string()),
+                topic: Some(topic.to_string()),
+            })
+            .await;
+        result.pending_id.ok_or_else(|| {
+            format!(
+                "gating evaluation returned outcome {:?} without a pending entry{}",
+                result.outcome,
+                result
+                    .fallback_reason
+                    .as_deref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            )
+        })
+    }
+}
+
+/// Contradiction bridge (§8.5): dream findings with operational
+/// consequence land as `MemoryConflictSignal`s in the operational ledger,
+/// where gating's R2/R3 conflict probe reads them. Fire-and-forget.
+struct GatewayMemoryConflictBridge {
+    runtime: StewardLateRuntime,
+    handle: tokio::runtime::Handle,
+}
+
+impl meerkat_mobkit::MemoryConflictBridge for GatewayMemoryConflictBridge {
+    fn emit_conflict(&self, entity: &str, topic: &str, reason: &str) {
+        let Some(runtime) = self.runtime.get() else {
+            tracing::warn!(
+                entity,
+                topic,
+                "memory conflict bridge: runtime not yet bound"
+            );
+            return;
+        };
+        let entity = entity.to_string();
+        let topic = topic.to_string();
+        let reason = reason.to_string();
+        self.handle.spawn(async move {
+            let request = meerkat_mobkit::runtime::MemoryIndexRequest {
+                entity: entity.clone(),
+                topic: topic.clone(),
+                store: None,
+                fact: None,
+                metadata: None,
+                conflict: Some(true),
+                conflict_reason: Some(reason),
+            };
+            if let Err(err) = runtime.memory_index(request).await {
+                tracing::warn!(
+                    entity,
+                    topic,
+                    error = ?err,
+                    "memory conflict bridge: conflict signal write failed"
+                );
+            }
+        });
     }
 }

@@ -2806,14 +2806,23 @@ impl IdentityRuntime {
         // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
         // member retires. Best-effort and bounded — retirement proceeds at
         // the distiller's pre-rotation timeout.
-        if let (Some(injector), Some(session_id)) =
-            (self.agent_memory.read().await.clone(), session_id.as_ref())
-        {
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            if let Some(session_id) = session_id.as_ref() {
+                injector
+                    .distill_before_rotation(
+                        identity,
+                        &session_id.to_string(),
+                        crate::memory::distiller::DistillCause::Retire,
+                    )
+                    .await;
+            }
+            // §8.5 exit interview: queue the retired identity's store for
+            // the next dream's harvest sub-phase.
             injector
-                .distill_before_rotation(
+                .note_identity_retired(
                     identity,
-                    &session_id.to_string(),
-                    crate::memory::distiller::DistillCause::Retire,
+                    session_id.as_ref().map(|id| id.to_string()).as_deref(),
+                    "retire",
                 )
                 .await;
         }
@@ -3728,14 +3737,22 @@ impl IdentityRuntime {
         // the outgoing session before teardown (its exit-interview analog,
         // §8.5, is the steward's; the distillate is what it will read).
         // Bounded; deletion proceeds at the pre-rotation timeout.
-        if let (Some(injector), Some(session_id)) =
-            (self.agent_memory.read().await.clone(), session_id.as_ref())
-        {
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            if let Some(session_id) = session_id.as_ref() {
+                injector
+                    .distill_before_rotation(
+                        identity,
+                        &session_id.to_string(),
+                        crate::memory::distiller::DistillCause::Delete,
+                    )
+                    .await;
+            }
+            // §8.5 exit interview (delete is the identity's LAST boundary).
             injector
-                .distill_before_rotation(
+                .note_identity_retired(
                     identity,
-                    &session_id.to_string(),
-                    crate::memory::distiller::DistillCause::Delete,
+                    session_id.as_ref().map(|id| id.to_string()).as_deref(),
+                    "delete",
                 )
                 .await;
         }

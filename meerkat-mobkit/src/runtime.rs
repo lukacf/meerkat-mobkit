@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,7 +49,7 @@ pub mod metadata;
 mod module_boundary;
 mod routing;
 mod rpc;
-mod scheduling;
+pub(crate) mod scheduling;
 mod session_store;
 mod supervisor;
 
@@ -974,6 +975,50 @@ pub struct GatingAuditEntry {
     pub detail: Value,
 }
 
+/// One resolved gating pending entry (decision or timeout), pushed
+/// synchronously to registered observers. The gating subsystem itself is
+/// poll-only; this seam exists so components that staged work behind a
+/// pending entry (the memory steward's quarantine-promotions, §10.2) can
+/// react without polling. Observers must not block — defer real work onto
+/// the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatingResolutionNotice {
+    pub pending_id: String,
+    pub action_id: String,
+    pub approved: bool,
+    /// Set when an escalation minted a successor pending entry.
+    pub next_pending_id: Option<String>,
+    /// `approval_decided`, `rejection_decided`, `escalation_decided`, or
+    /// `timeout_fallback`.
+    pub cause: String,
+}
+
+pub trait GatingResolutionObserver: Send + Sync {
+    fn on_gating_resolution(&self, notice: &GatingResolutionNotice);
+}
+
+/// Registered observers; newtype so `MobkitRuntimeHandle` keeps `Debug`.
+#[derive(Default)]
+pub(crate) struct GatingResolutionObservers(Vec<Arc<dyn GatingResolutionObserver>>);
+
+impl std::fmt::Debug for GatingResolutionObservers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GatingResolutionObservers({})", self.0.len())
+    }
+}
+
+impl GatingResolutionObservers {
+    pub(crate) fn push(&mut self, observer: Arc<dyn GatingResolutionObserver>) {
+        self.0.push(observer);
+    }
+
+    pub(crate) fn notify(&self, notice: &GatingResolutionNotice) {
+        for observer in &self.0 {
+            observer.on_gating_resolution(notice);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatingDecideError {
     UnknownPendingId(String),
@@ -1062,6 +1107,7 @@ pub struct MobkitRuntimeHandle {
     gating_pending: BTreeMap<String, GatingPendingEntry>,
     gating_pending_order: Vec<String>,
     gating_audit: Vec<GatingAuditEntry>,
+    gating_resolution_observers: GatingResolutionObservers,
     memory_sequence: u64,
     memory_assertions: Vec<MemoryAssertion>,
     memory_conflicts: BTreeMap<MemoryConflictKey, MemoryConflictSignal>,
@@ -1070,6 +1116,16 @@ pub struct MobkitRuntimeHandle {
 }
 
 impl MobkitRuntimeHandle {
+    /// Register a gating-resolution observer (see
+    /// [`GatingResolutionObserver`]). Registration is append-only for the
+    /// process lifetime.
+    pub fn register_gating_resolution_observer(
+        &mut self,
+        observer: Arc<dyn GatingResolutionObserver>,
+    ) {
+        self.gating_resolution_observers.push(observer);
+    }
+
     pub fn lifecycle_events(&self) -> &[LifecycleEvent] {
         &self.lifecycle_events
     }

@@ -8,11 +8,13 @@
 
 pub mod coordinator;
 pub mod distiller;
+pub mod events;
 pub mod guards;
 pub mod records;
 pub mod selector;
 pub mod sqlite_store;
 pub mod staged;
+pub mod steward;
 pub mod taint;
 
 pub use coordinator::{
@@ -24,6 +26,7 @@ pub use distiller::{
     HnswDiscardSource, SessionStoreTranscriptSource, TombstoneMeta, TombstoneSource,
     TranscriptSource,
 };
+pub use events::{MemoryEventSink, MemoryTimelineEvent};
 pub use guards::{BackgroundBudget, BackgroundBudgetConfig, BudgetDenied, BudgetPermit};
 pub use records::{
     CalibrationRef, EvidenceRef, InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor,
@@ -35,10 +38,18 @@ pub use selector::{
     SelectorError, SelectorHandle, SelectorProfile, SelectorRuntime, SelectorSpec, SelectorStage,
     select,
 };
-pub use sqlite_store::SqliteAgentMemoryStore;
+pub use sqlite_store::{
+    EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, ScopeOverview,
+    SqliteAgentMemoryStore,
+};
 pub use staged::{
     CommitReceipt, StageToken, StagedBatchError, StagedBatchView, StagedMemoryStore,
     StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,
+};
+pub use steward::{
+    DreamOutcome, DreamRun, FactoryStewardHandle, MemoryConflictBridge, MemoryGatingBridge,
+    MobPurposeSource, PromotionGateResolver, SessionStoreEvidenceResolver, StewardClientHandle,
+    StewardConfig, StewardEngine, StewardError, StewardProfile, StewardTriggers,
 };
 pub use taint::{
     ContentTrustConfig, LlmWriteGate, MemberAgentEventSink, SessionTaintTracker, TaintLlmWriteGate,

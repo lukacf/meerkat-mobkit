@@ -36,7 +36,7 @@ impl MobkitRuntimeHandle {
                     timestamp_ms: 0,
                     event_type: "timeout_fallback".to_string(),
                     action_id: expired_entry.action_id.clone(),
-                    pending_id: Some(pending_id),
+                    pending_id: Some(pending_id.clone()),
                     actor_id: expired_entry.actor_id,
                     risk_tier: expired_entry.risk_tier,
                     outcome: GatingOutcome::SafeDraft,
@@ -45,6 +45,14 @@ impl MobkitRuntimeHandle {
                         "reason": "approval_timeout"
                     }),
                 });
+                self.gating_resolution_observers
+                    .notify(&GatingResolutionNotice {
+                        pending_id,
+                        action_id: expired_entry.action_id,
+                        approved: false,
+                        next_pending_id: None,
+                        cause: "timeout_fallback".to_string(),
+                    });
             }
         }
     }
@@ -545,6 +553,14 @@ impl MobkitRuntimeHandle {
                 "next_pending_id": next_pending_id,
             }),
         });
+        self.gating_resolution_observers
+            .notify(&GatingResolutionNotice {
+                pending_id: pending_id.clone(),
+                action_id: pending_entry.action_id.clone(),
+                approved: matches!(decision, GatingDecision::Approve),
+                next_pending_id: next_pending_id.clone(),
+                cause: event_type.to_string(),
+            });
         Ok(GatingDecisionResult {
             pending_id,
             action_id: pending_entry.action_id,

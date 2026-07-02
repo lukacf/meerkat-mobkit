@@ -4,8 +4,8 @@
 //! identities × interactions × mobs. Stage-level throttles scale *with*
 //! activity; these guards are the deterministic containment on top: hard
 //! per-window caps on background runs and a concurrency ceiling, consulted
-//! before every run. A skipped run is loud (tracing warn; TODO(P3b): emit a
-//! timeline event so the console shows guard pressure — Principle 6).
+//! before every run. A skipped run is loud: a tracing warn always, plus a
+//! `memory.budget.denied` timeline event when a sink is wired (Principle 6).
 //!
 //! The load-*inverse* control Codex ships (skip background work below
 //! provider rate-limit headroom) needs a provider-quota surface MobKit does
@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
 
 /// Default hard cap on background runs per realm per window (§8.1; the
 /// concrete number is §16 open question 5, this is the measured starting
@@ -47,10 +49,10 @@ struct RealmBudgetState {
     concurrent: u32,
 }
 
-#[derive(Debug)]
 struct BudgetInner {
     config: BackgroundBudgetConfig,
     realms: HashMap<String, RealmBudgetState>,
+    event_sink: Option<Arc<dyn MemoryEventSink>>,
 }
 
 /// Per-realm background budget (§8.1): a sliding-window run cap plus a
@@ -62,10 +64,17 @@ pub struct BackgroundBudget {
 
 /// RAII permit for one admitted background run; dropping it releases the
 /// concurrency slot (the window slot is consumed permanently).
-#[derive(Debug)]
 pub struct BudgetPermit {
     inner: Arc<Mutex<BudgetInner>>,
     realm: String,
+}
+
+impl std::fmt::Debug for BudgetPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BudgetPermit")
+            .field("realm", &self.realm)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for BudgetPermit {
@@ -103,8 +112,18 @@ impl BackgroundBudget {
             inner: Arc::new(Mutex::new(BudgetInner {
                 config,
                 realms: HashMap::new(),
+                event_sink: None,
             })),
         }
+    }
+
+    /// Wire the §9.3 timeline sink so guard denials surface on the console
+    /// alongside the tracing warn. Shared across clones.
+    pub fn set_event_sink(&self, sink: Arc<dyn MemoryEventSink>) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .event_sink = Some(sink);
     }
 
     /// Admit one background run for `realm`, or say loudly why not.
@@ -132,15 +151,19 @@ impl BackgroundBudget {
             None
         };
         if let Some(denied) = denied {
-            // TODO(P3b): emit a timeline event when the guard bites; tracing
-            // is the visibility surface until the console lands (§8.1
-            // Principle 6 — skipped work is loud, never silent).
             tracing::warn!(
                 realm,
                 stage,
                 reason = %denied,
                 "agent memory background budget: run skipped"
             );
+            if let Some(sink) = inner.event_sink.as_ref() {
+                sink.emit(MemoryTimelineEvent::BudgetDenied {
+                    realm: realm.to_string(),
+                    stage: stage.to_string(),
+                    reason: denied.to_string(),
+                });
+            }
             return Err(denied);
         }
         state.starts.push(now);
@@ -182,6 +205,24 @@ mod tests {
         budget
             .try_acquire("realm-b", "distiller")
             .expect("other realm has its own window");
+    }
+
+    #[test]
+    fn denial_emits_timeline_event_when_sink_wired() {
+        let budget = BackgroundBudget::new(config(1, 10));
+        let sink = Arc::new(crate::memory::events::CollectingEventSink::new());
+        budget.set_event_sink(sink.clone());
+        let _permit = budget.try_acquire("realm-a", "steward").expect("first");
+        let _ = budget
+            .try_acquire("realm-a", "steward")
+            .expect_err("window spent");
+        assert_eq!(sink.types(), vec!["memory.budget.denied"]);
+        let events = sink.events.lock().unwrap();
+        assert!(matches!(
+            &events[0],
+            MemoryTimelineEvent::BudgetDenied { realm, stage, .. }
+                if realm == "realm-a" && stage == "steward"
+        ));
     }
 
     #[test]

@@ -345,6 +345,31 @@ impl UnifiedRuntime {
         self.console_events.clone()
     }
 
+    /// A §9.3 memory-event sink projecting typed memory-plane events onto
+    /// the console timeline (standard `ConsoleIdentityEventEnvelope`,
+    /// `event_type = "memory.*"`). Must be called from async context — the
+    /// sink captures the current runtime handle so sync emitters
+    /// (store/taint/guard code) can fire-and-forget.
+    pub fn memory_event_sink(&self) -> Arc<dyn crate::memory::events::MemoryEventSink> {
+        Arc::new(ConsoleMemoryEventSink {
+            store: self.console_events(),
+            handle: tokio::runtime::Handle::current(),
+        })
+    }
+
+    /// Register an observer for gating pending-entry resolutions
+    /// (decisions and timeout fallbacks) — the seam the memory steward's
+    /// gated promotions commit through (§10.2).
+    pub async fn register_gating_resolution_observer(
+        &self,
+        observer: Arc<dyn crate::runtime::GatingResolutionObserver>,
+    ) {
+        self.module_runtime
+            .lock()
+            .await
+            .register_gating_resolution_observer(observer);
+    }
+
     /// Internal accessor used by console-facing RPC routers to share the
     /// in-memory structural mob events store without holding a full
     /// runtime reference.
@@ -1184,5 +1209,29 @@ mod tests {
         // Saturates at the cap for arbitrarily many failures (no shift overflow).
         assert_eq!(subscribe_backoff_delay(50), SUBSCRIBE_BACKOFF_MAX);
         assert!(subscribe_backoff_delay(2) > subscribe_backoff_delay(1));
+    }
+}
+
+/// Projects [`crate::memory::events::MemoryTimelineEvent`]s onto the
+/// console timeline. Sync fire-and-forget: the async append is spawned on
+/// the captured runtime handle, so emitters inside mutexes or blocking
+/// threads never wait on the event surface.
+struct ConsoleMemoryEventSink {
+    store: ConsoleEventStore,
+    handle: tokio::runtime::Handle,
+}
+
+impl crate::memory::events::MemoryEventSink for ConsoleMemoryEventSink {
+    fn emit(&self, event: crate::memory::events::MemoryTimelineEvent) {
+        let store = self.store.clone();
+        let identity = event
+            .identity()
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string());
+        let event_type = event.event_type().to_string();
+        let data = event.data();
+        self.handle.spawn(async move {
+            store.append(identity, None, event_type, data).await;
+        });
     }
 }

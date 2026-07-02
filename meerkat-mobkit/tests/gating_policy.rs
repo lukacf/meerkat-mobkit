@@ -156,6 +156,113 @@ fn runtime_for_gating_with_forced_failed_delivery() -> meerkat_mobkit::MobkitRun
 }
 
 #[test]
+fn gating_resolution_observers_notified_on_decide_escalate_and_timeout() {
+    use meerkat_mobkit::runtime::{
+        GatingDecideRequest, GatingDecision, GatingEvaluateRequest, GatingResolutionNotice,
+        GatingResolutionObserver, GatingRiskTier,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Collector {
+        notices: Mutex<Vec<GatingResolutionNotice>>,
+    }
+
+    impl GatingResolutionObserver for Collector {
+        fn on_gating_resolution(&self, notice: &GatingResolutionNotice) {
+            self.notices.lock().unwrap().push(notice.clone());
+        }
+    }
+
+    let mut runtime = runtime_for_gating();
+    let collector = Arc::new(Collector::default());
+    runtime.register_gating_resolution_observer(collector.clone());
+
+    let evaluate =
+        |runtime: &mut meerkat_mobkit::MobkitRuntimeHandle, action: &str, timeout: Option<u64>| {
+            let result = runtime.evaluate_gating_action(GatingEvaluateRequest {
+                action: action.to_string(),
+                actor_id: "memory-steward:family".to_string(),
+                risk_tier: GatingRiskTier::R3,
+                rationale: None,
+                requested_approver: None,
+                approval_recipient: None,
+                approval_channel: None,
+                approval_timeout_ms: timeout,
+                entity: None,
+                topic: None,
+            });
+            result.pending_id.expect("R3 mints a pending entry")
+        };
+
+    // Approve → approved=true notice.
+    let approved_id = evaluate(&mut runtime, "memory.quarantine_promote:one", None);
+    runtime
+        .decide_gating_action(GatingDecideRequest {
+            pending_id: approved_id.clone(),
+            approver_id: "operator-1".to_string(),
+            decision: GatingDecision::Approve,
+            reason: None,
+        })
+        .expect("approve");
+
+    // Reject → approved=false notice.
+    let rejected_id = evaluate(&mut runtime, "memory.quarantine_promote:two", None);
+    runtime
+        .decide_gating_action(GatingDecideRequest {
+            pending_id: rejected_id.clone(),
+            approver_id: "operator-1".to_string(),
+            decision: GatingDecision::Reject,
+            reason: Some("not shareable".to_string()),
+        })
+        .expect("reject");
+
+    // Escalate → approved=false notice carrying the successor pending id.
+    let escalated_id = evaluate(&mut runtime, "memory.quarantine_promote:three", None);
+    let escalated = runtime
+        .decide_gating_action(GatingDecideRequest {
+            pending_id: escalated_id.clone(),
+            approver_id: "operator-1".to_string(),
+            decision: GatingDecision::Escalate,
+            reason: None,
+        })
+        .expect("escalate");
+    let successor = escalated.next_pending_id.clone().expect("successor id");
+
+    // Timeout → approved=false notice with cause timeout_fallback (the
+    // sweep runs on the next gating call; 1s is the clamp floor).
+    let timed_out_id = evaluate(&mut runtime, "memory.quarantine_promote:four", Some(1_000));
+    std::thread::sleep(Duration::from_millis(1_100));
+    let _ = runtime.list_gating_pending();
+
+    let notices = collector.notices.lock().unwrap();
+    let find = |pending: &str| -> GatingResolutionNotice {
+        notices
+            .iter()
+            .find(|notice| notice.pending_id == pending)
+            .unwrap_or_else(|| panic!("no notice for {pending}: {notices:?}"))
+            .clone()
+    };
+    let approve_notice = find(&approved_id);
+    assert!(approve_notice.approved);
+    assert_eq!(approve_notice.cause, "approval_decided");
+    let reject_notice = find(&rejected_id);
+    assert!(!reject_notice.approved);
+    assert_eq!(reject_notice.cause, "rejection_decided");
+    let escalate_notice = find(&escalated_id);
+    assert!(!escalate_notice.approved);
+    assert_eq!(escalate_notice.cause, "escalation_decided");
+    assert_eq!(
+        escalate_notice.next_pending_id.as_deref(),
+        Some(successor.as_str())
+    );
+    let timeout_notice = find(&timed_out_id);
+    assert!(!timeout_notice.approved);
+    assert_eq!(timeout_notice.cause, "timeout_fallback");
+    assert_eq!(timeout_notice.next_pending_id, None);
+}
+
+#[test]
 fn phase0_contract_008_gating_escalate_returns_successor_pending_entry() {
     let mut runtime = runtime_for_gating();
     let evaluated = parse_response(&handle_mobkit_rpc_json(

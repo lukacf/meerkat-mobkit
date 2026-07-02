@@ -204,6 +204,7 @@ pub fn start_mobkit_runtime_with_options(
         gating_pending: BTreeMap::new(),
         gating_pending_order: Vec::new(),
         gating_audit: Vec::new(),
+        gating_resolution_observers: GatingResolutionObservers::default(),
         memory_sequence,
         memory_assertions,
         memory_conflicts,

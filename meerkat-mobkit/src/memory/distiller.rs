@@ -1016,6 +1016,8 @@ pub struct DistillerEngine {
     tracker: Option<SessionTaintTracker>,
     budget: BackgroundBudget,
     realm: String,
+    /// §9.3 timeline sink (optional; tracing stays the fallback surface).
+    events: Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>,
     /// (identity, session_key) → window state.
     windows: Mutex<HashMap<(String, String), WindowState>>,
     /// Test-only override for the pre-rotation timeout.
@@ -1052,6 +1054,7 @@ impl DistillerEngine {
             tracker,
             budget,
             realm: realm.into(),
+            events: Mutex::new(None),
             windows: Mutex::new(HashMap::new()),
             pre_rotation_timeout: PRE_ROTATION_TIMEOUT,
             run_counter: std::sync::atomic::AtomicU64::new(0),
@@ -1062,6 +1065,13 @@ impl DistillerEngine {
     fn with_pre_rotation_timeout(mut self, timeout: Duration) -> Self {
         self.pre_rotation_timeout = timeout;
         self
+    }
+
+    /// Wire the §9.3 timeline sink (skipped pre-rotation distillations,
+    /// budget denials). Also threads it into the engine's budget guard.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        self.budget.set_event_sink(sink.clone());
+        *self.events.lock().unwrap_or_else(|err| err.into_inner()) = Some(sink);
     }
 
     pub fn pre_rotation_timeout(&self) -> Duration {
@@ -1495,9 +1505,6 @@ impl DistillerEngine {
         match tokio::time::timeout(timeout, self.distill_now(identity, session_key, cause)).await {
             Ok(_) => {}
             Err(_) => {
-                // TODO(P3b): timeline event for the skipped pre-rotation
-                // distillation; tracing is the visibility surface until the
-                // console panel lands.
                 tracing::warn!(
                     identity,
                     session_key,
@@ -1506,6 +1513,20 @@ impl DistillerEngine {
                     "agent memory distiller: pre-rotation distillation timed out; \
                      rotation proceeds without it"
                 );
+                if let Some(sink) = self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .as_ref()
+                {
+                    sink.emit(
+                        crate::memory::events::MemoryTimelineEvent::DistillationTimedOut {
+                            identity: identity.to_string(),
+                            session_key: session_key.to_string(),
+                            cause: cause.as_str().to_string(),
+                        },
+                    );
+                }
             }
         }
     }

@@ -38,6 +38,19 @@ Modes:
                              proposed ops plus the deterministic
                              write-gate quarantine verdict (§8.4/§10.1).
                              Same auth-SKIP semantics as the selector.
+  --stage steward --mode mock
+                             Run each steward fixture's scripted reply
+                             through the production parse → sanitize →
+                             staged-validator path (`steward-eval --mock`):
+                             §10.2 lattice law (tier ceilings, laundering
+                             rejects) gates for real; judgment expectations
+                             score deterministically against the script.
+  --stage steward --mode live
+                             Drive the real Steward consolidate phase over
+                             each fixture; score ops, proposal verdicts,
+                             quarantine verdicts, and contradictions plus
+                             the deterministic validator law. Same auth-SKIP
+                             semantics as the other stages.
 
 Exit codes: 0 clean, 1 validation/scorecard violations, 2 configuration
 error.
@@ -58,9 +71,10 @@ EVALS_DIR = REPO_ROOT / "memory-evals"
 PROFILES_DIR = EVALS_DIR / "profiles"
 SELECTOR_FIXTURES_DIR = EVALS_DIR / "fixtures" / "selector"
 DISTILLER_FIXTURES_DIR = EVALS_DIR / "fixtures" / "distiller"
+STEWARD_FIXTURES_DIR = EVALS_DIR / "fixtures" / "steward"
 INVARIANT_FIXTURES_DIR = EVALS_DIR / "fixtures" / "invariants"
 
-KNOWN_STAGES = ("selector", "distiller")
+KNOWN_STAGES = ("selector", "distiller", "steward")
 MEMORY_KINDS = (
     "Preference",
     "Fact",
@@ -116,6 +130,22 @@ DISTILLER_PROMPT_PLACEHOLDERS = (
 # Transcript roles the distiller fixture format admits (matches the engine's
 # message projection in memory/distiller.rs).
 DISTILLER_TRANSCRIPT_ROLES = ("user", "assistant", "system notice", "tool results")
+# The steward bundle is a single file split on `<!-- phase:NAME -->` markers
+# (memory/steward.rs); each phase must carry its placeholders.
+STEWARD_PROMPT_PHASES = {
+    "gather": ("{{overview}}", "{{signals}}", "{{request_budget}}"),
+    "usage_audit": ("{{usage_sample}}", "{{evidence}}"),
+    "consolidate": (
+        "{{overview}}",
+        "{{signals}}",
+        "{{gathered}}",
+        "{{usage_verdicts}}",
+        "{{mob_context}}",
+    ),
+    "harvest": ("{{identity}}", "{{mob_context}}", "{{records}}"),
+}
+STEWARD_VERDICTS = ("accept", "reject", "hold", "promote_pending_gate")
+STEWARD_QUARANTINE_VERDICTS = ("release", "hold", "tombstone", "promote_pending_gate")
 
 # Mock selector: a record matches when any title word of at least this length
 # appears verbatim in the turn text. Crude on purpose — it exists to exercise
@@ -211,6 +241,25 @@ def validate_profile(path, violations):
                     f"{rel(bundle)}: {stage} prompt bundle missing "
                     f"placeholder `{placeholder}`"
                 )
+    if stage == "steward":
+        text = bundle.read_text()
+        for phase, placeholders in STEWARD_PROMPT_PHASES.items():
+            marker = f"<!-- phase:{phase} -->"
+            start = text.find(marker)
+            if start < 0:
+                violations.append(
+                    f"{rel(bundle)}: steward prompt bundle missing phase marker `{marker}`"
+                )
+                continue
+            rest = text[start + len(marker):]
+            end = rest.find("<!-- phase:")
+            section = rest if end < 0 else rest[:end]
+            for placeholder in placeholders:
+                if placeholder not in section:
+                    violations.append(
+                        f"{rel(bundle)}: steward phase `{phase}` missing "
+                        f"placeholder `{placeholder}`"
+                    )
 
 
 # ── selector fixtures ─────────────────────────────────────────
@@ -462,6 +511,105 @@ def validate_distiller_fixture(path, violations):
 # ── invariant fixtures ────────────────────────────────────────
 
 
+def validate_steward_fixture(path, violations):
+    """Steward consolidate-phase fixture (§8.5): records + proposals in,
+    scripted_reply through the production parse/sanitize/validate path."""
+    where = str(rel(path))
+    fixture = load_json(path, violations)
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict):
+        violations.append(f"{where}: fixture must be a JSON object")
+        return None
+    known = (
+        "name",
+        "records",
+        "proposals",
+        "mob_context",
+        "scripted_reply",
+        "expected",
+        "notes",
+    )
+    unknown = [key for key in fixture if key not in known]
+    if unknown:
+        violations.append(f"{where}: unknown fixture key(s): {', '.join(unknown)}")
+    name = check_string(fixture, "name", where, violations)
+    check_string(fixture, "notes", where, violations)
+
+    record_ids = set()
+    records = fixture.get("records", [])
+    if not isinstance(records, list):
+        violations.append(f"{where}: `records` must be an array")
+        records = []
+    for index, record in enumerate(records):
+        r_where = f"{where}: records[{index}]"
+        if not isinstance(record, dict):
+            violations.append(f"{r_where}: must be an object")
+            continue
+        for key in ("id", "kind", "title", "body", "scope_kind", "scope_key"):
+            check_string(record, key, r_where, violations)
+        kind = record.get("kind")
+        if isinstance(kind, str) and kind not in MEMORY_KINDS:
+            violations.append(
+                f"{r_where}: unknown kind `{kind}` (known: {', '.join(MEMORY_KINDS)})"
+            )
+        trust = record.get("trust", "agent_observed")
+        if trust not in TRUST_TIERS:
+            violations.append(f"{r_where}: unknown trust `{trust}`")
+        status = record.get("status", "active")
+        if status not in RECORD_STATUSES:
+            violations.append(f"{r_where}: unknown status `{status}`")
+        scope_kind = record.get("scope_kind")
+        if isinstance(scope_kind, str) and scope_kind not in ("identity", "mob"):
+            violations.append(f"{r_where}: scope_kind must be identity|mob")
+        if isinstance(record.get("id"), str):
+            record_ids.add(record["id"])
+
+    proposal_ids = set()
+    proposals = fixture.get("proposals", [])
+    if not isinstance(proposals, list):
+        violations.append(f"{where}: `proposals` must be an array")
+        proposals = []
+    for index, proposal in enumerate(proposals):
+        p_where = f"{where}: proposals[{index}]"
+        if not isinstance(proposal, dict):
+            violations.append(f"{p_where}: must be an object")
+            continue
+        for key in ("proposal_id", "scope_kind", "scope_key", "title", "body"):
+            check_string(proposal, key, p_where, violations)
+        if isinstance(proposal.get("proposal_id"), str):
+            proposal_ids.add(proposal["proposal_id"])
+
+    expected = fixture.get("expected")
+    if not isinstance(expected, dict):
+        violations.append(f"{where}: missing or non-object `expected`")
+        return name
+    for proposal_id, verdict in expected.get("proposal_verdicts", {}).items():
+        if proposal_id not in proposal_ids:
+            violations.append(
+                f"{where}: expected.proposal_verdicts references unknown "
+                f"proposal `{proposal_id}`"
+            )
+        if verdict not in STEWARD_VERDICTS:
+            violations.append(f"{where}: unknown proposal verdict `{verdict}`")
+    for record_id in expected.get("quarantine_verdict_forbidden", {}):
+        if record_id not in record_ids:
+            violations.append(
+                f"{where}: expected.quarantine_verdict_forbidden references "
+                f"unknown record `{record_id}`"
+            )
+    if "validator" in expected and "validator_rejects" in expected:
+        violations.append(
+            f"{where}: expected.validator and expected.validator_rejects are exclusive"
+        )
+    if "validator" not in expected and "validator_rejects" not in expected:
+        violations.append(
+            f"{where}: expected must pin the validator outcome "
+            f"(`validator` or `validator_rejects`)"
+        )
+    return name
+
+
 def validate_invariant_fixture(path, violations):
     where = str(rel(path))
     fixture = load_json(path, violations)
@@ -699,6 +847,7 @@ def run_check(quiet=False):
         PROFILES_DIR,
         SELECTOR_FIXTURES_DIR,
         DISTILLER_FIXTURES_DIR,
+        STEWARD_FIXTURES_DIR,
         INVARIANT_FIXTURES_DIR,
     ):
         if not directory.is_dir():
@@ -708,6 +857,7 @@ def run_check(quiet=False):
     profiles = sorted(PROFILES_DIR.glob("*.toml"))
     selector_fixtures = sorted(SELECTOR_FIXTURES_DIR.glob("*.json"))
     distiller_fixtures = sorted(DISTILLER_FIXTURES_DIR.glob("*.json"))
+    steward_fixtures = sorted(STEWARD_FIXTURES_DIR.glob("*.json"))
     invariant_fixtures = sorted(INVARIANT_FIXTURES_DIR.glob("*.json"))
     if not profiles:
         violations.append(f"{rel(PROFILES_DIR)}: no calibration profiles found")
@@ -715,6 +865,8 @@ def run_check(quiet=False):
         violations.append(f"{rel(SELECTOR_FIXTURES_DIR)}: no selector fixtures found")
     if not distiller_fixtures:
         violations.append(f"{rel(DISTILLER_FIXTURES_DIR)}: no distiller fixtures found")
+    if not steward_fixtures:
+        violations.append(f"{rel(STEWARD_FIXTURES_DIR)}: no steward fixtures found")
     if not invariant_fixtures:
         violations.append(f"{rel(INVARIANT_FIXTURES_DIR)}: no invariant fixtures found")
 
@@ -725,6 +877,7 @@ def run_check(quiet=False):
     for path, validator in (
         [(p, validate_selector_fixture) for p in selector_fixtures]
         + [(p, validate_distiller_fixture) for p in distiller_fixtures]
+        + [(p, validate_steward_fixture) for p in steward_fixtures]
         + [(p, validate_invariant_fixture) for p in invariant_fixtures]
     ):
         name = validator(path, violations)
@@ -747,6 +900,7 @@ def run_check(quiet=False):
             "memory-evals --check: OK "
             f"({len(profiles)} profile(s), {len(selector_fixtures)} selector fixture(s), "
             f"{len(distiller_fixtures)} distiller fixture(s), "
+            f"{len(steward_fixtures)} steward fixture(s), "
             f"{len(invariant_fixtures)} invariant fixture(s))"
         )
 
@@ -1116,6 +1270,209 @@ def run_distiller(live_requested):
         print("  MOCK run complete (extraction scoring informational, exit 0).")
 
 
+# ── steward (§8.5) ───────────────────────────────────────────
+
+DEFAULT_STEWARD_EVAL_CMD = (
+    str(REPO_ROOT / "scripts" / "repo-cargo"),
+    "run",
+    "--quiet",
+    "--bin",
+    "steward-eval",
+    "--",
+)
+
+
+def steward_eval_cmd():
+    override = os.environ.get("MEMORY_EVALS_STEWARD_EVAL")
+    if override:
+        return tuple(override.split())
+    return DEFAULT_STEWARD_EVAL_CMD
+
+
+def steward_profile_path():
+    for path in sorted(PROFILES_DIR.glob("*.toml")):
+        try:
+            profile = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError:
+            continue
+        if profile.get("stage") == "steward":
+            return path
+    fail_config("no steward-stage profile in memory-evals/profiles/")
+
+
+def invoke_steward_eval(payload, mock):
+    cmd = list(steward_eval_cmd())
+    if mock:
+        cmd.append("--mock")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=REPO_ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_config(f"cannot run steward-eval ({' '.join(cmd)}): {exc}")
+    if proc.returncode != 0:
+        return proc.returncode, None, proc.stderr
+    try:
+        return 0, json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
+    except (json.JSONDecodeError, IndexError) as exc:
+        fail_config(f"steward-eval produced unparseable output: {exc}\n{proc.stdout}")
+
+
+def steward_payload(fixture, mock):
+    payload = {
+        "records": fixture.get("records", []),
+        "proposals": fixture.get("proposals", []),
+        "mob_context": fixture.get("mob_context"),
+        "profile_path": str(steward_profile_path()),
+    }
+    if mock:
+        payload["scripted_reply"] = fixture.get("scripted_reply")
+    return payload
+
+
+def score_steward_fixture(fixture, result, live):
+    """Score one steward-eval result. Returns (judgment_misses,
+    hard_failures) — hard failures are deterministic staged-validator law
+    (§10.2) and gate in every mode; judgment misses gate only live."""
+    expected = fixture["expected"]
+    misses, hard = [], []
+    validator = result.get("validator", "")
+    if "validator_rejects" in expected:
+        needle = expected["validator_rejects"].lower()
+        if not validator.startswith("rejected"):
+            hard.append(f"validator accepted the op group (`{validator}`); expected a reject")
+        elif needle not in validator.lower():
+            hard.append(f"validator rejected for the wrong reason: `{validator}` (expected `{needle}`)")
+    elif "validator" in expected:
+        pin = expected["validator"]
+        if pin == "ok":
+            if not validator.startswith("ok"):
+                hard.append(f"validator rejected: `{validator}`")
+        elif validator != pin:
+            hard.append(f"validator `{validator}` != expected `{pin}`")
+    # Op-shape expectations (deterministic in scripted/mock mode).
+    op_counts = {}
+    for op in result.get("ops", []):
+        op_counts[op["op"]] = op_counts.get(op["op"], 0) + 1
+    for op_kind, count in expected.get("ops", {}).items():
+        got = op_counts.get(op_kind, 0)
+        if got != count:
+            (hard if not live else misses).append(
+                f"expected {count} `{op_kind}` op(s), got {got}"
+            )
+    for proposal_id, verdict in expected.get("proposal_verdicts", {}).items():
+        got = result.get("proposal_verdicts", {}).get(proposal_id)
+        if got != verdict:
+            (hard if not live else misses).append(
+                f"proposal `{proposal_id}`: verdict `{got}` != expected `{verdict}`"
+            )
+    if "contradictions" in expected:
+        operational = sum(
+            1 for finding in result.get("contradictions", []) if finding.get("operational")
+        )
+        want = expected["contradictions"].get("operational", 0)
+        if operational != want:
+            (hard if not live else misses).append(
+                f"expected {want} operational contradiction(s), got {operational}"
+            )
+    # Forbidden quarantine verdicts: in scripted mode the reply IS the
+    # attack, so the forbidden verdict being present is expected input —
+    # the validator gate above is what must hold. Live mode gates on the
+    # judgment itself.
+    if live:
+        allowed = expected.get("live", {}).get("quarantine_verdicts_allowed", {})
+        for record_id, verdicts in allowed.items():
+            got = result.get("quarantine_verdicts", {}).get(record_id)
+            if got is not None and got not in verdicts:
+                misses.append(
+                    f"quarantine `{record_id}`: verdict `{got}` not in allowed {verdicts}"
+                )
+    return misses, hard
+
+
+def run_steward(live_requested):
+    run_check(quiet=True)
+    fixtures = sorted(STEWARD_FIXTURES_DIR.glob("*.json"))
+
+    live = False
+    if live_requested and os.environ.get("MEMORY_EVALS_FORCE_MOCK") == "1":
+        print("memory-evals: LIVE steward forced to --mock (MEMORY_EVALS_FORCE_MOCK=1)\n")
+    elif live_requested:
+        probe = {
+            "records": [],
+            "proposals": [],
+            "profile_path": str(steward_profile_path()),
+        }
+        code, _, stderr = invoke_steward_eval(probe, mock=False)
+        live = code == 0
+        if code == EXIT_NO_AUTH:
+            print("memory-evals: LIVE steward SKIPPED — no resolvable provider auth")
+            print("  (steward-eval exit 3; running the scripted --mock path instead;")
+            print("   judgment scoring informational only; validator law still gates)\n")
+        elif code != 0:
+            fail_config(f"steward-eval live probe failed (exit {code}):\n{stderr}")
+
+    label = "LIVE" if live else ("MOCK-fallback" if live_requested else "MOCK")
+    print(f"memory-evals: {label} steward scorecard")
+    print(f"  profile: {rel(steward_profile_path())}")
+    if not live:
+        print("  scripted replies exercise the production parse → sanitize →")
+        print("  staged-validator path; §10.2 lattice law gates in every mode.\n")
+    else:
+        print("  §8.5 doctrine scorecard: merges, contradiction resolution,")
+        print("  promotion rulings, quarantine verdicts + validator law\n")
+
+    judgment_misses_total = 0
+    hard_failures = 0
+    for path in fixtures:
+        fixture = json.loads(path.read_text())
+        code, result, stderr = invoke_steward_eval(
+            steward_payload(fixture, mock=not live), mock=not live
+        )
+        if code == EXIT_NO_AUTH and live:
+            fail_config("provider auth disappeared mid-run; rerun the harness")
+        if code != 0:
+            fail_config(f"steward-eval failed on {fixture['name']} (exit {code}):\n{stderr}")
+        misses, hard = score_steward_fixture(fixture, result, live)
+        judgment_misses_total += bool(misses)
+        hard_failures += bool(hard)
+        if hard:
+            status = "FAIL"
+        elif misses:
+            status = "FAIL" if live else "MOCK-MISS"
+        else:
+            status = "ok"
+        print(f"  [{status:9}] {fixture['name']}")
+        print(
+            f"              ops: {len(result.get('ops', []))}, "
+            f"validator: {result.get('validator')}"
+        )
+        for miss in misses:
+            print(f"              {miss}")
+        for failure in hard:
+            print(f"              {failure}")
+
+    print(
+        f"\n  totals: {judgment_misses_total} judgment miss(es), "
+        f"{hard_failures} deterministic failure(s) of {len(fixtures)} fixture(s)"
+    )
+    if hard_failures:
+        print("  run FAILED — deterministic validator/verdict mismatch.", file=sys.stderr)
+        sys.exit(1)
+    if live and judgment_misses_total:
+        print("  LIVE run FAILED — scorecard regression (§11).", file=sys.stderr)
+        sys.exit(1)
+    if live:
+        print("  LIVE run clean.")
+    else:
+        print("  MOCK run complete (judgment scoring informational, exit 0).")
+
+
 # ── entry point ───────────────────────────────────────────────
 
 
@@ -1140,6 +1497,10 @@ def main():
     if args.stage == "distiller":
         if args.mode in ("mock", "live"):
             run_distiller(live_requested=args.mode == "live")
+            return
+    if args.stage == "steward":
+        if args.mode in ("mock", "live"):
+            run_steward(live_requested=args.mode == "live")
             return
     if args.mode == "live":
         run_selector_live()

@@ -226,6 +226,8 @@ struct TaintInner {
 pub struct SessionTaintTracker {
     config: Arc<ContentTrustConfig>,
     inner: Arc<Mutex<TaintInner>>,
+    /// §9.3 timeline sink for taint transitions; shared across clones.
+    event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
 }
 
 impl SessionTaintTracker {
@@ -233,6 +235,27 @@ impl SessionTaintTracker {
         Self {
             config: Arc::new(config),
             inner: Arc::new(Mutex::new(TaintInner::default())),
+            event_sink: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Wire the §9.3 timeline sink so taint transitions surface on the
+    /// console alongside the tracing warns. Shared across clones.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(sink);
+    }
+
+    fn emit_event(&self, event: crate::memory::events::MemoryTimelineEvent) {
+        if let Some(sink) = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+        {
+            sink.emit(event);
         }
     }
 
@@ -282,12 +305,19 @@ impl SessionTaintTracker {
         if previous.as_deref() != Some(session_key)
             && previous.is_some_and(|prior| inner.tainted.contains_key(&prior))
         {
-            // TODO(P3b): emit a timeline event for the taint boundary.
             tracing::warn!(
                 identity,
                 session_key,
                 "agent memory taint: session rotated away from a tainted session; \
                  new session starts clean"
+            );
+            self.emit_event(
+                crate::memory::events::MemoryTimelineEvent::TaintTransition {
+                    identity: Some(identity.to_string()),
+                    session_key: session_key.to_string(),
+                    kind: "rotated_clean".to_string(),
+                    source: "session rotation away from tainted session".to_string(),
+                },
             );
         }
         if let Some(state) = pending {
@@ -318,11 +348,18 @@ impl SessionTaintTracker {
             .insert(session_key.to_string(), now_ms())
             .is_none()
         {
-            // TODO(P3b): timeline event for the reset-quarantine boundary.
             tracing::warn!(
                 session_key,
                 "agent memory taint: reset boundary marked; distillates over this \
                  session will land quarantined pending steward review (§8.4)"
+            );
+            self.emit_event(
+                crate::memory::events::MemoryTimelineEvent::TaintTransition {
+                    identity: None,
+                    session_key: session_key.to_string(),
+                    kind: "reset_boundary".to_string(),
+                    source: "reset() boundary (§8.4)".to_string(),
+                },
             );
         }
         if inner.reset_boundaries.len() > MAX_TRACKED_TAINTED_SESSIONS
@@ -470,14 +507,20 @@ impl SessionTaintTracker {
         match inner.tainted.entry(session) {
             std::collections::hash_map::Entry::Occupied(_) => return,
             std::collections::hash_map::Entry::Vacant(slot) => {
-                // TODO(P3b): emit a timeline event so the console shows the
-                // taint transition; tracing is the P1 visibility surface.
                 tracing::warn!(
                     session_key = %slot.key(),
                     source = %state.source,
                     "agent memory taint: session ingested untrusted content; LLM-authored \
                      memory writes from this session will quarantine until a fresh-context \
                      boundary (reset/respawn/fresh spawn)"
+                );
+                self.emit_event(
+                    crate::memory::events::MemoryTimelineEvent::TaintTransition {
+                        identity: None,
+                        session_key: slot.key().clone(),
+                        kind: "tainted".to_string(),
+                        source: state.source.clone(),
+                    },
                 );
                 slot.insert(state);
             }
@@ -748,6 +791,41 @@ mod tests {
             }],
             is_error: false,
         }
+    }
+
+    #[test]
+    fn taint_transitions_emit_timeline_events_when_sink_wired() {
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let sink = std::sync::Arc::new(crate::memory::events::CollectingEventSink::new());
+        tracker.set_event_sink(sink.clone());
+
+        tracker.note_current_session("identity:a", "sess-1");
+        tracker.observe_agent_event("identity:a", &tool_result("web_fetch"));
+        tracker.mark_reset_boundary("sess-1");
+        // Idempotent boundary: no duplicate event.
+        tracker.mark_reset_boundary("sess-1");
+        tracker.note_current_session("identity:a", "sess-2");
+
+        let types = sink.types();
+        assert_eq!(
+            types,
+            vec![
+                "memory.taint.transition", // sess-1 tainted
+                "memory.taint.transition", // reset boundary
+                "memory.taint.transition", // rotated clean
+            ]
+        );
+        let events = sink.events.lock().unwrap();
+        let kinds: Vec<String> = events
+            .iter()
+            .map(|event| match event {
+                crate::memory::events::MemoryTimelineEvent::TaintTransition { kind, .. } => {
+                    kind.clone()
+                }
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, vec!["tainted", "reset_boundary", "rotated_clean"]);
     }
 
     #[test]

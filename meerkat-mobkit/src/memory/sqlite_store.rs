@@ -120,6 +120,32 @@ CREATE TABLE IF NOT EXISTS injections (
 );
 CREATE INDEX IF NOT EXISTS injections_record_idx
     ON injections(record_id, at_ms);
+
+-- Exit-interview queue (§8.5): identities recorded by the retire/delete
+-- hooks; the next dream harvests each pending row and marks it done.
+CREATE TABLE IF NOT EXISTS pending_harvests (
+    identity      TEXT NOT NULL,
+    session_key   TEXT,
+    cause         TEXT NOT NULL,
+    retired_at_ms INTEGER NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY (identity, retired_at_ms)
+);
+
+-- Quarantine-promotions awaiting operator approval through the gating
+-- flow (§10.2): gating pending_id → staged batch token. Only a gating
+-- approval commits the token; deny/timeout discards it.
+CREATE TABLE IF NOT EXISTS pending_promotions (
+    pending_id     TEXT PRIMARY KEY,
+    stage_token    TEXT NOT NULL,
+    record_id      TEXT NOT NULL,
+    scope_kind     TEXT NOT NULL,
+    scope_key      TEXT NOT NULL,
+    rationale      TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_at_ms  INTEGER NOT NULL,
+    resolved_at_ms INTEGER
+);
 ";
 
 const RECORD_COLUMNS: &str = "memory_id, scope_kind, scope_key, kind, title, description, body, \
@@ -141,6 +167,23 @@ pub struct SqliteAgentMemoryStore {
     /// tool, staged batches, and future stages alike. Shared across clones
     /// so wiring the gate once covers every handle.
     llm_write_gate: Arc<Mutex<Option<Arc<dyn LlmWriteGate>>>>,
+    /// §10.2 P3 extension: evidence-ref resolvability for `agent_verified`
+    /// retiers. Optional like the write gate — the wiring that enables the
+    /// steward installs it; absent, the P2 claim-presence rule stands
+    /// alone. Shared across clones.
+    evidence_resolver: Arc<Mutex<Option<Arc<dyn EvidenceRefResolver>>>>,
+    /// §9.3 timeline sink for quarantined-write events. Shared across
+    /// clones; absent, the tracing warn is the only surface.
+    event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
+}
+
+/// §10.2 P3: whether an [`EvidenceRef`] resolves against the persistent
+/// session store (session exists; a cited range lies within the persisted
+/// transcript). The semantic endorsement half of an `agent_verified` retier
+/// is the dream's judgment (recorded in the op rationale); this is the
+/// mechanical half.
+pub trait EvidenceRefResolver: Send + Sync {
+    fn resolves(&self, evidence: &crate::memory::records::EvidenceRef) -> Result<(), String>;
 }
 
 impl SqliteAgentMemoryStore {
@@ -158,6 +201,8 @@ impl SqliteAgentMemoryStore {
             scope_floor_bytes: DEFAULT_SCOPE_FLOOR_BYTES,
             connections: Arc::new(Mutex::new(HashMap::new())),
             llm_write_gate: Arc::new(Mutex::new(None)),
+            evidence_resolver: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -170,8 +215,40 @@ impl SqliteAgentMemoryStore {
             .unwrap_or_else(|err| err.into_inner()) = Some(gate);
     }
 
+    /// Install the §10.2 evidence-ref resolver. The steward wiring installs
+    /// it at startup; from then on every staged retier to `agent_verified`
+    /// must cite evidence that resolves against the session store.
+    pub fn set_evidence_resolver(&self, resolver: Arc<dyn EvidenceRefResolver>) {
+        *self
+            .evidence_resolver
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(resolver);
+    }
+
+    /// Wire the §9.3 timeline sink for quarantined-write events.
+    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(sink);
+    }
+
     fn gate(&self) -> Option<Arc<dyn LlmWriteGate>> {
         self.llm_write_gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    fn resolver(&self) -> Option<Arc<dyn EvidenceRefResolver>> {
+        self.evidence_resolver
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    fn events(&self) -> Option<Arc<dyn crate::memory::events::MemoryEventSink>> {
+        self.event_sink
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
@@ -208,8 +285,12 @@ impl SqliteAgentMemoryStore {
             .map_err(sql_err)?;
         conn.execute_batch(SCHEMA_SQL).map_err(sql_err)?;
         let now = now_ms();
+        // Stage GC spares tokens referenced by a still-pending gated
+        // promotion (§10.2) — the operator's decision window outranks the
+        // dead-producer sweep; deny/timeout resolution discards them.
         conn.execute(
-            "DELETE FROM stage WHERE created_at_ms < ?1",
+            "DELETE FROM stage WHERE created_at_ms < ?1 AND token NOT IN \
+             (SELECT stage_token FROM pending_promotions WHERE status = 'pending')",
             params![(now.saturating_sub(STAGE_GC_MAX_AGE_MS)) as i64],
         )
         .map_err(sql_err)?;
@@ -316,7 +397,7 @@ impl SqliteAgentMemoryStore {
             let token = mint_token("import");
             // Gate deliberately absent: the import migrates records the
             // markdown store already accepted; it is not a new LLM write.
-            apply_batch_tx(conn, &batch, None, &token, now_ms()).map_err(|err| {
+            apply_batch_tx(conn, &batch, None, None, &token, now_ms()).map_err(|err| {
                 AgentMemoryError::InvalidRecord(format!(
                     "markdown import of '{}' failed: {err}",
                     path.display()
@@ -372,6 +453,7 @@ impl SqliteAgentMemoryStore {
         let floor_records = self.scope_floor_records;
         let floor_bytes = self.scope_floor_bytes;
         let gate = self.gate();
+        let events = self.events();
         self.with_realm_conn(realm, |conn| {
             // Deterministic write guard (§7.3): an exact content-hash
             // duplicate short-circuits to the existing id — no new row.
@@ -419,6 +501,7 @@ impl SqliteAgentMemoryStore {
                 conn,
                 &batch,
                 gate.as_deref(),
+                events.as_deref(),
                 &mint_token("direct"),
                 now_ms(),
             )?;
@@ -462,6 +545,7 @@ impl SqliteAgentMemoryStore {
     ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
         let memory_id = memory_id.to_string();
         let gate = self.gate();
+        let events = self.events();
         self.with_realm_conn(scope.realm(), |conn| {
             let record = load_record(conn, scope.realm(), &memory_id)?;
             let deletable = record.is_some_and(|record| {
@@ -485,6 +569,7 @@ impl SqliteAgentMemoryStore {
                 conn,
                 &batch,
                 gate.as_deref(),
+                events.as_deref(),
                 &mint_token("direct"),
                 now_ms(),
             )?;
@@ -520,6 +605,7 @@ impl SqliteAgentMemoryStore {
         let realm = scope.realm().to_string();
         let expected_scope = scope.clone();
         let gate = self.gate();
+        let events = self.events();
         self.with_realm_conn(&realm, |conn| {
             let existing = load_record(conn, &realm, prior)?.ok_or_else(|| {
                 AgentMemoryError::InvalidRecord(format!("record '{prior}' does not exist"))
@@ -550,6 +636,7 @@ impl SqliteAgentMemoryStore {
                 conn,
                 &batch,
                 gate.as_deref(),
+                events.as_deref(),
                 &mint_token("direct"),
                 now_ms(),
             )?;
@@ -584,6 +671,7 @@ impl SqliteAgentMemoryStore {
         let floor_records = self.scope_floor_records;
         let floor_bytes = self.scope_floor_bytes;
         let gate = self.gate();
+        let events = self.events();
         self.with_realm_conn(&realm, |conn| {
             // Deterministic write guard (§7.3): an exact content-hash
             // duplicate short-circuits to the existing active record.
@@ -632,6 +720,7 @@ impl SqliteAgentMemoryStore {
                 conn,
                 &batch,
                 gate.as_deref(),
+                events.as_deref(),
                 &mint_token("direct"),
                 now_ms(),
             )?;
@@ -827,6 +916,7 @@ impl SqliteAgentMemoryStore {
 
     fn stage_blocking(&self, batch: StagedMutationBatch) -> Result<StageToken, AgentMemoryError> {
         let realm = batch.realm.clone();
+        let resolver = self.resolver();
         self.with_realm_conn(&realm, |conn| {
             {
                 let view = ConnBatchView {
@@ -841,6 +931,7 @@ impl SqliteAgentMemoryStore {
                 )
                 .map_err(|err| AgentMemoryError::InvalidRecord(err.to_string()))?;
             }
+            check_verified_retier_evidence(conn, &batch, resolver.as_deref())?;
             let token = mint_token("stage");
             conn.execute(
                 "INSERT INTO stage (token, batch, created_at_ms) VALUES (?1, ?2, ?3)",
@@ -856,6 +947,8 @@ impl SqliteAgentMemoryStore {
 
     fn commit_blocking(&self, token: StageToken) -> Result<CommitReceipt, AgentMemoryError> {
         let gate = self.gate();
+        let resolver = self.resolver();
+        let events = self.events();
         self.with_realm_conn(&token.realm, |conn| {
             let batch_json: Option<String> = conn
                 .query_row(
@@ -873,7 +966,15 @@ impl SqliteAgentMemoryStore {
             };
             let batch: StagedMutationBatch = serde_json::from_str(&batch_json)
                 .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
-            apply_batch_tx(conn, &batch, gate.as_deref(), &token.token, now_ms())
+            check_verified_retier_evidence(conn, &batch, resolver.as_deref())?;
+            apply_batch_tx(
+                conn,
+                &batch,
+                gate.as_deref(),
+                events.as_deref(),
+                &token.token,
+                now_ms(),
+            )
         })
     }
 
@@ -1065,6 +1166,568 @@ impl StagedMemoryStore for SqliteAgentMemoryStore {
     }
 }
 
+// ---- steward read/write surface (§8.5) ----
+
+/// Per-scope store overview row for the dream's orient phase (§8.5) and
+/// the P3b console Memory panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeOverview {
+    pub scope: MemoryScope,
+    pub active: u64,
+    pub quarantined: u64,
+    pub superseded: u64,
+    pub tombstoned: u64,
+    pub body_bytes: u64,
+}
+
+/// One pending (or held) mob/operator-scope proposal awaiting a dream
+/// verdict (§8.5 promotion).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingProposal {
+    pub proposal_id: ProposalId,
+    pub scope: MemoryScope,
+    pub record: NewMemoryRecord,
+    pub author: MemoryAuthor,
+    pub status: String,
+    pub created_at_ms: u64,
+}
+
+/// One retired identity awaiting an exit-interview harvest (§8.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingHarvest {
+    pub identity: String,
+    pub session_key: Option<String>,
+    pub cause: String,
+    pub retired_at_ms: u64,
+}
+
+/// One gated quarantine-promotion (§10.2): the staged batch commits only on
+/// gating approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPromotion {
+    pub pending_id: String,
+    pub stage_token: String,
+    pub record_id: MemoryId,
+    pub scope_kind: String,
+    pub scope_key: String,
+    pub rationale: Option<String>,
+    pub status: String,
+    pub created_at_ms: u64,
+}
+
+impl SqliteAgentMemoryStore {
+    /// The per-scope retention floors this store warns against (§7.3);
+    /// rendered into the dream's orient overview as floor pressure.
+    pub fn scope_floors(&self) -> (usize, usize) {
+        (self.scope_floor_records, self.scope_floor_bytes)
+    }
+
+    /// Per-scope counts and byte totals for a realm — the orient phase's
+    /// one cheap aggregate.
+    pub async fn scope_overview(
+        &self,
+        realm: &str,
+    ) -> Result<Vec<ScopeOverview>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT scope_kind, scope_key, status_kind, COUNT(*), \
+                         COALESCE(SUM(LENGTH(body)), 0) FROM records \
+                         GROUP BY scope_kind, scope_key, status_kind",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    })
+                    .map_err(sql_err)?;
+                let mut by_scope: HashMap<(String, String), ScopeOverview> = HashMap::new();
+                for row in rows {
+                    let (scope_kind, scope_key, status_kind, count, bytes) =
+                        row.map_err(sql_err)?;
+                    let scope = scope_from_parts(&scope_kind, &scope_key, &realm)?;
+                    let entry =
+                        by_scope
+                            .entry((scope_kind, scope_key))
+                            .or_insert_with(|| ScopeOverview {
+                                scope,
+                                active: 0,
+                                quarantined: 0,
+                                superseded: 0,
+                                tombstoned: 0,
+                                body_bytes: 0,
+                            });
+                    match status_kind.as_str() {
+                        "active" => entry.active = count as u64,
+                        "quarantined" => entry.quarantined = count as u64,
+                        "superseded" => entry.superseded = count as u64,
+                        "tombstoned" => entry.tombstoned = count as u64,
+                        _ => {}
+                    }
+                    entry.body_bytes += bytes as u64;
+                }
+                let mut overview: Vec<ScopeOverview> = by_scope.into_values().collect();
+                overview.sort_by(|a, b| a.scope.cmp(&b.scope));
+                Ok(overview)
+            })
+        })
+        .await
+    }
+
+    /// Pending/held proposals, oldest first (§8.5 promotion queue).
+    pub async fn pending_proposals(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<PendingProposal>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT proposal_id, scope_kind, scope_key, record, author, status, \
+                         created_at_ms FROM proposals WHERE status IN ('pending', 'held') \
+                         ORDER BY created_at_ms ASC LIMIT ?1",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![limit as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, i64>(6)?,
+                        ))
+                    })
+                    .map_err(sql_err)?;
+                let mut proposals = Vec::new();
+                for row in rows {
+                    let (proposal_id, scope_kind, scope_key, record, author, status, created) =
+                        row.map_err(sql_err)?;
+                    proposals.push(PendingProposal {
+                        proposal_id,
+                        scope: scope_from_parts(&scope_kind, &scope_key, &realm)?,
+                        record: serde_json::from_str(&record)
+                            .map_err(|err| AgentMemoryError::Parse(err.to_string()))?,
+                        author: serde_json::from_str(&author)
+                            .map_err(|err| AgentMemoryError::Parse(err.to_string()))?,
+                        status,
+                        created_at_ms: created as u64,
+                    });
+                }
+                Ok(proposals)
+            })
+        })
+        .await
+    }
+
+    /// Record a dream verdict on a proposal: `accepted`, `rejected`, or
+    /// `held` (held stays in the pending queue for the next dream).
+    pub async fn set_proposal_status(
+        &self,
+        realm: &str,
+        proposal_id: &str,
+        status: &str,
+    ) -> Result<(), AgentMemoryError> {
+        if !matches!(status, "accepted" | "rejected" | "held" | "pending") {
+            return Err(AgentMemoryError::InvalidRecord(format!(
+                "unknown proposal status '{status}'"
+            )));
+        }
+        let store = self.clone();
+        let realm = realm.to_string();
+        let proposal_id = proposal_id.to_string();
+        let status = status.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let updated = conn
+                    .execute(
+                        "UPDATE proposals SET status = ?1 WHERE proposal_id = ?2",
+                        params![status, proposal_id],
+                    )
+                    .map_err(sql_err)?;
+                if updated == 0 {
+                    return Err(AgentMemoryError::InvalidRecord(format!(
+                        "unknown proposal '{proposal_id}'"
+                    )));
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Quarantined records, newest first — the dream's review queue (§8.5).
+    /// The steward is the one stage that reads these bodies wholesale; the
+    /// caller renders them defanged.
+    pub async fn quarantined_records(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<super::records::MemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {RECORD_COLUMNS} FROM records \
+                         WHERE status_kind = 'quarantined' \
+                         ORDER BY created_at_ms DESC LIMIT ?1"
+                    ))
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![limit as i64], row_to_record_row)
+                    .map_err(sql_err)?;
+                let mut records = Vec::new();
+                for row in rows {
+                    records.push(row.map_err(sql_err)?.into_record(&realm)?);
+                }
+                Ok(records)
+            })
+        })
+        .await
+    }
+
+    /// Records by id, any status — the gather phase's bounded body fetch.
+    /// Missing ids are skipped (the model may cite stale ids).
+    pub async fn records_by_ids(
+        &self,
+        realm: &str,
+        ids: &[String],
+    ) -> Result<Vec<super::records::MemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let ids = ids.to_vec();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut records = Vec::new();
+                for id in &ids {
+                    if let Some(record) = load_record(conn, &realm, id)? {
+                        records.push(record);
+                    }
+                }
+                Ok(records)
+            })
+        })
+        .await
+    }
+
+    /// Most recently updated records in a realm, any scope, active or
+    /// quarantined — the gather phase filters (e.g. recent distillates by
+    /// author) host-side.
+    pub async fn recent_records(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<super::records::MemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {RECORD_COLUMNS} FROM records \
+                         WHERE status_kind IN ('active', 'quarantined') \
+                         ORDER BY updated_at_ms DESC LIMIT ?1"
+                    ))
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![limit as i64], row_to_record_row)
+                    .map_err(sql_err)?;
+                let mut records = Vec::new();
+                for row in rows {
+                    records.push(row.map_err(sql_err)?.into_record(&realm)?);
+                }
+                Ok(records)
+            })
+        })
+        .await
+    }
+
+    /// Record a retired identity for the next dream's exit-interview
+    /// harvest (§8.5). Idempotent per (identity, retired_at_ms).
+    pub async fn record_pending_harvest(
+        &self,
+        realm: &str,
+        identity: &str,
+        session_key: Option<&str>,
+        cause: &str,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let identity = identity.to_string();
+        let session_key = session_key.map(str::to_string);
+        let cause = cause.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO pending_harvests \
+                     (identity, session_key, cause, retired_at_ms, status) \
+                     VALUES (?1, ?2, ?3, ?4, 'pending')",
+                    params![identity, session_key, cause, now_ms() as i64],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Pending exit-interview harvests, oldest first.
+    pub async fn pending_harvests(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<PendingHarvest>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT identity, session_key, cause, retired_at_ms FROM \
+                         pending_harvests WHERE status = 'pending' \
+                         ORDER BY retired_at_ms ASC LIMIT ?1",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![limit as i64], |row| {
+                        Ok(PendingHarvest {
+                            identity: row.get(0)?,
+                            session_key: row.get(1)?,
+                            cause: row.get(2)?,
+                            retired_at_ms: row.get::<_, i64>(3)? as u64,
+                        })
+                    })
+                    .map_err(sql_err)?;
+                let mut harvests = Vec::new();
+                for row in rows {
+                    harvests.push(row.map_err(sql_err)?);
+                }
+                Ok(harvests)
+            })
+        })
+        .await
+    }
+
+    /// Mark one exit-interview harvest done.
+    pub async fn mark_harvest_complete(
+        &self,
+        realm: &str,
+        identity: &str,
+        retired_at_ms: u64,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let identity = identity.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "UPDATE pending_harvests SET status = 'harvested' \
+                     WHERE identity = ?1 AND retired_at_ms = ?2",
+                    params![identity, retired_at_ms as i64],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Record a gated quarantine-promotion: gating `pending_id` → staged
+    /// batch token (§10.2). Only a gating approval commits the token.
+    pub async fn record_pending_promotion(
+        &self,
+        realm: &str,
+        promotion: PendingPromotion,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "INSERT INTO pending_promotions (pending_id, stage_token, record_id, \
+                     scope_kind, scope_key, rationale, status, created_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        promotion.pending_id,
+                        promotion.stage_token,
+                        promotion.record_id,
+                        promotion.scope_kind,
+                        promotion.scope_key,
+                        promotion.rationale,
+                        promotion.status,
+                        promotion.created_at_ms as i64,
+                    ],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Look up a still-pending gated promotion by its gating pending id.
+    pub async fn pending_promotion_by_id(
+        &self,
+        realm: &str,
+        pending_id: &str,
+    ) -> Result<Option<PendingPromotion>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let pending_id = pending_id.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.query_row(
+                    "SELECT pending_id, stage_token, record_id, scope_kind, scope_key, \
+                     rationale, status, created_at_ms FROM pending_promotions \
+                     WHERE pending_id = ?1 AND status = 'pending'",
+                    params![pending_id],
+                    |row| {
+                        Ok(PendingPromotion {
+                            pending_id: row.get(0)?,
+                            stage_token: row.get(1)?,
+                            record_id: row.get(2)?,
+                            scope_kind: row.get(3)?,
+                            scope_key: row.get(4)?,
+                            rationale: row.get(5)?,
+                            status: row.get(6)?,
+                            created_at_ms: row.get::<_, i64>(7)? as u64,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sql_err)
+            })
+        })
+        .await
+    }
+
+    /// All still-pending gated promotions (dream-start reconciliation).
+    pub async fn pending_promotions(
+        &self,
+        realm: &str,
+    ) -> Result<Vec<PendingPromotion>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT pending_id, stage_token, record_id, scope_kind, scope_key, \
+                         rationale, status, created_at_ms FROM pending_promotions \
+                         WHERE status = 'pending' ORDER BY created_at_ms ASC",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok(PendingPromotion {
+                            pending_id: row.get(0)?,
+                            stage_token: row.get(1)?,
+                            record_id: row.get(2)?,
+                            scope_kind: row.get(3)?,
+                            scope_key: row.get(4)?,
+                            rationale: row.get(5)?,
+                            status: row.get(6)?,
+                            created_at_ms: row.get::<_, i64>(7)? as u64,
+                        })
+                    })
+                    .map_err(sql_err)?;
+                let mut promotions = Vec::new();
+                for row in rows {
+                    promotions.push(row.map_err(sql_err)?);
+                }
+                Ok(promotions)
+            })
+        })
+        .await
+    }
+
+    /// Resolve a gated promotion: `committed`, `denied`, or `expired`.
+    pub async fn resolve_pending_promotion(
+        &self,
+        realm: &str,
+        pending_id: &str,
+        status: &str,
+    ) -> Result<(), AgentMemoryError> {
+        if !matches!(status, "committed" | "denied" | "expired") {
+            return Err(AgentMemoryError::InvalidRecord(format!(
+                "unknown promotion resolution '{status}'"
+            )));
+        }
+        let store = self.clone();
+        let realm = realm.to_string();
+        let pending_id = pending_id.to_string();
+        let status = status.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "UPDATE pending_promotions SET status = ?1, resolved_at_ms = ?2 \
+                     WHERE pending_id = ?3",
+                    params![status, now_ms() as i64, pending_id],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Re-key a gated promotion after a gating escalation minted a
+    /// successor pending entry.
+    pub async fn rekey_pending_promotion(
+        &self,
+        realm: &str,
+        old_pending_id: &str,
+        new_pending_id: &str,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let old_pending_id = old_pending_id.to_string();
+        let new_pending_id = new_pending_id.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "UPDATE pending_promotions SET pending_id = ?1 WHERE pending_id = ?2",
+                    params![new_pending_id, old_pending_id],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Discard a staged-but-uncommitted batch (denied/expired gated
+    /// promotions; §8.5 crash semantics keep this safe — an unapplied stage
+    /// row is never visible).
+    pub async fn discard_stage(&self, token: StageToken) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        run_blocking(move || {
+            store.with_realm_conn(&token.realm, |conn| {
+                conn.execute("DELETE FROM stage WHERE token = ?1", params![token.token])
+                    .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+}
+
 #[async_trait]
 impl crate::memory::distiller::TombstoneSource for SqliteAgentMemoryStore {
     /// Recent tombstones for the Distiller's pre-injected "never re-create
@@ -1166,6 +1829,63 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|err| AgentMemoryError::Io(format!("agent memory task failed: {err}")))?
 }
 
+/// §10.2 P3 validator extension, enforced at the store seam (stage and
+/// commit): every `Retier` to `agent_verified` requires the target record's
+/// verification claim to cite at least one `EvidenceRef` that resolves
+/// against the session store. No resolver wired ⇒ the P2 claim-presence
+/// rule stands alone (wiring that enables the steward installs one).
+fn check_verified_retier_evidence(
+    conn: &Connection,
+    batch: &StagedMutationBatch,
+    resolver: Option<&dyn EvidenceRefResolver>,
+) -> Result<(), AgentMemoryError> {
+    let Some(resolver) = resolver else {
+        return Ok(());
+    };
+    for (op_index, op) in batch.ops.iter().enumerate() {
+        let StagedOp::Retier { id, trust, .. } = op else {
+            continue;
+        };
+        if *trust != TrustTier::AgentVerified {
+            continue;
+        }
+        let reject = |reason: String| {
+            AgentMemoryError::InvalidRecord(
+                super::staged::StagedBatchError::UnresolvableEvidence { op_index, reason }
+                    .to_string(),
+            )
+        };
+        let provenance: Option<String> = conn
+            .query_row(
+                "SELECT provenance FROM records WHERE memory_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        let Some(provenance) = provenance else {
+            // Unknown record — validate_batch already rejects this.
+            continue;
+        };
+        let provenance: MemoryProvenance = serde_json::from_str(&provenance)
+            .map_err(|err| AgentMemoryError::Parse(err.to_string()))?;
+        let evidence = provenance
+            .verification
+            .as_ref()
+            .map(|claim| claim.evidence.as_slice())
+            .unwrap_or(&[]);
+        if evidence.is_empty() {
+            return Err(reject(
+                "verification claim cites no evidence refs".to_string(),
+            ));
+        }
+        for reference in evidence {
+            resolver.resolves(reference).map_err(reject)?;
+        }
+    }
+    Ok(())
+}
+
 /// Validates (against the live transaction) and applies a batch atomically:
 /// one SQLite transaction, one audit row per op (§8.5).
 ///
@@ -1180,6 +1900,7 @@ fn apply_batch_tx(
     conn: &mut Connection,
     batch: &StagedMutationBatch,
     gate: Option<&dyn LlmWriteGate>,
+    events: Option<&dyn crate::memory::events::MemoryEventSink>,
     token: &str,
     now: u64,
 ) -> Result<CommitReceipt, AgentMemoryError> {
@@ -1195,14 +1916,21 @@ fn apply_batch_tx(
         .collect();
     let quarantine = gate.and_then(|gate| gate.quarantine_reason(&batch.author, &evidence));
     if let Some(reason) = quarantine.as_deref() {
-        // TODO(P3b): emit a timeline event for the quarantined write; the
-        // tracing warn is the P1 visibility surface.
         tracing::warn!(
             realm = %batch.realm,
             author = ?batch.author,
             reason,
             "agent memory: LLM-authored write landing quarantined (write-only until review)"
         );
+        if let Some(events) = events {
+            events.emit(
+                crate::memory::events::MemoryTimelineEvent::QuarantinedWrite {
+                    realm: batch.realm.clone(),
+                    author: format!("{:?}", batch.author),
+                    reason: reason.to_string(),
+                },
+            );
+        }
     }
     let tx = conn.transaction().map_err(sql_err)?;
     {

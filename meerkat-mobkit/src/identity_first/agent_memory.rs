@@ -557,6 +557,7 @@ pub struct AgentMemoryRuntimeInjector {
     coordinator: RecallCoordinator,
     taint: Option<crate::memory::taint::SessionTaintTracker>,
     distiller: Option<Arc<crate::memory::distiller::DistillerEngine>>,
+    steward: Option<Arc<crate::memory::steward::StewardEngine>>,
 }
 
 impl AgentMemoryRuntimeInjector {
@@ -565,6 +566,7 @@ impl AgentMemoryRuntimeInjector {
             coordinator: RecallCoordinator::new(provider, config),
             taint: None,
             distiller: None,
+            steward: None,
         }
     }
 
@@ -582,6 +584,13 @@ impl AgentMemoryRuntimeInjector {
         distiller: Arc<crate::memory::distiller::DistillerEngine>,
     ) -> Self {
         self.distiller = Some(distiller);
+        self
+    }
+
+    /// Attach the §8.5 Steward so the retire/delete paths can queue
+    /// exit-interview harvests for the next dream.
+    pub fn with_steward(mut self, steward: Arc<crate::memory::steward::StewardEngine>) -> Self {
+        self.steward = Some(steward);
         self
     }
 
@@ -638,6 +647,23 @@ impl AgentMemoryRuntimeInjector {
         if let Some(distiller) = self.distiller.as_ref() {
             distiller
                 .distill_before_rotation(identity.as_str(), session_key, cause)
+                .await;
+        }
+    }
+
+    /// §8.5 exit interviews: record a retired/deleted identity in the
+    /// pending-harvest queue so the NEXT dream harvests its store. One
+    /// fast local write, best-effort — rotation never fails on it. No-op
+    /// without a wired Steward.
+    pub async fn note_identity_retired(
+        &self,
+        identity: &AgentIdentity,
+        session_key: Option<&str>,
+        cause: &str,
+    ) {
+        if let Some(steward) = self.steward.as_ref() {
+            steward
+                .note_identity_retired(identity.as_str(), session_key, cause)
                 .await;
         }
     }

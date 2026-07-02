@@ -191,6 +191,14 @@ pub enum StagedBatchError {
     UnverifiedRetier {
         op_index: usize,
     },
+    /// §10.2 P3 extension: a retier to `agent_verified` cited evidence that
+    /// does not resolve against the session store. Enforced at the store
+    /// seam (the resolver needs session-store access the pure validator
+    /// does not have); the error lives here because it is validator law.
+    UnresolvableEvidence {
+        op_index: usize,
+        reason: String,
+    },
     UnknownRecord {
         op_index: usize,
         id: MemoryId,
@@ -263,6 +271,11 @@ impl std::fmt::Display for StagedBatchError {
                 f,
                 "op {op_index}: retier to agent_verified requires a steward author and a \
                  verification claim on the record"
+            ),
+            Self::UnresolvableEvidence { op_index, reason } => write!(
+                f,
+                "op {op_index}: retier to agent_verified rejected: verification evidence \
+                 does not resolve against the session store ({reason})"
             ),
             Self::UnknownRecord { op_index, id } => {
                 write!(f, "op {op_index}: record '{id}' does not exist")

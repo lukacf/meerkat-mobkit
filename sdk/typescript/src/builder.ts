@@ -243,6 +243,14 @@ export class MobKitBuilder {
         minInteractions?: number;
         model?: string;
       };
+      steward?: boolean | {
+        enabled?: boolean;
+        cadence?: string;
+        model?: string;
+        perMob?: boolean;
+        runsPerDay?: number;
+        minSignals?: number;
+      };
     } = true,
   ): this {
     if (config !== true && config.enabled === false) {
@@ -310,6 +318,32 @@ export class MobKitBuilder {
           distiller.model = config.distiller.model;
         }
         wire.distiller = distiller;
+      }
+    }
+    if (config.steward !== undefined) {
+      if (typeof config.steward === "boolean") {
+        wire.steward = config.steward;
+      } else {
+        const steward: Record<string, unknown> = {};
+        if (config.steward.enabled !== undefined) {
+          steward.enabled = config.steward.enabled;
+        }
+        if (config.steward.cadence !== undefined) {
+          steward.cadence = config.steward.cadence;
+        }
+        if (config.steward.model !== undefined) {
+          steward.model = config.steward.model;
+        }
+        if (config.steward.perMob !== undefined) {
+          steward.per_mob = config.steward.perMob;
+        }
+        if (config.steward.runsPerDay !== undefined) {
+          steward.runs_per_day = config.steward.runsPerDay;
+        }
+        if (config.steward.minSignals !== undefined) {
+          steward.min_signals = config.steward.minSignals;
+        }
+        wire.steward = steward;
       }
     }
     this._config.agentMemoryConfig = wire;

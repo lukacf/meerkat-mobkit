@@ -228,6 +228,31 @@ class MobKitBuilder:
                 wire["distiller"] = distiller_wire
             else:
                 wire["distiller"] = distiller
+        steward = config.get("steward")
+        if steward is not None:
+            if isinstance(steward, dict):
+                steward_wire: dict[str, Any] = {}
+                if "enabled" in steward:
+                    steward_wire["enabled"] = steward["enabled"]
+                if "cadence" in steward:
+                    steward_wire["cadence"] = steward["cadence"]
+                if "model" in steward:
+                    steward_wire["model"] = steward["model"]
+                if "per_mob" in steward:
+                    steward_wire["per_mob"] = steward["per_mob"]
+                elif "perMob" in steward:
+                    steward_wire["per_mob"] = steward["perMob"]
+                if "runs_per_day" in steward:
+                    steward_wire["runs_per_day"] = steward["runs_per_day"]
+                elif "runsPerDay" in steward:
+                    steward_wire["runs_per_day"] = steward["runsPerDay"]
+                if "min_signals" in steward:
+                    steward_wire["min_signals"] = steward["min_signals"]
+                elif "minSignals" in steward:
+                    steward_wire["min_signals"] = steward["minSignals"]
+                wire["steward"] = steward_wire
+            else:
+                wire["steward"] = steward
         self._config.agent_memory_config = wire
         return self
 

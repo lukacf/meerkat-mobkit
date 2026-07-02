@@ -732,7 +732,11 @@ fn max_day_for_month_with_feb_29(month: u32) -> u32 {
     }
 }
 
-fn parse_interval_marker_ms(interval: &str) -> Option<u64> {
+/// Parse a `*/N{s|m|h|d}` interval marker to milliseconds — the same
+/// cadence syntax `schedules.toml` uses. `pub(crate)` so the steward's
+/// cadence config (agent-memory §8.5) validates against the scheduling
+/// subsystem's own grammar instead of growing a dialect.
+pub(crate) fn parse_interval_marker_ms(interval: &str) -> Option<u64> {
     let marker = interval.trim().to_ascii_lowercase();
     let marker = marker.strip_prefix("*/")?;
     if marker.len() < 2 {
