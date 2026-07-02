@@ -271,8 +271,17 @@ content-trust configuration (web/fetch always untrusted; MCP servers
 untrusted by default with an explicit allowlist) plus an observe-stream
 tracker that marks the session tainted — session-sticky, cleared only at
 fresh-context boundaries — with the first-ingestion race documented. P2
-closes cross-agent laundering MobKit-side by joining mob topology with
-sender-session taint state at send time (MobKit knows both), which is what
-envelope-level flags would eventually replace. Deployments that cannot accept
-the P1 race set `memory.llm_writes = "quarantined"` (every LLM-authored write
-quarantines until steward/operator review).
+ships the comms taint join over what the observe surface actually carries
+(implemented in `meerkat-mobkit/src/memory/taint.rs`,
+`observe_inbound_peer_content`), and building it sharpened this ask:
+meerkat 0.7.9 has **no typed inbound peer-message event** — a delivery
+surfaces only as injected prompt text on the receiver's `RunStarted`
+(`format_peer_message_projection`, meerkat-core `interaction.rs:126`), so
+the join parses the sender's `MemberCommsName` out of that text and checks
+the sender's tracked taint at delivery-observe time, not send time. Three
+gaps only envelope-level flags can close: (a) send-time vs observe-time
+taint state can differ across a sender rotation; (b) peer *requests* render
+a raw cryptographic peer id, unmappable to an identity host-side; (c)
+cross-process senders are not in the host tracker at all. Deployments that
+cannot accept the P1 race set `memory.llm_writes = "quarantined"` (every
+LLM-authored write quarantines until steward/operator review).

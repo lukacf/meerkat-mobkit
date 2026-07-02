@@ -13,13 +13,30 @@
 //! which is automatic here because state is keyed by session id and those
 //! paths mint new session ids.
 //!
-//! ## Honest P1 gaps (closed in P2 via dispatch-time visibility, §13)
+//! ## P2 additions (§10.1 taint completion)
 //!
-//! - **The first-ingestion race**: taint is derived from the observe-only
-//!   agent-event stream, which is asynchronous. A memory write in the same
-//!   turn as the session's *first* untrusted ingestion can reach the store
-//!   before the taint observer processes the tool event. Deployments that
-//!   cannot accept this set `agent_memory.llm_writes = "quarantined"`.
+//! - **Comms taint join**: a peer message from a tracked sender whose
+//!   session is tainted taints the receiving session (the peer-laundering
+//!   close). See [`SessionTaintTracker::observe_inbound_peer_content`] for
+//!   what is — and honestly is not — observable.
+//! - **Evidence-range taint**: the write gate now sees a write's
+//!   `EvidenceRef`s; any LLM-authored write citing a tainted session
+//!   quarantines. Coarse by design: the tracker holds session-sticky
+//!   facts, so session-tainted ⇒ every range in it tainted (per-turn
+//!   granularity would need the Hygienist's pinned revisions, P4).
+//! - **Reset boundaries**: `reset()` marks the outgoing session so
+//!   Distiller output over it lands `Quarantined` (§8.4 — reset is the
+//!   operator's escape hatch; quarantine preserves the re-dream option).
+//!
+//! ## Honest gaps that remain (upstream asks, §13)
+//!
+//! - **The first-ingestion race** (ask: taint visibility at tool-dispatch
+//!   time): taint is derived from the observe-only agent-event stream,
+//!   which is asynchronous. A memory write in the same turn as the
+//!   session's *first* untrusted ingestion can reach the store before the
+//!   taint observer processes the tool event. Deployments that cannot
+//!   accept this set `agent_memory.llm_writes = "quarantined"`. This stays
+//!   upstream-dependent; nothing here pretends to close it.
 //! - **The mirror race**: after a session rotation, the tracker's view of
 //!   an identity's current session lags until the runtime's delivery hook
 //!   or the new session's first `RunStarted` event updates it, so a write
@@ -30,8 +47,8 @@
 //!   a server unless their names are server-qualified
 //!   (`mcp__<server>__<tool>`). Deployments with unqualified MCP tool names
 //!   list them in `content_trust.untrusted_tools` (or run
-//!   `llm_writes = "quarantined"`) until P2's dispatch-time join against
-//!   real `ToolProvenance`.
+//!   `llm_writes = "quarantined"`) until the dispatch-time join against
+//!   real `ToolProvenance` lands upstream.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -41,7 +58,7 @@ use meerkat_core::event::AgentEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::identity_first::agent_memory::AgentMemoryLlmWrites;
-use crate::memory::records::MemoryAuthor;
+use crate::memory::records::{EvidenceRef, MemoryAuthor};
 
 /// Builtin web-facing tool names: ALWAYS untrusted for memory purposes, not
 /// overridable by `trusted_tools` (§10.1 "web/fetch always untrusted").
@@ -189,12 +206,18 @@ struct TaintInner {
     /// delivery/reset hooks and, as fallback, by observed `RunStarted`
     /// events (peer-comms-driven runs never pass through the runtime hooks).
     current_session: HashMap<String, String>,
-    /// session key → taint fact. Session-sticky by construction.
+    /// session key → taint fact. Session-sticky by construction, and
+    /// retained after rotation/clear: the fact is historical ("this session
+    /// ingested untrusted content"), and the P2 comms join and
+    /// evidence-range gate read it for sessions that are no longer current.
     tainted: HashMap<String, TaintState>,
     /// Untrusted ingestion observed before the observer learned the
     /// identity's session (mid-run attach). Transferred to the next learned
     /// session — conservative direction (see module docs).
     pending_identity_taint: HashMap<String, TaintState>,
+    /// session key → reset-boundary mark (§8.4): distillates citing this
+    /// session quarantine pending steward review. Bounded like `tainted`.
+    reset_boundaries: HashMap<String, u64>,
 }
 
 /// Session-sticky taint tracker (§10.1, coarse P1). Cheap to clone; clones
@@ -217,8 +240,14 @@ impl SessionTaintTracker {
     /// stream is per-member, so attribution is the subscription's).
     pub fn observe_agent_event(&self, identity: &str, event: &AgentEvent) {
         match event {
-            AgentEvent::RunStarted { session_id, .. } => {
-                self.note_current_session(identity, &session_id.to_string());
+            AgentEvent::RunStarted { session_id, input } => {
+                let session_key = session_id.to_string();
+                self.note_current_session(identity, &session_key);
+                // §10.1 comms taint join: peer-delivered content arrives as
+                // the run's injected input, not as a typed event.
+                if let Some(text) = input.prompt_text() {
+                    self.observe_inbound_peer_content(identity, &session_key, &text);
+                }
             }
             // Taint on result *ingestion*: these are the events whose content
             // enters the conversation context. Errors taint too — an error
@@ -268,13 +297,65 @@ impl SessionTaintTracker {
 
     /// Explicit clear for the reset path (`reset()` is the operator's escape
     /// hatch from a poisoned session). Rotation already clears implicitly;
-    /// this also drops any pending pre-attribution taint.
+    /// this also drops any pending pre-attribution taint. The outgoing
+    /// session's *fact* is deliberately retained (P2): "that session was
+    /// tainted" stays true after the identity moves on, and the comms join
+    /// and the Distiller's evidence gate consult it for exactly such
+    /// sessions.
     pub fn clear_identity(&self, identity: &str) {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         inner.pending_identity_taint.remove(identity);
-        if let Some(session) = inner.current_session.remove(identity) {
-            inner.tainted.remove(&session);
+        inner.current_session.remove(identity);
+    }
+
+    /// Mark a `reset()` boundary on the outgoing session (§8.4): every
+    /// LLM-authored write whose evidence cites this session quarantines
+    /// pending steward review, regardless of content taint. Idempotent.
+    pub fn mark_reset_boundary(&self, session_key: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if inner
+            .reset_boundaries
+            .insert(session_key.to_string(), now_ms())
+            .is_none()
+        {
+            // TODO(P3b): timeline event for the reset-quarantine boundary.
+            tracing::warn!(
+                session_key,
+                "agent memory taint: reset boundary marked; distillates over this \
+                 session will land quarantined pending steward review (§8.4)"
+            );
         }
+        if inner.reset_boundaries.len() > MAX_TRACKED_TAINTED_SESSIONS
+            && let Some(oldest) = inner
+                .reset_boundaries
+                .iter()
+                .min_by_key(|(_, at_ms)| **at_ms)
+                .map(|(key, _)| key.clone())
+        {
+            inner.reset_boundaries.remove(&oldest);
+        }
+    }
+
+    /// §10.1/§8.4 evidence gate query: why a write citing `session_key` as
+    /// evidence must quarantine, if it must. Coarse by design: the tracker
+    /// holds session-sticky facts, so a tainted session taints every
+    /// evidence range within it.
+    pub fn evidence_quarantine_reason(&self, session_key: &str) -> Option<String> {
+        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = inner.tainted.get(session_key) {
+            return Some(format!(
+                "evidence session tainted by {} (session-tainted ⇒ range-tainted)",
+                state.source
+            ));
+        }
+        if inner.reset_boundaries.contains_key(session_key) {
+            return Some(
+                "evidence session closed at a reset boundary; distillates quarantine \
+                 pending steward review (§8.4)"
+                    .to_string(),
+            );
+        }
+        None
     }
 
     /// Taint fact for an explicit session key.
@@ -295,6 +376,65 @@ impl SessionTaintTracker {
             .get(identity)
             .and_then(|session| inner.tainted.get(session))
             .cloned()
+    }
+
+    /// §10.1 comms taint join, over what the observe surface actually
+    /// carries. Meerkat 0.7.9 has **no typed inbound peer-message event**:
+    /// a peer delivery lands in the receiver's session as injected prompt
+    /// text rendered by `format_peer_message_projection` /
+    /// `format_peer_response_projection` (meerkat-core `interaction.rs:126,
+    /// :239`), where the sender is the resolved trusted-peer name — for mob
+    /// members the `MemberCommsName` `{mob_id}/{role}/{agent_identity}`
+    /// (meerkat-core `connection.rs:368`). This join parses that sender out
+    /// and taints the receiving session when the sender's tracked session
+    /// is tainted.
+    ///
+    /// Honest limits, filed against upstream ask 5 (envelope-level taint
+    /// flags):
+    /// - **"tainted at send time" is approximated at delivery-observe
+    ///   time.** If the sender rotated to a clean session between send and
+    ///   delivery, the join misses; if the sender got tainted after the
+    ///   send, the join over-taints (conservative direction).
+    /// - **Peer *requests* render a raw cryptographic `peer_id`**, not a
+    ///   comms name, so their senders are unmappable host-side — unknowable
+    ///   without the upstream envelope fact.
+    /// - **Cross-process senders** are not in this tracker at all;
+    ///   sender-session taint state is unknowable for them.
+    /// - A user message quoting the projection prefix can false-positive —
+    ///   conservative (false quarantine, never false trust).
+    fn observe_inbound_peer_content(&self, identity: &str, session_key: &str, text: &str) {
+        for line in text.lines() {
+            let Some(sender_identity) = peer_projection_sender_identity(line) else {
+                continue;
+            };
+            if sender_identity == identity {
+                continue;
+            }
+            let source = {
+                let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+                inner
+                    .pending_identity_taint
+                    .get(sender_identity)
+                    .or_else(|| {
+                        inner
+                            .current_session
+                            .get(sender_identity)
+                            .and_then(|session| inner.tainted.get(session))
+                    })
+                    .map(|state| state.source.clone())
+            };
+            if let Some(source) = source {
+                let state = TaintState {
+                    tainted_at_ms: now_ms(),
+                    source: format!(
+                        "peer message from tainted sender '{sender_identity}' \
+                         (sender session tainted by {source})"
+                    ),
+                };
+                let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+                self.insert_taint(&mut inner, session_key.to_string(), state);
+            }
+        }
     }
 
     fn mark_identity_tainted(&self, identity: &str, source: String) {
@@ -361,14 +501,17 @@ impl SessionTaintTracker {
 pub trait LlmWriteGate: Send + Sync {
     /// `Some(reason)` when this LLM-authored write must land
     /// `RecordStatus::Quarantined`. Non-LLM principals are never gated.
-    fn quarantine_reason(&self, author: &MemoryAuthor) -> Option<String>;
+    /// `evidence` is the union of `EvidenceRef`s the write cites (P2
+    /// evidence-range taint, §10.1); empty for writes that cite nothing.
+    fn quarantine_reason(&self, author: &MemoryAuthor, evidence: &[EvidenceRef]) -> Option<String>;
 }
 
-/// The P1 gate: `llm_writes = "quarantined"` forces every LLM-authored write
-/// into quarantine regardless of taint; otherwise agent-authored writes
-/// quarantine when the author's session is tainted. Steward/Distiller
-/// authors carry run ids, not identities — in P1 only the `llm_writes` knob
-/// gates them (their evidence-range taint is P2's Distiller work).
+/// The taint/posture gate: `llm_writes = "quarantined"` forces every
+/// LLM-authored write into quarantine regardless of taint; agent-authored
+/// writes quarantine when the author's session is tainted; and ANY
+/// LLM-authored write (Distiller included) quarantines when its evidence
+/// cites a tainted session or a reset boundary (§8.4/§10.1 — coarse:
+/// session-tainted ⇒ range-tainted).
 pub struct TaintLlmWriteGate {
     tracker: Option<SessionTaintTracker>,
     llm_writes: AgentMemoryLlmWrites,
@@ -384,28 +527,78 @@ impl TaintLlmWriteGate {
 }
 
 impl LlmWriteGate for TaintLlmWriteGate {
-    fn quarantine_reason(&self, author: &MemoryAuthor) -> Option<String> {
+    fn quarantine_reason(&self, author: &MemoryAuthor, evidence: &[EvidenceRef]) -> Option<String> {
         if !author.is_llm() {
             return None;
         }
         if self.llm_writes == AgentMemoryLlmWrites::Quarantined {
             return Some("llm_writes=quarantined policy".to_string());
         }
-        if let (Some(tracker), MemoryAuthor::Agent { identity }) = (self.tracker.as_ref(), author)
+        let Some(tracker) = self.tracker.as_ref() else {
+            return None;
+        };
+        if let MemoryAuthor::Agent { identity } = author
             && let Some(state) = tracker.identity_taint(identity)
         {
             return Some(format!("session tainted by {}", state.source));
         }
+        for evidence_ref in evidence {
+            if let Some(reason) = tracker.evidence_quarantine_reason(&evidence_ref.session_id) {
+                return Some(reason);
+            }
+        }
         None
     }
+}
+
+/// Sender-identity extraction from one line of injected peer-projection
+/// text. Pinned to meerkat 0.7.9's canonical projections:
+/// `format_peer_message_projection` → `"Peer message from {name}:"` and
+/// `format_peer_response_projection` → `"Peer response from {name} (to
+/// request: ...)"`, where `{name}` for a mob member is
+/// `{mob_id}/{role}/{agent_identity}`. Returns the trailing path segment
+/// (the agent identity). Peer *requests* carry a raw peer id and return
+/// `None` (module docs on the honest gaps).
+fn peer_projection_sender_identity(line: &str) -> Option<&str> {
+    let name = if let Some(rest) = line.strip_prefix("Peer message from ") {
+        // Canonical shape ends the line with ':' (body follows on the next
+        // line). Names may themselves contain ':' (agent identities do), so
+        // strip the trailing delimiter rather than splitting at the first.
+        match rest.split_once(": ") {
+            Some((name, _)) => name.trim(),
+            None => rest.strip_suffix(':').unwrap_or(rest).trim(),
+        }
+    } else if let Some(rest) = line.strip_prefix("Peer response from ") {
+        rest.split(" (to request:").next()?.trim()
+    } else {
+        return None;
+    };
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.rsplit('/').next().unwrap_or(name))
 }
 
 // ---------------------------------------------------------------------------
 // Observe-stream feed
 // ---------------------------------------------------------------------------
 
-/// Guard for the taint observer task; aborts the task when the last clone
-/// drops (the runtime that owned the tracker is gone).
+/// A consumer of the per-member agent-event observe stream. The taint
+/// tracker and the Distiller's trigger sink both ride ONE observer loop —
+/// one `subscribe_agent_events` subscription per member, however many
+/// memory stages listen.
+pub trait MemberAgentEventSink: Send + Sync {
+    fn observe(&self, identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>);
+}
+
+impl MemberAgentEventSink for SessionTaintTracker {
+    fn observe(&self, identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>) {
+        self.observe_agent_event(identity, &envelope.payload);
+    }
+}
+
+/// Guard for the observer task; aborts the task when the last clone drops
+/// (the runtime that owned the sinks is gone).
 #[derive(Clone)]
 pub struct TaintObserverGuard {
     _abort: Arc<AbortOnDrop>,
@@ -421,20 +614,31 @@ impl Drop for AbortOnDrop {
 
 /// Subscribe the taint observer to every active member's agent-event stream
 /// (the same observe-only `subscribe_agent_events` surface the console
-/// forwarder rides), reconciling membership every second. Streams feed
-/// [`SessionTaintTracker::observe_agent_event`] keyed by the member's agent
-/// identity.
+/// forwarder rides), reconciling membership every second.
 pub fn spawn_taint_observer(
     handle: meerkat_mob::MobHandle,
     tracker: SessionTaintTracker,
 ) -> TaintObserverGuard {
-    let task = tokio::spawn(run_taint_observer(handle, tracker));
+    spawn_member_event_observer(handle, vec![Arc::new(tracker)])
+}
+
+/// Generalized observer: one reconcile loop, one stream per active member,
+/// fanned out to every sink (taint tracker, Distiller triggers, future
+/// stages).
+pub fn spawn_member_event_observer(
+    handle: meerkat_mob::MobHandle,
+    sinks: Vec<Arc<dyn MemberAgentEventSink>>,
+) -> TaintObserverGuard {
+    let task = tokio::spawn(run_member_event_observer(handle, sinks));
     TaintObserverGuard {
         _abort: Arc::new(AbortOnDrop(task)),
     }
 }
 
-async fn run_taint_observer(handle: meerkat_mob::MobHandle, tracker: SessionTaintTracker) {
+async fn run_member_event_observer(
+    handle: meerkat_mob::MobHandle,
+    sinks: Vec<Arc<dyn MemberAgentEventSink>>,
+) {
     use futures::StreamExt;
     use futures::stream::SelectAll;
 
@@ -453,7 +657,9 @@ async fn run_taint_observer(handle: meerkat_mob::MobHandle, tracker: SessionTain
         tokio::select! {
             Some(observed) = streams.next() => match observed {
                 Observed::Event(identity, envelope) => {
-                    tracker.observe_agent_event(&identity, &envelope.payload);
+                    for sink in &sinks {
+                        sink.observe(&identity, &envelope);
+                    }
                 }
                 Observed::Closed(identity) => {
                     subscribed.remove(&identity);
@@ -668,15 +874,23 @@ mod tests {
     }
 
     #[test]
-    fn clear_identity_drops_taint_explicitly() {
+    fn clear_identity_drops_attribution_but_keeps_the_session_fact() {
         let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
         let session = SessionId::new();
         tracker.observe_agent_event("identity:a", &run_started(&session));
         tracker.observe_agent_event("identity:a", &tool_result("web_fetch"));
         assert!(tracker.identity_taint("identity:a").is_some());
         tracker.clear_identity("identity:a");
+        // The identity moves on clean...
         assert!(tracker.identity_taint("identity:a").is_none());
-        assert!(tracker.session_taint(&session.to_string()).is_none());
+        // ...but the historical fact survives: the comms join and the
+        // evidence-range gate consult exactly such sessions (P2).
+        assert!(tracker.session_taint(&session.to_string()).is_some());
+        assert!(
+            tracker
+                .evidence_quarantine_reason(&session.to_string())
+                .is_some()
+        );
     }
 
     #[test]
@@ -689,31 +903,186 @@ mod tests {
         let agent = MemoryAuthor::Agent {
             identity: "identity:a".to_string(),
         };
-        assert!(gate.quarantine_reason(&agent).is_none());
-        assert!(gate.quarantine_reason(&MemoryAuthor::Application).is_none());
+        assert!(gate.quarantine_reason(&agent, &[]).is_none());
+        assert!(
+            gate.quarantine_reason(&MemoryAuthor::Application, &[])
+                .is_none()
+        );
 
         tracker.observe_agent_event("identity:a", &tool_result("web_search"));
-        let reason = gate.quarantine_reason(&agent).expect("tainted quarantines");
+        let reason = gate
+            .quarantine_reason(&agent, &[])
+            .expect("tainted quarantines");
         assert!(reason.contains("session tainted"), "{reason}");
         // Non-LLM principals are never gated, tainted or not.
-        assert!(gate.quarantine_reason(&MemoryAuthor::Application).is_none());
-        assert!(gate.quarantine_reason(&MemoryAuthor::Operator).is_none());
+        assert!(
+            gate.quarantine_reason(&MemoryAuthor::Application, &[])
+                .is_none()
+        );
+        assert!(
+            gate.quarantine_reason(&MemoryAuthor::Operator, &[])
+                .is_none()
+        );
 
         // llm_writes=quarantined forces quarantine with no taint at all.
         let strict = TaintLlmWriteGate::new(None, AgentMemoryLlmWrites::Quarantined);
         let reason = strict
-            .quarantine_reason(&MemoryAuthor::Agent {
-                identity: "identity:clean".to_string(),
-            })
+            .quarantine_reason(
+                &MemoryAuthor::Agent {
+                    identity: "identity:clean".to_string(),
+                },
+                &[],
+            )
             .expect("policy quarantines untainted writes");
         assert!(reason.contains("llm_writes=quarantined"), "{reason}");
         assert!(
             strict
-                .quarantine_reason(&MemoryAuthor::Steward {
-                    run_id: "run-1".to_string()
-                })
+                .quarantine_reason(
+                    &MemoryAuthor::Steward {
+                        run_id: "run-1".to_string()
+                    },
+                    &[]
+                )
                 .is_some()
         );
-        assert!(strict.quarantine_reason(&MemoryAuthor::Operator).is_none());
+        assert!(
+            strict
+                .quarantine_reason(&MemoryAuthor::Operator, &[])
+                .is_none()
+        );
+    }
+
+    fn evidence_for(session: &SessionId) -> Vec<EvidenceRef> {
+        vec![EvidenceRef {
+            session_id: session.to_string(),
+            generation: 0,
+            revision: None,
+            range: Some((0, 4)),
+        }]
+    }
+
+    #[test]
+    fn gate_quarantines_llm_writes_citing_tainted_evidence() {
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let session = SessionId::new();
+        tracker.observe_agent_event("identity:a", &run_started(&session));
+        tracker.observe_agent_event("identity:a", &tool_result("web_search"));
+        // Identity rotates away: the identity is clean, the session fact
+        // remains — the distiller's evidence must still quarantine.
+        let fresh = SessionId::new();
+        tracker.observe_agent_event("identity:a", &run_started(&fresh));
+
+        let gate = TaintLlmWriteGate::new(Some(tracker), AgentMemoryLlmWrites::Observed);
+        let distiller = MemoryAuthor::Distiller {
+            run_id: "run-1".to_string(),
+        };
+        let reason = gate
+            .quarantine_reason(&distiller, &evidence_for(&session))
+            .expect("tainted evidence range quarantines (session-tainted ⇒ range-tainted)");
+        assert!(reason.contains("evidence session tainted"), "{reason}");
+        // Clean evidence does not.
+        assert!(
+            gate.quarantine_reason(&distiller, &evidence_for(&fresh))
+                .is_none()
+        );
+        // Non-LLM authors are never evidence-gated.
+        assert!(
+            gate.quarantine_reason(&MemoryAuthor::Operator, &evidence_for(&session))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reset_boundary_quarantines_evidence_without_content_taint() {
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let session = SessionId::new();
+        tracker.observe_agent_event("identity:a", &run_started(&session));
+        assert!(
+            tracker
+                .evidence_quarantine_reason(&session.to_string())
+                .is_none()
+        );
+        tracker.mark_reset_boundary(&session.to_string());
+        let gate = TaintLlmWriteGate::new(Some(tracker), AgentMemoryLlmWrites::Observed);
+        let reason = gate
+            .quarantine_reason(
+                &MemoryAuthor::Distiller {
+                    run_id: "run-1".to_string(),
+                },
+                &evidence_for(&session),
+            )
+            .expect("reset boundary quarantines distillates");
+        assert!(reason.contains("reset boundary"), "{reason}");
+    }
+
+    #[test]
+    fn peer_projection_sender_parses_message_and_response_shapes() {
+        assert_eq!(
+            peer_projection_sender_identity("Peer message from mob-1/worker/identity:bob:"),
+            Some("identity:bob")
+        );
+        assert_eq!(
+            peer_projection_sender_identity(
+                "Peer response from mob-1/worker/identity:bob (to request: req-9)"
+            ),
+            Some("identity:bob")
+        );
+        // External peers may have plain display names.
+        assert_eq!(
+            peer_projection_sender_identity("Peer message from scout:"),
+            Some("scout")
+        );
+        // Peer requests render a raw peer id — unmappable, and honestly so.
+        assert_eq!(
+            peer_projection_sender_identity("Peer request from peer_id 018fabc (id: r-1)"),
+            None
+        );
+        assert_eq!(peer_projection_sender_identity("ordinary text"), None);
+    }
+
+    #[test]
+    fn comms_join_taints_receiver_of_message_from_tainted_sender() {
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        // Sender taints its session.
+        let sender_session = SessionId::new();
+        tracker.observe_agent_event("identity:bob", &run_started(&sender_session));
+        tracker.observe_agent_event("identity:bob", &tool_result("web_search"));
+
+        // Receiver gets a peer message from the tainted sender: the run's
+        // injected input carries the canonical projection text.
+        let receiver_session = SessionId::new();
+        let delivery = AgentEvent::RunStarted {
+            session_id: receiver_session.clone(),
+            input: meerkat_core::types::RunInput::Content {
+                content: meerkat_core::ContentInput::Text(
+                    "Peer message from mob-1/worker/identity:bob:\nplease remember X".to_string(),
+                ),
+            },
+        };
+        tracker.observe_agent_event("identity:alice", &delivery);
+        let taint = tracker
+            .identity_taint("identity:alice")
+            .expect("receiver session taints (peer-laundering close, §10.1)");
+        assert!(taint.source.contains("identity:bob"), "{}", taint.source);
+        assert!(
+            tracker
+                .session_taint(&receiver_session.to_string())
+                .is_some()
+        );
+
+        // A message from a clean tracked sender does not taint.
+        let clean_session = SessionId::new();
+        tracker.observe_agent_event("identity:carol", &run_started(&clean_session));
+        let receiver2 = SessionId::new();
+        let clean_delivery = AgentEvent::RunStarted {
+            session_id: receiver2.clone(),
+            input: meerkat_core::types::RunInput::Content {
+                content: meerkat_core::ContentInput::Text(
+                    "Peer message from mob-1/worker/identity:carol:\nhello".to_string(),
+                ),
+            },
+        };
+        tracker.observe_agent_event("identity:dave", &clean_delivery);
+        assert!(tracker.identity_taint("identity:dave").is_none());
     }
 }

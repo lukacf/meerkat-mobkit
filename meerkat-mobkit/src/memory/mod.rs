@@ -7,6 +7,8 @@
 //! never grow retrieval-index machinery; that is hub material.
 
 pub mod coordinator;
+pub mod distiller;
+pub mod guards;
 pub mod records;
 pub mod selector;
 pub mod sqlite_store;
@@ -16,6 +18,13 @@ pub mod taint;
 pub use coordinator::{
     RecallCoordinator, ScopeBudget, compose_identity_scope_set, compose_scope_budgets,
 };
+pub use distiller::{
+    CompactionDiscardSource, DistillCause, DistillOutcome, DistillerClientHandle, DistillerConfig,
+    DistillerEngine, DistillerError, DistillerProfile, DistillerTriggers, FactoryDistillerHandle,
+    HnswDiscardSource, SessionStoreTranscriptSource, TombstoneMeta, TombstoneSource,
+    TranscriptSource,
+};
+pub use guards::{BackgroundBudget, BackgroundBudgetConfig, BudgetDenied, BudgetPermit};
 pub use records::{
     CalibrationRef, EvidenceRef, InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor,
     MemoryId, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, NewMemoryRecord, ProposalId,
@@ -32,6 +41,7 @@ pub use staged::{
     StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,
 };
 pub use taint::{
-    ContentTrustConfig, LlmWriteGate, SessionTaintTracker, TaintLlmWriteGate, TaintObserverGuard,
-    TaintState, ToolContentTrust, spawn_taint_observer,
+    ContentTrustConfig, LlmWriteGate, MemberAgentEventSink, SessionTaintTracker, TaintLlmWriteGate,
+    TaintObserverGuard, TaintState, ToolContentTrust, spawn_member_event_observer,
+    spawn_taint_observer,
 };

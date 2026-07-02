@@ -209,6 +209,25 @@ class MobKitBuilder:
             wire["content_trust"] = config["contentTrust"]
         if "selector" in config:
             wire["selector"] = config["selector"]
+        distiller = config.get("distiller")
+        if distiller is not None:
+            if isinstance(distiller, dict):
+                distiller_wire: dict[str, Any] = {}
+                if "enabled" in distiller:
+                    distiller_wire["enabled"] = distiller["enabled"]
+                if "runs_per_hour" in distiller:
+                    distiller_wire["runs_per_hour"] = distiller["runs_per_hour"]
+                elif "runsPerHour" in distiller:
+                    distiller_wire["runs_per_hour"] = distiller["runsPerHour"]
+                if "min_interactions" in distiller:
+                    distiller_wire["min_interactions"] = distiller["min_interactions"]
+                elif "minInteractions" in distiller:
+                    distiller_wire["min_interactions"] = distiller["minInteractions"]
+                if "model" in distiller:
+                    distiller_wire["model"] = distiller["model"]
+                wire["distiller"] = distiller_wire
+            else:
+                wire["distiller"] = distiller
         self._config.agent_memory_config = wire
         return self
 

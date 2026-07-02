@@ -841,10 +841,13 @@ as a deliverable rather than asserting "the runtime knows":
   tool event is seen — small enough machinery that the Recorder must not ship
   without it (a memory tool that can be poisoned for a whole phase is worse than
   no memory tool). Its one honest gap is a race: a write in the same turn as the
-  session's *first* untrusted ingestion can beat the observe stream. **P2 closes
-  the race** (taint visibility at tool-dispatch time — upstream ask, §13) and
-  adds comms propagation and Distiller evidence-range taint. Deployments that
-  cannot accept the P1 race set `memory.llm_writes = "quarantined"` (below).
+  session's *first* untrusted ingestion can beat the observe stream. **P2 adds
+  the MobKit-side completion** — comms propagation and Distiller
+  evidence-range taint — while the race close itself (taint visibility at
+  tool-dispatch time) is **upstream-gated** on the §13 ask and lands when it
+  does; until then the race stays a documented gap, not a claimed close.
+  Deployments that cannot accept the race set
+  `memory.llm_writes = "quarantined"` (below).
 - **Taint is session-sticky, not per-turn** (Codex's thread-level
   `memory_mode='polluted'`, adopted): once a session ingests untrusted content,
   all Recorder/Distiller writes from that session quarantine until a
@@ -1088,13 +1091,15 @@ initiative scope; hub work is the roadmap's.
   precede its firewall. All LLM-authored writes cap at `AgentObserved`;
   quarantined records are write-only (surfaced via memory export) until P3's
   review surfaces.
-- **P2 — Distiller + lifecycle hooks + taint completion.** Fork-based extraction
-  with detached fallback; interaction-stream + compaction triggers with resource
-  guards (bounded host-side reads over compaction discards); pre-rotation
-  distillation on respawn/retire and quarantined distillation on reset (D3
-  knowledge half); taint completion — dispatch-time visibility (closing the P1
-  race) + comms taint join + Distiller evidence-range taint (§10.1); trust
-  lattice enforced end-to-end.
+- **P2 — Distiller + lifecycle hooks + taint completion.** Detached bounded
+  extraction (the fork harness stays a documented seam until a
+  capability-gated tool-authorization layer exists — §8.4);
+  interaction-stream + compaction triggers with resource guards (bounded
+  host-side reads over compaction discards); pre-rotation distillation on
+  respawn/retire and quarantined distillation on reset (D3 knowledge half);
+  taint completion — comms taint join + Distiller evidence-range taint
+  (§10.1; dispatch-time visibility stays upstream-gated on the §13 ask);
+  trust lattice enforced end-to-end.
 - **P3 — Steward.** App-enabled steward provisioning; scheduled dreams;
   staged-commit machinery with the full validator rule set; mob scope +
   proposals + promotion (quarantine-promote behind gating approval); exit

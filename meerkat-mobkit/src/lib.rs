@@ -116,9 +116,10 @@ pub use identity_first::{
     AuthoredWriteReceipt, MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use memory::{
-    ContentTrustConfig, ManifestTier, MemoryKind, MemoryRecord, MemoryScope, NewMemoryRecord,
-    RecordMeta, SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore,
-    StagedMutationBatch, StagedOp, TaintLlmWriteGate, TaintObserverGuard, TrustTier,
+    ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine, ManifestTier,
+    MemberAgentEventSink, MemoryKind, MemoryRecord, MemoryScope, NewMemoryRecord, RecordMeta,
+    SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
+    TaintLlmWriteGate, TaintObserverGuard, TrustTier, spawn_member_event_observer,
     spawn_taint_observer,
 };
 pub use mob_handle_runtime::{

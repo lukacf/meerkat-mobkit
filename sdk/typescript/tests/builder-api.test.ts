@@ -99,6 +99,31 @@ describe("MobKitBuilder.agentMemory()", () => {
       selector: "profile:/etc/mobkit/selector.toml",
     });
   });
+
+  it("serializes the distiller block to gateway wire keys", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({
+      distiller: {
+        enabled: true,
+        runsPerHour: 6,
+        minInteractions: 5,
+        model: "claude-haiku-4-5",
+      },
+    });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      distiller: {
+        enabled: true,
+        runs_per_hour: 6,
+        min_interactions: 5,
+        model: "claude-haiku-4-5",
+      },
+    });
+
+    const boolBuilder = MobKit.builder();
+    boolBuilder.agentMemory({ distiller: true });
+    assert.deepEqual(boolBuilder._config.agentMemoryConfig, { distiller: true });
+  });
 });
 
 // ---------------------------------------------------------------------------

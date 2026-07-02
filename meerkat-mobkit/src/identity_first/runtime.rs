@@ -1381,6 +1381,22 @@ impl IdentityRuntime {
                 }
                 let effective_session_id = outcome.session_id().clone();
                 if effective_session_id != registered_session_id {
+                    // §8.4 trigger (b): the resume fallback abandoned the
+                    // registered session — harvest it detached (materialize
+                    // is a hot path; the session store read stays valid).
+                    if let Some(injector) = self.agent_memory.read().await.as_ref() {
+                        let abandoned_key = registered_session_id.to_string();
+                        injector.note_session_generation(
+                            identity,
+                            &abandoned_key,
+                            record.generation.get(),
+                        );
+                        injector.spawn_rotation_distillation(
+                            identity,
+                            &abandoned_key,
+                            crate::memory::distiller::DistillCause::ResumeFallback,
+                        );
+                    }
                     abandoned_session_registrations.push(registered_session_id);
                 }
                 record.session_id = effective_session_id;
@@ -2508,7 +2524,7 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
-        let (runtime_id, memory_session_key) = {
+        let (runtime_id, memory_session_key, memory_generation) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -2520,6 +2536,7 @@ impl IdentityRuntime {
                     .map(|c| c.agent_runtime_id.clone()),
                 // Scopes the injector's cross-turn dedup + cumulative budget.
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
+                entry.continuity.as_ref().map(|c| c.generation.get()),
             )
         };
         // Steer is latency-sensitive live operator input: it bypasses both
@@ -2534,9 +2551,13 @@ impl IdentityRuntime {
                 Some(injector) => {
                     // §10.1 taint hook: authoritative session attribution
                     // ahead of the async observe stream — the run this send
-                    // triggers belongs to this session.
+                    // triggers belongs to this session. The generation bind
+                    // feeds the Distiller's EvidenceRefs (§8.4).
                     if let Some(session_key) = memory_session_key.as_deref() {
                         injector.note_current_session(identity, session_key);
+                        if let Some(generation) = memory_generation {
+                            injector.note_session_generation(identity, session_key, generation);
+                        }
                     }
                     let defanged = injector.defang_inbound(identity, content);
                     injector
@@ -2782,6 +2803,21 @@ impl IdentityRuntime {
             return Err(err);
         }
 
+        // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
+        // member retires. Best-effort and bounded — retirement proceeds at
+        // the distiller's pre-rotation timeout.
+        if let (Some(injector), Some(session_id)) =
+            (self.agent_memory.read().await.clone(), session_id.as_ref())
+        {
+            injector
+                .distill_before_rotation(
+                    identity,
+                    &session_id.to_string(),
+                    crate::memory::distiller::DistillCause::Retire,
+                )
+                .await;
+        }
+
         // Retire the mob member through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id)
             && let Err(err) = bridge.retire_member(rid).await
@@ -2900,6 +2936,22 @@ impl IdentityRuntime {
                 ));
             }
         };
+
+        // §8.4 trigger (b): respawn is a recovery boundary — harvest the
+        // session's window before the runtime refreshes (the SessionId does
+        // not rotate here; the cursor stays valid). Bounded; respawn
+        // proceeds at the pre-rotation timeout.
+        if let Some(injector) = self.agent_memory.read().await.clone() {
+            let session_key = record.session_id.to_string();
+            injector.note_session_generation(identity, &session_key, record.generation.get());
+            injector
+                .distill_before_rotation(
+                    identity,
+                    &session_key,
+                    crate::memory::distiller::DistillCause::Respawn,
+                )
+                .await;
+        }
 
         let effective_checkpoint_version = match self
             .refresh_existing_session_runtime_state(identity, &record, &grant)
@@ -3546,9 +3598,32 @@ impl IdentityRuntime {
             drop(entries);
             // §10.1: reset is the deliberate clean-slate boundary — clear
             // session taint explicitly (rotation clears implicitly; this
-            // also drops pending pre-attribution taint).
+            // also drops pending pre-attribution taint). §8.4: distill the
+            // outgoing session DETACHED (never on the reset critical path;
+            // the session store outlives the member, so the read stays
+            // valid after teardown) with the reset boundary marked first so
+            // every distillate lands Quarantined pending steward review.
             if let Some(injector) = self.agent_memory.read().await.as_ref() {
                 injector.clear_taint_for_identity(identity);
+                injector.note_session_generation(
+                    identity,
+                    &new_record.session_id.to_string(),
+                    new_record.generation.get(),
+                );
+                if let Some(old_continuity) = registered_entry.continuity.as_ref() {
+                    let old_session_key = old_continuity.session_id.to_string();
+                    injector.note_reset_boundary(&old_session_key);
+                    injector.note_session_generation(
+                        identity,
+                        &old_session_key,
+                        old_continuity.generation.get(),
+                    );
+                    injector.spawn_rotation_distillation(
+                        identity,
+                        &old_session_key,
+                        crate::memory::distiller::DistillCause::Reset,
+                    );
+                }
             }
             return Ok(new_record);
         }
@@ -3576,6 +3651,16 @@ impl IdentityRuntime {
         drop(entries);
         if let Some(injector) = self.agent_memory.read().await.as_ref() {
             injector.clear_taint_for_identity(identity);
+            // No-bridge (validation) reset: same §8.4 boundary semantics.
+            if let Some(old_continuity) = registered_entry.continuity.as_ref() {
+                let old_session_key = old_continuity.session_id.to_string();
+                injector.note_reset_boundary(&old_session_key);
+                injector.spawn_rotation_distillation(
+                    identity,
+                    &old_session_key,
+                    crate::memory::distiller::DistillCause::Reset,
+                );
+            }
         }
 
         Ok(new_record)
@@ -3637,6 +3722,22 @@ impl IdentityRuntime {
             broken_entry.lease = None;
             self.restore_entry(identity, broken_entry).await;
             return Err(err);
+        }
+
+        // §8.4 trigger (b): delete is the identity's LAST boundary — harvest
+        // the outgoing session before teardown (its exit-interview analog,
+        // §8.5, is the steward's; the distillate is what it will read).
+        // Bounded; deletion proceeds at the pre-rotation timeout.
+        if let (Some(injector), Some(session_id)) =
+            (self.agent_memory.read().await.clone(), session_id.as_ref())
+        {
+            injector
+                .distill_before_rotation(
+                    identity,
+                    &session_id.to_string(),
+                    crate::memory::distiller::DistillCause::Delete,
+                )
+                .await;
         }
 
         // Retire the mob member through the session bridge before removing

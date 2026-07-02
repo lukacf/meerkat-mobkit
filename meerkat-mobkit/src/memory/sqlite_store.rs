@@ -1065,6 +1065,61 @@ impl StagedMemoryStore for SqliteAgentMemoryStore {
     }
 }
 
+#[async_trait]
+impl crate::memory::distiller::TombstoneSource for SqliteAgentMemoryStore {
+    /// Recent tombstones for the Distiller's pre-injected "never re-create
+    /// these" list (§8.4). The mechanical backstop for exact recreation is
+    /// the staged validator's content-hash check; this list closes the
+    /// paraphrase gap at the prompt level.
+    async fn recent_tombstones(
+        &self,
+        scope: &MemoryScope,
+        since_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::memory::distiller::TombstoneMeta>, AgentMemoryError> {
+        let store = self.clone();
+        let scope = scope.clone();
+        run_blocking(move || {
+            store.with_realm_conn(&scope.realm().to_string(), |conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT title, kind, tombstoned_at_ms FROM records \
+                         WHERE scope_kind = ?1 AND scope_key = ?2 \
+                           AND status_kind = 'tombstoned' AND tombstoned_at_ms >= ?3 \
+                         ORDER BY tombstoned_at_ms DESC LIMIT ?4",
+                    )
+                    .map_err(sql_err)?;
+                let rows = statement
+                    .query_map(
+                        params![scope.kind_str(), scope.key(), since_ms as i64, limit as i64],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                            ))
+                        },
+                    )
+                    .map_err(sql_err)?;
+                let mut tombstones = Vec::new();
+                for row in rows {
+                    let (title, kind, tombstoned_at_ms) = row.map_err(sql_err)?;
+                    let kind = MemoryKind::parse(&kind).ok_or_else(|| {
+                        AgentMemoryError::Parse(format!("unknown record kind '{kind}'"))
+                    })?;
+                    tombstones.push(crate::memory::distiller::TombstoneMeta {
+                        title,
+                        kind,
+                        tombstoned_at_ms: tombstoned_at_ms as u64,
+                    });
+                }
+                Ok(tombstones)
+            })
+        })
+        .await
+    }
+}
+
 /// Body fetch for selector-chosen ids (§8.3): a plain by-id read over the
 /// composed scopes, wire-compat projected, returned in `ids` order. Only
 /// active records in the requested scopes qualify — the selector judged a
@@ -1115,10 +1170,12 @@ async fn run_blocking<T: Send + 'static>(
 /// one SQLite transaction, one audit row per op (§8.5).
 ///
 /// `gate` is the §10.1 LLM write gate: consulted once per batch (the
-/// quarantine decision is a property of the author's session/posture, not of
-/// individual ops) and applied to every create/supersede in the batch.
-/// `None` only for the markdown import, which migrates already-accepted
-/// records rather than writing new LLM output.
+/// quarantine decision is a property of the author's session/posture and of
+/// the batch's cited evidence, not of individual ops — a batch with any
+/// tainted evidence quarantines wholesale, conservative direction) and
+/// applied to every create/supersede in the batch. `None` only for the
+/// markdown import, which migrates already-accepted records rather than
+/// writing new LLM output.
 fn apply_batch_tx(
     conn: &mut Connection,
     batch: &StagedMutationBatch,
@@ -1126,7 +1183,17 @@ fn apply_batch_tx(
     token: &str,
     now: u64,
 ) -> Result<CommitReceipt, AgentMemoryError> {
-    let quarantine = gate.and_then(|gate| gate.quarantine_reason(&batch.author));
+    let evidence: Vec<crate::memory::records::EvidenceRef> = batch
+        .ops
+        .iter()
+        .flat_map(|op| match op {
+            StagedOp::Create { record, .. } | StagedOp::Supersede { record, .. } => {
+                record.evidence.clone()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    let quarantine = gate.and_then(|gate| gate.quarantine_reason(&batch.author, &evidence));
     if let Some(reason) = quarantine.as_deref() {
         // TODO(P3b): emit a timeline event for the quarantined write; the
         // tracing warn is the P1 visibility surface.
@@ -2495,7 +2562,11 @@ mod tests {
     struct AlwaysQuarantine;
 
     impl LlmWriteGate for AlwaysQuarantine {
-        fn quarantine_reason(&self, author: &MemoryAuthor) -> Option<String> {
+        fn quarantine_reason(
+            &self,
+            author: &MemoryAuthor,
+            _evidence: &[crate::memory::records::EvidenceRef],
+        ) -> Option<String> {
             author
                 .is_llm()
                 .then(|| "session tainted by web tool 'web_search'".to_string())
@@ -2554,6 +2625,121 @@ mod tests {
         let records = store.recall(recall_all(id, "family")).await?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].memory_id, record.memory_id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn distiller_write_law_holds_at_the_store_seam() -> Result<(), Box<dyn Error>> {
+        use crate::memory::taint::{ContentTrustConfig, SessionTaintTracker, TaintLlmWriteGate};
+
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        store.set_llm_write_gate(Arc::new(TaintLlmWriteGate::new(
+            Some(tracker.clone()),
+            crate::identity_first::agent_memory::AgentMemoryLlmWrites::Observed,
+        )));
+        let scope = identity_scope("family")?;
+        let author = MemoryAuthor::Distiller {
+            run_id: "run-1".to_string(),
+        };
+        let with_evidence = |title: &str, session: &str| NewMemoryRecord {
+            evidence: vec![crate::memory::records::EvidenceRef {
+                session_id: session.to_string(),
+                generation: 1,
+                revision: None,
+                range: Some((0, 3)),
+            }],
+            ..payload(title, "Distilled body")
+        };
+
+        // Clean evidence: lands Active, tier-ceilinged at AgentObserved.
+        let receipt = store
+            .remember_authored(
+                &scope,
+                with_evidence("Clean fact", "sess-clean"),
+                author.clone(),
+            )
+            .await?;
+        assert_eq!(receipt.status, RecordStatus::Active);
+        let record = store.with_realm_conn(&"family".to_string(), |conn| {
+            load_record(conn, "family", &receipt.memory_id)?
+                .ok_or_else(|| AgentMemoryError::Io("record missing".to_string()))
+        })?;
+        assert_eq!(record.trust, TrustTier::AgentObserved);
+        assert!(matches!(
+            record.provenance.author,
+            MemoryAuthor::Distiller { .. }
+        ));
+        assert_eq!(record.provenance.evidence.len(), 1);
+        assert_eq!(record.provenance.evidence[0].range, Some((0, 3)));
+
+        // Tainted evidence range: session-tainted ⇒ the write quarantines,
+        // for the Distiller author (not just Agent authors).
+        tracker.note_current_session("identity:someone", "sess-dirty");
+        tracker.observe_agent_event(
+            "identity:someone",
+            &meerkat_core::event::AgentEvent::ToolResultReceived {
+                id: "t".to_string(),
+                name: "web_fetch".to_string(),
+                content: vec![],
+                is_error: false,
+            },
+        );
+        let receipt = store
+            .remember_authored(
+                &scope,
+                with_evidence("Tainted fact", "sess-dirty"),
+                author.clone(),
+            )
+            .await?;
+        let RecordStatus::Quarantined { reason } = &receipt.status else {
+            return Err(format!("expected quarantine, got {:?}", receipt.status).into());
+        };
+        assert!(reason.contains("evidence session tainted"), "{reason}");
+
+        // Reset boundary: quarantines without any content taint (§8.4).
+        tracker.mark_reset_boundary("sess-reset");
+        let receipt = store
+            .remember_authored(&scope, with_evidence("Reset fact", "sess-reset"), author)
+            .await?;
+        let RecordStatus::Quarantined { reason } = &receipt.status else {
+            return Err(format!("expected quarantine, got {:?}", receipt.status).into());
+        };
+        assert!(reason.contains("reset boundary"), "{reason}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recent_tombstones_lists_scope_tombstones_newest_first() -> Result<(), Box<dyn Error>> {
+        use crate::memory::distiller::TombstoneSource;
+
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        let scope = identity_scope("family")?;
+        let kept = store
+            .remember("family", &id, new_memory("Kept fact", "Body"))
+            .await?;
+        let dropped = store
+            .remember("family", &id, new_memory("Phone number", "Body 2"))
+            .await?;
+        store.forget("family", &id, &dropped.memory_id).await?;
+
+        let tombstones = store.recent_tombstones(&scope, 0, 10).await?;
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(tombstones[0].title, "Phone number");
+        assert!(tombstones[0].tombstoned_at_ms > 0);
+        // Active records never appear; a since_ms in the future filters out.
+        assert!(!tombstones.iter().any(|t| t.title == "Kept fact"));
+        let future = tombstones[0].tombstoned_at_ms + 1;
+        assert!(
+            store
+                .recent_tombstones(&scope, future, 10)
+                .await?
+                .is_empty()
+        );
+        let _ = kept;
         Ok(())
     }
 

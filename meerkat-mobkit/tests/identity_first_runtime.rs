@@ -7382,3 +7382,173 @@ async fn identity_first_explicit_recall_marks_usage_mechanically() {
         "explicit recall reads must mark ExplicitRecall usage, nothing else"
     );
 }
+
+// ===========================================================================
+// §8.4 pre-rotation distillation hooks (P2)
+// ===========================================================================
+
+/// Scripted no-op LLM for the distiller: replies `[]` (the doctrine's
+/// preferred output) instantly.
+struct NoopDistillerLlm;
+
+#[async_trait]
+impl meerkat_client::LlmClient for NoopDistillerLlm {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a meerkat_client::LlmRequest,
+    ) -> meerkat_client::types::LlmStream<'a> {
+        Box::pin(futures::stream::iter(vec![
+            Ok(meerkat_client::LlmEvent::TextDelta {
+                delta: "[]".to_string(),
+                meta: None,
+            }),
+            Ok(meerkat_client::LlmEvent::Done {
+                outcome: meerkat_client::LlmDoneOutcome::Success {
+                    stop_reason: meerkat_core::StopReason::EndTurn,
+                },
+            }),
+        ]))
+    }
+
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::Other
+    }
+
+    async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+        Ok(())
+    }
+}
+
+struct NoopDistillerHandle;
+
+#[async_trait]
+impl meerkat_mobkit::memory::distiller::DistillerClientHandle for NoopDistillerHandle {
+    async fn client(
+        &self,
+    ) -> Result<Arc<dyn meerkat_client::LlmClient>, meerkat_mobkit::memory::distiller::DistillerError>
+    {
+        Ok(Arc::new(NoopDistillerLlm))
+    }
+    fn invalidate(&self) {}
+}
+
+/// Transcript source that snapshots the bridge's retire-call counter at read
+/// time — the ordering witness: a pre-rotation distillation must read the
+/// evidence BEFORE the bridge retires the member.
+struct OrderWitnessTranscripts {
+    bridge: Arc<CountingBridge>,
+    retire_calls_at_read: Arc<Mutex<Vec<usize>>>,
+}
+
+#[async_trait]
+impl meerkat_mobkit::memory::distiller::TranscriptSource for OrderWitnessTranscripts {
+    async fn read(
+        &self,
+        session_key: &str,
+        from_index: u64,
+    ) -> Result<
+        Option<meerkat_mobkit::memory::distiller::TranscriptSlice>,
+        meerkat_mobkit::memory::distiller::DistillerError,
+    > {
+        self.retire_calls_at_read
+            .lock()
+            .unwrap()
+            .push(self.bridge.retire_calls.load(Ordering::SeqCst));
+        Ok(Some(meerkat_mobkit::memory::distiller::TranscriptSlice {
+            session_key: session_key.to_string(),
+            start_index: from_index,
+            end_index: from_index + 1,
+            messages: vec![meerkat_mobkit::memory::distiller::TranscriptMessage {
+                index: from_index,
+                role: "user",
+                text: "remember: always use the wrapper".to_string(),
+            }],
+        }))
+    }
+}
+
+#[tokio::test]
+async fn identity_first_runtime_retire_distills_before_bridge_rotation() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store, lease, bridge.clone());
+    lazy_register_flow(&runtime, &[make_spec("agent:distill-retire")], None)
+        .await
+        .unwrap();
+    runtime
+        .materialize(&make_identity("agent:distill-retire"))
+        .await
+        .unwrap();
+
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store =
+        Arc::new(meerkat_mobkit::SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let retire_calls_at_read = Arc::new(Mutex::new(Vec::new()));
+    let engine = Arc::new(meerkat_mobkit::memory::distiller::DistillerEngine::new(
+        meerkat_mobkit::memory::distiller::DistillerProfile::embedded_default(),
+        meerkat_mobkit::memory::distiller::DistillerConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        Arc::new(NoopDistillerHandle),
+        memory_store.clone(),
+        memory_store.clone(),
+        Arc::new(OrderWitnessTranscripts {
+            bridge: bridge.clone(),
+            retire_calls_at_read: retire_calls_at_read.clone(),
+        }),
+        None,
+        None,
+        "default",
+    ));
+    runtime
+        .set_agent_memory(Some(
+            AgentMemoryRuntimeInjector::new(memory_store, AgentMemoryConfig::default())
+                .with_distiller(engine),
+        ))
+        .await;
+
+    runtime
+        .retire(&make_identity("agent:distill-retire"))
+        .await
+        .unwrap();
+
+    let reads = retire_calls_at_read.lock().unwrap().clone();
+    assert_eq!(
+        reads,
+        vec![0],
+        "the §8.4 pre-rotation hook must read the outgoing session's evidence \
+         exactly once, BEFORE the bridge retires the member"
+    );
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn identity_first_runtime_retire_without_distiller_is_unaffected() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store, lease, bridge.clone());
+    lazy_register_flow(&runtime, &[make_spec("agent:no-distill")], None)
+        .await
+        .unwrap();
+    runtime
+        .materialize(&make_identity("agent:no-distill"))
+        .await
+        .unwrap();
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store = Arc::new(MarkdownAgentMemoryStore::open(memory_dir.path()).unwrap());
+    runtime
+        .set_agent_memory(Some(AgentMemoryRuntimeInjector::new(
+            memory_store,
+            AgentMemoryConfig::default(),
+        )))
+        .await;
+
+    runtime
+        .retire(&make_identity("agent:no-distill"))
+        .await
+        .unwrap();
+    assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+}

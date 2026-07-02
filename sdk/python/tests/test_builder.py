@@ -130,6 +130,39 @@ class TestBuilderChain:
             "selector": "profile:/etc/mobkit/selector.toml",
         }
 
+    def test_agent_memory_distiller_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            distiller={
+                "enabled": True,
+                "runs_per_hour": 6,
+                "min_interactions": 5,
+                "model": "claude-haiku-4-5",
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["agent_memory"] == {
+            "distiller": {
+                "enabled": True,
+                "runs_per_hour": 6,
+                "min_interactions": 5,
+                "model": "claude-haiku-4-5",
+            },
+        }
+
+    def test_agent_memory_distiller_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(
+            distiller={"runsPerHour": 3, "minInteractions": 2},
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "distiller": {"runs_per_hour": 3, "min_interactions": 2},
+        }
+
+        b = MobKit.builder().agent_memory(distiller=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"distiller": True}
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

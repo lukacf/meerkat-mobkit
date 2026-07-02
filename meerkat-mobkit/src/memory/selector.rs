@@ -598,13 +598,26 @@ impl FactorySelectorHandle {
         realm: impl Into<String>,
         profile: &SelectorProfile,
     ) -> Self {
+        Self::for_model(store_path, config, realm, &profile.model, profile.provider)
+    }
+
+    /// Same seam, keyed by raw model/provider — the Distiller (§8.4) and any
+    /// future off-turn stage obtain their clients through this exact factory
+    /// path rather than growing a parallel one (§8.1 dogma rule 7).
+    pub fn for_model(
+        store_path: impl Into<PathBuf>,
+        config: meerkat::Config,
+        realm: impl Into<String>,
+        model: &str,
+        provider: Provider,
+    ) -> Self {
         Self {
             factory: meerkat::AgentFactory::new(store_path.into()),
             config,
             realm: realm.into(),
             identity: SessionLlmIdentity {
-                model: profile.model.clone(),
-                provider: profile.provider,
+                model: model.to_string(),
+                provider,
                 self_hosted_server_id: None,
                 provider_params: None,
                 // None = the realm's default binding for the provider; the

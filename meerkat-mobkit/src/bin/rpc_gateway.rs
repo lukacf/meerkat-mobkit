@@ -88,6 +88,9 @@ struct GatewayAgentMemoryOptions {
     /// configured; the wiring then falls back to the
     /// `MOBKIT_AGENT_MEMORY_SELECTOR` env var (config takes precedence).
     selector: Option<meerkat_mobkit::memory::selector::SelectorSpec>,
+    /// §8.4 distiller block from `agent_memory.distiller`. Disabled by
+    /// default (flipping it is a calibration decision, §11).
+    distiller: meerkat_mobkit::memory::distiller::DistillerConfig,
 }
 
 /// Which bundled store backs agent memory. SQLite is the default now that
@@ -823,6 +826,110 @@ actions = ["agent.view"]
         };
 
         assert!(err.contains("'markdown' or 'sqlite'"), "{err}");
+    }
+
+    #[test]
+    fn gateway_runtime_options_agent_memory_distiller_parse_matrix() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        // Default: disabled (flipping the default is a calibration decision).
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let agent_memory = options.agent_memory.expect("agent memory options");
+        assert!(!agent_memory.distiller.enabled);
+        assert_eq!(agent_memory.distiller.runs_per_hour, 12);
+        assert_eq!(agent_memory.distiller.min_interactions, 3);
+        assert_eq!(agent_memory.distiller.model, None);
+
+        // Full object block.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": {
+                    "distiller": {
+                        "enabled": true,
+                        "runs_per_hour": 6,
+                        "min_interactions": 5,
+                        "model": "claude-haiku-4-5"
+                    }
+                }
+            }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let distiller = options.agent_memory.expect("agent memory").distiller;
+        assert!(distiller.enabled);
+        assert_eq!(distiller.runs_per_hour, 6);
+        assert_eq!(distiller.min_interactions, 5);
+        assert_eq!(distiller.model.as_deref(), Some("claude-haiku-4-5"));
+
+        // Boolean shorthand + object-without-enabled is an explicit opt-in.
+        let params = json!({
+            "runtime_options": { "agent_memory": { "distiller": true } }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        assert!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .distiller
+                .enabled
+        );
+        let params = json!({
+            "runtime_options": { "agent_memory": { "distiller": { "runs_per_hour": 2 } } }
+        });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        assert!(
+            options
+                .agent_memory
+                .expect("agent memory")
+                .distiller
+                .enabled
+        );
+
+        // Fail-loud: unknown fields, bad types, out-of-range values.
+        for (params, needle) in [
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "cadence": 5 } } } }),
+                "unsupported runtime_options.agent_memory.distiller fields",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": "on" } } }),
+                "must be a boolean or object",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "runs_per_hour": 0 } } } }),
+                "runs_per_hour must be between 1 and 240",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "min_interactions": 0 } } } }),
+                "min_interactions must be between 1 and 100",
+            ),
+            (
+                json!({ "runtime_options": { "agent_memory": { "distiller": { "model": "" } } } }),
+                "model must be a non-empty string",
+            ),
+        ] {
+            let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+                Ok(_) => panic!("expected fail-loud parse for {params}"),
+                Err(err) => err,
+            };
+            assert!(err.contains(needle), "{err}");
+        }
+
+        // The markdown store has no manifest/tombstone/authored-write seams.
+        let params = json!({
+            "runtime_options": {
+                "agent_memory": { "store": "markdown", "distiller": { "enabled": true } }
+            }
+        });
+        let err = match parse_gateway_runtime_options(&params, Some(tmp.path())) {
+            Ok(_) => panic!("markdown + distiller should fail loudly"),
+            Err(err) => err,
+        };
+        assert!(err.contains("distiller requires store='sqlite'"), "{err}");
     }
 
     #[test]
@@ -1566,6 +1673,7 @@ fn parse_gateway_agent_memory_config(
             path,
             store: GatewayAgentMemoryStoreKind::default(),
             selector: None,
+            distiller: meerkat_mobkit::memory::distiller::DistillerConfig::default(),
         }));
     }
 
@@ -1587,6 +1695,7 @@ fn parse_gateway_agent_memory_config(
         "recorder_tool",
         "content_trust",
         "selector",
+        "distiller",
     ];
     let unsupported = object
         .keys()
@@ -1781,6 +1890,11 @@ fn parse_gateway_agent_memory_config(
             }
         }
     };
+    // §8.4 distiller block: fail-loud parse; enabled defaults false.
+    let distiller = match object.get("distiller") {
+        None => meerkat_mobkit::memory::distiller::DistillerConfig::default(),
+        Some(value) => parse_gateway_distiller_config(value)?,
+    };
     // The write gate and taint tracker are store-seam machinery; only the
     // sqlite store has the seam. Accepting these knobs with the markdown
     // store would silently enforce nothing — fail loud instead.
@@ -1801,6 +1915,11 @@ fn parse_gateway_agent_memory_config(
             .is_some_and(|spec| *spec != meerkat_mobkit::memory::selector::SelectorSpec::Off)
     {
         return Err("runtime_options.agent_memory.selector requires store='sqlite'".to_string());
+    }
+    // And for the distiller: manifests, tombstones, and the authored-write
+    // seam all live on the sqlite store.
+    if store == GatewayAgentMemoryStoreKind::Markdown && distiller.enabled {
+        return Err("runtime_options.agent_memory.distiller requires store='sqlite'".to_string());
     }
     let path = persistent_state
         .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
@@ -1823,7 +1942,82 @@ fn parse_gateway_agent_memory_config(
         path,
         store,
         selector,
+        distiller,
     }))
+}
+
+/// Fail-loud parse of `runtime_options.agent_memory.distiller` (§8.4):
+/// `{enabled, runs_per_hour, min_interactions, model}`; unknown fields and
+/// wrong types are errors, never silently ignored.
+fn parse_gateway_distiller_config(
+    value: &Value,
+) -> Result<meerkat_mobkit::memory::distiller::DistillerConfig, String> {
+    let mut config = meerkat_mobkit::memory::distiller::DistillerConfig::default();
+    if let Some(enabled) = value.as_bool() {
+        config.enabled = enabled;
+        return Ok(config);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        "runtime_options.agent_memory.distiller must be a boolean or object".to_string()
+    })?;
+    let supported = ["enabled", "runs_per_hour", "min_interactions", "model"];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_memory.distiller fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    if let Some(enabled) = object.get("enabled") {
+        config.enabled = enabled.as_bool().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.enabled must be a boolean".to_string()
+        })?;
+    } else {
+        // An object block without `enabled` is an explicit opt-in.
+        config.enabled = true;
+    }
+    if let Some(value) = object.get("runs_per_hour") {
+        let runs = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.runs_per_hour must be a positive integer"
+                .to_string()
+        })?;
+        if runs == 0 || runs > 240 {
+            return Err(
+                "runtime_options.agent_memory.distiller.runs_per_hour must be between 1 and 240"
+                    .to_string(),
+            );
+        }
+        config.runs_per_hour = runs as u32;
+    }
+    if let Some(value) = object.get("min_interactions") {
+        let min = value.as_u64().ok_or_else(|| {
+            "runtime_options.agent_memory.distiller.min_interactions must be a positive integer"
+                .to_string()
+        })?;
+        if min == 0 || min > 100 {
+            return Err(
+                "runtime_options.agent_memory.distiller.min_interactions must be between 1 and 100"
+                    .to_string(),
+            );
+        }
+        config.min_interactions = min as u32;
+    }
+    if let Some(value) = object.get("model") {
+        let model = value
+            .as_str()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .ok_or_else(|| {
+                "runtime_options.agent_memory.distiller.model must be a non-empty string"
+                    .to_string()
+            })?;
+        config.model = Some(model.to_string());
+    }
+    Ok(config)
 }
 
 /// §8.3 selector precedence: `agent_memory.selector` config wins; the
@@ -3161,6 +3355,9 @@ external_addressable = true
             None
         };
         let mut agent_memory_taint: Option<meerkat_mobkit::SessionTaintTracker> = None;
+        let mut agent_memory_distiller: Option<
+            Arc<meerkat_mobkit::memory::distiller::DistillerEngine>,
+        > = None;
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
                 match agent_memory.store {
@@ -3188,7 +3385,7 @@ external_addressable = true
                         // §10.1 taint firewall: the Recorder must not ship
                         // without it. Content-trust classification feeds a
                         // session-sticky tracker; the write gate applies
-                        // taint/posture quarantine at the store seam.
+                        // taint/posture/evidence quarantine at the store seam.
                         let tracker = meerkat_mobkit::SessionTaintTracker::new(
                             agent_memory.config.content_trust.clone(),
                         );
@@ -3196,11 +3393,83 @@ external_addressable = true
                             Some(tracker.clone()),
                             agent_memory.config.llm_writes,
                         )));
+                        // §8.4 Distiller: shares the tracker's observe loop.
+                        let mut sinks: Vec<Arc<dyn meerkat_mobkit::MemberAgentEventSink>> =
+                            vec![Arc::new(tracker.clone())];
+                        if agent_memory.distiller.enabled {
+                            use meerkat_mobkit::memory::distiller as memory_distiller;
+                            let mut profile =
+                                memory_distiller::DistillerProfile::embedded_default();
+                            if let Some(model) = agent_memory.distiller.model.as_deref() {
+                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32602,
+                                        format!("agent memory distiller: {e}"),
+                                    );
+                                });
+                            }
+                            let Some(state) = persistent_state.clone() else {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory distiller requires persistent_state".to_string(),
+                                );
+                            };
+                            let transcript_store: Arc<dyn meerkat::SessionStore> =
+                                if let Some(adapter) = identity_session_store_adapter.clone() {
+                                    adapter
+                                } else {
+                                    // Second handle on the same session
+                                    // database the mob bridge persists to;
+                                    // WAL keeps the read-side safe.
+                                    match meerkat_store::SqliteSessionStore::open(
+                                        state.join("sessions.db"),
+                                    ) {
+                                        Ok(store) => Arc::new(store),
+                                        Err(e) => fail_init(
+                                            &request_id,
+                                            -32603,
+                                            format!("agent memory distiller session store: {e}"),
+                                        ),
+                                    }
+                                };
+                            let handle = memory_distiller::FactoryDistillerHandle::new(
+                                state.clone(),
+                                meerkat::Config::default(),
+                                agent_memory.config.realm.clone(),
+                                &profile,
+                            );
+                            let model = profile.model.clone();
+                            let engine = Arc::new(memory_distiller::DistillerEngine::new(
+                                profile,
+                                agent_memory.distiller.clone(),
+                                Arc::new(handle),
+                                Arc::new(store.clone()),
+                                Arc::new(store.clone()),
+                                Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
+                                    transcript_store,
+                                )),
+                                // Meerkat's session semantic memory lives at
+                                // <persistent_state>/memory; absent dir ⇒
+                                // nothing was preserved at compaction.
+                                Some(Arc::new(memory_distiller::HnswDiscardSource::new(
+                                    state.join("memory"),
+                                ))),
+                                Some(tracker.clone()),
+                                agent_memory.config.realm.clone(),
+                            ));
+                            sinks.push(Arc::new(memory_distiller::DistillerTriggers::new(
+                                engine.clone(),
+                            )));
+                            agent_memory_distiller = Some(engine);
+                            tracing::info!(model = %model, "agent memory distiller installed");
+                        }
                         // Observe-stream feed lives for the gateway process;
                         // forgetting the guard keeps the task running.
-                        std::mem::forget(meerkat_mobkit::spawn_taint_observer(
+                        std::mem::forget(meerkat_mobkit::spawn_member_event_observer(
                             runtime.mob_handle(),
-                            tracker.clone(),
+                            sinks,
                         ));
                         agent_memory_taint = Some(tracker);
                         Some(Arc::new(store) as Arc<dyn meerkat_mobkit::AgentMemoryProvider>)
@@ -3233,6 +3502,9 @@ external_addressable = true
             );
             if let Some(tracker) = agent_memory_taint.clone() {
                 injector = injector.with_taint_tracker(tracker);
+            }
+            if let Some(distiller) = agent_memory_distiller.clone() {
+                injector = injector.with_distiller(distiller);
             }
             Some(injector)
         } else {

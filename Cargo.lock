@@ -2157,6 +2157,7 @@ dependencies = [
  "meerkat-contracts",
  "meerkat-core",
  "meerkat-mcp",
+ "meerkat-memory",
  "meerkat-mob",
  "meerkat-mob-mcp",
  "meerkat-models",

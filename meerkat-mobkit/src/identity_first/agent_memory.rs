@@ -556,6 +556,7 @@ pub struct AgentMemoryCustomizer {
 pub struct AgentMemoryRuntimeInjector {
     coordinator: RecallCoordinator,
     taint: Option<crate::memory::taint::SessionTaintTracker>,
+    distiller: Option<Arc<crate::memory::distiller::DistillerEngine>>,
 }
 
 impl AgentMemoryRuntimeInjector {
@@ -563,6 +564,7 @@ impl AgentMemoryRuntimeInjector {
         Self {
             coordinator: RecallCoordinator::new(provider, config),
             taint: None,
+            distiller: None,
         }
     }
 
@@ -570,6 +572,16 @@ impl AgentMemoryRuntimeInjector {
     /// delivery/reset hooks can keep session attribution authoritative.
     pub fn with_taint_tracker(mut self, taint: crate::memory::taint::SessionTaintTracker) -> Self {
         self.taint = Some(taint);
+        self
+    }
+
+    /// Attach the §8.4 Distiller so the identity runtime's lifecycle paths
+    /// can run pre-rotation extraction.
+    pub fn with_distiller(
+        mut self,
+        distiller: Arc<crate::memory::distiller::DistillerEngine>,
+    ) -> Self {
+        self.distiller = Some(distiller);
         self
     }
 
@@ -582,11 +594,65 @@ impl AgentMemoryRuntimeInjector {
         }
     }
 
+    /// Bind the continuity generation to a session for the Distiller's
+    /// `EvidenceRef`s (§7.1 — reset boundaries are first-class; the
+    /// generation is only knowable runtime-side).
+    pub fn note_session_generation(
+        &self,
+        identity: &AgentIdentity,
+        session_key: &str,
+        generation: u64,
+    ) {
+        if let Some(distiller) = self.distiller.as_ref() {
+            distiller.note_session_generation(identity.as_str(), session_key, generation);
+        }
+    }
+
     /// Explicit taint clear for `reset()` — the deliberate clean-slate
     /// lifecycle path (§10.1 fresh-context boundary).
     pub fn clear_taint_for_identity(&self, identity: &AgentIdentity) {
         if let Some(taint) = self.taint.as_ref() {
             taint.clear_identity(identity.as_str());
+        }
+    }
+
+    /// Mark the outgoing session of a `reset()` so distillates over it land
+    /// `Quarantined` (§8.4 reset boundary). Called before the detached
+    /// reset distillation is spawned; the engine also marks defensively.
+    pub fn note_reset_boundary(&self, session_key: &str) {
+        if let Some(taint) = self.taint.as_ref() {
+            taint.mark_reset_boundary(session_key);
+        }
+    }
+
+    /// Pre-rotation distillation (§8.4 trigger (b)) for respawn/retire/
+    /// delete: bounded and best-effort — returns at the engine's
+    /// pre-rotation timeout so rotation never hangs on distillation. No-op
+    /// without a wired Distiller.
+    pub async fn distill_before_rotation(
+        &self,
+        identity: &AgentIdentity,
+        session_key: &str,
+        cause: crate::memory::distiller::DistillCause,
+    ) {
+        if let Some(distiller) = self.distiller.as_ref() {
+            distiller
+                .distill_before_rotation(identity.as_str(), session_key, cause)
+                .await;
+        }
+    }
+
+    /// Detached distillation for the paths that must never wait on it
+    /// (reset, resume fallback). The session store outlives the session, so
+    /// the read stays valid after teardown.
+    pub fn spawn_rotation_distillation(
+        &self,
+        identity: &AgentIdentity,
+        session_key: &str,
+        cause: crate::memory::distiller::DistillCause,
+    ) {
+        if let Some(distiller) = self.distiller.as_ref() {
+            distiller.spawn_detached(identity.as_str(), session_key, cause);
         }
     }
 

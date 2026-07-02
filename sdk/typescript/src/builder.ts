@@ -237,6 +237,12 @@ export class MobKitBuilder {
         trustedTools?: string[];
       };
       selector?: "off" | "default" | `profile:${string}`;
+      distiller?: boolean | {
+        enabled?: boolean;
+        runsPerHour?: number;
+        minInteractions?: number;
+        model?: string;
+      };
     } = true,
   ): this {
     if (config !== true && config.enabled === false) {
@@ -286,6 +292,26 @@ export class MobKitBuilder {
       wire.content_trust = contentTrust;
     }
     if (config.selector !== undefined) wire.selector = config.selector;
+    if (config.distiller !== undefined) {
+      if (typeof config.distiller === "boolean") {
+        wire.distiller = config.distiller;
+      } else {
+        const distiller: Record<string, unknown> = {};
+        if (config.distiller.enabled !== undefined) {
+          distiller.enabled = config.distiller.enabled;
+        }
+        if (config.distiller.runsPerHour !== undefined) {
+          distiller.runs_per_hour = config.distiller.runsPerHour;
+        }
+        if (config.distiller.minInteractions !== undefined) {
+          distiller.min_interactions = config.distiller.minInteractions;
+        }
+        if (config.distiller.model !== undefined) {
+          distiller.model = config.distiller.model;
+        }
+        wire.distiller = distiller;
+      }
+    }
     this._config.agentMemoryConfig = wire;
     return this;
   }

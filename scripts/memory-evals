@@ -24,6 +24,20 @@ Modes:
                              back to `selector-eval --mock`, which exercises
                              the full prompt/parse plumbing deterministically
                              and never gates.
+  --stage distiller --mode mock
+                             Run the trivial deterministic mock distiller
+                             (extracts nothing — the doctrine's preferred
+                             output) against the distiller fixtures: noop
+                             fixtures and the deterministic quarantine
+                             verdicts score for real; extraction misses are
+                             informational and never fail the run.
+  --stage distiller --mode live
+                             Drive the real Distiller through the
+                             `distiller-eval` binary; score noop /
+                             must_contain / must_not_contain over the
+                             proposed ops plus the deterministic
+                             write-gate quarantine verdict (§8.4/§10.1).
+                             Same auth-SKIP semantics as the selector.
 
 Exit codes: 0 clean, 1 validation/scorecard violations, 2 configuration
 error.
@@ -43,9 +57,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = REPO_ROOT / "memory-evals"
 PROFILES_DIR = EVALS_DIR / "profiles"
 SELECTOR_FIXTURES_DIR = EVALS_DIR / "fixtures" / "selector"
+DISTILLER_FIXTURES_DIR = EVALS_DIR / "fixtures" / "distiller"
 INVARIANT_FIXTURES_DIR = EVALS_DIR / "fixtures" / "invariants"
 
-KNOWN_STAGES = ("selector",)
+KNOWN_STAGES = ("selector", "distiller")
 MEMORY_KINDS = (
     "Preference",
     "Fact",
@@ -92,6 +107,15 @@ TITLE_MAX_BYTES = 200
 DESCRIPTION_MAX_BYTES = 400
 # Placeholders the coordinator renders into a selector prompt bundle.
 SELECTOR_PROMPT_PLACEHOLDERS = ("{{manifest}}", "{{turn_text}}", "{{suppression_list}}")
+# Placeholders the distiller engine renders into its prompt bundle (§8.4).
+DISTILLER_PROMPT_PLACEHOLDERS = (
+    "{{existing_manifest}}",
+    "{{recent_tombstones}}",
+    "{{transcript}}",
+)
+# Transcript roles the distiller fixture format admits (matches the engine's
+# message projection in memory/distiller.rs).
+DISTILLER_TRANSCRIPT_ROLES = ("user", "assistant", "system notice", "tool results")
 
 # Mock selector: a record matches when any title word of at least this length
 # appears verbatim in the turn text. Crude on purpose — it exists to exercise
@@ -175,12 +199,16 @@ def validate_profile(path, violations):
             f"(expected file at {rel(bundle)})"
         )
         return
-    if stage == "selector":
+    stage_placeholders = {
+        "selector": SELECTOR_PROMPT_PLACEHOLDERS,
+        "distiller": DISTILLER_PROMPT_PLACEHOLDERS,
+    }
+    if stage in stage_placeholders:
         text = bundle.read_text()
-        for placeholder in SELECTOR_PROMPT_PLACEHOLDERS:
+        for placeholder in stage_placeholders[stage]:
             if placeholder not in text:
                 violations.append(
-                    f"{rel(bundle)}: selector prompt bundle missing "
+                    f"{rel(bundle)}: {stage} prompt bundle missing "
                     f"placeholder `{placeholder}`"
                 )
 
@@ -286,6 +314,147 @@ def validate_selector_fixture(path, violations):
                     f"{where}: suppressed_ids id `{record_id}` "
                     "not present in the fixture's manifest"
                 )
+
+    return name
+
+
+# ── distiller fixtures ────────────────────────────────────────
+
+
+def validate_distiller_fixture(path, violations):
+    where = str(rel(path))
+    fixture = load_json(path, violations)
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict):
+        violations.append(f"{where}: fixture must be a JSON object")
+        return None
+
+    allowed = {
+        "name",
+        "transcript",
+        "existing_manifest",
+        "tombstones",
+        "taint",
+        "expected",
+        "notes",
+    }
+    unknown = [key for key in fixture if key not in allowed]
+    if unknown:
+        violations.append(f"{where}: unknown key(s): {', '.join(unknown)}")
+
+    name = check_string(fixture, "name", where, violations)
+    check_string(fixture, "notes", where, violations)
+
+    transcript = fixture.get("transcript")
+    if not isinstance(transcript, list) or not transcript:
+        violations.append(f"{where}: `transcript` must be a non-empty array")
+    else:
+        for index, message in enumerate(transcript):
+            message_where = f"{where}: transcript[{index}]"
+            if not isinstance(message, dict):
+                violations.append(f"{message_where}: must be an object")
+                continue
+            unknown = [key for key in message if key not in ("role", "text")]
+            if unknown:
+                violations.append(f"{message_where}: unknown key(s): {', '.join(unknown)}")
+            role = check_string(message, "role", message_where, violations)
+            if role is not None and role not in DISTILLER_TRANSCRIPT_ROLES:
+                violations.append(
+                    f"{message_where}: unknown role `{role}` "
+                    f"(known: {', '.join(DISTILLER_TRANSCRIPT_ROLES)})"
+                )
+            check_string(message, "text", message_where, violations)
+
+    manifest = fixture.get("existing_manifest", [])
+    manifest_ids = []
+    if not isinstance(manifest, list):
+        violations.append(f"{where}: `existing_manifest` must be an array")
+    else:
+        for index, record in enumerate(manifest):
+            record_id = validate_record_meta(
+                record, f"{where}: existing_manifest[{index}]", violations
+            )
+            if record_id is not None:
+                if record_id in manifest_ids:
+                    violations.append(f"{where}: duplicate manifest id `{record_id}`")
+                manifest_ids.append(record_id)
+
+    tombstones = fixture.get("tombstones", [])
+    if not isinstance(tombstones, list):
+        violations.append(f"{where}: `tombstones` must be an array")
+    else:
+        for index, tombstone in enumerate(tombstones):
+            tombstone_where = f"{where}: tombstones[{index}]"
+            if not isinstance(tombstone, dict):
+                violations.append(f"{tombstone_where}: must be an object")
+                continue
+            unknown = [key for key in tombstone if key not in ("title", "kind")]
+            if unknown:
+                violations.append(f"{tombstone_where}: unknown key(s): {', '.join(unknown)}")
+            check_string(tombstone, "title", tombstone_where, violations)
+            kind = check_string(tombstone, "kind", tombstone_where, violations)
+            if kind is not None and kind not in MEMORY_KINDS:
+                violations.append(
+                    f"{tombstone_where}: unknown kind `{kind}` (known: {', '.join(MEMORY_KINDS)})"
+                )
+
+    taint = fixture.get("taint", {})
+    session_tainted = False
+    if not isinstance(taint, dict):
+        violations.append(f"{where}: `taint` must be an object")
+        taint = {}
+    else:
+        unknown = [key for key in taint if key not in ("session_tainted", "source")]
+        if unknown:
+            violations.append(f"{where}: taint unknown key(s): {', '.join(unknown)}")
+        session_tainted = taint.get("session_tainted", False)
+        if not isinstance(session_tainted, bool):
+            violations.append(f"{where}: taint.session_tainted must be a boolean")
+            session_tainted = False
+
+    expected = fixture.get("expected")
+    if not isinstance(expected, dict):
+        violations.append(f"{where}: missing or non-object `expected`")
+        return name
+    unknown = [key for key in expected if key not in ("noop", "proposals", "quarantined")]
+    if unknown:
+        violations.append(f"{where}: expected unknown key(s): {', '.join(unknown)}")
+    noop = expected.get("noop", False)
+    proposals = expected.get("proposals")
+    if noop is not False and noop is not True:
+        violations.append(f"{where}: expected.noop must be a boolean")
+    if noop and proposals is not None:
+        violations.append(f"{where}: expected.noop and expected.proposals are exclusive")
+    if not noop:
+        if not isinstance(proposals, dict):
+            violations.append(
+                f"{where}: expected needs either noop=true or a `proposals` object"
+            )
+            proposals = {}
+        unknown = [
+            key for key in proposals if key not in ("must_contain", "must_not_contain")
+        ]
+        if unknown:
+            violations.append(f"{where}: proposals unknown key(s): {', '.join(unknown)}")
+        for key in ("must_contain", "must_not_contain"):
+            needles = proposals.get(key, [])
+            if not isinstance(needles, list) or not all(
+                isinstance(n, str) and n for n in needles
+            ):
+                violations.append(
+                    f"{where}: expected.proposals.{key} must be an array of "
+                    "non-empty strings"
+                )
+    quarantined = expected.get("quarantined")
+    if quarantined is not None:
+        if not isinstance(quarantined, bool):
+            violations.append(f"{where}: expected.quarantined must be a boolean")
+        elif quarantined and not session_tainted:
+            violations.append(
+                f"{where}: expected.quarantined=true requires taint.session_tainted=true "
+                "(the gate verdict is deterministic over the fixture's taint context)"
+            )
 
     return name
 
@@ -526,18 +695,26 @@ def validate_staged_invariant(fixture, invariant, expected, where, violations):
 
 
 def run_check(quiet=False):
-    for directory in (PROFILES_DIR, SELECTOR_FIXTURES_DIR, INVARIANT_FIXTURES_DIR):
+    for directory in (
+        PROFILES_DIR,
+        SELECTOR_FIXTURES_DIR,
+        DISTILLER_FIXTURES_DIR,
+        INVARIANT_FIXTURES_DIR,
+    ):
         if not directory.is_dir():
             fail_config(f"missing directory {rel(directory)}")
 
     violations = []
     profiles = sorted(PROFILES_DIR.glob("*.toml"))
     selector_fixtures = sorted(SELECTOR_FIXTURES_DIR.glob("*.json"))
+    distiller_fixtures = sorted(DISTILLER_FIXTURES_DIR.glob("*.json"))
     invariant_fixtures = sorted(INVARIANT_FIXTURES_DIR.glob("*.json"))
     if not profiles:
         violations.append(f"{rel(PROFILES_DIR)}: no calibration profiles found")
     if not selector_fixtures:
         violations.append(f"{rel(SELECTOR_FIXTURES_DIR)}: no selector fixtures found")
+    if not distiller_fixtures:
+        violations.append(f"{rel(DISTILLER_FIXTURES_DIR)}: no distiller fixtures found")
     if not invariant_fixtures:
         violations.append(f"{rel(INVARIANT_FIXTURES_DIR)}: no invariant fixtures found")
 
@@ -545,9 +722,11 @@ def run_check(quiet=False):
         validate_profile(path, violations)
 
     seen_names = {}
-    for path, validator in [(p, validate_selector_fixture) for p in selector_fixtures] + [
-        (p, validate_invariant_fixture) for p in invariant_fixtures
-    ]:
+    for path, validator in (
+        [(p, validate_selector_fixture) for p in selector_fixtures]
+        + [(p, validate_distiller_fixture) for p in distiller_fixtures]
+        + [(p, validate_invariant_fixture) for p in invariant_fixtures]
+    ):
         name = validator(path, violations)
         if name is None:
             continue
@@ -567,6 +746,7 @@ def run_check(quiet=False):
         print(
             "memory-evals --check: OK "
             f"({len(profiles)} profile(s), {len(selector_fixtures)} selector fixture(s), "
+            f"{len(distiller_fixtures)} distiller fixture(s), "
             f"{len(invariant_fixtures)} invariant fixture(s))"
         )
 
@@ -767,6 +947,175 @@ def run_selector_live():
         print("  MOCK-fallback run complete (informational only, exit 0).")
 
 
+# ── distiller (§8.4) ─────────────────────────────────────────
+
+DEFAULT_DISTILLER_EVAL_CMD = (
+    str(REPO_ROOT / "scripts" / "repo-cargo"),
+    "run",
+    "--quiet",
+    "--bin",
+    "distiller-eval",
+    "--",
+)
+
+
+def distiller_eval_cmd():
+    override = os.environ.get("MEMORY_EVALS_DISTILLER_EVAL")
+    if override:
+        return tuple(override.split())
+    return DEFAULT_DISTILLER_EVAL_CMD
+
+
+def distiller_profile_path():
+    for path in sorted(PROFILES_DIR.glob("*.toml")):
+        try:
+            profile = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError:
+            continue
+        if profile.get("stage") == "distiller":
+            return path
+    fail_config("no distiller-stage profile in memory-evals/profiles/")
+
+
+def invoke_distiller_eval(payload, mock):
+    """One distiller-eval invocation. Returns (exit_code, parsed_or_None,
+    stderr_text)."""
+    cmd = list(distiller_eval_cmd())
+    if mock:
+        cmd.append("--mock")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=REPO_ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_config(f"cannot run distiller-eval ({' '.join(cmd)}): {exc}")
+    if proc.returncode != 0:
+        return proc.returncode, None, proc.stderr
+    try:
+        return 0, json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
+    except (json.JSONDecodeError, IndexError) as exc:
+        fail_config(f"distiller-eval produced unparseable output: {exc}\n{proc.stdout}")
+
+
+def score_distiller_fixture(fixture, result):
+    """Score one distiller-eval result. Returns (extraction_misses,
+    hard_failures) — extraction misses are LLM-judgment gaps (informational
+    in mock), hard failures are deterministic-verdict mismatches."""
+    expected = fixture["expected"]
+    ops = result["ops"]
+    op_text = " ".join(f"{op['title']} {op['body']}" for op in ops).lower()
+    misses, hard = [], []
+    if expected.get("noop"):
+        if ops:
+            misses.append(f"expected noop, got {len(ops)} op(s)")
+    else:
+        proposals = expected.get("proposals", {})
+        for needle in proposals.get("must_contain", []):
+            if needle.lower() not in op_text:
+                misses.append(f"missing must_contain `{needle}`")
+        for needle in proposals.get("must_not_contain", []):
+            if needle.lower() in op_text:
+                misses.append(f"contains must_not_contain `{needle}`")
+    if "quarantined" in expected and result.get("quarantined") != expected["quarantined"]:
+        # The gate verdict is deterministic (§10.1); a mismatch is a real
+        # failure in any mode.
+        hard.append(
+            f"quarantined verdict {result.get('quarantined')} != "
+            f"expected {expected['quarantined']}"
+        )
+    return misses, hard
+
+
+def distiller_payload(fixture):
+    return {
+        "transcript": fixture["transcript"],
+        "existing_manifest": fixture.get("existing_manifest", []),
+        "tombstones": fixture.get("tombstones", []),
+        "taint": fixture.get("taint", {"session_tainted": False}),
+        "profile_path": str(distiller_profile_path()),
+    }
+
+
+def run_distiller(live_requested):
+    run_check(quiet=True)
+    fixtures = sorted(DISTILLER_FIXTURES_DIR.glob("*.json"))
+
+    live = False
+    if live_requested and os.environ.get("MEMORY_EVALS_FORCE_MOCK") == "1":
+        print("memory-evals: LIVE distiller forced to --mock (MEMORY_EVALS_FORCE_MOCK=1)\n")
+    elif live_requested:
+        probe = {
+            "transcript": [{"role": "user", "text": "auth probe"}],
+            "existing_manifest": [],
+            "tombstones": [],
+            "profile_path": str(distiller_profile_path()),
+        }
+        code, _, stderr = invoke_distiller_eval(probe, mock=False)
+        live = code == 0
+        if code == EXIT_NO_AUTH:
+            print("memory-evals: LIVE distiller SKIPPED — no resolvable provider auth")
+            print("  (distiller-eval exit 3; running the --mock plumbing path instead;")
+            print("   extraction scoring informational only; quarantine verdicts still gate)\n")
+        elif code != 0:
+            fail_config(f"distiller-eval live probe failed (exit {code}):\n{stderr}")
+
+    label = "LIVE" if live else ("MOCK-fallback" if live_requested else "MOCK")
+    print(f"memory-evals: {label} distiller scorecard")
+    print(f"  profile: {rel(distiller_profile_path())}")
+    if not live:
+        print("  mock distiller extracts nothing (the doctrine's preferred output);")
+        print("  extraction misses are informational; deterministic quarantine")
+        print("  verdicts gate in every mode.\n")
+    else:
+        print("  §8.4 doctrine scorecard: noop / must_contain / must_not_contain +")
+        print("  deterministic quarantine verdicts\n")
+
+    extraction_regressions = 0
+    hard_failures = 0
+    for path in fixtures:
+        fixture = json.loads(path.read_text())
+        code, result, stderr = invoke_distiller_eval(distiller_payload(fixture), mock=not live)
+        if code == EXIT_NO_AUTH and live:
+            fail_config("provider auth disappeared mid-run; rerun the harness")
+        if code != 0:
+            fail_config(f"distiller-eval failed on {fixture['name']} (exit {code}):\n{stderr}")
+        misses, hard = score_distiller_fixture(fixture, result)
+        extraction_regressions += bool(misses)
+        hard_failures += bool(hard)
+        if hard:
+            status = "FAIL"
+        elif misses:
+            status = "FAIL" if live else "MOCK-MISS"
+        else:
+            status = "ok"
+        print(f"  [{status:9}] {fixture['name']}")
+        print(f"              ops: {len(result['ops'])}, quarantined: {result['quarantined']}")
+        for miss in misses:
+            print(f"              {miss}")
+        for failure in hard:
+            print(f"              {failure}")
+
+    print(
+        f"\n  totals: {extraction_regressions} extraction miss(es), "
+        f"{hard_failures} deterministic failure(s) of {len(fixtures)} fixture(s)"
+    )
+    if hard_failures:
+        print("  run FAILED — deterministic quarantine verdict mismatch.", file=sys.stderr)
+        sys.exit(1)
+    if live and extraction_regressions:
+        print("  LIVE run FAILED — scorecard regression (§11).", file=sys.stderr)
+        sys.exit(1)
+    if live:
+        print("  LIVE run clean.")
+    else:
+        print("  MOCK run complete (extraction scoring informational, exit 0).")
+
+
 # ── entry point ───────────────────────────────────────────────
 
 
@@ -788,6 +1137,10 @@ def main():
 
     if args.mode and not args.stage:
         parser.error("--mode requires --stage")
+    if args.stage == "distiller":
+        if args.mode in ("mock", "live"):
+            run_distiller(live_requested=args.mode == "live")
+            return
     if args.mode == "live":
         run_selector_live()
         return
