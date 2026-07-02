@@ -47,7 +47,7 @@ export function ConversationPane({
   onToggleDiffFile = null,
 }: ConversationPaneProps) {
   const scrollRef = useRef<HTMLElement | null>(null);
-  const [activeTurnIndex, setActiveTurnIndex] = useState(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = useState<number[]>([]);
   const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
   const showEmptyState = Boolean(viewState.emptyState && viewState.entries.length === 0 && !canRenderTurnDiff);
   const visibleTurns = useMemo(
@@ -64,7 +64,7 @@ export function ConversationPane({
   useEffect(() => {
     const scrollNode = scrollRef.current;
     if (!scrollNode || railTurns.length <= 1) {
-      setActiveTurnIndex(0);
+      setVisibleTurnIndexes([]);
       return;
     }
 
@@ -75,13 +75,16 @@ export function ConversationPane({
         scrollNode.querySelectorAll<HTMLElement>("[data-cc-conversation-turn-index]"),
       );
       if (!turnNodes.length) {
-        setActiveTurnIndex(0);
+        setVisibleTurnIndexes([]);
         return;
       }
 
       const scrollRect = scrollNode.getBoundingClientRect();
+      const visibleTop = scrollRect.top;
+      const visibleBottom = scrollRect.bottom;
       const targetY = scrollRect.top + Math.min(128, Math.max(48, scrollRect.height * 0.24));
       let nextIndex = 0;
+      const nextVisibleIndexes: number[] = [];
 
       for (const turnNode of turnNodes) {
         const rawIndex = Number(turnNode.dataset.ccConversationTurnIndex);
@@ -89,14 +92,21 @@ export function ConversationPane({
           continue;
         }
         const turnRect = turnNode.getBoundingClientRect();
+        if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
+          nextVisibleIndexes.push(rawIndex);
+        }
         if (turnRect.top <= targetY) {
           nextIndex = rawIndex;
-          continue;
         }
-        break;
       }
 
-      setActiveTurnIndex((current) => current === nextIndex ? current : nextIndex);
+      const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
+      setVisibleTurnIndexes((current) => {
+        if (current.length === nextIndexes.length && current.every((value, index) => value === nextIndexes[index])) {
+          return current;
+        }
+        return nextIndexes;
+      });
     };
 
     const scheduleUpdate = () => {
@@ -145,6 +155,7 @@ export function ConversationPane({
           <ol className="cc-conversation-turn-rail__list">
             {railTurns.map((turn, turnIndex) => {
               const isLastVisibleTurn = turnIndex === visibleTurns.length - 1;
+              const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
               const preview = visibleTurns[turnIndex]
                 ? conversationTurnPreview(
                     visibleTurns[turnIndex],
@@ -154,14 +165,19 @@ export function ConversationPane({
               return (
                 <li className="cc-conversation-turn-rail__item" key={turn.id || `turn-${turnIndex}`}>
                   <button
-                    aria-current={activeTurnIndex === turnIndex ? "true" : undefined}
+                    aria-current={isVisibleTurn ? "true" : undefined}
                     aria-label={preview ? `Jump to turn ${turnIndex + 1}: ${preview.title}` : `Jump to turn ${turnIndex + 1}`}
                     className={clsx(
                       "cc-conversation-turn-rail__button",
-                      activeTurnIndex === turnIndex && "is-active",
+                      isVisibleTurn && "is-active",
                     )}
                     data-testid={`conversation-turn-rail:${turnIndex}`}
-                    onClick={() => scrollToTurn(turnIndex)}
+                    onClick={(event) => {
+                      scrollToTurn(turnIndex);
+                      if (event.detail > 0) {
+                        event.currentTarget.blur();
+                      }
+                    }}
                     type="button"
                   >
                     <span className="cc-conversation-turn-rail__tick" aria-hidden="true" />

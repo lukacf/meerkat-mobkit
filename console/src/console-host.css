@@ -2307,6 +2307,7 @@ svg[data-svg="fit"],
   display: flex; flex-direction: column; height: 100%;
   min-width: 0; min-height: 0;
   position: relative;
+  container-type: inline-size;
   overflow: hidden;
   background: var(--bg-elev-1);
 }
@@ -2342,7 +2343,7 @@ svg[data-svg="fit"],
 
 .conv__body {
   flex: 1; overflow-y: auto; overflow-x: hidden;
-  padding: 18px 24px 12px;
+  padding: 18px 24px 12px 46px;
   display: flex; flex-direction: column; gap: 14px;
   min-height: 0;
   position: relative;
@@ -2365,8 +2366,8 @@ svg[data-svg="fit"],
   z-index: 100;
   top: 72px;
   bottom: 150px;
-  left: 10px;
-  width: 58px;
+  left: 12px;
+  width: 18px;
   overflow: visible;
   pointer-events: none;
   display: grid;
@@ -2375,7 +2376,7 @@ svg[data-svg="fit"],
 
 .conv-turn-rail__list {
   display: grid;
-  gap: clamp(6px, 1.16vh, 12px);
+  gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -2386,7 +2387,7 @@ svg[data-svg="fit"],
 .conv-turn-rail__item {
   position: relative;
   z-index: 8;
-  height: 24px;
+  height: 7px;
   display: flex;
   align-items: center;
   pointer-events: auto;
@@ -2395,8 +2396,8 @@ svg[data-svg="fit"],
 .conv-turn-rail__button {
   position: relative;
   z-index: 9;
-  width: 58px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -2407,8 +2408,8 @@ svg[data-svg="fit"],
 }
 
 .conv-turn-rail__tick {
-  width: 12px;
-  height: 3px;
+  width: 7px;
+  height: 2px;
   border-radius: 999px;
   background: color-mix(in oklch, var(--ink) 24%, transparent);
   transition: width var(--motion-hover), background var(--motion-hover);
@@ -2416,38 +2417,64 @@ svg[data-svg="fit"],
 
 .conv-turn-rail__button:hover .conv-turn-rail__tick,
 .conv-turn-rail__button:focus-visible .conv-turn-rail__tick {
-  width: 34px;
   background: color-mix(in oklch, var(--ink) 52%, transparent);
 }
 
 .conv-turn-rail__button.is-active .conv-turn-rail__tick,
 .conv-turn-rail__button[aria-current="true"] .conv-turn-rail__tick {
-  width: 52px;
   background: var(--ink);
+}
+
+.conv-turn-rail__item:has(+ .conv-turn-rail__item + .conv-turn-rail__item:hover) .conv-turn-rail__tick,
+.conv-turn-rail__item:hover + .conv-turn-rail__item + .conv-turn-rail__item .conv-turn-rail__tick {
+  width: 9px;
+}
+
+.conv-turn-rail__item:has(+ .conv-turn-rail__item:hover) .conv-turn-rail__tick,
+.conv-turn-rail__item:hover + .conv-turn-rail__item .conv-turn-rail__tick {
+  width: 11px;
+}
+
+.conv-turn-rail__item:hover .conv-turn-rail__tick {
+  width: 13px;
 }
 
 .conv-turn-preview {
   position: absolute;
-  left: 72px;
+  left: 28px;
   top: 50%;
-  width: min(640px, calc(100vw - 112px));
-  min-height: 92px;
-  padding: 20px 18px 18px;
-  border-radius: 24px;
+  width: min(320px, calc(100cqw - 72px));
+  min-height: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(33, 34, 36, 0.96);
   box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   color: rgba(246, 247, 249, 0.96);
   display: grid;
-  gap: 12px;
+  gap: 6px;
   opacity: 0;
   transform: translateY(-50%) translateX(-6px);
   pointer-events: none;
   transition: opacity var(--motion-hover), transform var(--motion-hover);
 }
 
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .conv-turn-preview {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 44px rgba(33, 34, 36, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.64);
+}
+
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .conv-turn-preview__title {
+  color: rgba(24, 24, 27, 0.96);
+}
+
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .conv-turn-preview__body {
+  color: rgba(82, 82, 91, 0.78);
+}
+
 .conv-turn-rail__item:hover .conv-turn-preview,
-.conv-turn-rail__item:focus-within .conv-turn-preview {
+.conv-turn-rail__button:focus-visible + .conv-turn-preview {
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }
@@ -2455,7 +2482,7 @@ svg[data-svg="fit"],
 .conv-turn-preview__title {
   min-width: 0;
   color: rgba(248, 249, 251, 0.98);
-  font-size: 20px;
+  font-size: 14px;
   line-height: 1.25;
   font-weight: 600;
   overflow: hidden;
@@ -2466,7 +2493,7 @@ svg[data-svg="fit"],
 .conv-turn-preview__body {
   min-width: 0;
   color: rgba(190, 195, 204, 0.72);
-  font-size: 18px;
+  font-size: 12px;
   line-height: 1.46;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2476,18 +2503,19 @@ svg[data-svg="fit"],
 
 @media (max-width: 760px) {
   .conv-turn-rail {
-    left: 6px;
+    left: 8px;
   }
 
   .conv-turn-rail__button {
-    width: 40px;
+    width: 18px;
+    height: 18px;
   }
 
   .conv-turn-rail__button:hover .conv-turn-rail__tick,
   .conv-turn-rail__button:focus-visible .conv-turn-rail__tick,
   .conv-turn-rail__button.is-active .conv-turn-rail__tick,
   .conv-turn-rail__button[aria-current="true"] .conv-turn-rail__tick {
-    width: 32px;
+    width: 7px;
   }
 
   .conv-turn-preview {
@@ -3090,7 +3118,7 @@ svg[data-svg="fit"],
   align-self: stretch;
 }
 .pane__body .msg__time { padding-top: 0; }
-.pane__body .conv__body { padding: 14px 16px 8px; gap: 10px; }
+.pane__body .conv__body { padding: 14px 16px 8px 46px; gap: 10px; }
 .pane__body .conv__head { padding: 12px 16px 10px; gap: 8px; }
 .pane__body .composer { padding: 10px 16px 12px; }
 
