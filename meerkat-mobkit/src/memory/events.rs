@@ -410,7 +410,7 @@ impl CollectingEventSink {
     pub(crate) fn types(&self) -> Vec<&'static str> {
         self.events
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(MemoryTimelineEvent::event_type)
             .collect()
@@ -422,7 +422,7 @@ impl MemoryEventSink for CollectingEventSink {
     fn emit(&self, event: MemoryTimelineEvent) {
         self.events
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
     }
 }

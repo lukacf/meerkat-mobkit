@@ -1116,7 +1116,10 @@ impl DistillerEngine {
     /// budget denials). Also threads it into the engine's budget guard.
     pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
         self.budget.set_event_sink(sink.clone());
-        *self.events.lock().unwrap_or_else(|err| err.into_inner()) = Some(sink);
+        *self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     pub fn pre_rotation_timeout(&self) -> Duration {
@@ -1161,7 +1164,7 @@ impl DistillerEngine {
     pub fn distilled_cursor(&self, identity: &str, session_key: &str) -> u64 {
         self.windows
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&(identity.to_string(), session_key.to_string()))
             .map(|state| state.cursor)
             .unwrap_or(0)
@@ -1173,7 +1176,10 @@ impl DistillerEngine {
         session_key: &str,
         f: impl FnOnce(&mut WindowState) -> T,
     ) -> T {
-        let mut windows = self.windows.lock().unwrap_or_else(|err| err.into_inner());
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if windows.len() >= MAX_TRACKED_WINDOWS
             && !windows.contains_key(&(identity.to_string(), session_key.to_string()))
             && let Some(oldest) = windows
@@ -1405,7 +1411,7 @@ impl DistillerEngine {
         let scope = self.identity_scope(identity);
         let manifest = match self
             .provider
-            .manifest(&[scope.clone()], ManifestTier::Full)
+            .manifest(std::slice::from_ref(&scope), ManifestTier::Full)
             .await
         {
             Ok(manifest) => manifest,
@@ -1621,7 +1627,7 @@ impl DistillerEngine {
                 if let Some(sink) = self
                     .events
                     .lock()
-                    .unwrap_or_else(|err| err.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_ref()
                 {
                     sink.emit(
@@ -1744,6 +1750,7 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::redundant_clone, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::identity_first::agent_memory::{
@@ -1771,7 +1778,7 @@ mod tests {
         fn prompts(&self) -> Vec<String> {
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
     }
@@ -1790,10 +1797,13 @@ mod tests {
                 .join("\n");
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(prompt);
             let reply = {
-                let mut replies = self.replies.lock().unwrap_or_else(|err| err.into_inner());
+                let mut replies = self
+                    .replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if replies.is_empty() {
                     String::new()
                 } else {
@@ -1873,7 +1883,7 @@ mod tests {
             Ok(self
                 .manifest
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone())
         }
 
@@ -1889,7 +1899,7 @@ mod tests {
         ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
             self.remembers
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((scope.clone(), record, author));
             Ok(AuthoredWriteReceipt {
                 memory_id: "mem-new".to_string(),
@@ -1912,7 +1922,7 @@ mod tests {
         ) -> Result<AuthoredWriteReceipt, AgentMemoryError> {
             self.supersedes
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((scope.clone(), prior.to_string(), record, author));
             Ok(AuthoredWriteReceipt {
                 memory_id: "mem-updated".to_string(),
@@ -2579,11 +2589,13 @@ mod tests {
         let seen: Arc<StdMutex<Vec<(String, String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
         let sink = seen.clone();
         engine.set_compaction_follow_up(Arc::new(move |identity, session, outcome| {
-            sink.lock().unwrap_or_else(|err| err.into_inner()).push((
-                identity.to_string(),
-                session.to_string(),
-                outcome.compaction_harvest_satisfied(),
-            ));
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    identity.to_string(),
+                    session.to_string(),
+                    outcome.compaction_harvest_satisfied(),
+                ));
         }));
         engine
             .distill_now("identity:a", "sess-1", DistillCause::Compaction)
@@ -2592,7 +2604,10 @@ mod tests {
         engine
             .distill_now("identity:a", "sess-1", DistillCause::Interactions)
             .await;
-        let seen = seen.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let seen = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             seen,
             vec![("identity:a".to_string(), "sess-1".to_string(), true)]
@@ -2699,7 +2714,7 @@ mod tests {
         engine.set_compaction_observed(Arc::new(move |identity, session| {
             observed
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((identity.to_string(), session.to_string()));
         }));
 
@@ -2719,7 +2734,9 @@ mod tests {
         // Fired synchronously at observation time — no detached harvest to
         // await.
         assert_eq!(
-            seen.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             vec![("identity:a".to_string(), session.to_string())]
         );
 
@@ -2738,6 +2755,11 @@ mod tests {
                 },
             ),
         );
-        assert_eq!(seen.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
     }
 }

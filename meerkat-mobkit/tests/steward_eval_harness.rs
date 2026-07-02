@@ -6,6 +6,7 @@
 //! law — including the quarantine-laundering reject — gates for real
 //! without credentials.
 
+#![allow(clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 

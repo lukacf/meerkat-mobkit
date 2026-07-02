@@ -1161,6 +1161,30 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
     }
 }
 
+/// Projects [`crate::memory::events::MemoryTimelineEvent`]s onto the
+/// console timeline. Sync fire-and-forget: the async append is spawned on
+/// the captured runtime handle, so emitters inside mutexes or blocking
+/// threads never wait on the event surface.
+struct ConsoleMemoryEventSink {
+    store: ConsoleEventStore,
+    handle: tokio::runtime::Handle,
+}
+
+impl crate::memory::events::MemoryEventSink for ConsoleMemoryEventSink {
+    fn emit(&self, event: crate::memory::events::MemoryTimelineEvent) {
+        let store = self.store.clone();
+        let identity = event
+            .identity()
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string());
+        let event_type = event.event_type().to_string();
+        let data = event.data();
+        self.handle.spawn(async move {
+            store.append(identity, None, event_type, data).await;
+        });
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1239,29 +1263,5 @@ mod tests {
         // Saturates at the cap for arbitrarily many failures (no shift overflow).
         assert_eq!(subscribe_backoff_delay(50), SUBSCRIBE_BACKOFF_MAX);
         assert!(subscribe_backoff_delay(2) > subscribe_backoff_delay(1));
-    }
-}
-
-/// Projects [`crate::memory::events::MemoryTimelineEvent`]s onto the
-/// console timeline. Sync fire-and-forget: the async append is spawned on
-/// the captured runtime handle, so emitters inside mutexes or blocking
-/// threads never wait on the event surface.
-struct ConsoleMemoryEventSink {
-    store: ConsoleEventStore,
-    handle: tokio::runtime::Handle,
-}
-
-impl crate::memory::events::MemoryEventSink for ConsoleMemoryEventSink {
-    fn emit(&self, event: crate::memory::events::MemoryTimelineEvent) {
-        let store = self.store.clone();
-        let identity = event
-            .identity()
-            .map(str::to_string)
-            .unwrap_or_else(|| crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string());
-        let event_type = event.event_type().to_string();
-        let data = event.data();
-        self.handle.spawn(async move {
-            store.append(identity, None, event_type, data).await;
-        });
     }
 }

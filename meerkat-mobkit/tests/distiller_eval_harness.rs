@@ -7,6 +7,7 @@
 //! which come from the real `TaintLlmWriteGate` law inside the binary —
 //! gate for real.
 
+#![allow(clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 

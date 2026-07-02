@@ -423,8 +423,7 @@ pub fn validate_batch(
                     });
                 }
                 let hash = content_hash(&record.title, &record.body);
-                check_tombstone_recreation(
-                    op_index,
+                if is_tombstone_recreation(
                     &batch.author,
                     view,
                     &batch_tombstoned,
@@ -432,7 +431,12 @@ pub fn validate_batch(
                     &hash,
                     tombstone_recreate_window_ms,
                     now_ms,
-                )?;
+                ) {
+                    return Err(StagedBatchError::TombstoneRecreation {
+                        op_index,
+                        content_hash: hash,
+                    });
+                }
                 if let Some(id) = id {
                     overlay.insert(
                         id.clone(),
@@ -519,8 +523,7 @@ pub fn validate_batch(
                     });
                 }
                 let hash = content_hash(&record.title, &record.body);
-                check_tombstone_recreation(
-                    op_index,
+                if is_tombstone_recreation(
                     &batch.author,
                     view,
                     &batch_tombstoned,
@@ -528,7 +531,12 @@ pub fn validate_batch(
                     &hash,
                     tombstone_recreate_window_ms,
                     now_ms,
-                )?;
+                ) {
+                    return Err(StagedBatchError::TombstoneRecreation {
+                        op_index,
+                        content_hash: hash,
+                    });
+                }
                 overlay.insert(
                     prior.clone(),
                     StagedRecordView {
@@ -760,9 +768,9 @@ fn chain_reaches_taint<'a>(
 
 /// §8.4 Distiller guard: LLM authors must not re-learn content that was
 /// just revoked. Deliberate non-LLM re-adds (operator/SDK forget-then-
-/// remember) are a human decision and pass.
-fn check_tombstone_recreation(
-    op_index: usize,
+/// remember) are a human decision and pass. Callers turn a `true` into
+/// `StagedBatchError::TombstoneRecreation` with their op index.
+fn is_tombstone_recreation(
     author: &MemoryAuthor,
     view: &dyn StagedBatchView,
     batch_tombstoned: &HashSet<(MemoryScope, String)>,
@@ -770,28 +778,23 @@ fn check_tombstone_recreation(
     hash: &str,
     window_ms: u64,
     now_ms: u64,
-) -> Result<(), StagedBatchError> {
+) -> bool {
     if !author.is_llm() {
-        return Ok(());
+        return false;
     }
     if batch_tombstoned.contains(&(scope.clone(), hash.to_string())) {
-        return Err(StagedBatchError::TombstoneRecreation {
-            op_index,
-            content_hash: hash.to_string(),
-        });
+        return true;
     }
     if let Some(at_ms) = view.tombstoned_at_ms(scope, hash)
         && now_ms.saturating_sub(at_ms) <= window_ms
     {
-        return Err(StagedBatchError::TombstoneRecreation {
-            op_index,
-            content_hash: hash.to_string(),
-        });
+        return true;
     }
-    Ok(())
+    false
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::redundant_clone)]
 mod tests {
     use super::*;
     use crate::memory::records::MemoryKind;

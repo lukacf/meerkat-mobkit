@@ -6,6 +6,7 @@
 //! quarantine hard-block, role law, and the §8.4 ordering invariant gate
 //! for real without credentials.
 
+#![allow(clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 

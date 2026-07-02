@@ -698,7 +698,7 @@ struct HarvestVerdict {
 
 /// Strict extraction of the outermost JSON value in a possibly fenced or
 /// prefixed reply (the Distiller's tolerance shape).
-fn parse_json_slice<'a>(reply: &'a str, open: char, close: char) -> Result<&'a str, String> {
+fn parse_json_slice(reply: &str, open: char, close: char) -> Result<&str, String> {
     let trimmed = reply.trim();
     let start = trimmed
         .find(open)
@@ -1253,7 +1253,7 @@ impl StewardEngine {
         for escalation in reply.open_loop_escalations {
             if !known_ids.contains(&escalation.record_id) {
                 run.skips
-                    .push(format!("open-loop escalation for unknown id, dropped"));
+                    .push("open-loop escalation for unknown id, dropped".to_string());
                 continue;
             }
             run.verdicts.open_loops_escalated += 1;
@@ -1809,7 +1809,7 @@ impl StewardEngine {
             GatherRequest::RecordBody { id } => {
                 let records = self
                     .store
-                    .records_by_ids(&self.realm, &[id.clone()])
+                    .records_by_ids(&self.realm, std::slice::from_ref(&id))
                     .await
                     .map_err(|err| err.to_string())?;
                 let Some(record) = records.into_iter().next() else {
@@ -2049,10 +2049,10 @@ impl StewardEngine {
 
 /// Shell-side sanitation of a consolidate op list (free so the eval
 /// harness exercises the exact production mapping).
-fn map_consolidate_ops_impl(
+fn map_consolidate_ops_impl<S: std::hash::BuildHasher>(
     realm: &str,
     raw_ops: Vec<RawStewardOp>,
-    known_ids: &HashSet<String>,
+    known_ids: &HashSet<String, S>,
     run_id: &str,
     run: &mut DreamRun,
     allow_operator: bool,
@@ -2060,19 +2060,19 @@ fn map_consolidate_ops_impl(
     // First pass: collect declared create ids for namespacing.
     let mut created_ids: HashMap<String, String> = HashMap::new();
     for (index, raw) in raw_ops.iter().enumerate() {
-        if raw.op == "create" || raw.op == "supersede" {
-            if let Some(id) = raw.id.as_deref() {
-                let sanitized: String = id
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                    .collect();
-                let sanitized = if sanitized.is_empty() {
-                    format!("op{index}")
-                } else {
-                    sanitized
-                };
-                created_ids.insert(id.to_string(), format!("mem-{run_id}-{sanitized}"));
-            }
+        if (raw.op == "create" || raw.op == "supersede")
+            && let Some(id) = raw.id.as_deref()
+        {
+            let sanitized: String = id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            let sanitized = if sanitized.is_empty() {
+                format!("op{index}")
+            } else {
+                sanitized
+            };
+            created_ids.insert(id.to_string(), format!("mem-{run_id}-{sanitized}"));
         }
     }
     let resolve = |id: &str| -> String {
@@ -3439,11 +3439,11 @@ pub mod eval {
 
     /// Parse a consolidate reply and run the shell's op sanitation, exactly
     /// as a dream would.
-    pub fn parse_and_map_consolidate(
+    pub fn parse_and_map_consolidate<S: std::hash::BuildHasher>(
         reply: &str,
         realm: &str,
         run_id: &str,
-        known_ids: &HashSet<String>,
+        known_ids: &HashSet<String, S>,
         allow_operator: bool,
     ) -> Result<EvalConsolidateOutcome, String> {
         let parsed: ConsolidateReply = parse_object(reply)?;
@@ -3545,7 +3545,7 @@ pub mod eval {
             DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS,
             1_000_000,
         )
-        .map(|_| batch.ops.len())
+        .map(|()| batch.ops.len())
         .map_err(|err| err.to_string())
     }
 
@@ -3569,6 +3569,13 @@ pub mod eval {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::expect_used,
+    clippy::manual_contains,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use crate::identity_first::agent_memory::AgentMemoryProvider;
@@ -3602,7 +3609,7 @@ mod tests {
         fn prompts(&self) -> Vec<String> {
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
     }
@@ -3621,10 +3628,13 @@ mod tests {
                 .join("\n");
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(prompt);
             let reply = {
-                let mut replies = self.replies.lock().unwrap_or_else(|err| err.into_inner());
+                let mut replies = self
+                    .replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if replies.is_empty() {
                     "{}".to_string()
                 } else {
@@ -3681,7 +3691,7 @@ mod tests {
         fn insert(&self, session: &str, messages: Vec<&str>) {
             self.sessions
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(
                     session.to_string(),
                     messages.into_iter().map(str::to_string).collect(),
@@ -3696,7 +3706,10 @@ mod tests {
             session_key: &str,
             from_index: u64,
         ) -> Result<Option<TranscriptSlice>, crate::memory::distiller::DistillerError> {
-            let sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(messages) = sessions.get(session_key) else {
                 return Ok(None);
             };
@@ -3765,7 +3778,7 @@ mod tests {
         ) -> Result<String, String> {
             self.calls
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((
                     realm.to_string(),
                     description.to_string(),
@@ -3774,7 +3787,7 @@ mod tests {
             let mut ids = self
                 .pending_ids
                 .lock()
-                .unwrap_or_else(|err| err.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if ids.is_empty() {
                 Err("no scripted pending ids left".to_string())
             } else {
@@ -3792,7 +3805,7 @@ mod tests {
         fn emit_conflict(&self, entity: &str, topic: &str, reason: &str) {
             self.conflicts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((entity.to_string(), topic.to_string(), reason.to_string()));
         }
     }

@@ -380,11 +380,11 @@ impl RecallCoordinator {
     pub fn on_session_compacted(&self, session_key: &str) {
         self.session_state
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_key);
         self.sweeps
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_key);
     }
 
@@ -403,7 +403,10 @@ impl RecallCoordinator {
     /// It must NEVER appear in logs, RPC responses, error strings, or ledger
     /// rows — only in the rendered injection header itself.
     fn nonce_for(&self, identity: &AgentIdentity, session_key: Option<&str>) -> String {
-        let mut guard = self.nonces.lock().unwrap_or_else(|err| err.into_inner());
+        let mut guard = self
+            .nonces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !guard.contains_key(identity.as_str()) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
             guard.clear();
         }
@@ -450,7 +453,7 @@ impl RecallCoordinator {
                 let guard = self
                     .session_state
                     .lock()
-                    .unwrap_or_else(|err| err.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let state = guard.get(key);
                 let used = state.map(|s| s.injected_bytes).unwrap_or(0);
                 let skip = state.map(|s| s.injected_ids.clone()).unwrap_or_default();
@@ -514,7 +517,7 @@ impl RecallCoordinator {
             let mut guard = self
                 .session_state
                 .lock()
-                .unwrap_or_else(|err| err.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !guard.contains_key(key) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
                 guard.clear();
             }
@@ -671,7 +674,10 @@ impl RecallCoordinator {
     }
 
     fn peek_ready_sweep(&self, session_key: &str) -> Vec<String> {
-        let guard = self.sweeps.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = self
+            .sweeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get(session_key)
             .and_then(|state| state.ready.clone())
@@ -681,7 +687,10 @@ impl RecallCoordinator {
     /// Clear the sweep result an assembly consumed — compare-and-clear, so
     /// a newer sweep that landed mid-assembly stays for the next one.
     fn consume_ready_sweep(&self, session_key: &str, used: &[String]) {
-        let mut guard = self.sweeps.lock().unwrap_or_else(|err| err.into_inner());
+        let mut guard = self
+            .sweeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(state) = guard.get_mut(session_key)
             && state.ready.as_deref() == Some(used)
         {
@@ -703,7 +712,10 @@ impl RecallCoordinator {
             return;
         };
         {
-            let mut guard = self.sweeps.lock().unwrap_or_else(|err| err.into_inner());
+            let mut guard = self
+                .sweeps
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !guard.contains_key(session_key) && guard.len() >= MAX_TRACKED_INJECTION_SESSIONS {
                 guard.clear();
             }
@@ -725,7 +737,9 @@ impl RecallCoordinator {
                 run_full_sweep(provider, runtime, scopes, turn_text, suppressed),
             )
             .await;
-            let mut guard = sweeps.lock().unwrap_or_else(|err| err.into_inner());
+            let mut guard = sweeps
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = guard.entry(key).or_default();
             state.in_flight = false;
             match result {
@@ -1421,6 +1435,7 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::identity_first::agent_memory::AgentMemoryForgetResult;
@@ -1524,14 +1539,14 @@ mod tests {
         fn captured_usage(&self) -> Vec<(Vec<String>, UsageEvent)> {
             self.usage_events
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
 
         fn captured_injections(&self) -> Vec<InjectionLogEntry> {
             self.injections
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
     }
@@ -1593,7 +1608,7 @@ mod tests {
         ) -> Result<(), AgentMemoryError> {
             self.usage_events
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((ids.to_vec(), event));
             Ok(())
         }
@@ -1605,7 +1620,7 @@ mod tests {
         ) -> Result<(), AgentMemoryError> {
             self.injections
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .extend(entries.iter().cloned());
             Ok(())
         }
@@ -1797,7 +1812,10 @@ mod tests {
 
     impl MobScopeResolver for FixedMobs {
         fn active_mobs(&self, _realm: &str, _identity: &str) -> Vec<String> {
-            self.0.iter().map(|mob| mob.to_string()).collect()
+            self.0
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
         }
     }
 
@@ -2311,7 +2329,10 @@ mod tests {
     impl LlmClient for QueueLlm {
         fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
             let reply = {
-                let mut replies = self.replies.lock().unwrap_or_else(|err| err.into_inner());
+                let mut replies = self
+                    .replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if replies.len() > 1 {
                     replies.remove(0)
                 } else {
@@ -2779,17 +2800,17 @@ mod tests {
         coordinator
             .sweeps
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(session_key.to_string())
             .or_default()
-            .ready = Some(ids.iter().map(|id| id.to_string()).collect());
+            .ready = Some(ids.iter().map(std::string::ToString::to_string).collect());
     }
 
     fn ready_sweep_of(coordinator: &RecallCoordinator, session_key: &str) -> Option<Vec<String>> {
         coordinator
             .sweeps
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_key)
             .and_then(|state| state.ready.clone())
     }
@@ -2946,7 +2967,7 @@ mod tests {
             let mut guard = coordinator
                 .session_state
                 .lock()
-                .unwrap_or_else(|err| err.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard
                 .entry("session-a".to_string())
                 .or_default()
@@ -2975,7 +2996,7 @@ mod tests {
             let mut guard = coordinator
                 .session_state
                 .lock()
-                .unwrap_or_else(|err| err.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard
                 .get_mut("session-a")
                 .expect("session state")
@@ -3037,7 +3058,7 @@ mod tests {
             let sessions = coordinator
                 .session_state
                 .lock()
-                .unwrap_or_else(|err| err.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(
                 !sessions.contains_key("session-a"),
                 "compaction must clear the session's dedup set and byte counter"

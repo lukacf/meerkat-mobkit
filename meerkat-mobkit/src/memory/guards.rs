@@ -79,7 +79,10 @@ impl std::fmt::Debug for BudgetPermit {
 
 impl Drop for BudgetPermit {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(state) = inner.realms.get_mut(&self.realm) {
             state.concurrent = state.concurrent.saturating_sub(1);
         }
@@ -122,14 +125,17 @@ impl BackgroundBudget {
     pub fn set_event_sink(&self, sink: Arc<dyn MemoryEventSink>) {
         self.inner
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .event_sink = Some(sink);
     }
 
     /// Admit one background run for `realm`, or say loudly why not.
     /// `stage` is only for the log line.
     pub fn try_acquire(&self, realm: &str, stage: &str) -> Result<BudgetPermit, BudgetDenied> {
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let window = inner.config.window;
         let runs_cap = inner.config.runs_per_window;
         let concurrent_cap = inner.config.max_concurrent;
@@ -176,6 +182,7 @@ impl BackgroundBudget {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

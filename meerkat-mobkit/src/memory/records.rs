@@ -456,6 +456,7 @@ pub fn age_days(updated_at_ms: u64, now_ms: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

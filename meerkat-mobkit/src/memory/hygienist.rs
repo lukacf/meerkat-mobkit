@@ -42,7 +42,7 @@ use meerkat_core::event::AgentEvent;
 use meerkat_core::{Message, Provider, SystemNoticeKind, SystemNoticeMessage, UserMessage};
 
 use crate::identity_first::agent_memory::{compact_whitespace, truncate_utf8_boundary};
-use crate::memory::distiller::{DistillOutcome, DistillerEngine};
+use crate::memory::distiller::{CompactionFollowUp, DistillOutcome, DistillerEngine};
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{ManifestTier, MemoryScope, RecordStatus};
@@ -837,8 +837,7 @@ pub fn validate_revision(
             });
         }
         previous_end = op.end;
-        for index in op.start..op.end {
-            let role = roles[index];
+        for (index, &role) in roles.iter().enumerate().take(op.end).skip(op.start) {
             match op.action {
                 RevisionAction::PruneToolResults => {
                     if role != HygieneRole::ToolResults {
@@ -1010,7 +1009,7 @@ pub fn build_replacement(
         if let Some(op) = ops.iter().find(|op| op.start == index) {
             match &op.action {
                 RevisionAction::PruneToolResults => {
-                    for pruned in messages[op.start..op.end].iter() {
+                    for pruned in &messages[op.start..op.end] {
                         if let Message::ToolResults {
                             results,
                             created_at,
@@ -1028,7 +1027,7 @@ pub fn build_replacement(
                                 .collect();
                             replacement.push(Message::ToolResults {
                                 results: stubbed,
-                                created_at: created_at.clone(),
+                                created_at: *created_at,
                             });
                         }
                     }
@@ -1141,14 +1140,17 @@ impl HygienistEngine {
     /// Wire the §9.3 timeline sink; also threads it into the budget guard.
     pub fn set_event_sink(&self, sink: Arc<dyn MemoryEventSink>) {
         self.budget.set_event_sink(sink.clone());
-        *self.events.lock().unwrap_or_else(|err| err.into_inner()) = Some(sink);
+        *self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     fn emit(&self, event: MemoryTimelineEvent) {
         if let Some(sink) = self
             .events
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
             sink.emit(event);
@@ -1401,9 +1403,7 @@ impl HygienistEngine {
 /// the boundary, and only when the harvest left nothing unharvested
 /// (`DistillOutcome::compaction_harvest_satisfied` — budget denials and
 /// read/extraction failures block hygiene loudly instead).
-pub fn distiller_follow_up(
-    engine: Arc<HygienistEngine>,
-) -> Arc<dyn Fn(&str, &str, &DistillOutcome) + Send + Sync> {
+pub fn distiller_follow_up(engine: Arc<HygienistEngine>) -> CompactionFollowUp {
     Arc::new(
         move |identity: &str, session_key: &str, outcome: &DistillOutcome| {
             if outcome.compaction_harvest_satisfied() {
@@ -1519,6 +1519,7 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat_core::StopReason;
@@ -1889,7 +1890,7 @@ mod tests {
             }
             self.rewrites
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((start, end, replacement.len()));
             Ok(AppliedRevision {
                 parent_revision: "rev-parent".to_string(),
@@ -2018,7 +2019,7 @@ mod tests {
             scripted
                 .rewrites
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
             &[(2, 3, 1)]
         );
@@ -2050,7 +2051,7 @@ mod tests {
             scripted
                 .rewrites
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty(),
             "blocked revision must not reach the seam"
         );
@@ -2156,7 +2157,7 @@ mod tests {
             if scripted
                 .rewrites
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len()
                 == 1
             {
@@ -2168,7 +2169,7 @@ mod tests {
             scripted
                 .rewrites
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             1,
             "satisfied harvest must trigger the pass"

@@ -7336,7 +7336,7 @@ async fn identity_first_explicit_recall_marks_usage_mechanically() {
         ) -> Result<(), meerkat_mobkit::identity_first::AgentMemoryError> {
             self.usage
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((ids.to_vec(), event));
             Ok(())
         }

@@ -5,6 +5,7 @@
 //! this never attempts (or pays for) a live model call, regardless of what
 //! auth the host machine could resolve.
 
+#![allow(clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 

@@ -246,14 +246,14 @@ impl SessionTaintTracker {
         *self
             .event_sink
             .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(sink);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     fn emit_event(&self, event: crate::memory::events::MemoryTimelineEvent) {
         if let Some(sink) = self
             .event_sink
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
             sink.emit(event);
@@ -298,7 +298,10 @@ impl SessionTaintTracker {
     /// delivery path. Keeps the tracker's attribution ahead of the (async)
     /// observe stream on the paths MobKit controls.
     pub fn note_current_session(&self, identity: &str, session_key: &str) {
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pending = inner.pending_identity_taint.remove(identity);
         let previous = inner
             .current_session
@@ -334,7 +337,10 @@ impl SessionTaintTracker {
     /// and the Distiller's evidence gate consult it for exactly such
     /// sessions.
     pub fn clear_identity(&self, identity: &str) {
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.pending_identity_taint.remove(identity);
         inner.current_session.remove(identity);
     }
@@ -343,7 +349,10 @@ impl SessionTaintTracker {
     /// LLM-authored write whose evidence cites this session quarantines
     /// pending steward review, regardless of content taint. Idempotent.
     pub fn mark_reset_boundary(&self, session_key: &str) {
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if inner
             .reset_boundaries
             .insert(session_key.to_string(), now_ms())
@@ -379,7 +388,10 @@ impl SessionTaintTracker {
     /// holds session-sticky facts, so a tainted session taints every
     /// evidence range within it.
     pub fn evidence_quarantine_reason(&self, session_key: &str) -> Option<String> {
-        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(state) = inner.tainted.get(session_key) {
             return Some(format!(
                 "evidence session tainted by {} (session-tainted ⇒ range-tainted)",
@@ -398,14 +410,20 @@ impl SessionTaintTracker {
 
     /// Taint fact for an explicit session key.
     pub fn session_taint(&self, session_key: &str) -> Option<TaintState> {
-        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.tainted.get(session_key).cloned()
     }
 
     /// Taint fact for the identity's currently-attributed session (the write
     /// gate's query: LLM-authored writes carry identity, not session).
     pub fn identity_taint(&self, identity: &str) -> Option<TaintState> {
-        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(state) = inner.pending_identity_taint.get(identity) {
             return Some(state.clone());
         }
@@ -449,7 +467,10 @@ impl SessionTaintTracker {
                 continue;
             }
             let source = {
-                let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+                let inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 inner
                     .pending_identity_taint
                     .get(sender_identity)
@@ -469,7 +490,10 @@ impl SessionTaintTracker {
                          (sender session tainted by {source})"
                     ),
                 };
-                let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 self.insert_taint(&mut inner, session_key.to_string(), state);
             }
         }
@@ -480,7 +504,10 @@ impl SessionTaintTracker {
             tainted_at_ms: now_ms(),
             source,
         };
-        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match inner.current_session.get(identity).cloned() {
             Some(session) => self.insert_taint(&mut inner, session, state),
             None => {
@@ -606,9 +633,7 @@ impl LlmWriteGate for TaintLlmWriteGate {
         {
             return Some("llm_writes=quarantined policy".to_string());
         }
-        let Some(tracker) = self.tracker.as_ref() else {
-            return None;
-        };
+        let tracker = self.tracker.as_ref()?;
         if let MemoryAuthor::Agent { identity } = author
             && let Some(state) = tracker.identity_taint(identity)
         {
@@ -824,6 +849,12 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use meerkat_core::types::{ContentBlock, ServerToolKind, SessionId};

@@ -2821,7 +2821,10 @@ impl IdentityRuntime {
             injector
                 .note_identity_retired(
                     identity,
-                    session_id.as_ref().map(|id| id.to_string()).as_deref(),
+                    session_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string)
+                        .as_deref(),
                     "retire",
                 )
                 .await;
@@ -3751,7 +3754,10 @@ impl IdentityRuntime {
             injector
                 .note_identity_retired(
                     identity,
-                    session_id.as_ref().map(|id| id.to_string()).as_deref(),
+                    session_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string)
+                        .as_deref(),
                     "delete",
                 )
                 .await;

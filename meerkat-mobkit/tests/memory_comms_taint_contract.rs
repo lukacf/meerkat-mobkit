@@ -11,6 +11,7 @@
 //! silently dying (tainted peer content would then launder into memory as
 //! Active with no failing test).
 
+#![allow(clippy::expect_used)]
 use meerkat_comms::PubKey;
 use meerkat_comms::agent::{CommsContent, CommsMessage, CommsStatus, MessageIntent};
 use meerkat_core::event::AgentEvent;

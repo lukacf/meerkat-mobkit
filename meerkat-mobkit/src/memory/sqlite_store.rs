@@ -222,7 +222,7 @@ impl SqliteAgentMemoryStore {
         *self
             .llm_write_gate
             .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(gate);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
     }
 
     /// Install the §10.2 evidence-ref resolver. The steward wiring installs
@@ -232,7 +232,7 @@ impl SqliteAgentMemoryStore {
         *self
             .evidence_resolver
             .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(resolver);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
     }
 
     /// Wire the §9.3 timeline sink for quarantined-write events.
@@ -240,27 +240,27 @@ impl SqliteAgentMemoryStore {
         *self
             .event_sink
             .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(sink);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
     fn gate(&self) -> Option<Arc<dyn LlmWriteGate>> {
         self.llm_write_gate
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     fn resolver(&self) -> Option<Arc<dyn EvidenceRefResolver>> {
         self.evidence_resolver
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     fn events(&self) -> Option<Arc<dyn crate::memory::events::MemoryEventSink>> {
         self.event_sink
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -282,7 +282,7 @@ impl SqliteAgentMemoryStore {
         let mut connections = self
             .connections
             .lock()
-            .unwrap_or_else(|err| err.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = connections.get(realm) {
             return Ok(existing.clone());
         }
@@ -528,7 +528,9 @@ impl SqliteAgentMemoryStore {
         f: impl FnOnce(&mut Connection) -> Result<T, AgentMemoryError>,
     ) -> Result<T, AgentMemoryError> {
         let conn = self.realm_connection(realm)?;
-        let mut guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let mut guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut guard)
     }
 
@@ -2280,7 +2282,7 @@ impl crate::memory::distiller::TombstoneSource for SqliteAgentMemoryStore {
         let store = self.clone();
         let scope = scope.clone();
         run_blocking(move || {
-            store.with_realm_conn(&scope.realm().to_string(), |conn| {
+            store.with_realm_conn(scope.realm(), |conn| {
                 let mut statement = conn
                     .prepare(
                         "SELECT title, kind, tombstoned_at_ms FROM records \
@@ -3272,6 +3274,14 @@ fn mint_token(prefix: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::await_holding_lock,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::expect_used,
+    clippy::let_and_return,
+    clippy::panic,
+    clippy::unnecessary_to_owned
+)]
 mod tests {
     use super::*;
     use crate::identity_first::agent_memory::{AgentMemorySelection, MarkdownAgentMemoryStore};
@@ -3471,7 +3481,9 @@ mod tests {
 
         // Chain is preserved on the row.
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (status_kind, by): (String, Option<String>) = guard.query_row(
             "SELECT status_kind, status_detail FROM records WHERE memory_id = ?1",
             params![prior.memory_id],
@@ -3685,7 +3697,9 @@ mod tests {
         // pending_proposals also exercises the proposals `taint` migration.
         assert!(store.pending_proposals("family", 4).await?.is_empty());
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let flag = |id: &str| -> Result<bool, Box<dyn Error>> {
             Ok(guard.query_row(
                 "SELECT ever_quarantined FROM records WHERE memory_id = ?1",
@@ -3769,7 +3783,9 @@ mod tests {
         // Terminal statuses are never re-verdicted: the backfill leaves them
         // alone.
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for id in ["prop-accepted", "prop-rejected"] {
             let taint: Option<String> = guard.query_row(
                 "SELECT taint FROM proposals WHERE proposal_id = ?1",
@@ -3846,7 +3862,9 @@ mod tests {
         // Age every stage row past the 24h GC horizon, then reopen.
         {
             let conn = store.realm_connection("family")?;
-            let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+            let guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.execute(
                 "UPDATE stage SET created_at_ms = created_at_ms - ?1",
                 params![(STAGE_GC_MAX_AGE_MS + 60_000) as i64],
@@ -4040,7 +4058,9 @@ mod tests {
 
         // Import audit trail exists (one audit row per imported record).
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let audits: i64 = guard.query_row(
             "SELECT COUNT(*) FROM audit WHERE stage_token LIKE 'import-%'",
             [],
@@ -4162,7 +4182,9 @@ mod tests {
         // tombstoned origin and the copy (inherited via derived_from).
         {
             let conn = store.realm_connection("family")?;
-            let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+            let guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let flags: Vec<(String, bool)> = {
                 let mut stmt = guard.prepare(
                     "SELECT memory_id, ever_quarantined FROM records ORDER BY memory_id",
@@ -4252,7 +4274,9 @@ mod tests {
 
         // The skips are counted in import audit rows.
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let summaries: Vec<String> = {
             let mut stmt =
                 guard.prepare("SELECT detail FROM audit WHERE op_kind = 'import_summary'")?;
@@ -4435,7 +4459,9 @@ mod tests {
             .await?;
 
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let usage_json: String = guard.query_row(
             "SELECT usage_stats FROM records WHERE memory_id = ?1",
             params![record.memory_id],
@@ -4508,7 +4534,9 @@ mod tests {
         assert!(proposal_id.starts_with("prop-"));
 
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (status, scope_kind): (String, String) = guard.query_row(
             "SELECT status, scope_kind FROM proposals WHERE proposal_id = ?1",
             params![proposal_id],
@@ -4804,7 +4832,9 @@ mod tests {
         // The verification is a CLAIM in provenance; the tier stays at the
         // LLM ceiling (§10.2).
         let conn = store.realm_connection("family")?;
-        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (trust, provenance_json): (String, String) = guard.query_row(
             "SELECT trust, provenance FROM records WHERE memory_id = ?1",
             params![receipt.memory_id],

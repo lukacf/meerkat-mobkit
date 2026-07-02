@@ -321,10 +321,10 @@ enum RawCoverage {
 /// `{selected_ids, coverage}` reply. Unknown ids are dropped with a warning;
 /// suppressed ids are never returned; a single JSON-repair round-trip runs
 /// on parse failure, then the call errors.
-pub async fn select(
+pub async fn select<S: std::hash::BuildHasher>(
     manifest: &[RecordMeta],
     turn_text: &str,
-    suppressed_ids: &HashSet<String>,
+    suppressed_ids: &HashSet<String, S>,
     profile: &SelectorProfile,
     client: &dyn LlmClient,
 ) -> Result<Selection, SelectorError> {
@@ -424,11 +424,11 @@ fn parse_selection(reply: &str) -> Result<RawSelection, String> {
 // Prompt rendering
 // ---------------------------------------------------------------------------
 
-fn render_prompt(
+fn render_prompt<S: std::hash::BuildHasher>(
     profile: &SelectorProfile,
     manifest: &[RecordMeta],
     turn_text: &str,
-    suppressed_ids: &HashSet<String>,
+    suppressed_ids: &HashSet<String, S>,
 ) -> String {
     let rows: Vec<&RecordMeta> = if profile.params.shuffle_manifest {
         shuffled(manifest)
@@ -636,7 +636,7 @@ impl SelectorHandle for FactorySelectorHandle {
         if let Some(client) = self
             .cache
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
         {
             return Ok(client.clone());
@@ -653,7 +653,7 @@ impl SelectorHandle for FactorySelectorHandle {
             })?;
         self.cache
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, client.clone());
         Ok(client)
     }
@@ -661,7 +661,7 @@ impl SelectorHandle for FactorySelectorHandle {
     fn invalidate(&self) {
         self.cache
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }
@@ -780,7 +780,9 @@ static INSTALLED: LazyLock<RwLock<Option<Arc<SelectorRuntime>>>> =
 /// construction); coordinators built for tests inject via
 /// `with_selector` and never touch this global.
 pub fn install(runtime: Arc<SelectorRuntime>) {
-    let mut guard = INSTALLED.write().unwrap_or_else(|err| err.into_inner());
+    let mut guard = INSTALLED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_some() {
         tracing::warn!("agent-memory selector re-installed; replacing the existing stage");
     }
@@ -790,7 +792,7 @@ pub fn install(runtime: Arc<SelectorRuntime>) {
 pub fn installed() -> Option<Arc<SelectorRuntime>> {
     INSTALLED
         .read()
-        .unwrap_or_else(|err| err.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
@@ -842,6 +844,7 @@ pub fn profile_for_spec(spec: &SelectorSpec) -> Result<Option<SelectorProfile>, 
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::redundant_clone, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::memory::records::MemoryKind;
@@ -879,7 +882,7 @@ mod tests {
         fn prompts(&self) -> Vec<String> {
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
     }
@@ -898,10 +901,13 @@ mod tests {
                 .join("\n");
             self.prompts
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(prompt);
             let reply = {
-                let mut replies = self.replies.lock().unwrap_or_else(|err| err.into_inner());
+                let mut replies = self
+                    .replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if replies.is_empty() {
                     String::new()
                 } else {
