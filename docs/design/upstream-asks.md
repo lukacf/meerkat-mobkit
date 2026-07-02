@@ -1,16 +1,34 @@
-# Meerkat upstream asks — issue drafts
+# Meerkat upstream asks — work order
 
-> **DRAFTS — not filed.** These are ready-to-file issue drafts for the meerkat
-> repo, derived from
-> [`agent-memory-architecture.md`](agent-memory-architecture.md) §13. Filing
-> needs Luka's go-ahead. None of these block the MobKit memory initiative —
-> each ask has a specified MobKit interim behavior, and each removes a class
-> of defect at the right layer when it lands.
+> **Handed to the meerkat coding agent by Luka (2026-07-02).** Eight asks for
+> the meerkat repo, derived from the MobKit memory initiative
+> ([`agent-memory-architecture.md`](agent-memory-architecture.md) §13) and
+> refined by what its implementation actually found. **None of these block
+> MobKit** — every ask has a shipped MobKit interim behavior, so land them in
+> whatever order fits meerkat's own constraints. Each ask states the problem,
+> code-verified evidence, a proposed shape (a starting point, not a contract —
+> deviate where meerkat's internals argue otherwise, but preserve the stated
+> *property*), and what MobKit does today / will do when it lands.
+>
+> **Suggested sequencing by impact:**
+> 1. **Ask 1 + Ask 3** (same seam, one change set) — unlocks MobKit flipping
+>    ambient per-turn memory injection on by default, echo-safe by
+>    construction, and closes the injection-channel-authenticity gap.
+> 2. **Ask 2 (+ Ask 8, natural pair)** — stops the per-build re-embed tax that
+>    grows with every respawn/reset in a realm; operational debt accruing
+>    daily.
+> 3. **Ask 5** — closes the remaining persistent-prompt-injection gaps
+>    (cross-process taint, send-time semantics, dispatch-time race).
+> 4. **Ask 6** — deepest change, biggest architectural unlock (contained
+>    fork-launched extraction with prompt-cache economics).
+> 5. **Ask 4** (incl. the head-revision-read refinement) and **Ask 7** —
+>    quality-of-life; no urgency.
 
-Evidence citations come from the memory survey
+Evidence citations were code-verified against meerkat 0.7.9 (the version
+MobKit pins) and the mobkit `feat/agent-memory-system` branch; line numbers
+may have drifted. The memory-survey archive
 ([`evidence/memory-survey/followups.md`](evidence/memory-survey/followups.md))
-and were code-verified against the meerkat and mobkit working trees at survey
-time (June 2026); line numbers may have drifted since.
+holds the original deep-dive evidence.
 
 ---
 
@@ -307,3 +325,136 @@ a raw cryptographic peer id, unmappable to an identity host-side; (c)
 cross-process senders are not in the host tracker at all. Deployments that
 cannot accept the P1 race set `memory.llm_writes = "quarantined"` (every
 LLM-authored write quarantines until steward/operator review).
+
+---
+
+## Ask 6 — Capability-gated tool authorization for fork-launched members
+
+**Title:** Call-level tool authorization policy on fork/spawn launch modes, so
+a fork-launched member can be capability-contained without changing its tool
+list
+
+**Problem statement.** MobKit's memory Distiller wants to run as a fork of
+the live session — `Session::fork`/`fork_at` are O(1) copy-on-write, and a
+fork shares the parent's prompt-cache prefix, making extraction nearly free
+in input tokens (the pattern Claude Code uses for exactly this workload). But
+prompt-cache identity requires a byte-identical prefix *including the tool
+list*, and the only fork path MobKit can reach —
+`MemberLaunchMode::Fork` / `fork_helper` — spawns a **live member carrying
+the parent's full tool surface**. An LLM stage whose entire job is reading
+possibly-poisoned transcript evidence cannot be handed live tools: that is an
+uncontained extractor. Containment must therefore live at the *authorization*
+layer (every call gated to an allowlist, e.g. read-only + a memory-write
+seam), not at tool-list subsetting (which breaks the cache) — and no such
+layer exists on the fork/spawn path today. The same gap forced MobKit's
+memory Steward to be a shell-driven pipeline of structured calls instead of
+an agentic dream member.
+
+**Evidence.**
+- Fork launch surfaces: `meerkat-mob/src/launch.rs:23-57` (`fork_helper`),
+  `meerkat-mob/src/runtime/handle.rs:5946` — a fork-launched member gets the
+  parent's tool surface; there is no per-launch authorization hook.
+- CoW fork primitive: `meerkat-core/src/session.rs:3644` (`fork_at`),
+  `:3764` (`fork`).
+- The prior-art constraint (tool list is part of the prompt-cache key, so
+  containment must be call-level): Claude Code keeps the parent's exact tool
+  list and gates via a `canUseTool` closure —
+  `evidence/memory-survey/followups.md` and
+  `agent-memory-architecture.md` §8.4.
+- MobKit's decision record: `meerkat-mobkit/src/memory/distiller.rs` module
+  docs ("full tool surface … §8.4's fork containment") — the fork seam is
+  named and parked there.
+
+**Proposed shape.** A per-launch tool-authorization policy on member
+launch (at minimum the fork mode; ideally any spawn):
+`ToolCallAuthorizer`-style trait (`fn authorize(&self, tool_name, args) ->
+Allow | Deny(reason)`) accepted by the launch/spawn config and enforced in
+the tool dispatch path *after* ToolDef listing (list unchanged → cache
+prefix unchanged; execution gated). Deny should surface to the model as an
+ordinary tool error. Composes with meerkat's fail-closed capability
+philosophy; dogma-wise it is an authorization seam, not a new semantic
+authority.
+
+**MobKit interim behavior.** The Distiller runs as a detached bounded
+one-shot over a transcript slice read from the session store (correct but
+full-input-price; spend bounded by MobKit's background resource guards), and
+the Steward is a deterministic multi-phase pipeline of structured LLM calls
+(the model holds no tools at all). When this ask lands, MobKit switches the
+interaction-triggered and pre-rotation distillation paths to session forks
+and can consider an agentic steward gather phase; the seam is documented in
+`distiller.rs` module docs.
+
+---
+
+## Ask 7 — Internal-runnable schedule targets in meerkat-schedule
+
+**Title:** Let `meerkat-schedule` target a host-registered runnable, not only
+mob members/sessions
+
+**Problem statement.** Schedule target bindings only address sessions and mob
+members. Host-internal periodic work — MobKit's memory steward is the
+concrete case: a scheduled consolidation "dream" that must NOT be a mob
+member (see Ask 6's containment problem) — cannot be expressed as a
+schedule, so it runs as a guarded `tokio` interval loop outside the schedule
+subsystem: invisible to schedule listing/inspection surfaces, no shared
+cadence semantics, separate operational story.
+
+**Evidence.**
+- Target vocabulary: `meerkat-schedule` `TargetBinding::{Session, Mob}` —
+  verified during MobKit P3 implementation; no host-runnable variant.
+- The workaround and its deliberate forward-compatibility:
+  `meerkat-mobkit/src/memory/steward.rs` (`spawn_dream_loop`) uses the
+  schedule subsystem's own interval-marker grammar
+  (`parse_interval_marker_ms`) for its cadence config, so the config
+  migrates unchanged the day a real target type exists; module docs carry
+  the TODO.
+
+**Proposed shape.** A `TargetBinding::HostRunnable { name }` (or
+callback-registration equivalent): the host registers named runnables with
+the schedule service at startup; occurrences invoke them through the normal
+occurrence lifecycle (so listing, history, and failure surfaces work
+unchanged). No new machine semantics — the schedule/occurrence machines
+already own the lifecycle; this adds a target kind whose "delivery" is a
+host callback.
+
+**MobKit interim behavior.** The steward's interval loop stays; cadence
+config is already schedule-grammar-compatible. On landing, MobKit registers
+the dream as a host runnable and deletes the loop.
+
+---
+
+## Ask 8 — `MemoryStore` enumeration API
+
+**Title:** Add a scoped enumeration/read API to the `MemoryStore` trait
+(pairs with Ask 2's delete/GC)
+
+**Problem statement.** The `MemoryStore` trait exposes exactly
+`index_scoped`, `index_scoped_batch`, and `search` — similarity search is
+the *only* read surface. Hosts that need to read back what a scope contains
+must approximate enumeration with a generous-limit search query. MobKit hits
+this in the post-compaction harvest: after `CompactionCompleted`, the
+Distiller reads the discarded message range host-side from meerkat's own
+session-memory store, and "read the discard range" becomes "one
+big-limit scoped `search` and hope the limit covered it." Ask 2's GC/delete
+work needs the same primitive (you cannot audit or selectively reap what you
+cannot list), as does any re-derivation/re-indexing tooling.
+
+**Evidence.**
+- Trait surface: `meerkat-core/src/memory.rs:404-434` — three methods, no
+  list/enumerate/count.
+- The approximation and its honesty caveat:
+  `meerkat-mobkit/src/memory/distiller.rs` (`HnswDiscardSource`) — one
+  scoped `MemoryStore::search` with a generous limit per harvest, caveat
+  documented in code ("search is the only read surface … approximates
+  enumeration").
+
+**Proposed shape.** `async fn enumerate_scoped(&self, scope:
+MemorySearchScope, page: PageRequest) -> Result<Page<MemoryEntry>, _>`
+(paged, deterministic order, optional `source_range` overlap filter so a
+caller can fetch exactly the entries covering a transcript range). Read-only
+and additive — no change to indexing or search semantics; implementations
+that cannot page can return one page.
+
+**MobKit interim behavior.** The generous-limit search approximation, with
+the limit sized to compaction discard batches. On landing, the harvest reads
+the exact range and the approximation caveat comes out of `distiller.rs`.
