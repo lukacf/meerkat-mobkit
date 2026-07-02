@@ -36,7 +36,7 @@ impl Default for BackgroundBudgetConfig {
     fn default() -> Self {
         Self {
             runs_per_window: DEFAULT_RUNS_PER_HOUR,
-            window: Duration::from_secs(60 * 60),
+            window: Duration::from_hours(1),
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
     }
@@ -189,7 +189,7 @@ mod tests {
     fn config(runs: u32, concurrent: u32) -> BackgroundBudgetConfig {
         BackgroundBudgetConfig {
             runs_per_window: runs,
-            window: Duration::from_secs(3600),
+            window: Duration::from_hours(1),
             max_concurrent: concurrent,
         }
     }

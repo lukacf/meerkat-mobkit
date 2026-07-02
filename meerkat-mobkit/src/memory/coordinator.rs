@@ -2381,7 +2381,7 @@ mod tests {
     #[async_trait]
     impl SelectorHandle for HangingHandle {
         async fn client(&self) -> Result<Arc<dyn LlmClient>, SelectorError> {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            tokio::time::sleep(Duration::from_hours(1)).await;
             Err(SelectorError::Client("unreachable".to_string()))
         }
 

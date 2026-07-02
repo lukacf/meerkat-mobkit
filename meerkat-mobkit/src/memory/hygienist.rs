@@ -1116,6 +1116,9 @@ impl HygienistEngine {
         // Curation concurrency is 1 per realm; runs/day is the window cap.
         let budget = BackgroundBudget::new(BackgroundBudgetConfig {
             runs_per_window: config.runs_per_day,
+            // `Duration::from_days` is unstable (duration_constructors);
+            // clippy 1.96 suggests it, so allow the units lint here.
+            #[allow(clippy::duration_suboptimal_units)]
             window: Duration::from_secs(24 * 60 * 60),
             max_concurrent: 1,
         });

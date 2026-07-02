@@ -2154,7 +2154,7 @@ async fn handle_memory_panel_quarantine(
     // still needs the caller's per-scope read grant, and hidden rows must not
     // consume the page budget.
     records.retain(|record| memory_panel_record_visible(view, record));
-    records.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+    records.sort_by_key(|record| std::cmp::Reverse(record.created_at_ms));
     records.truncate(limit);
     // Queue rows stay body-free even for reviewers: verdicts are decided on
     // the record detail surface, which renders the body with provenance.
@@ -2194,7 +2194,7 @@ async fn handle_memory_panel_dreams(
             Err(err) => return memory_panel_store_error(response_id, err),
         }
     }
-    runs.sort_by(|a, b| b.1.last_op_at_ms.cmp(&a.1.last_op_at_ms));
+    runs.sort_by_key(|(_, run)| std::cmp::Reverse(run.last_op_at_ms));
     runs.truncate(limit);
     let rows: Vec<Value> = runs
         .iter()

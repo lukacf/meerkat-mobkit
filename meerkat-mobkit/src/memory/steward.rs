@@ -890,6 +890,9 @@ impl StewardEngine {
         // Dream concurrency is 1 per realm; runs/day is the window cap.
         let budget = BackgroundBudget::new(BackgroundBudgetConfig {
             runs_per_window: config.runs_per_day,
+            // `Duration::from_days` is unstable (duration_constructors);
+            // clippy 1.96 suggests it, so allow the units lint here.
+            #[allow(clippy::duration_suboptimal_units)]
             window: Duration::from_secs(24 * 60 * 60),
             max_concurrent: 1,
         });
@@ -998,7 +1001,7 @@ impl StewardEngine {
         let interval = self
             .config
             .cadence_interval()
-            .unwrap_or(Duration::from_secs(6 * 60 * 60));
+            .unwrap_or(Duration::from_hours(6));
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
@@ -4027,11 +4030,11 @@ mod tests {
     fn cadence_accepts_interval_markers_and_rejects_cron() {
         assert_eq!(
             StewardConfig::parse_cadence("*/6h").expect("6h"),
-            Duration::from_secs(6 * 60 * 60)
+            Duration::from_hours(6)
         );
         assert_eq!(
             StewardConfig::parse_cadence("*/30m").expect("30m"),
-            Duration::from_secs(30 * 60)
+            Duration::from_mins(30)
         );
         // Cron is the scheduling subsystem's other grammar; steward cadence
         // stays interval-only until the loop re-homes (module docs).

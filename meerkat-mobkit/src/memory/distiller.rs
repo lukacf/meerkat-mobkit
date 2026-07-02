@@ -1083,7 +1083,7 @@ impl DistillerEngine {
     ) -> Self {
         let budget = BackgroundBudget::new(BackgroundBudgetConfig {
             runs_per_window: config.runs_per_hour,
-            window: Duration::from_secs(60 * 60),
+            window: Duration::from_hours(1),
             max_concurrent: crate::memory::guards::DEFAULT_MAX_CONCURRENT,
         });
         Self {
