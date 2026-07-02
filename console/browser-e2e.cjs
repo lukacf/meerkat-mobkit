@@ -1758,6 +1758,338 @@ async function runChatPaneAutoScrollProof() {
   }
 }
 
+async function runChatPaneTurnRailProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T21:35:00.000Z");
+  const frames = [];
+  for (let index = 1; index <= 6; index += 1) {
+    frames.push({
+      id: `turn-rail-user-${index}`,
+      kind: "user_input",
+      identity: "person-worker-alpha",
+      interaction_id: `turn-rail-${index}`,
+      timestamp_ms: baseTs + index * 2_000,
+      cursor: `console:turn-rail:${index}:user`,
+      payload: {
+        content: `Turn rail request ${index}: verify invoice drift and owner follow-up with enough text to create a visible row.`,
+      },
+    });
+    frames.push({
+      id: `turn-rail-agent-${index}`,
+      kind: "interaction_complete",
+      identity: "person-worker-alpha",
+      interaction_id: `turn-rail-${index}`,
+      timestamp_ms: baseTs + index * 2_000 + 800,
+      cursor: `console:turn-rail:${index}:agent`,
+      payload: {
+        text: `Turn rail answer ${index}: the billing owner should reconcile source totals, confirm due dates, and record the outcome.`,
+      },
+    });
+  }
+
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 520, height: 540 } });
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByTestId("chat-turn:person-worker-alpha:5").getByText("Turn rail answer 6").waitFor({ timeout: 10_000 });
+    await pane.getByTestId("chat-turn-rail:person-worker-alpha:5").waitFor({ timeout: 10_000 });
+
+    const body = pane.locator(".conv__body");
+    const initial = await body.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+    }));
+    const initialRail = await pane.evaluate((node) => {
+      const body = node.querySelector(".conv__body");
+      const bodyRect = body?.getBoundingClientRect();
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const visibleIndexes = [...node.querySelectorAll("[data-chat-turn-index]")]
+        .filter((turnNode) => {
+          const rect = turnNode.getBoundingClientRect();
+          return bodyRect && rect.bottom >= bodyRect.top && rect.top <= bodyRect.bottom;
+        })
+        .map((turnNode) => Number(turnNode.dataset.chatTurnIndex));
+      const activeIndexes = rails
+        .map((rail, index) => rail.getAttribute("aria-current") === "true" ? index : -1)
+        .filter((index) => index >= 0);
+      return {
+        railCount: rails.length,
+        activeIndexes,
+        visibleIndexes,
+      };
+    });
+    assert.equal(initialRail.railCount, 6, `expected 6 turn rail markers: ${JSON.stringify(initialRail)}`);
+    assert.deepEqual(
+      initialRail.activeIndexes,
+      initialRail.visibleIndexes,
+      `initial rail markers should track all visible turns: ${JSON.stringify(initialRail)}`,
+    );
+    assert(
+      initial.scrollHeight > initial.clientHeight,
+      `expected overflowing chat body for turn rail proof: ${JSON.stringify(initial)}`,
+    );
+
+    const initialLayout = await pane.evaluate((node) => {
+      const rail = node.querySelector('[data-testid="chat-turn-rail:person-worker-alpha:0"]');
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const railYs = rails.map((marker) => {
+        const rect = marker.getBoundingClientRect();
+        return Math.round(rect.top + rect.height / 2);
+      });
+      const buttonSizes = rails.map((marker) => {
+        const rect = marker.getBoundingClientRect();
+        return {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      });
+      const firstBubble = node.querySelector('[data-testid="chat-turn:person-worker-alpha:0"] .msg__bubble');
+      const railRect = rail?.getBoundingClientRect();
+      const bubbleRect = firstBubble?.getBoundingClientRect();
+      return {
+        railRight: railRect?.right ?? 0,
+        bubbleLeft: bubbleRect?.left ?? 0,
+        markerDeltas: railYs.slice(1).map((y, index) => y - railYs[index]),
+        buttonSizes,
+      };
+    });
+    assert(
+      initialLayout.bubbleLeft - initialLayout.railRight >= 8,
+      `turn rail must stay in its own gutter, not overlap chat content: ${JSON.stringify(initialLayout)}`,
+    );
+    assert(
+      initialLayout.markerDeltas.every((delta) => delta > 0 && delta <= 18),
+      `turn rail markers should be tightly spaced: ${JSON.stringify(initialLayout)}`,
+    );
+    assert(
+      initialLayout.buttonSizes.every((size) => size.width <= 18 && size.height <= 18),
+      `turn rail buttons should stay visually compact: ${JSON.stringify(initialLayout)}`,
+    );
+
+    await body.evaluate((node) => {
+      node.scrollTo({ top: Math.round(node.scrollHeight * 0.55), behavior: "instant" });
+      node.dispatchEvent(new Event("scroll"));
+    });
+    await page.waitForTimeout(120);
+    const afterMiddleScroll = await pane.evaluate((node) => {
+      const body = node.querySelector(".conv__body");
+      const bodyRect = body?.getBoundingClientRect();
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      const toRgba = (color) => {
+        if (!context) {
+          return [0, 0, 0, 0];
+        }
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = "#0000";
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        return [...context.getImageData(0, 0, 1, 1).data];
+      };
+      const colorDistance = (a, b) => Math.hypot(
+        a[0] - b[0],
+        a[1] - b[1],
+        a[2] - b[2],
+        a[3] - b[3],
+      );
+      const bodyColor = toRgba(getComputedStyle(body || node).backgroundColor);
+      const visibleIndexes = [...node.querySelectorAll("[data-chat-turn-index]")]
+        .filter((turnNode) => {
+          const rect = turnNode.getBoundingClientRect();
+          return bodyRect && rect.bottom >= bodyRect.top && rect.top <= bodyRect.bottom;
+        })
+        .map((turnNode) => Number(turnNode.dataset.chatTurnIndex));
+      const activeIndexes = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')]
+        .map((rail, index) => rail.getAttribute("aria-current") === "true" ? index : -1)
+        .filter((index) => index >= 0);
+      const tickData = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')]
+        .map((rail, index) => {
+          const tick = rail.querySelector(".conv-turn-rail__tick");
+          const background = tick ? getComputedStyle(tick).backgroundColor : "";
+          return {
+            index,
+            active: rail.getAttribute("aria-current") === "true",
+            background,
+            bodyDistance: colorDistance(toRgba(background), bodyColor),
+            width: Math.round(tick?.getBoundingClientRect().width ?? 0),
+          };
+        });
+      return {
+        activeIndexes,
+        tickWidths: tickData.map((tick) => tick.width),
+        visibleIndexes,
+        activeTickStyles: tickData.filter((tick) => tick.active),
+        inactiveTickStyles: tickData.filter((tick) => !tick.active),
+      };
+    });
+    assert.deepEqual(
+      afterMiddleScroll.activeIndexes,
+      afterMiddleScroll.visibleIndexes,
+      `mid-scroll rail markers should highlight every visible turn: ${JSON.stringify(afterMiddleScroll)}`,
+    );
+    assert.equal(
+      new Set(afterMiddleScroll.tickWidths).size,
+      1,
+      `visible markers should brighten without changing tick width when not hovered: ${JSON.stringify(afterMiddleScroll)}`,
+    );
+    const weakestActiveDistance = Math.min(...afterMiddleScroll.activeTickStyles.map((tick) => tick.bodyDistance));
+    const strongestInactiveDistance = Math.max(...afterMiddleScroll.inactiveTickStyles.map((tick) => tick.bodyDistance));
+    assert(
+      weakestActiveDistance > strongestInactiveDistance,
+      `visible markers should be visually stronger than inactive markers without growing: ${JSON.stringify(afterMiddleScroll)}`,
+    );
+
+    await pane.getByTestId("chat-turn-rail:person-worker-alpha:0").click();
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      const firstRail = paneNode?.querySelector('[data-testid="chat-turn-rail:person-worker-alpha:0"]');
+      return firstRail?.getAttribute("aria-current") === "true";
+    }, null, { timeout: 3_000 });
+    await page.mouse.move(500, 500);
+
+    const afterClick = await pane.evaluate((node) => {
+      const body = node.querySelector(".conv__body");
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const visiblePreview = [...node.querySelectorAll(".conv-turn-preview")]
+        .find((preview) => getComputedStyle(preview).opacity === "1");
+      return {
+        scrollTop: body?.scrollTop ?? 0,
+        activeIndexes: rails
+          .map((rail, index) => rail.getAttribute("aria-current") === "true" ? index : -1)
+          .filter((index) => index >= 0),
+        focusedRail: document.activeElement?.getAttribute("data-testid") || "",
+        firstTurnTop: node.querySelector('[data-testid="chat-turn:person-worker-alpha:0"]')?.getBoundingClientRect().top,
+        previewTitle: visiblePreview?.querySelector(".conv-turn-preview__title")?.textContent || "",
+        firstRailLabel: rails[0]?.getAttribute("aria-label") || "",
+      };
+    });
+
+    assert(
+      afterClick.scrollTop < initial.scrollTop,
+      `clicking first turn marker should move the scroll position upward; initial=${JSON.stringify(initial)} after=${JSON.stringify(afterClick)}`,
+    );
+    assert(
+      afterClick.activeIndexes.includes(0),
+      `first turn marker should become active after clicking it: ${JSON.stringify(afterClick)}`,
+    );
+    assert.equal(afterClick.focusedRail, "", `mouse click should not leave a rail marker focused: ${JSON.stringify(afterClick)}`);
+    assert.equal(afterClick.previewTitle, "", `mouse click should not leave the preview stuck open: ${JSON.stringify(afterClick)}`);
+    assert.match(afterClick.firstRailLabel, /Turn rail request 1/);
+
+    await body.evaluate((node) => {
+      node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+      node.dispatchEvent(new Event("scroll"));
+    });
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      const rails = [...(paneNode?.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]') ?? [])];
+      return rails[5]?.getAttribute("aria-current") === "true";
+    }, null, { timeout: 3_000 });
+    const afterManualScroll = await pane.evaluate((node) => {
+      const body = node.querySelector(".conv__body");
+      const bodyRect = body?.getBoundingClientRect();
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const visibleIndexes = [...node.querySelectorAll("[data-chat-turn-index]")]
+        .filter((turnNode) => {
+          const rect = turnNode.getBoundingClientRect();
+          return bodyRect && rect.bottom >= bodyRect.top && rect.top <= bodyRect.bottom;
+        })
+        .map((turnNode) => Number(turnNode.dataset.chatTurnIndex));
+      return {
+        activeIndexes: rails
+          .map((rail, index) => rail.getAttribute("aria-current") === "true" ? index : -1)
+          .filter((index) => index >= 0),
+        visibleIndexes,
+        focusedRail: document.activeElement?.getAttribute("data-testid") || "",
+      };
+    });
+    assert.deepEqual(
+      afterManualScroll.activeIndexes,
+      afterManualScroll.visibleIndexes,
+      `manual scroll should highlight every visible turn marker: ${JSON.stringify(afterManualScroll)}`,
+    );
+    assert.equal(afterManualScroll.focusedRail, "", `manual scroll should not focus a rail marker: ${JSON.stringify(afterManualScroll)}`);
+
+    await page.setViewportSize({ width: 1280, height: 760 });
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      return Boolean(paneNode?.querySelector('[data-testid="chat-turn-rail:person-worker-alpha:1"]'));
+    }, null, { timeout: 3_000 });
+    await pane.getByTestId("chat-turn-rail:person-worker-alpha:1").hover();
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      return [...(paneNode?.querySelectorAll(".conv-turn-preview") ?? [])]
+        .some((preview) => getComputedStyle(preview).opacity === "1");
+    }, null, { timeout: 1_000 });
+    const hoverPreview = await pane.evaluate((node) => {
+      const visiblePreview = [...node.querySelectorAll(".conv-turn-preview")]
+        .find((preview) => getComputedStyle(preview).opacity === "1");
+      const rect = visiblePreview?.getBoundingClientRect();
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      return {
+        title: visiblePreview?.querySelector(".conv-turn-preview__title")?.textContent || "",
+        body: visiblePreview?.querySelector(".conv-turn-preview__body")?.textContent || "",
+        width: rect?.width ?? 0,
+        height: rect?.height ?? 0,
+        waveWidths: rails.slice(0, 4).map((rail) => Math.round(rail.querySelector(".conv-turn-rail__tick")?.getBoundingClientRect().width ?? 0)),
+      };
+    });
+    assert.match(hoverPreview.title, /Turn rail request 2/);
+    assert.match(hoverPreview.body, /Turn rail answer 2/);
+    assert(
+      hoverPreview.width <= 370 && hoverPreview.height <= 96,
+      `turn preview should be compact, not a modal-sized slab: ${JSON.stringify(hoverPreview)}`,
+    );
+    assert.deepEqual(
+      hoverPreview.waveWidths.slice(0, 4),
+      [11, 13, 11, 9],
+      `hover should restore a compact local wave around the hovered marker: ${JSON.stringify(hoverPreview)}`,
+    );
+
+    await page.waitForFunction(() => {
+      const paneNode = document.querySelector('[data-testid="chat-pane:person-worker-alpha"]');
+      return Boolean(paneNode?.querySelector('[data-testid="chat-turn-rail:person-worker-alpha:0"]'));
+    }, null, { timeout: 3_000 });
+    const desktopLayout = await pane.evaluate((node) => {
+      const rails = [...node.querySelectorAll('[data-testid^="chat-turn-rail:person-worker-alpha:"]')];
+      const bubbles = [...node.querySelectorAll('[data-testid^="chat-turn:person-worker-alpha:"] .msg__bubble')];
+      const maxRailRight = Math.max(...rails.map((rail) => rail.getBoundingClientRect().right));
+      const minBubbleLeft = Math.min(...bubbles.map((bubble) => bubble.getBoundingClientRect().left));
+      return {
+        maxRailRight,
+        minBubbleLeft,
+        gap: minBubbleLeft - maxRailRight,
+      };
+    });
+    assert(
+      desktopLayout.gap >= 8,
+      `desktop turn rail must remain in its own gutter: ${JSON.stringify(desktopLayout)}`,
+    );
+
+    process.stdout.write("browser chat pane turn rail ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runGlobalTimelineRecentSeedProof() {
   const port = await reservePort();
   const baseTs = Date.now() - 60_000;
@@ -2504,6 +2836,7 @@ async function main() {
   await runNonCommsSystemNoticeDoesNotClearBusyProof();
   await runSidebarSearchExpandsCollapsedWorkerSectionProof();
   await runChatPaneAutoScrollProof();
+  await runChatPaneTurnRailProof();
   await runGlobalTimelineRecentSeedProof();
   await runChatPaneRecentFirstPageProof();
   await runChatPaneOlderHistoryDemandPagingProof();

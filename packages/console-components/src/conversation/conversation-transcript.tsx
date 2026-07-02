@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { ConversationViewState } from "@console-core";
 
 import { ConversationMessageGroup } from "./conversation-message-group";
+import { groupConversationTranscriptTurns } from "./conversation-turns";
 import { TurnDiffCard } from "./turn-diff-card";
 import type { IconRenderer } from "../shared";
 
@@ -32,6 +33,7 @@ export function ConversationTranscript({
   const groups = typeof maxGroups === "number" && maxGroups > 0
     ? viewState.groups.slice(-maxGroups)
     : viewState.groups;
+  const turns = groupConversationTranscriptTurns(groups);
 
   if (!groups.length && !renderableTurnDiff) {
     return null;
@@ -39,15 +41,42 @@ export function ConversationTranscript({
 
   return (
     <div className={clsx("cc-theme-scope", "cc-conversation-transcript", compact && "is-compact", className)}>
-      {groups.map((group) => (
-        <ConversationMessageGroup compact={compact} group={group} Icon={Icon} key={group.id} />
-      ))}
-      {renderableTurnDiff && onToggleDiffFile ? (
-        <TurnDiffCard
-          expandedFile={expandedDiffFile}
-          onToggleFile={onToggleDiffFile}
-          turnDiff={renderableTurnDiff}
-        />
+      {turns.map((turn, turnIndex) => {
+        const isLastTurn = turnIndex === turns.length - 1;
+        return (
+          <section
+            aria-label={`Turn ${turnIndex + 1}`}
+            className="cc-conversation-turn"
+            data-cc-conversation-turn-index={turnIndex}
+            data-testid={`conversation-turn:${turnIndex}`}
+            key={turn.id}
+          >
+            {turn.groups.map((group) => (
+              <ConversationMessageGroup compact={compact} group={group} Icon={Icon} key={group.id} />
+            ))}
+            {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (
+              <TurnDiffCard
+                expandedFile={expandedDiffFile}
+                onToggleFile={onToggleDiffFile}
+                turnDiff={renderableTurnDiff}
+              />
+            ) : null}
+          </section>
+        );
+      })}
+      {!turns.length && renderableTurnDiff && onToggleDiffFile ? (
+        <section
+          aria-label="Turn 1"
+          className="cc-conversation-turn"
+          data-cc-conversation-turn-index={0}
+          data-testid="conversation-turn:0"
+        >
+          <TurnDiffCard
+            expandedFile={expandedDiffFile}
+            onToggleFile={onToggleDiffFile}
+            turnDiff={renderableTurnDiff}
+          />
+        </section>
       ) : null}
     </div>
   );

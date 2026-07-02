@@ -63,6 +63,65 @@ test("chat pane still shows duration for real user turns", () => {
   assert.equal(messages.find((entry) => entry.id === "done")?.workedFor, "2m 5s");
 });
 
+test("chat pane groups messages into user-addressable scroll turns", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({
+      id: "ask-1",
+      role: "user",
+      createdAt: "2026-05-20T06:43:02.000Z",
+      text: "First request.",
+    }),
+    message({
+      id: "answer-1",
+      role: "assistant",
+      createdAt: "2026-05-20T06:43:07.000Z",
+      text: "First response.",
+    }),
+    message({
+      id: "ask-2",
+      role: "user",
+      createdAt: "2026-05-20T06:44:02.000Z",
+      text: "Second request.",
+    }),
+    message({
+      id: "answer-2",
+      role: "assistant",
+      createdAt: "2026-05-20T06:44:07.000Z",
+      text: "Second response.",
+    }),
+  ]);
+
+  const turns = __chatPaneTest.buildChatTurns(messages);
+
+  assert.equal(turns.length, 2);
+  assert.deepEqual(turns[0].messages.map((entry) => entry.id), ["ask-1", "answer-1"]);
+  assert.deepEqual(turns[1].messages.map((entry) => entry.id), ["ask-2", "answer-2"]);
+  assert.deepEqual(__chatPaneTest.chatTurnPreview(turns[0]), {
+    title: "First request.",
+    body: "First response.",
+  });
+});
+
+test("chat pane renders turn rail markers when multiple turns are present", () => {
+  const html = renderChat({
+    entries: [
+      message({ id: "ask-1", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "First request." }),
+      message({ id: "answer-1", role: "assistant", createdAt: "2026-05-20T06:43:07.000Z", text: "First response." }),
+      message({ id: "ask-2", role: "user", createdAt: "2026-05-20T06:44:02.000Z", text: "Second request." }),
+      message({ id: "answer-2", role: "assistant", createdAt: "2026-05-20T06:44:07.000Z", text: "Second response." }),
+    ],
+    phase: null,
+  });
+
+  assert.match(html, /aria-label="Conversation turns"/);
+  assert.match(html, /data-testid="chat-turn:agent:0"/);
+  assert.match(html, /data-testid="chat-turn:agent:1"/);
+  assert.match(html, /data-testid="chat-turn-rail:agent:0"/);
+  assert.match(html, /data-testid="chat-turn-rail:agent:1"/);
+  assert.match(html, /First request/);
+  assert.match(html, /First response/);
+});
+
 test("chat pane does not count peer update scaffolding as user work", () => {
   const messages = __chatPaneTest.buildChatMessages([
     message({

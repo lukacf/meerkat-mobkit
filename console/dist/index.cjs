@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react29 = __toESM(require("react"));
+var import_react30 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -2178,6 +2178,9 @@ function isNamespacedKind(kind) {
 // ../packages/console-components/src/composer/console-composer.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
 
+// ../packages/console-components/src/conversation/conversation-pane.tsx
+var import_react4 = require("react");
+
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react3 = require("react");
 
@@ -2755,15 +2758,15 @@ var import_jsx_runtime12 = require("react/jsx-runtime");
 var import_jsx_runtime13 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/dock/console-dock.tsx
-var import_react4 = require("react");
+var import_react5 = require("react");
 var import_jsx_runtime14 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/pending/console-pending-stack.tsx
-var import_react5 = __toESM(require("react"));
+var import_react6 = __toESM(require("react"));
 var import_jsx_runtime15 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/dock/use-console-dock-controller.ts
-var import_react6 = require("react");
+var import_react7 = require("react");
 function useConsoleDockController({
   initialTarget = null,
   initialPresetId = "single",
@@ -2772,9 +2775,9 @@ function useConsoleDockController({
   resolvePanelView,
   resolveTabView
 }) {
-  const panelCounterRef = (0, import_react6.useRef)(1);
-  const splitCounterRef = (0, import_react6.useRef)(1);
-  const tabCounterRef = (0, import_react6.useRef)(1);
+  const panelCounterRef = (0, import_react7.useRef)(1);
+  const splitCounterRef = (0, import_react7.useRef)(1);
+  const tabCounterRef = (0, import_react7.useRef)(1);
   function nextPanelId() {
     return `panel-${panelCounterRef.current++}`;
   }
@@ -2784,7 +2787,7 @@ function useConsoleDockController({
   function nextTabId() {
     return `tab-${tabCounterRef.current++}`;
   }
-  const [state, setState] = (0, import_react6.useState)(() => createConsoleDockState({
+  const [state, setState] = (0, import_react7.useState)(() => createConsoleDockState({
     initialTarget,
     initialPresetId,
     createPanelState: (args) => {
@@ -2798,11 +2801,11 @@ function useConsoleDockController({
     createTabId: nextTabId,
     suggestTargets
   }));
-  const viewState = (0, import_react6.useMemo)(() => buildConsoleDockViewState(state, {
+  const viewState = (0, import_react7.useMemo)(() => buildConsoleDockViewState(state, {
     resolvePanelView,
     resolveTabView
   }), [resolvePanelView, resolveTabView, state]);
-  const focusedPanel = (0, import_react6.useMemo)(
+  const focusedPanel = (0, import_react7.useMemo)(
     () => state.panels.find((panel) => panel.id === state.focusedPanelId) || null,
     [state.focusedPanelId, state.panels]
   );
@@ -2844,23 +2847,23 @@ function useConsoleDockController({
 }
 
 // ../packages/console-components/src/sidebar/console-sidebar.tsx
-var import_react7 = require("react");
+var import_react8 = require("react");
 var import_jsx_runtime16 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/topology/topology-panel.tsx
-var import_react11 = __toESM(require("react"));
+var import_react12 = __toESM(require("react"));
 
 // ../packages/console-components/src/topology/role-tree.tsx
-var import_react9 = __toESM(require("react"));
+var import_react10 = __toESM(require("react"));
 
 // ../packages/console-components/src/topology/data.ts
-var import_react8 = __toESM(require("react"));
+var import_react9 = __toESM(require("react"));
 
 // ../packages/console-components/src/topology/role-tree.tsx
 var import_jsx_runtime17 = require("react/jsx-runtime");
 
 // ../packages/console-components/src/topology/dense-graph-map.tsx
-var import_react10 = __toESM(require("react"));
+var import_react11 = __toESM(require("react"));
 var import_jsx_runtime18 = require("react/jsx-runtime");
 var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
@@ -7253,13 +7256,13 @@ function Icon({ name, className }) {
 }
 
 // src/panels/TopologyPanel.tsx
-var import_react15 = __toESM(require("react"));
+var import_react16 = __toESM(require("react"));
 
 // src/panels/topology/RoleTree.tsx
-var import_react13 = __toESM(require("react"));
+var import_react14 = __toESM(require("react"));
 
 // src/panels/topology/data.ts
-var import_react12 = __toESM(require("react"));
+var import_react13 = __toESM(require("react"));
 var PEER_TOOL_NAMES2 = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 function frameData(frame) {
   return frame.data && typeof frame.data === "object" ? frame.data : null;
@@ -7525,9 +7528,9 @@ function roleIndexFor2(roles) {
 }
 function useTopologyActivity2(frames, graph, options = {}) {
   const life = options.life ?? 1500;
-  const [now, setNow] = import_react12.default.useState(() => Date.now());
-  const ticking = import_react12.default.useRef(false);
-  import_react12.default.useEffect(() => {
+  const [now, setNow] = import_react13.default.useState(() => Date.now());
+  const ticking = import_react13.default.useRef(false);
+  import_react13.default.useEffect(() => {
     if (ticking.current) return;
     let raf = 0;
     let stopped = false;
@@ -7544,7 +7547,7 @@ function useTopologyActivity2(frames, graph, options = {}) {
       cancelAnimationFrame(raf);
     };
   }, []);
-  return import_react12.default.useMemo(() => {
+  return import_react13.default.useMemo(() => {
     return deriveTopologyActivity(frames, graph, now, life);
   }, [frames, graph, life, now]);
 }
@@ -7628,17 +7631,17 @@ function RoleTree2({
   agents,
   activity
 }) {
-  const graph = import_react13.default.useMemo(() => buildGraph2(nodes, agents), [nodes, agents]);
-  const roleIndex = import_react13.default.useMemo(() => roleIndexFor2(graph.roles), [graph.roles]);
+  const graph = import_react14.default.useMemo(() => buildGraph2(nodes, agents), [nodes, agents]);
+  const roleIndex = import_react14.default.useMemo(() => roleIndexFor2(graph.roles), [graph.roles]);
   const live = useTopologyActivity2(activity, graph, { life: 1500 });
-  const grouped = import_react13.default.useMemo(() => {
+  const grouped = import_react14.default.useMemo(() => {
     var _a;
     const g = {};
     for (const r2 of graph.roles) g[r2] = [];
     for (const a of graph.agents) (g[_a = a.role] || (g[_a] = [])).push(a);
     return g;
   }, [graph]);
-  const [expanded, setExpanded] = import_react13.default.useState(() => {
+  const [expanded, setExpanded] = import_react14.default.useState(() => {
     const initial = { __root: true };
     for (const r2 of graph.roles) {
       const count = grouped[r2]?.length || 0;
@@ -7738,7 +7741,7 @@ function RoleTree2({
 }
 
 // src/panels/topology/DenseGraphMap.tsx
-var import_react14 = __toESM(require("react"));
+var import_react15 = __toESM(require("react"));
 var import_jsx_runtime23 = require("react/jsx-runtime");
 var GOLDEN_ANGLE2 = Math.PI * (3 - Math.sqrt(5));
 var EMPTY_ACTIVITY = { active: {}, busy: {}, calls: {}, pulses: [] };
@@ -8082,16 +8085,16 @@ function DenseGraphMap2({
   edgeMode = "all",
   activity = EMPTY_ACTIVITY
 }) {
-  const wrapRef = import_react14.default.useRef(null);
-  const canvasRef = import_react14.default.useRef(null);
-  const staticRef = import_react14.default.useRef(null);
-  const dragRef = import_react14.default.useRef(null);
-  const [size, setSize] = import_react14.default.useState({ width: 900, height: 420 });
-  const [viewport, setViewport] = import_react14.default.useState({ scale: 1, x: 0, y: 0 });
-  const viewportRef = import_react14.default.useRef(viewport);
-  const [hoverId, setHoverId] = import_react14.default.useState(null);
-  const roleIndex = import_react14.default.useMemo(() => roleIndexFor2(graph.roles), [graph.roles]);
-  const layoutFingerprint = import_react14.default.useMemo(
+  const wrapRef = import_react15.default.useRef(null);
+  const canvasRef = import_react15.default.useRef(null);
+  const staticRef = import_react15.default.useRef(null);
+  const dragRef = import_react15.default.useRef(null);
+  const [size, setSize] = import_react15.default.useState({ width: 900, height: 420 });
+  const [viewport, setViewport] = import_react15.default.useState({ scale: 1, x: 0, y: 0 });
+  const viewportRef = import_react15.default.useRef(viewport);
+  const [hoverId, setHoverId] = import_react15.default.useState(null);
+  const roleIndex = import_react15.default.useMemo(() => roleIndexFor2(graph.roles), [graph.roles]);
+  const layoutFingerprint = import_react15.default.useMemo(
     () => [
       graph.agents.length,
       graph.groups.join("|"),
@@ -8099,11 +8102,11 @@ function DenseGraphMap2({
     ].join("::"),
     [graph]
   );
-  const drawFingerprint = import_react14.default.useMemo(
+  const drawFingerprint = import_react15.default.useMemo(
     () => `${layoutFingerprint}::edges=${graph.edges.length}::edgeMode=${edgeMode}`,
     [layoutFingerprint, graph.edges.length, edgeMode]
   );
-  const layout = import_react14.default.useMemo(
+  const layout = import_react15.default.useMemo(
     () => buildLayout(graph, size.width, size.height),
     // `graph` is rebuilt every console poll. The dense layout
     // should only rerun when graph shape changes, not when an equivalent
@@ -8111,15 +8114,15 @@ function DenseGraphMap2({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layoutFingerprint, size.width, size.height]
   );
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     dragRef.current = null;
     setHoverId(null);
     setViewport({ scale: 1, x: 0, y: 0 });
   }, [layoutFingerprint, size.width, size.height]);
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
@@ -8133,7 +8136,7 @@ function DenseGraphMap2({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const drawStatic = import_react14.default.useCallback(() => {
+  const drawStatic = import_react15.default.useCallback(() => {
     const host = wrapRef.current;
     if (!host) return null;
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -8212,10 +8215,10 @@ function DenseGraphMap2({
     ctx.globalAlpha = 1;
     return off;
   }, [drawFingerprint, layout, roleIndex]);
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     staticRef.current = drawStatic();
   }, [drawStatic]);
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const onWheel = (event) => {
@@ -8238,7 +8241,7 @@ function DenseGraphMap2({
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
-  const drawFrame = import_react14.default.useCallback(() => {
+  const drawFrame = import_react15.default.useCallback(() => {
     const canvas = canvasRef.current;
     const host = wrapRef.current;
     const ctx = canvas?.getContext("2d");
@@ -8373,10 +8376,10 @@ function DenseGraphMap2({
     }
     ctx.restore();
   }, [activity, drawStatic, drawFingerprint, hoverId, layout, viewport]);
-  import_react14.default.useEffect(() => {
+  import_react15.default.useEffect(() => {
     drawFrame();
   }, [drawFrame]);
-  const nearestId = import_react14.default.useCallback((clientX, clientY) => {
+  const nearestId = import_react15.default.useCallback((clientX, clientY) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const pos = screenToGraph(clientX, clientY, canvas, viewport);
@@ -8523,7 +8526,7 @@ function TopologyPanel2({
   agents,
   activity
 }) {
-  const [view, setView] = import_react15.default.useState(() => {
+  const [view, setView] = import_react16.default.useState(() => {
     try {
       const stored = localStorage.getItem(VIEW_STORAGE);
       if (stored === "summary") return "graph";
@@ -8541,7 +8544,7 @@ function TopologyPanel2({
     } catch {
     }
   };
-  const [edgeMode, setEdgeMode] = import_react15.default.useState(() => {
+  const [edgeMode, setEdgeMode] = import_react16.default.useState(() => {
     try {
       const stored = localStorage.getItem(EDGE_STORAGE);
       if (stored === "all" || stored === "focus") return stored;
@@ -8556,7 +8559,7 @@ function TopologyPanel2({
     } catch {
     }
   };
-  const graph = import_react15.default.useMemo(() => buildGraph2(nodes, agents), [nodes, agents]);
+  const graph = import_react16.default.useMemo(() => buildGraph2(nodes, agents), [nodes, agents]);
   const live = useTopologyActivity2(activity, graph, { life: 8e3 });
   const liveCount = Object.keys(live.active).length;
   const busyCount = Object.values(live.busy).filter(Boolean).length;
@@ -8624,7 +8627,7 @@ function TopologyPanel2({
 }
 
 // src/panels/TimelinePanel.tsx
-var import_react16 = __toESM(require("react"));
+var import_react17 = __toESM(require("react"));
 var import_jsx_runtime25 = require("react/jsx-runtime");
 var INTERNAL_TIMELINE_EVENTS = /* @__PURE__ */ new Set([
   "keep-alive",
@@ -8690,7 +8693,7 @@ function summarizeFrame(frame) {
   }
 }
 function TimelinePanel({ frames }) {
-  const entries = import_react16.default.useMemo(() => {
+  const entries = import_react17.default.useMemo(() => {
     const todayMs = (() => {
       const d = /* @__PURE__ */ new Date();
       d.setHours(0, 0, 0, 0);
@@ -8734,7 +8737,7 @@ function TimelinePanel({ frames }) {
 }
 
 // src/panels/GatingInboxPanel.tsx
-var import_react17 = __toESM(require("react"));
+var import_react18 = __toESM(require("react"));
 var import_jsx_runtime26 = require("react/jsx-runtime");
 function getRisk(entry) {
   const tier = String(entry.risk_tier || entry.risk || "").toLowerCase();
@@ -8800,9 +8803,9 @@ function GatingInboxPanel({
   onDecide,
   readOnly = false
 }) {
-  const [tab, setTab] = import_react17.default.useState("pending");
-  const [selectedId, setSelectedId] = import_react17.default.useState(null);
-  const policies = import_react17.default.useMemo(() => derivePolicies(audit), [audit]);
+  const [tab, setTab] = import_react18.default.useState("pending");
+  const [selectedId, setSelectedId] = import_react18.default.useState(null);
+  const policies = import_react18.default.useMemo(() => derivePolicies(audit), [audit]);
   const autoApproved = audit.filter((e) => {
     const r2 = e;
     return String(r2.decision || "").toLowerCase() === "auto_approve" || String(r2.event_type || "").includes("auto");
@@ -8982,7 +8985,7 @@ function GatingInboxPanel({
 }
 
 // src/panels/AccessPanel.tsx
-var import_react18 = __toESM(require("react"));
+var import_react19 = __toESM(require("react"));
 var import_jsx_runtime27 = require("react/jsx-runtime");
 var DEFAULT_ACTIONS = [
   "agent.view",
@@ -9092,16 +9095,16 @@ function AccessPanel({
   onDeleteGroup,
   onPreview
 }) {
-  const [tab, setTab] = import_react18.default.useState("overview");
-  const [ruleDraft, setRuleDraft] = import_react18.default.useState(null);
-  const [adminsDraft, setAdminsDraft] = import_react18.default.useState(null);
-  const [groupNameDraft, setGroupNameDraft] = import_react18.default.useState("");
-  const [groupMembersDraft, setGroupMembersDraft] = import_react18.default.useState("");
-  const [editingGroup, setEditingGroup] = import_react18.default.useState(null);
-  const [previewSubject, setPreviewSubject] = import_react18.default.useState("");
-  const [previewAction, setPreviewAction] = import_react18.default.useState("agent.view");
-  const [previewIdentity, setPreviewIdentity] = import_react18.default.useState("");
-  const [previewResult, setPreviewResult] = import_react18.default.useState(null);
+  const [tab, setTab] = import_react19.default.useState("overview");
+  const [ruleDraft, setRuleDraft] = import_react19.default.useState(null);
+  const [adminsDraft, setAdminsDraft] = import_react19.default.useState(null);
+  const [groupNameDraft, setGroupNameDraft] = import_react19.default.useState("");
+  const [groupMembersDraft, setGroupMembersDraft] = import_react19.default.useState("");
+  const [editingGroup, setEditingGroup] = import_react19.default.useState(null);
+  const [previewSubject, setPreviewSubject] = import_react19.default.useState("");
+  const [previewAction, setPreviewAction] = import_react19.default.useState("agent.view");
+  const [previewIdentity, setPreviewIdentity] = import_react19.default.useState("");
+  const [previewResult, setPreviewResult] = import_react19.default.useState(null);
   const actions = status?.actions?.length ? status.actions : DEFAULT_ACTIONS;
   const rules = config?.rules || [];
   const groups = Object.entries(config?.groups || {});
@@ -9555,7 +9558,7 @@ function AccessPanel({
 }
 
 // src/panels/MemoryPanel.tsx
-var import_react19 = __toESM(require("react"));
+var import_react20 = __toESM(require("react"));
 var import_jsx_runtime28 = require("react/jsx-runtime");
 function realmOfRecord(record) {
   return record.scope.realm;
@@ -9833,9 +9836,9 @@ function MemoryPanel({
   onSelectRecord,
   onClearDetail
 }) {
-  const [tab, setTab] = import_react19.default.useState("records");
+  const [tab, setTab] = import_react20.default.useState("records");
   const tabs = canReviewQuarantine ? ["records", "quarantine", "dreams"] : ["records", "dreams"];
-  const groups = import_react19.default.useMemo(() => groupRecordsByScope(records), [records]);
+  const groups = import_react20.default.useMemo(() => groupRecordsByScope(records), [records]);
   if (unavailable) {
     return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gating memory-panel", "data-testid": "memory-panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__head", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("h2", { children: "Memory" }) }),
@@ -9952,7 +9955,7 @@ function MemoryPanel({
 }
 
 // src/panels/RosterPanel.tsx
-var import_react20 = __toESM(require("react"));
+var import_react21 = __toESM(require("react"));
 var import_jsx_runtime29 = require("react/jsx-runtime");
 var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
 function roleOf(a) {
@@ -9986,13 +9989,13 @@ function RosterPanel({
   actionLabels,
   actionVisibility
 }) {
-  const [q, setQ] = import_react20.default.useState("");
-  const [role, setRole] = import_react20.default.useState("all");
-  const [sel, setSel] = import_react20.default.useState(agents[0]?.member_id || "");
-  import_react20.default.useEffect(() => {
+  const [q, setQ] = import_react21.default.useState("");
+  const [role, setRole] = import_react21.default.useState("all");
+  const [sel, setSel] = import_react21.default.useState(agents[0]?.member_id || "");
+  import_react21.default.useEffect(() => {
     if (selectedMemberId) setSel(selectedMemberId);
   }, [selectedMemberId]);
-  const rows = import_react20.default.useMemo(() => {
+  const rows = import_react21.default.useMemo(() => {
     return agents.filter((a) => {
       if (role !== "all" && roleOf(a) !== role) return false;
       if (!q) return true;
@@ -10110,14 +10113,14 @@ function RosterPanel({
 }
 
 // src/panels/RoutingPanel.tsx
-var import_react21 = __toESM(require("react"));
+var import_react22 = __toESM(require("react"));
 var import_jsx_runtime30 = require("react/jsx-runtime");
 function RoutingPanel({ data }) {
   const routes = data.routes || [];
   const deliveries = data.deliveries || [];
-  const [q, setQ] = import_react21.default.useState("");
-  const [sel, setSel] = import_react21.default.useState(routes[0]?.route_key || "");
-  const rows = import_react21.default.useMemo(() => {
+  const [q, setQ] = import_react22.default.useState("");
+  const [sel, setSel] = import_react22.default.useState(routes[0]?.route_key || "");
+  const rows = import_react22.default.useMemo(() => {
     if (!q) return routes;
     const needle = q.toLowerCase();
     return routes.filter(
@@ -10237,7 +10240,7 @@ function RoutingPanel({ data }) {
 }
 
 // src/panels/LogsPanel.tsx
-var import_react22 = __toESM(require("react"));
+var import_react23 = __toESM(require("react"));
 var import_jsx_runtime31 = require("react/jsx-runtime");
 var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
   "keep-alive",
@@ -10374,16 +10377,16 @@ function hasStructuredOutput(frame) {
   return d.structured_output != null;
 }
 function LogsPanel({ frames }) {
-  const [q, setQ] = import_react22.default.useState("");
-  const [lvl, setLvl] = import_react22.default.useState("all");
-  const [expanded, setExpanded] = import_react22.default.useState(/* @__PURE__ */ new Set());
+  const [q, setQ] = import_react23.default.useState("");
+  const [lvl, setLvl] = import_react23.default.useState("all");
+  const [expanded, setExpanded] = import_react23.default.useState(/* @__PURE__ */ new Set());
   const toggle = (key) => setExpanded((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key);
     else next.add(key);
     return next;
   });
-  const rows = import_react22.default.useMemo(() => {
+  const rows = import_react23.default.useMemo(() => {
     return frames.filter(isLogFrameVisible).map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
       if (lvl !== "all" && level !== lvl) return false;
       if (!q) return true;
@@ -10391,7 +10394,7 @@ function LogsPanel({ frames }) {
       return f.event.toLowerCase().includes(needle) || (f.identity || "").toLowerCase().includes(needle);
     });
   }, [frames, q, lvl]);
-  const counts = import_react22.default.useMemo(() => {
+  const counts = import_react23.default.useMemo(() => {
     const c = { info: 0, warn: 0, error: 0 };
     frames.filter(isLogFrameVisible).forEach((f) => {
       c[levelFor(f)]++;
@@ -10574,10 +10577,10 @@ function Topbar({
 }
 
 // src/panels/Tweaks.tsx
-var import_react23 = __toESM(require("react"));
+var import_react24 = __toESM(require("react"));
 var VARIANT_STORAGE = "mobkit-console-variant";
 function useConsoleVariant() {
-  const [v, setV] = import_react23.default.useState(() => {
+  const [v, setV] = import_react24.default.useState(() => {
     try {
       const stored = localStorage.getItem(VARIANT_STORAGE);
       if (stored === "rams" || stored === "terminal" || stored === "graphite") return stored;
@@ -10585,7 +10588,7 @@ function useConsoleVariant() {
     }
     return "rams";
   });
-  const set = import_react23.default.useCallback((next) => {
+  const set = import_react24.default.useCallback((next) => {
     setV(next);
     try {
       localStorage.setItem(VARIANT_STORAGE, next);
@@ -10596,7 +10599,7 @@ function useConsoleVariant() {
 }
 
 // src/panels/Sidebar.tsx
-var import_react24 = __toESM(require("react"));
+var import_react25 = __toESM(require("react"));
 var import_jsx_runtime33 = require("react/jsx-runtime");
 var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory"];
 var NAV_LABEL = {
@@ -11418,9 +11421,9 @@ function pendingOrderFocusMatchesElement(pending, element) {
   return true;
 }
 function useMeasuredHeight() {
-  const ref = import_react24.default.useRef(null);
-  const [height, setHeight] = import_react24.default.useState(0);
-  import_react24.default.useLayoutEffect(() => {
+  const ref = import_react25.default.useRef(null);
+  const [height, setHeight] = import_react25.default.useState(0);
+  import_react25.default.useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return void 0;
     const update = () => setHeight(element.clientHeight);
@@ -11525,85 +11528,85 @@ function Sidebar({
   onTogglePinnedAgent,
   onOpenControl
 }) {
-  const [q, setQ] = import_react24.default.useState("");
-  const [draggingOrder, setDraggingOrder] = import_react24.default.useState(null);
-  const [dragOverOrder, setDragOverOrder] = import_react24.default.useState(null);
-  const [dragPreview, setDragPreview] = import_react24.default.useState(null);
-  const [orderAnnouncement, setOrderAnnouncement] = import_react24.default.useState("");
-  const pendingOrderFocusRef = import_react24.default.useRef(null);
-  const draggingOrderRef = import_react24.default.useRef(null);
-  const pointerDragRef = import_react24.default.useRef(null);
-  const suppressOrderClickRef = import_react24.default.useRef(false);
-  import_react24.default.useEffect(() => {
+  const [q, setQ] = import_react25.default.useState("");
+  const [draggingOrder, setDraggingOrder] = import_react25.default.useState(null);
+  const [dragOverOrder, setDragOverOrder] = import_react25.default.useState(null);
+  const [dragPreview, setDragPreview] = import_react25.default.useState(null);
+  const [orderAnnouncement, setOrderAnnouncement] = import_react25.default.useState("");
+  const pendingOrderFocusRef = import_react25.default.useRef(null);
+  const draggingOrderRef = import_react25.default.useRef(null);
+  const pointerDragRef = import_react25.default.useRef(null);
+  const suppressOrderClickRef = import_react25.default.useRef(false);
+  import_react25.default.useEffect(() => {
     draggingOrderRef.current = draggingOrder;
   }, [draggingOrder]);
-  const navKinds = import_react24.default.useMemo(() => {
+  const navKinds = import_react25.default.useMemo(() => {
     const configured = visibleNavKinds();
     if (!visibleControls) return configured;
     const allowed = new Set(visibleControls);
     return configured.filter((kind) => allowed.has(kind));
   }, [visibleControls]);
-  const filtered = import_react24.default.useMemo(() => {
+  const filtered = import_react25.default.useMemo(() => {
     if (!q) return agents;
     const needle = q.toLowerCase();
     return agents.filter(
       (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.role || "").toLowerCase().includes(needle)
     );
   }, [agents, q]);
-  const grouped = import_react24.default.useMemo(() => {
+  const grouped = import_react25.default.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
   }, [filtered, grouping]);
-  const familyPinIdsByMemberId = import_react24.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
-  const sectionNames = import_react24.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
-  const defaultCollapsedKey = import_react24.default.useMemo(
+  const familyPinIdsByMemberId = import_react25.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
+  const sectionNames = import_react25.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
+  const defaultCollapsedKey = import_react25.default.useMemo(
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
     [grouping?.sections]
   );
-  const sectionCollapseStorageKey = import_react24.default.useMemo(
+  const sectionCollapseStorageKey = import_react25.default.useMemo(
     () => sidebarStorageKey(SECTION_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupCollapseStorageKey = import_react24.default.useMemo(
+  const subgroupCollapseStorageKey = import_react25.default.useMemo(
     () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const sectionOrderStorageKey = import_react24.default.useMemo(
+  const sectionOrderStorageKey = import_react25.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const subgroupOrderStorageKey = import_react24.default.useMemo(
+  const subgroupOrderStorageKey = import_react25.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
-  const [collapsedSections, setCollapsedSections] = import_react24.default.useState(() => {
+  const [collapsedSections, setCollapsedSections] = import_react25.default.useState(() => {
     return collapsedSectionsForStorage(grouping, sectionCollapseStorageKey);
   });
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     setCollapsedSections(collapsedSectionsForStorage(grouping, sectionCollapseStorageKey));
   }, [defaultCollapsedKey, grouping, sectionCollapseStorageKey]);
-  const [collapsedSubgroups, setCollapsedSubgroups] = import_react24.default.useState(() => {
+  const [collapsedSubgroups, setCollapsedSubgroups] = import_react25.default.useState(() => {
     return collapsedSubgroupsForStorage(subgroupCollapseStorageKey);
   });
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
   }, [subgroupCollapseStorageKey]);
-  const [sectionOrder, setSectionOrder] = import_react24.default.useState(() => {
+  const [sectionOrder, setSectionOrder] = import_react25.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || [];
   });
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     setSectionOrder(readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || []);
   }, [sectionOrderStorageKey]);
-  const [subgroupOrder, setSubgroupOrder] = import_react24.default.useState(() => {
+  const [subgroupOrder, setSubgroupOrder] = import_react25.default.useState(() => {
     return readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || [];
   });
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     setSubgroupOrder(readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || []);
   }, [subgroupOrderStorageKey]);
-  const customSidebarButtons = import_react24.default.useMemo(
+  const customSidebarButtons = import_react25.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
-  const completeSectionDrop = import_react24.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
+  const completeSectionDrop = import_react25.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
     if (!draggedId || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "section", id: draggedId };
@@ -11616,12 +11619,12 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
-  const subgroupIdsForBucket = import_react24.default.useCallback((bucket) => {
+  const subgroupIdsForBucket = import_react25.default.useCallback((bucket) => {
     const list = grouped.get(bucket) || [];
     const ids = list.map((row) => row.subgroup).filter((value) => Boolean(value)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = import_react24.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
+  const completeSubgroupDrop = import_react25.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
     if (inputSource === "keyboard") {
       pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
@@ -11639,7 +11642,7 @@ function Sidebar({
     });
     setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
-  const handleSectionOrderKeyDown = import_react24.default.useCallback((event, bucket) => {
+  const handleSectionOrderKeyDown = import_react25.default.useCallback((event, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(sectionNames, sectionOrder);
     const index = ordered.indexOf(bucket);
@@ -11648,7 +11651,7 @@ function Sidebar({
     event.preventDefault();
     completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
   }, [completeSectionDrop, sectionNames, sectionOrder]);
-  const handleSubgroupOrderKeyDown = import_react24.default.useCallback((event, storageKey, bucket) => {
+  const handleSubgroupOrderKeyDown = import_react25.default.useCallback((event, storageKey, bucket) => {
     if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
     const ordered = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
     const index = ordered.indexOf(storageKey);
@@ -11657,7 +11660,7 @@ function Sidebar({
     event.preventDefault();
     completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
   }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
-  const beginPointerOrderDrag = import_react24.default.useCallback((event, item) => {
+  const beginPointerOrderDrag = import_react25.default.useCallback((event, item) => {
     if (event.button !== 0) return;
     event.preventDefault();
     pointerDragRef.current = {
@@ -11671,7 +11674,7 @@ function Sidebar({
     setDraggingOrder(item);
     draggingOrderRef.current = item;
   }, []);
-  const movePointerOrderDrag = import_react24.default.useCallback((event) => {
+  const movePointerOrderDrag = import_react25.default.useCallback((event) => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     if (!drag.moved && Math.max(Math.abs(event.clientX - drag.startX), Math.abs(event.clientY - drag.startY)) < 4) return;
@@ -11701,7 +11704,7 @@ function Sidebar({
     drag.over = { id, bucket, where };
     setDragOverOrder({ kind, id, where });
   }, []);
-  const finishPointerOrderDrag = import_react24.default.useCallback(() => {
+  const finishPointerOrderDrag = import_react25.default.useCallback(() => {
     const drag = pointerDragRef.current;
     if (!drag) return;
     pointerDragRef.current = null;
@@ -11721,7 +11724,7 @@ function Sidebar({
     setDragOverOrder(null);
     setDragPreview(null);
   }, [completeSectionDrop, completeSubgroupDrop]);
-  import_react24.default.useEffect(() => {
+  import_react25.default.useEffect(() => {
     if (!draggingOrder) return void 0;
     const onMove = (event) => movePointerOrderDrag(event);
     const onDone = () => finishPointerOrderDrag();
@@ -11734,7 +11737,7 @@ function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const sidebarNavigationModel = import_react24.default.useMemo(() => {
+  const sidebarNavigationModel = import_react25.default.useMemo(() => {
     return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
@@ -11747,29 +11750,29 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualRows = import_react24.default.useMemo(
+  const virtualRows = import_react25.default.useMemo(
     () => sidebarNavigationRows(sidebarNavigationModel),
     [sidebarNavigationModel]
   );
-  const virtualOffsets = import_react24.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
+  const virtualOffsets = import_react25.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
-  const [scrollTop, setScrollTop] = import_react24.default.useState(0);
-  import_react24.default.useEffect(() => {
+  const [scrollTop, setScrollTop] = import_react25.default.useState(0);
+  import_react25.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, listRef]);
-  const visibleRange = import_react24.default.useMemo(() => sidebarVisibleRange({
+  const visibleRange = import_react25.default.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
     total: virtualOffsets.total,
     scrollTop,
     listHeight
   }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
-  const visibleRows = import_react24.default.useMemo(
+  const visibleRows = import_react25.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
   );
-  import_react24.default.useLayoutEffect(() => {
+  import_react25.default.useLayoutEffect(() => {
     const pending = pendingOrderFocusRef.current;
     const list = listRef.current;
     if (!pending || !list) return;
@@ -11801,7 +11804,7 @@ function Sidebar({
       window.setTimeout(restoreFocus, 0);
     }
   }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
-  const dragPreviewRows = import_react24.default.useMemo(
+  const dragPreviewRows = import_react25.default.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder]
   );
@@ -12025,7 +12028,7 @@ function Sidebar({
 }
 
 // src/panels/SignalsRail.tsx
-var import_react25 = __toESM(require("react"));
+var import_react26 = __toESM(require("react"));
 var import_jsx_runtime34 = require("react/jsx-runtime");
 var DEFAULT_FILTER_PRESETS = [
   { id: "all", label: "All" },
@@ -12375,18 +12378,18 @@ function SignalsRail({
   onPresetChange,
   onSelect
 }) {
-  const presets = import_react25.default.useMemo(() => {
+  const presets = import_react26.default.useMemo(() => {
     const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
     return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
   }, [filterPresets]);
-  const [filter, setFilter] = import_react25.default.useState(activePresetId || presets[0]?.id || "all");
-  const [expandedGroups, setExpandedGroups] = import_react25.default.useState(() => /* @__PURE__ */ new Set());
-  import_react25.default.useEffect(() => {
+  const [filter, setFilter] = import_react26.default.useState(activePresetId || presets[0]?.id || "all");
+  const [expandedGroups, setExpandedGroups] = import_react26.default.useState(() => /* @__PURE__ */ new Set());
+  import_react26.default.useEffect(() => {
     if (activePresetId && presets.some((preset) => preset.id === activePresetId)) {
       setFilter(activePresetId);
     }
   }, [activePresetId, presets]);
-  const groups = import_react25.default.useMemo(() => {
+  const groups = import_react26.default.useMemo(() => {
     return buildSignalGroupsForTest(frames);
   }, [frames]);
   function groupMatchesPreset(group, preset) {
@@ -12403,7 +12406,7 @@ function SignalsRail({
     return true;
   }
   const activePreset = presets.find((preset) => preset.id === filter) || presets[0] || DEFAULT_FILTER_PRESETS[0];
-  const counts = import_react25.default.useMemo(() => {
+  const counts = import_react26.default.useMemo(() => {
     return new Map(presets.map((preset) => [
       preset.id,
       groups.filter((group) => groupMatchesPreset(group, preset)).length
@@ -12511,7 +12514,7 @@ function SignalsRail({
 }
 
 // src/panels/ChatPane.tsx
-var import_react26 = __toESM(require("react"));
+var import_react27 = __toESM(require("react"));
 
 // src/lib/composer-attachment-text.ts
 function composerImageFileKey(file) {
@@ -12624,6 +12627,45 @@ function msgCopyText(message) {
 function msgHasTextualPayload(message) {
   if (message.text?.trim()) return true;
   return Boolean(message.blocks?.some((block) => block.type === "paragraph" || block.type === "heading" || block.type === "divider" || block.type === "code" || block.type === "command"));
+}
+function buildChatTurns(messages) {
+  const turns = [];
+  for (const message of messages) {
+    const current = turns.at(-1);
+    if (!current || message.kind === "user") {
+      turns.push({
+        id: `turn-${message.id}`,
+        messages: [message]
+      });
+      continue;
+    }
+    current.messages.push(message);
+  }
+  return turns;
+}
+function chatTurnPreview(turn) {
+  let title = "";
+  let body = "";
+  for (const message of turn.messages) {
+    const text = msgCopyText(message);
+    if (!text) {
+      continue;
+    }
+    if (!title && message.kind === "user") {
+      title = text;
+      continue;
+    }
+    if (!body && message.kind !== "user") {
+      body = text;
+    }
+  }
+  if (!title) {
+    title = msgCopyText(turn.messages[0]) || "Turn";
+  }
+  if (!body) {
+    body = "No response yet.";
+  }
+  return { title, body };
 }
 function isScaffoldUserText(text) {
   const normalized = text.trimStart();
@@ -12856,7 +12898,7 @@ function CopyInlineButton({
   label,
   className = ""
 }) {
-  const [copied, setCopied] = import_react26.default.useState(false);
+  const [copied, setCopied] = import_react27.default.useState(false);
   const disabled = !text.trim();
   async function copy() {
     if (disabled) return;
@@ -12911,20 +12953,23 @@ function ChatPane({
   onLoadOlder,
   stackSlot
 }) {
-  const bodyRef = import_react26.default.useRef(null);
-  const preserveOlderHistoryScrollRef = import_react26.default.useRef(false);
-  const olderHistoryScrollHeightRef = import_react26.default.useRef(0);
-  const olderHistoryScrollTopRef = import_react26.default.useRef(0);
-  const messages = import_react26.default.useMemo(() => {
+  const bodyRef = import_react27.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react27.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react27.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react27.default.useRef(0);
+  const activeTurnFrameRef = import_react27.default.useRef(0);
+  const [visibleTurnIndexes, setVisibleTurnIndexes] = import_react27.default.useState([]);
+  const messages = import_react27.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
-  const lastAgentMessageId = import_react26.default.useMemo(() => {
+  const turns = import_react27.default.useMemo(() => buildChatTurns(messages), [messages]);
+  const lastAgentMessageId = import_react27.default.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       if (messages[i].kind === "agent") return messages[i].id;
     }
     return null;
   }, [messages]);
-  const scrollSignature = import_react26.default.useMemo(() => {
+  const scrollSignature = import_react27.default.useMemo(() => {
     const last = messages[messages.length - 1];
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : 0;
@@ -12937,7 +12982,7 @@ function ChatPane({
       phase ?? ""
     ].join(":");
   }, [identity, messages, phase]);
-  import_react26.default.useLayoutEffect(() => {
+  import_react27.default.useLayoutEffect(() => {
     if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
       const node = bodyRef.current;
       const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
@@ -12960,11 +13005,78 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
-  import_react26.default.useEffect(() => {
+  import_react27.default.useEffect(() => {
     if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
       preserveOlderHistoryScrollRef.current = false;
     }
   }, [loadingOlderHistory]);
+  const updateActiveTurn = import_react27.default.useCallback(() => {
+    activeTurnFrameRef.current = 0;
+    const body = bodyRef.current;
+    if (!body || turns.length <= 1) {
+      setVisibleTurnIndexes([]);
+      return;
+    }
+    const turnNodes = Array.from(
+      body.querySelectorAll("[data-chat-turn-index]")
+    );
+    if (turnNodes.length === 0) {
+      setVisibleTurnIndexes([]);
+      return;
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const visibleTop = bodyRect.top;
+    const visibleBottom = bodyRect.bottom;
+    const targetY = bodyRect.top + Math.min(128, Math.max(48, bodyRect.height * 0.24));
+    let nextIndex = 0;
+    const nextVisibleIndexes = [];
+    for (const turnNode of turnNodes) {
+      const rawIndex = Number(turnNode.dataset.chatTurnIndex);
+      if (!Number.isFinite(rawIndex)) {
+        continue;
+      }
+      const turnRect = turnNode.getBoundingClientRect();
+      if (turnRect.bottom >= visibleTop && turnRect.top <= visibleBottom) {
+        nextVisibleIndexes.push(rawIndex);
+      }
+      if (turnRect.top <= targetY) {
+        nextIndex = rawIndex;
+      }
+    }
+    const nextIndexes = nextVisibleIndexes.length > 0 ? nextVisibleIndexes : [nextIndex];
+    setVisibleTurnIndexes((current) => {
+      if (current.length === nextIndexes.length && current.every((value, index) => value === nextIndexes[index])) {
+        return current;
+      }
+      return nextIndexes;
+    });
+  }, [turns.length]);
+  const scheduleActiveTurnUpdate = import_react27.default.useCallback(() => {
+    if (activeTurnFrameRef.current) {
+      return;
+    }
+    activeTurnFrameRef.current = window.requestAnimationFrame(updateActiveTurn);
+  }, [updateActiveTurn]);
+  import_react27.default.useEffect(() => {
+    scheduleActiveTurnUpdate();
+  }, [scheduleActiveTurnUpdate, scrollSignature]);
+  import_react27.default.useEffect(() => {
+    updateActiveTurn();
+    window.addEventListener("resize", scheduleActiveTurnUpdate);
+    return () => {
+      if (activeTurnFrameRef.current) {
+        window.cancelAnimationFrame(activeTurnFrameRef.current);
+        activeTurnFrameRef.current = 0;
+      }
+      window.removeEventListener("resize", scheduleActiveTurnUpdate);
+    };
+  }, [scheduleActiveTurnUpdate, updateActiveTurn]);
+  function scrollToTurn(turnIndex) {
+    const turnNode = bodyRef.current?.querySelector(
+      `[data-chat-turn-index="${turnIndex}"]`
+    );
+    turnNode?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
   function requestOlderHistory() {
     if (bodyRef.current) {
       preserveOlderHistoryScrollRef.current = true;
@@ -12973,14 +13085,41 @@ function ChatPane({
     }
     onLoadOlder?.();
   }
-  const transcriptText = import_react26.default.useMemo(() => transcriptCopyText(messages), [messages]);
+  const transcriptText = import_react27.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = !readOnly && agent?.model_capabilities?.image_input === true;
   const sendWithheld = accessEnforcing && agent?.affordances?.can_send_message === false;
-  const [dragActive, setDragActive] = import_react26.default.useState(false);
-  const [attachmentError, setAttachmentError] = import_react26.default.useState(null);
-  const resolvedDraftBlobRefs = import_react26.default.useRef("");
+  const [dragActive, setDragActive] = import_react27.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react27.default.useState(null);
+  const resolvedDraftBlobRefs = import_react27.default.useRef("");
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("ol", { className: "conv-turn-rail__list", children: turns.map((turn, turnIndex) => {
+    const preview = chatTurnPreview(turn);
+    const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
+    return /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("li", { className: "conv-turn-rail__item", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+        "button",
+        {
+          "aria-current": isVisibleTurn ? "true" : void 0,
+          "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
+          className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
+          "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
+          onClick: (event) => {
+            scrollToTurn(turnIndex);
+            if (event.detail > 0) {
+              event.currentTarget.blur();
+            }
+          },
+          type: "button",
+          children: /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+        /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+      ] })
+    ] }, turn.id);
+  }) }) }) : null;
   function addFiles(fileList) {
     if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
@@ -13029,7 +13168,7 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
-  import_react26.default.useEffect(() => {
+  import_react27.default.useEffect(() => {
     if (!canAttachImages) return;
     const refs = consoleBlobReferencesFromText(draft);
     if (refs.length === 0) {
@@ -13111,6 +13250,7 @@ function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          scheduleActiveTurnUpdate();
           if (event.currentTarget.scrollTop <= 32 && hasOlderHistory && !loadingOlderHistory) {
             requestOlderHistory();
           }
@@ -13163,27 +13303,37 @@ function ChatPane({
               "."
             ] }) })
           ] }),
-          messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "msg__time", children: m.time }),
-            /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "msg__bubble", children: [
-              (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
-              m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "msg__text", children: m.text }),
-              m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "msg__worked", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { children: [
-                  "Worked for ",
-                  m.workedFor
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
-                  CopyInlineButton,
-                  {
-                    className: "msg__copy--inline",
-                    label: "Copy work time",
-                    text: m.workedForCopyText || `Worked for ${m.workedFor}`
-                  }
-                )
-              ] })
-            ] })
-          ] }, m.id)),
+          turns.map((turn, turnIndex) => /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+            "div",
+            {
+              "aria-label": `Turn ${turnIndex + 1}`,
+              className: "conv-turn",
+              "data-chat-turn-index": turnIndex,
+              "data-testid": `chat-turn:${identity}:${turnIndex}`,
+              children: turn.messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("div", { className: "msg__time", children: m.time }),
+                /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "msg__bubble", children: [
+                  (m.kind === "user" || m.kind === "agent") && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(CopyInlineButton, { label: `Copy ${m.kind === "user" ? "message" : "turn"}`, text: msgCopyText(m) }),
+                  m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime35.jsx)("span", { className: "msg__text", children: m.text }),
+                  m.workedFor && !(phase && m.id === lastAgentMessageId) && /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "msg__worked", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("span", { children: [
+                      "Worked for ",
+                      m.workedFor
+                    ] }),
+                    /* @__PURE__ */ (0, import_jsx_runtime35.jsx)(
+                      CopyInlineButton,
+                      {
+                        className: "msg__copy--inline",
+                        label: "Copy work time",
+                        text: m.workedForCopyText || `Worked for ${m.workedFor}`
+                      }
+                    )
+                  ] })
+                ] })
+              ] }, m.id))
+            },
+            turn.id
+          )),
           phase && /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
             "div",
             {
@@ -13207,6 +13357,7 @@ function ChatPane({
         ]
       }
     ),
+    turnRail,
     stackSlot,
     /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)("div", { className: "composer", children: [
       /* @__PURE__ */ (0, import_jsx_runtime35.jsxs)(
@@ -13332,7 +13483,7 @@ function ChatPane({
 }
 
 // src/panels/MobKitDock.tsx
-var import_react27 = __toESM(require("react"));
+var import_react28 = __toESM(require("react"));
 var import_jsx_runtime36 = require("react/jsx-runtime");
 function tabPanelCount(node) {
   if (!node) return 0;
@@ -13354,7 +13505,7 @@ function MobKitDock({
   onOpenTargetInPanel
 }) {
   const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
-  import_react27.default.useEffect(() => {
+  import_react28.default.useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -13464,7 +13615,7 @@ function SplitView(props) {
   const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
   const direction = node.direction;
   const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
-  const hostRef = import_react27.default.useRef(null);
+  const hostRef = import_react28.default.useRef(null);
   function startDrag(e) {
     e.preventDefault();
     const host = hostRef.current;
@@ -13522,7 +13673,7 @@ function PaneView({
   const title = panel.title || panel.target?.title || "untitled";
   const target = panel.target;
   const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
-  const [menuOpen, setMenuOpen] = import_react27.default.useState(false);
+  const [menuOpen, setMenuOpen] = import_react28.default.useState(false);
   return /* @__PURE__ */ (0, import_jsx_runtime36.jsxs)(
     "div",
     {
@@ -13657,7 +13808,7 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }) {
 }
 
 // src/panels/PendingStack.tsx
-var import_react28 = __toESM(require("react"));
+var import_react29 = __toESM(require("react"));
 var import_jsx_runtime37 = require("react/jsx-runtime");
 function StackHead({
   count,
@@ -13725,9 +13876,9 @@ function StackItem({
   onDrop,
   onDragEnd
 }) {
-  const taRef = import_react28.default.useRef(null);
-  const [draft, setDraft] = import_react28.default.useState(item.text);
-  import_react28.default.useEffect(() => {
+  const taRef = import_react29.default.useRef(null);
+  const [draft, setDraft] = import_react29.default.useState(item.text);
+  import_react29.default.useEffect(() => {
     if (item.editing && taRef.current) {
       taRef.current.focus();
       const len = taRef.current.value.length;
@@ -13736,7 +13887,7 @@ function StackItem({
       taRef.current.style.height = taRef.current.scrollHeight + "px";
     }
   }, [item.editing]);
-  import_react28.default.useEffect(() => {
+  import_react29.default.useEffect(() => {
     setDraft(item.text);
   }, [item.text, item.editing]);
   const handleEditKey = (e) => {
@@ -13918,16 +14069,16 @@ function PendingStack2({
   onClearAll,
   onToggleExpand
 }) {
-  const [, setTick] = import_react28.default.useState(0);
-  import_react28.default.useEffect(() => {
+  const [, setTick] = import_react29.default.useState(0);
+  import_react29.default.useEffect(() => {
     const t = window.setInterval(() => setTick((n) => n + 1), 1e4);
     return () => window.clearInterval(t);
   }, []);
-  const [dragId, setDragId] = import_react28.default.useState(null);
-  const [dropTarget, setDropTarget] = import_react28.default.useState({ id: null, where: null });
-  const [collapsed, setCollapsed] = import_react28.default.useState(false);
-  const lastCount = import_react28.default.useRef(0);
-  import_react28.default.useEffect(() => {
+  const [dragId, setDragId] = import_react29.default.useState(null);
+  const [dropTarget, setDropTarget] = import_react29.default.useState({ id: null, where: null });
+  const [collapsed, setCollapsed] = import_react29.default.useState(false);
+  const lastCount = import_react29.default.useRef(0);
+  import_react29.default.useEffect(() => {
     if (items.length > lastCount.current) setCollapsed(false);
     lastCount.current = items.length;
   }, [items.length]);
@@ -14246,47 +14397,47 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "server_tool_content"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const consoleFetchTimeoutMsRef = import_react29.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
-  const consoleTransport = import_react29.default.useMemo(
+  const consoleFetchTimeoutMsRef = import_react30.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS2);
+  const consoleTransport = import_react30.default.useMemo(
     () => createHttpConsoleTransport2({
       baseUrl,
       fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
     }),
     [baseUrl]
   );
-  const consoleController = import_react29.default.useMemo(
+  const consoleController = import_react30.default.useMemo(
     () => createMobKitConsoleController2({ transport: consoleTransport }),
     [consoleTransport]
   );
-  const [experience, setExperience] = import_react29.default.useState(
+  const [experience, setExperience] = import_react30.default.useState(
     null
   );
-  const [agents, setAgents] = import_react29.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react29.default.useState(
+  const [agents, setAgents] = import_react30.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react30.default.useState(
     {}
   );
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react29.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react29.default.useState(
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react30.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react30.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react29.default.useState(
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react30.default.useState(
     /* @__PURE__ */ new Set()
   );
-  const [inspectByIdentity, setInspectByIdentity] = import_react29.default.useState({});
-  const [routingData, setRoutingData] = import_react29.default.useState({
+  const [inspectByIdentity, setInspectByIdentity] = import_react30.default.useState({});
+  const [routingData, setRoutingData] = import_react30.default.useState({
     routes: [],
     deliveries: []
   });
-  const [gatingData, setGatingData] = import_react29.default.useState({
+  const [gatingData, setGatingData] = import_react30.default.useState({
     pending: [],
     audit: []
   });
-  const [accessData, setAccessData] = import_react29.default.useState({
+  const [accessData, setAccessData] = import_react30.default.useState({
     status: null,
     config: null,
     error: null
   });
-  const [memoryData, setMemoryData] = import_react29.default.useState({
+  const [memoryData, setMemoryData] = import_react30.default.useState({
     records: [],
     realms: [],
     quarantineRecords: [],
@@ -14297,13 +14448,13 @@ function ConsoleApp({ baseUrl }) {
     unavailable: false,
     error: null
   });
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react29.default.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react29.default.useState("");
-  const [loading, setLoading] = import_react29.default.useState(true);
-  const [loadingHistory, setLoadingHistory] = import_react29.default.useState({});
-  const [error, setError] = import_react29.default.useState("");
-  const [actionError, setActionError] = import_react29.default.useState("");
-  const [theme, setTheme] = import_react29.default.useState(() => {
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react30.default.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react30.default.useState("");
+  const [loading, setLoading] = import_react30.default.useState(true);
+  const [loadingHistory, setLoadingHistory] = import_react30.default.useState({});
+  const [error, setError] = import_react30.default.useState("");
+  const [actionError, setActionError] = import_react30.default.useState("");
+  const [theme, setTheme] = import_react30.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
@@ -14311,22 +14462,22 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
-  const sidebarStorageScope = import_react29.default.useMemo(
+  const sidebarStorageScope = import_react30.default.useMemo(
     () => sidebarPreferencesScope(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarStorageNamespace = import_react29.default.useMemo(
+  const sidebarStorageNamespace = import_react30.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
   );
-  const sidebarPinsStorageKey = import_react29.default.useMemo(
+  const sidebarPinsStorageKey = import_react30.default.useMemo(
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
   }, [sidebarStorageScope, sidebarStorageNamespace]);
-  const [sidebarCollapsed, setSidebarCollapsed] = import_react29.default.useState(
+  const [sidebarCollapsed, setSidebarCollapsed] = import_react30.default.useState(
     () => {
       try {
         return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
@@ -14335,7 +14486,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   );
-  const toggleSidebarCollapsed = import_react29.default.useCallback(() => {
+  const toggleSidebarCollapsed = import_react30.default.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
       try {
@@ -14348,14 +14499,14 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const [railCollapsed, setRailCollapsed] = import_react29.default.useState(() => {
+  const [railCollapsed, setRailCollapsed] = import_react30.default.useState(() => {
     try {
       return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
     } catch {
       return false;
     }
   });
-  const toggleRailCollapsed = import_react29.default.useCallback(() => {
+  const toggleRailCollapsed = import_react30.default.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
       try {
@@ -14365,11 +14516,11 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
-  const defaultPinnedAgentIdsKey = import_react29.default.useMemo(
+  const defaultPinnedAgentIdsKey = import_react30.default.useMemo(
     () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
     [experience?.console_config?.agent_list?.default_pinned_agent_ids]
   );
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
     const stored = readSidebarStringSet(
       browserLocalStorage(),
@@ -14377,7 +14528,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react29.default.useCallback((agent, renderedFamilyPinIds) => {
+  const togglePinnedAgent = import_react30.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId2(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
@@ -14396,13 +14547,13 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, [agents, sidebarPinsStorageKey]);
-  const [, setRenderTick] = import_react29.default.useState(0);
-  const forceRender = import_react29.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const stagedAttachmentsRef = import_react29.default.useRef(stagedAttachmentsByIdentity);
-  import_react29.default.useEffect(() => {
+  const [, setRenderTick] = import_react30.default.useState(0);
+  const forceRender = import_react30.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react30.default.useRef(stagedAttachmentsByIdentity);
+  import_react30.default.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  import_react29.default.useEffect(
+  import_react30.default.useEffect(
     () => () => {
       for (const items of Object.values(stagedAttachmentsRef.current)) {
         items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -14451,11 +14602,11 @@ function ConsoleApp({ baseUrl }) {
       params
     })).result;
   }
-  const identityLogRef = import_react29.default.useRef({});
-  const timelineFetchInFlightRef = import_react29.default.useRef(
+  const identityLogRef = import_react30.default.useRef({});
+  const timelineFetchInFlightRef = import_react30.default.useRef(
     {}
   );
-  const optimisticUserByPanelKeyRef = import_react29.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react30.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
@@ -14846,14 +14997,14 @@ function ConsoleApp({ baseUrl }) {
     void panelId;
     return frames;
   }
-  const activityRef = import_react29.default.useRef([]);
-  const liveFramesRef = import_react29.default.useRef([]);
-  const [liveFrames, setLiveFrames] = import_react29.default.useState([]);
+  const activityRef = import_react30.default.useRef([]);
+  const liveFramesRef = import_react30.default.useRef([]);
+  const [liveFrames, setLiveFrames] = import_react30.default.useState([]);
   function commitLiveFrames(frames) {
     liveFramesRef.current = frames;
     setLiveFrames(frames);
   }
-  const pendingStackRef = import_react29.default.useRef({});
+  const pendingStackRef = import_react30.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
   const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
@@ -14920,7 +15071,7 @@ function ConsoleApp({ baseUrl }) {
     persistPendingStack(identity, next);
     forceRender();
   }
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
@@ -14932,26 +15083,26 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  const identityBusyRef = import_react29.default.useRef({});
-  const identityLifecycleRef = import_react29.default.useRef({});
+  const identityBusyRef = import_react30.default.useRef({});
+  const identityLifecycleRef = import_react30.default.useRef({});
   const isIdentityBusy = (identity) => identityBusyRef.current[identity] === true;
-  const phaseRef = import_react29.default.useRef({});
-  const phaseValueByKey = import_react29.default.useRef({});
-  const phaseSinceByKey = import_react29.default.useRef({});
-  const phaseTimerByKey = import_react29.default.useRef({});
-  const refreshTimersRef = import_react29.default.useRef({});
-  const experienceTimerRef = import_react29.default.useRef(null);
-  const experienceLoadInFlightRef = import_react29.default.useRef(
+  const phaseRef = import_react30.default.useRef({});
+  const phaseValueByKey = import_react30.default.useRef({});
+  const phaseSinceByKey = import_react30.default.useRef({});
+  const phaseTimerByKey = import_react30.default.useRef({});
+  const refreshTimersRef = import_react30.default.useRef({});
+  const experienceTimerRef = import_react30.default.useRef(null);
+  const experienceLoadInFlightRef = import_react30.default.useRef(
     null
   );
-  const agentsRef = import_react29.default.useRef([]);
-  import_react29.default.useEffect(() => {
+  const agentsRef = import_react30.default.useRef([]);
+  import_react30.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react29.default.useRef(false);
-  const dockLayoutHydrated = import_react29.default.useRef(false);
-  const dockLayoutRestored = import_react29.default.useRef(false);
-  const dockLayoutRestoring = import_react29.default.useRef(false);
+  const initialTargetOpened = import_react30.default.useRef(false);
+  const dockLayoutHydrated = import_react30.default.useRef(false);
+  const dockLayoutRestored = import_react30.default.useRef(false);
+  const dockLayoutRestoring = import_react30.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: createConsoleId("panel"),
@@ -14959,11 +15110,11 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  const currentDockLayoutStorageKey = import_react29.default.useMemo(
+  const currentDockLayoutStorageKey = import_react30.default.useMemo(
     () => dockLayoutStorageKey(baseUrl, experience),
     [baseUrl, experience?.runtime_id, experience?.console_config?.title]
   );
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     if (!experience || dockLayoutHydrated.current) return;
     dockLayoutHydrated.current = true;
     try {
@@ -14978,7 +15129,7 @@ function ConsoleApp({ baseUrl }) {
     } catch {
     }
   }, [currentDockLayoutStorageKey, experience]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     if (!experience || !dockLayoutHydrated.current) return;
     if (dockLayoutRestoring.current) {
       dockLayoutRestoring.current = false;
@@ -15086,7 +15237,7 @@ function ConsoleApp({ baseUrl }) {
         return false;
     }
   }
-  const dockRef = import_react29.default.useRef(dock);
+  const dockRef = import_react30.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
     let changed = false;
@@ -15143,7 +15294,7 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
-  const loadExperience = import_react29.default.useCallback(() => {
+  const loadExperience = import_react30.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
       return experienceLoadInFlightRef.current;
     }
@@ -15173,7 +15324,7 @@ function ConsoleApp({ baseUrl }) {
     experienceLoadInFlightRef.current = request;
     return request;
   }, [consoleTransport]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -15186,14 +15337,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
     }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const appearance = experience?.console_config?.appearance;
     if (!appearance) return;
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
@@ -15217,7 +15368,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }
   }, [experience?.console_config?.appearance, setVariant]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -15227,7 +15378,7 @@ function ConsoleApp({ baseUrl }) {
     }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
@@ -15238,12 +15389,12 @@ function ConsoleApp({ baseUrl }) {
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const frontendReadOnly = import_react29.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
+  const frontendReadOnly = import_react30.default.useMemo(() => resolveConsoleReadOnlyOverride(), []);
   const accessEnforcing = experience?.access?.enabled === true;
   const consoleReadOnly = frontendReadOnly || experience?.console_policy?.read_only === true || !accessEnforcing && experience?.runtime_capabilities?.can_send_messages === false;
-  const consoleReadOnlyRef = import_react29.default.useRef(false);
+  const consoleReadOnlyRef = import_react30.default.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
-  const visibleControls = import_react29.default.useMemo(() => {
+  const visibleControls = import_react30.default.useMemo(() => {
     const runtimeControls = hasMobControlSurface ? [
       "topology",
       "timeline",
@@ -15277,7 +15428,7 @@ function ConsoleApp({ baseUrl }) {
     experience?.memory?.can_read,
     hasMobControlSurface
   ]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || !experience)
       return;
     if (!dockLayoutHydrated.current) return;
@@ -15311,7 +15462,7 @@ function ConsoleApp({ baseUrl }) {
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
   }, [agents, dock, experience, visibleControls]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
@@ -15328,7 +15479,7 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget2("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const refreshAccessData = import_react29.default.useCallback(async () => {
+  const refreshAccessData = import_react30.default.useCallback(async () => {
     const accessTarget = controlWorkbenchTarget("access");
     try {
       const status = await executeHeadlessCommand(
@@ -15348,7 +15499,7 @@ function ConsoleApp({ baseUrl }) {
       setAccessData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl]);
-  const refreshMemoryData = import_react29.default.useCallback(async () => {
+  const refreshMemoryData = import_react30.default.useCallback(async () => {
     const memoryTarget = controlWorkbenchTarget("memory");
     try {
       const recordsResult = await executeHeadlessCommand(
@@ -15399,7 +15550,7 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
-  const loadMemoryRecordDetail = import_react29.default.useCallback(
+  const loadMemoryRecordDetail = import_react30.default.useCallback(
     async (realm, memoryId) => {
       setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
       try {
@@ -15427,7 +15578,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl]
   );
-  const runAccessMutation = import_react29.default.useCallback(
+  const runAccessMutation = import_react30.default.useCallback(
     async (command, params) => {
       try {
         await executeHeadlessCommand(command, controlWorkbenchTarget("access"), params);
@@ -15442,7 +15593,7 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshAccessData, loadExperience]
   );
-  const refreshPanelData = import_react29.default.useCallback(async () => {
+  const refreshPanelData = import_react30.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter(
       (t) => t.kind === "identity-inspect"
@@ -15489,11 +15640,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react29.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react30.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -15503,7 +15654,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 150);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react29.default.useCallback(
+  const scheduleHistoryRefresh = import_react30.default.useCallback(
     (identity) => {
       clearTimeout(refreshTimersRef.current[identity]);
       refreshTimersRef.current[identity] = window.setTimeout(async () => {
@@ -15521,7 +15672,7 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -15532,7 +15683,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
       for (const panel of dock.viewState.panels) {
@@ -15583,11 +15734,11 @@ function ConsoleApp({ baseUrl }) {
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react29.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react30.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react29.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react30.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     const handleLiveFrame = (incomingFrame) => {
       const canonicalIdentity = canonicalConsoleIdentity(
         incomingFrame.identity,
@@ -15632,7 +15783,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe?.();
     };
   }, [consoleController, consoleTransport]);
-  import_react29.default.useEffect(() => {
+  import_react30.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
         window.clearTimeout(timer);
@@ -15813,7 +15964,7 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
-  const pendingDrainOwnerRef = import_react29.default.useRef(
+  const pendingDrainOwnerRef = import_react30.default.useRef(
     `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   );
   function findChatTargetFor(identity) {
