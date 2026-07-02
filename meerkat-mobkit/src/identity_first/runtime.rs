@@ -2544,8 +2544,12 @@ impl IdentityRuntime {
         // is defanged first (§9.1 anti-spoofing — even with injection off,
         // forged memory envelopes are an inbound threat) and only then
         // considered for ambient injection.
-        let content_to_deliver = if handling_mode == HandlingMode::Steer {
-            content.clone()
+        // Ask 1: the user content and the ambient memory recall travel as
+        // SEPARATE bodies — `content_to_deliver` is the (defanged) user
+        // message, `injected_context` is the recall assembled as its own
+        // typed injected-context body. They are never fused into one text.
+        let (content_to_deliver, injected_context) = if handling_mode == HandlingMode::Steer {
+            (content.clone(), Vec::new())
         } else {
             match self.agent_memory.read().await.clone() {
                 Some(injector) => {
@@ -2560,21 +2564,27 @@ impl IdentityRuntime {
                         }
                     }
                     let defanged = injector.defang_inbound(identity, content);
-                    injector
+                    let injected_context = injector
                         .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
                         .await
                         .map_err(|err| {
                             IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                        })?
+                        })?;
+                    (defanged, injected_context)
                 }
-                None => content.clone(),
+                None => (content.clone(), Vec::new()),
             }
         };
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
             let delivered_session_id = bridge
-                .deliver_with_mode(rid, &content_to_deliver, handling_mode)
+                .deliver_with_mode_and_context(
+                    rid,
+                    &content_to_deliver,
+                    &injected_context,
+                    handling_mode,
+                )
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
             if let Some(rebound_token) = self

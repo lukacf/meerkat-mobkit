@@ -42,10 +42,15 @@ pub struct MemorySpawnCustomizer {
 impl MemorySpawnCustomizer {
     pub fn new(provider: Arc<dyn AgentMemoryProvider>, config: AgentMemoryConfig) -> Self {
         if config.per_turn_injection == AgentMemoryPerTurnInjection::Budgeted {
-            tracing::warn!(
-                "agent_memory.per_turn_injection = budgeted has no effect on the classic mob \
-                 path; ambient per-turn injection is identity-first-only for now (build-time \
-                 injection and the recorder tool are unaffected)"
+            // `Budgeted` is now the platform default (ask 1 made ambient
+            // injection echo-safe), so this is no longer a user misconfig —
+            // it is an as-designed limitation of the classic path, which
+            // still injects at build time only (§9.1). Debug, not warn, to
+            // avoid spamming every roster-less mob that just takes defaults.
+            tracing::debug!(
+                "agent_memory.per_turn_injection = budgeted: ambient per-turn injection is \
+                 identity-first-only for now; the classic mob path injects at build time only \
+                 (the recorder tool and build-time injection are unaffected)"
             );
         }
         Self {

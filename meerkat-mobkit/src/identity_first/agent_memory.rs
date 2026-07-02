@@ -70,8 +70,14 @@ pub enum AgentMemoryRecallFailurePolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMemoryPerTurnInjection {
-    #[default]
     Off,
+    /// Ambient per-turn recall, budget-laddered and dedup'd, delivered as a
+    /// separate typed injected-context body (meerkat 0.7.12 ask 1). Now the
+    /// default: echo-safe by construction (excluded from compaction indexing)
+    /// and delivered on an authenticated channel rather than fused into user
+    /// text. Active on the identity-first path; the classic (roster-less) mob
+    /// path still injects at build time only (§9.1).
+    #[default]
     Budgeted,
 }
 
@@ -142,7 +148,7 @@ impl Default for AgentMemoryConfig {
             recall_timeout_ms: DEFAULT_RECALL_TIMEOUT_MS,
             recall_failure_policy: AgentMemoryRecallFailurePolicy::Skip,
             instruction_header: None,
-            per_turn_injection: AgentMemoryPerTurnInjection::Off,
+            per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
             defang_inbound: true,
             llm_writes: AgentMemoryLlmWrites::Observed,
             recorder_tool: true,
@@ -784,12 +790,16 @@ impl AgentMemoryRuntimeInjector {
 
     /// Ambient per-turn injection. `session_key` scopes the cross-turn dedup
     /// and cumulative byte budget; without it only the per-assembly cap holds.
+    /// Assemble the ambient per-turn recall as a separate `injected_context`
+    /// body (meerkat 0.7.12 ask 1). Returns the vector to deliver alongside
+    /// the user message; empty means inject nothing. See
+    /// [`RecallCoordinator::inject_for_turn`].
     pub async fn inject_for_turn(
         &self,
         identity: &AgentIdentity,
         session_key: Option<&str>,
         content: &meerkat_core::ContentInput,
-    ) -> Result<meerkat_core::ContentInput, AgentMemoryError> {
+    ) -> Result<Vec<meerkat_core::ContentInput>, AgentMemoryError> {
         self.coordinator
             .inject_for_turn(identity, session_key, content)
             .await
@@ -2041,6 +2051,24 @@ mod tests {
     use async_trait::async_trait;
     use meerkat_mob::ProfileName;
     use std::error::Error;
+
+    /// Ask 1: `inject_for_turn` now returns the recall as a SEPARATE
+    /// `Vec<ContentInput>` (typed injected-context bodies), not fused with the
+    /// user's text. This helper flattens the bodies to one string so
+    /// "injection contains X" assertions read unchanged; an empty vector
+    /// (nothing injected) flattens to the empty string — and, unlike the old
+    /// fused return, it no longer echoes the user's own message back.
+    trait InjectionText {
+        fn text_content(&self) -> String;
+    }
+    impl InjectionText for Vec<meerkat_core::ContentInput> {
+        fn text_content(&self) -> String {
+            self.iter()
+                .map(meerkat_core::ContentInput::text_content)
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Barrier, Mutex};
     use std::time::Duration;
@@ -2940,8 +2968,10 @@ mod tests {
         );
         let injected_text = injected.text_content();
         assert!(injected_text.contains("Passport location"));
-        assert!(injected_text.contains("Current user message"));
-        assert!(injected_text.contains("Where did I put my passport?"));
+        // Ask 1: the injection is a SEPARATE body — it must NOT echo the
+        // user's own message (that travels on the user channel).
+        assert!(!injected_text.contains("Current user message"));
+        assert!(!injected_text.contains("Where did I put my passport?"));
         Ok(())
     }
 
@@ -2960,7 +2990,7 @@ mod tests {
             .inject_for_turn(&identity()?, None, &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -3001,7 +3031,7 @@ mod tests {
             .inject_for_turn(&identity()?, None, &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -3049,7 +3079,7 @@ mod tests {
             Err(_) => return Err("locked markdown recall should respect timeout".into()),
         };
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -3083,7 +3113,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn per_turn_injection_defaults_off() -> Result<(), Box<dyn Error>> {
+    async fn per_turn_injection_defaults_budgeted() -> Result<(), Box<dyn Error>> {
+        // Ask 1 flipped the platform default from Off to Budgeted (ambient
+        // injection is now echo-safe: delivered as a separate typed
+        // injected-context body, excluded from compaction indexing). Default
+        // config must now recall AND inject.
+        assert_eq!(
+            AgentMemoryConfig::default().per_turn_injection,
+            AgentMemoryPerTurnInjection::Budgeted,
+            "per-turn injection now defaults to budgeted"
+        );
         let provider = Arc::new(CapturingProvider {
             request: Mutex::new(None),
             records: vec![AgentMemoryRecord {
@@ -3103,13 +3142,16 @@ mod tests {
             .inject_for_turn(&identity()?, Some("session-1"), &content)
             .await?;
 
-        assert_eq!(injected.text_content(), content.text_content());
+        // Recall ran and the record was injected as its own body — and the
+        // user's message is NOT echoed back into it.
+        assert!(injected.text_content().contains("Fact"));
+        assert!(!injected.text_content().contains("where is the fact?"));
         let captured = provider
             .request
             .lock()
             .map_err(|err| format!("capture mutex poisoned: {err}"))?
             .clone();
-        assert!(captured.is_none(), "off mode must not recall at all");
+        assert!(captured.is_some(), "budgeted default must recall");
         Ok(())
     }
 
@@ -3144,9 +3186,8 @@ mod tests {
         let second = injector
             .inject_for_turn(&identity()?, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            second.text_content(),
-            "hello",
+        assert!(
+            second.is_empty(),
             "already-injected record must not re-inject in the same session"
         );
 
@@ -3183,7 +3224,7 @@ mod tests {
             blocks < 12,
             "assembly budget must exclude some of 12 x 2KB records (got {blocks})"
         );
-        let overhead = text.len() - content.text_content().len();
+        let overhead = text.len();
         assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
         Ok(())
     }
@@ -3209,7 +3250,7 @@ mod tests {
             let injected = injector
                 .inject_for_turn(&identity()?, Some("session-x"), &content)
                 .await?;
-            let overhead = injected.text_content().len() - content.text_content().len();
+            let overhead = injected.text_content().len();
             assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
             if overhead == 0 {
                 saw_passthrough_at = Some(turn);
