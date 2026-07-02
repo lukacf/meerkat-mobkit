@@ -145,6 +145,13 @@ pub struct StagedRecordView {
     pub derived_from: Vec<MemoryId>,
     pub content_hash: String,
     pub has_verification: bool,
+    /// §10.2 durable taint marker: the record landed quarantined at some
+    /// point (or descends from one that did). The *current* status is not
+    /// enough — a quarantine release tombstones the origin, and the
+    /// tombstone erases `Quarantined` from the row, so without this flag
+    /// the "capped at agent_observed forever" ceiling would be lost the
+    /// moment the origin is tombstoned.
+    pub ever_quarantined: bool,
 }
 
 /// Read-only store view backing the validator, so validation stays pure
@@ -165,6 +172,13 @@ pub enum StagedBatchError {
     InvalidRecord {
         op_index: usize,
         reason: String,
+    },
+    /// §10.4 secret hygiene: the payload matches a curated gitleaks-class
+    /// secret pattern. Refused, never silently redacted; the class is named
+    /// so the author knows WHY, but the matched text is never echoed.
+    SecretDetected {
+        op_index: usize,
+        class: &'static str,
     },
     RealmMismatch {
         op_index: usize,
@@ -235,6 +249,13 @@ impl std::fmt::Display for StagedBatchError {
             Self::InvalidRecord { op_index, reason } => {
                 write!(f, "op {op_index}: invalid record: {reason}")
             }
+            Self::SecretDetected { op_index, class } => write!(
+                f,
+                "op {op_index}: write refused: content matches the '{class}' secret pattern \
+                 class (§10.4). Durable memory must never hold credentials — store a \
+                 reference to where the credential lives instead. Do not retry with the \
+                 secret paraphrased or split."
+            ),
             Self::RealmMismatch {
                 op_index,
                 expected,
@@ -399,6 +420,7 @@ pub fn validate_batch(
                             derived_from: derived_from.clone(),
                             content_hash: hash,
                             has_verification: record.verification.is_some(),
+                            ever_quarantined: tainted,
                         },
                     );
                 }
@@ -503,6 +525,7 @@ pub fn validate_batch(
                             derived_from: derived_from.clone(),
                             content_hash: hash,
                             has_verification: record.verification.is_some(),
+                            ever_quarantined: tainted,
                         },
                     );
                 }
@@ -522,10 +545,15 @@ pub fn validate_batch(
                 }
                 check_scope(op_index, batch, &existing.scope)?;
                 batch_tombstoned.insert((existing.scope.clone(), existing.content_hash.clone()));
+                // Overlaying `Tombstoned` over a `Quarantined` view must not
+                // launder the taint within this batch: carry the durable bit
+                // so a tombstone-then-derive sequence still hits the ceiling.
+                let was_quarantined = matches!(existing.status, RecordStatus::Quarantined { .. });
                 overlay.insert(
                     id.clone(),
                     StagedRecordView {
                         status: RecordStatus::Tombstoned,
+                        ever_quarantined: existing.ever_quarantined || was_quarantined,
                         ..existing
                     },
                 );
@@ -594,7 +622,19 @@ pub fn validate_batch(
 
 fn check_record_payload(op_index: usize, record: &NewMemoryRecord) -> Result<(), StagedBatchError> {
     validate_record_fields(&record.title, &record.description, &record.body)
-        .map_err(|reason| StagedBatchError::InvalidRecord { op_index, reason })
+        .map_err(|reason| StagedBatchError::InvalidRecord { op_index, reason })?;
+    // §10.4 secret hygiene: this is the single write chokepoint — every
+    // write path (memory tool, RPC remember/update, Distiller, Steward,
+    // Hygienist, markdown import) stages a batch validated here.
+    if let Some(class) = crate::memory::secrets::detect_record_secret(
+        &record.title,
+        &record.description,
+        &record.body,
+        &record.tags,
+    ) {
+        return Err(StagedBatchError::SecretDetected { op_index, class });
+    }
+    Ok(())
 }
 
 /// Scope legality (§7.2 write authority): scopes must live in the batch
@@ -660,8 +700,12 @@ fn check_tier_assignment(
 }
 
 /// Walks supersede + derivation edges from the given starting ids; true if
-/// any reachable record is `Untrusted` or `Quarantined` (§10.2 transitive
-/// provenance ceiling).
+/// any reachable record is `Untrusted`, `Quarantined`, or ever WAS
+/// quarantined (§10.2 transitive provenance ceiling). The durable
+/// `ever_quarantined` bit is what survives a quarantine release: the
+/// release tombstones the origin, and a tombstoned row no longer reads as
+/// `Quarantined` — without the bit the ceiling would only hold until the
+/// first release.
 fn chain_reaches_taint<'a>(
     overlay: &HashMap<MemoryId, StagedRecordView>,
     view: &dyn StagedBatchView,
@@ -677,6 +721,7 @@ fn chain_reaches_taint<'a>(
             continue;
         };
         if record.trust == TrustTier::Untrusted
+            || record.ever_quarantined
             || matches!(record.status, RecordStatus::Quarantined { .. })
         {
             return true;
@@ -781,6 +826,7 @@ mod tests {
             derived_from: Vec::new(),
             content_hash: content_hash("t", "b"),
             has_verification: false,
+            ever_quarantined: false,
         }
     }
 
@@ -1203,6 +1249,240 @@ mod tests {
                 tier: TrustTier::AgentVerified,
             }
         );
+    }
+
+    #[test]
+    fn tombstoned_formerly_quarantined_origin_still_caps_tier() {
+        // Cross-batch: origin Q was quarantined, then a release tombstoned
+        // it (the tombstone erased `Quarantined` from the status; only the
+        // durable ever_quarantined bit remains). The released copy carries a
+        // verification claim; a later steward retier to agent_verified must
+        // still hit the §10.2 ceiling.
+        let mut view = MapView::empty();
+        view.records.insert(
+            "mem-origin".to_string(),
+            StagedRecordView {
+                ever_quarantined: true,
+                ..record_view(
+                    identity_scope(),
+                    TrustTier::AgentObserved,
+                    RecordStatus::Tombstoned,
+                )
+            },
+        );
+        view.records.insert(
+            "mem-released".to_string(),
+            StagedRecordView {
+                derived_from: vec!["mem-origin".to_string()],
+                has_verification: true,
+                ever_quarantined: true,
+                ..record_view(
+                    identity_scope(),
+                    TrustTier::AgentObserved,
+                    RecordStatus::Active,
+                )
+            },
+        );
+        let retier = steward_batch(vec![StagedOp::Retier {
+            id: "mem-released".to_string(),
+            trust: TrustTier::AgentVerified,
+            rationale: Some("post-release launder attempt".to_string()),
+        }]);
+        assert_eq!(
+            validate_batch(&retier, &view, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, 1_000),
+            Err(StagedBatchError::TransitiveTaintCeiling {
+                op_index: 0,
+                tier: TrustTier::AgentVerified,
+            })
+        );
+
+        // Even a copy whose own bit was somehow not set is capped through
+        // the derivation walk reaching the flagged origin.
+        view.records
+            .get_mut("mem-released")
+            .expect("present")
+            .ever_quarantined = false;
+        assert_eq!(
+            validate_batch(&retier, &view, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, 1_000),
+            Err(StagedBatchError::TransitiveTaintCeiling {
+                op_index: 0,
+                tier: TrustTier::AgentVerified,
+            })
+        );
+
+        // A non-LLM supersede over the released copy asking agent_verified
+        // is capped the same way.
+        let supersede = StagedMutationBatch {
+            realm: "family".to_string(),
+            author: MemoryAuthor::Application,
+            ops: vec![StagedOp::Supersede {
+                id: None,
+                prior: "mem-released".to_string(),
+                record: payload("Fresh", "Fresh body"),
+                trust: TrustTier::AgentVerified,
+                derived_from: Vec::new(),
+                rationale: None,
+            }],
+        };
+        assert_eq!(
+            validate_batch(
+                &supersede,
+                &view,
+                DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS,
+                1_000
+            ),
+            Err(StagedBatchError::TransitiveTaintCeiling {
+                op_index: 0,
+                tier: TrustTier::AgentVerified,
+            })
+        );
+    }
+
+    #[test]
+    fn intra_batch_tombstone_of_quarantined_origin_still_caps_tier() {
+        // Single batch: tombstone the quarantined origin FIRST, then derive
+        // a fresh record from it and retier up. The tombstone overlay must
+        // carry the ever-quarantined bit or the walk sees only `Tombstoned`.
+        let mut view = MapView::empty();
+        view.records.insert(
+            "mem-q".to_string(),
+            record_view(
+                identity_scope(),
+                TrustTier::AgentObserved,
+                RecordStatus::Quarantined {
+                    reason: "tainted session".to_string(),
+                },
+            ),
+        );
+        let batch = steward_batch(vec![
+            StagedOp::Tombstone {
+                id: "mem-q".to_string(),
+                rationale: Some("clearing the queue".to_string()),
+            },
+            StagedOp::Create {
+                id: Some("mem-fresh".to_string()),
+                scope: identity_scope(),
+                record: {
+                    let mut p = payload("Laundered", "Laundered body");
+                    p.verification = Some(crate::memory::records::VerificationClaim {
+                        checked: "supposedly checked".to_string(),
+                        evidence: Vec::new(),
+                    });
+                    p
+                },
+                trust: TrustTier::AgentObserved,
+                derived_from: vec!["mem-q".to_string()],
+                rationale: None,
+                created_at_ms: None,
+                updated_at_ms: None,
+            },
+            StagedOp::Retier {
+                id: "mem-fresh".to_string(),
+                trust: TrustTier::AgentVerified,
+                rationale: Some("intra-batch launder attempt".to_string()),
+            },
+        ]);
+        assert_eq!(
+            validate_batch(&batch, &view, DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS, 1_000),
+            Err(StagedBatchError::TransitiveTaintCeiling {
+                op_index: 2,
+                tier: TrustTier::AgentVerified,
+            })
+        );
+    }
+
+    #[test]
+    fn secret_bearing_payloads_are_refused_with_class_named() {
+        let secrets = [
+            (
+                "aws key",
+                "the key is AKIAIOSFODNN7EXAMPLE ok",
+                "aws-access-key-id",
+            ),
+            (
+                "github token",
+                "token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 works",
+                "github-token",
+            ),
+            (
+                "private key",
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n-----END RSA PRIVATE KEY-----",
+                "private-key",
+            ),
+            (
+                "assignment",
+                "api_key = \"zXy1aB2cD3eF4gH5iJ6k\"",
+                "credential-assignment",
+            ),
+        ];
+        for (title, body, class) in secrets {
+            let batch = agent_batch(vec![StagedOp::Create {
+                id: None,
+                scope: identity_scope(),
+                record: payload(title, body),
+                trust: TrustTier::AgentObserved,
+                derived_from: Vec::new(),
+                rationale: None,
+                created_at_ms: None,
+                updated_at_ms: None,
+            }]);
+            let err = validate_batch(
+                &batch,
+                &MapView::empty(),
+                DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS,
+                1_000,
+            )
+            .expect_err("secret-bearing payload must be refused");
+            assert_eq!(
+                err,
+                StagedBatchError::SecretDetected { op_index: 0, class },
+                "wrong class for {title}"
+            );
+            // The refusal names the class but never echoes the secret.
+            let message = err.to_string();
+            assert!(message.contains(class), "{message}");
+            assert!(!message.contains("AKIA"), "{message}");
+            assert!(!message.contains("ghp_"), "{message}");
+            assert!(!message.contains("zXy1aB2cD3eF4gH5iJ6k"), "{message}");
+        }
+
+        // Tags are scanned too.
+        let mut op = create_op(identity_scope(), TrustTier::AgentObserved);
+        if let StagedOp::Create { record, .. } = &mut op {
+            record.tags = vec!["AKIAIOSFODNN7EXAMPLE".to_string()];
+        }
+        assert!(matches!(
+            validate_batch(
+                &agent_batch(vec![op]),
+                &MapView::empty(),
+                DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS,
+                1_000
+            ),
+            Err(StagedBatchError::SecretDetected { op_index: 0, .. })
+        ));
+
+        // Ordinary technical prose passes.
+        let clean = agent_batch(vec![StagedOp::Create {
+            id: None,
+            scope: identity_scope(),
+            record: payload(
+                "API key rotation procedure",
+                "The api_key lives in the vault under service/deploy; rotate it quarterly \
+                 and never write the value down.",
+            ),
+            trust: TrustTier::AgentObserved,
+            derived_from: Vec::new(),
+            rationale: None,
+            created_at_ms: None,
+            updated_at_ms: None,
+        }]);
+        validate_batch(
+            &clean,
+            &MapView::empty(),
+            DEFAULT_TOMBSTONE_RECREATE_WINDOW_MS,
+            1_000,
+        )
+        .expect("clean payload about credentials passes");
     }
 
     #[test]

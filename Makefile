@@ -93,10 +93,14 @@ bright-line: ## Enforce the memory bright line (agent-memory-architecture.md §1
 	@scripts/check-memory-bright-line
 	@echo "$(GREEN)Memory bright line holds.$(NC)"
 
-memory-evals: ## Validate memory calibration profiles/fixtures (agent-memory-architecture.md §11)
+memory-evals: ## Validate memory calibration profiles/fixtures + gate mock-lane invariants (agent-memory-architecture.md §11)
 	@echo "$(YELLOW)Checking memory calibration harness…$(NC)"
 	@scripts/memory-evals --check
-	@echo "$(GREEN)Memory calibration harness OK.$(NC)"
+	@scripts/memory-evals --stage selector --mode mock
+	@scripts/memory-evals --stage distiller --mode mock
+	@scripts/memory-evals --stage steward --mode mock
+	@scripts/memory-evals --stage hygienist --mode mock
+	@echo "$(GREEN)Memory calibration harness OK (mock lanes gate deterministic invariants; judgment misses informational).$(NC)"
 
 ci: fmt-check verify-version-parity bright-line memory-evals lint test-all audit ## Full CI pipeline
 	@echo "$(GREEN)CI pipeline passed.$(NC)"

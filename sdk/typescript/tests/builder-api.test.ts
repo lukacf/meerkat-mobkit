@@ -153,6 +153,74 @@ describe("MobKitBuilder.agentMemory()", () => {
     boolBuilder.agentMemory({ steward: true });
     assert.deepEqual(boolBuilder._config.agentMemoryConfig, { steward: true });
   });
+
+  it("serializes operatorScope to the gateway wire key", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({ store: "sqlite", operatorScope: "provisional" });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      store: "sqlite",
+      operator_scope: "provisional",
+    });
+  });
+
+  it("serializes the hygienist block to gateway wire keys", () => {
+    const builder = MobKit.builder();
+    builder.agentMemory({
+      hygienist: {
+        enabled: true,
+        runsPerDay: 3,
+        model: "claude-haiku-4-5",
+      },
+    });
+
+    assert.deepEqual(builder._config.agentMemoryConfig, {
+      hygienist: {
+        enabled: true,
+        runs_per_day: 3,
+        model: "claude-haiku-4-5",
+      },
+    });
+
+    const boolBuilder = MobKit.builder();
+    boolBuilder.agentMemory({ hygienist: true });
+    assert.deepEqual(boolBuilder._config.agentMemoryConfig, { hygienist: true });
+  });
+
+  it("rejects unknown options at runtime instead of silently dropping them", () => {
+    const builder = MobKit.builder();
+    assert.throws(
+      // Cast simulates a plain-JS caller; the TS type already rejects this.
+      () => builder.agentMemory({ perTurnInjecton: "budgeted" } as never),
+      /agentMemory got unsupported option\(s\): perTurnInjecton/,
+    );
+  });
+
+  it("rejects unknown nested options at runtime", () => {
+    assert.throws(
+      () =>
+        MobKit.builder().agentMemory({
+          distiller: { runsPerHour: 2, runsperhourTypo: 9 },
+        } as never),
+      /agentMemory distiller got unsupported option\(s\): runsperhourTypo/,
+    );
+    assert.throws(
+      () => MobKit.builder().agentMemory({ steward: { cadance: "*/6h" } } as never),
+      /agentMemory steward got unsupported option\(s\): cadance/,
+    );
+    assert.throws(
+      () =>
+        MobKit.builder().agentMemory({ hygienist: { runsPerDya: 2 } } as never),
+      /agentMemory hygienist got unsupported option\(s\): runsPerDya/,
+    );
+    assert.throws(
+      () =>
+        MobKit.builder().agentMemory({
+          contentTrust: { trustedMcpServrs: [] },
+        } as never),
+      /agentMemory contentTrust got unsupported option\(s\): trustedMcpServrs/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

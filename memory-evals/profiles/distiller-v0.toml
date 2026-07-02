@@ -4,7 +4,7 @@
 # that produced them (CalibrationRef, §7.1).
 
 stage         = "distiller"
-version       = "0"
+version       = "1"
 # Resolved through meerkat's model-client seam (§8.1). Extraction is the
 # highest-value LLM stage (§8.4); the calibration matrix decides whether a
 # larger tier earns its cost. Deployments override per-config via

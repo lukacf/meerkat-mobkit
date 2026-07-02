@@ -550,11 +550,20 @@ pub trait LlmWriteGate: Send + Sync {
 }
 
 /// The taint/posture gate: `llm_writes = "quarantined"` forces every
-/// LLM-authored write into quarantine regardless of taint; agent-authored
-/// writes quarantine when the author's session is tainted; and ANY
-/// LLM-authored write (Distiller included) quarantines when its evidence
-/// cites a tainted session or a reset boundary (§8.4/§10.1 — coarse:
-/// session-tainted ⇒ range-tainted).
+/// first-pass LLM-authored write (Agent, Distiller) into quarantine
+/// regardless of taint; agent-authored writes quarantine when the author's
+/// session is tainted; and ANY LLM-authored write (Steward and Distiller
+/// included) quarantines when its evidence cites a tainted session or a
+/// reset boundary (§8.4/§10.1 — coarse: session-tainted ⇒ range-tainted).
+///
+/// Steward-authored batches are exempt from the *posture* branch only:
+/// steward staged output IS the review the posture defers to (§10.1
+/// "quarantined until steward/operator review") — quarantine releases and
+/// gating-approved promotions commit as Steward batches, and
+/// re-quarantining them would make review unable to ever produce an Active
+/// record under the conservative posture. The evidence-taint branch still
+/// applies to the steward, so a consolidation citing a tainted session
+/// quarantines like any other write.
 pub struct TaintLlmWriteGate {
     tracker: Option<SessionTaintTracker>,
     llm_writes: AgentMemoryLlmWrites,
@@ -574,7 +583,9 @@ impl LlmWriteGate for TaintLlmWriteGate {
         if !author.is_llm() {
             return None;
         }
-        if self.llm_writes == AgentMemoryLlmWrites::Quarantined {
+        if self.llm_writes == AgentMemoryLlmWrites::Quarantined
+            && !matches!(author, MemoryAuthor::Steward { .. })
+        {
             return Some("llm_writes=quarantined policy".to_string());
         }
         let Some(tracker) = self.tracker.as_ref() else {
@@ -637,6 +648,33 @@ pub trait MemberAgentEventSink: Send + Sync {
 impl MemberAgentEventSink for SessionTaintTracker {
     fn observe(&self, identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>) {
         self.observe_agent_event(identity, &envelope.payload);
+    }
+}
+
+/// §9.1 as-built compaction reset feed: an ALWAYS-ON sink — unconditional,
+/// unlike the distiller's trigger sink — surfacing `CompactionCompleted`
+/// session keys to a callback. The gateway points it at
+/// `AgentMemoryRuntimeInjector::on_session_compacted` so the coordinator's
+/// cross-turn dedup/budget state resets even when no distiller is enabled
+/// (gate finding: budgeted injection without a distiller never reset).
+pub struct CompactionResetSink {
+    on_compacted: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl CompactionResetSink {
+    pub fn new(on_compacted: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        Self { on_compacted }
+    }
+}
+
+impl MemberAgentEventSink for CompactionResetSink {
+    fn observe(&self, _identity: &str, envelope: &meerkat_core::event::EventEnvelope<AgentEvent>) {
+        if matches!(envelope.payload, AgentEvent::CompactionCompleted { .. })
+            && let meerkat_core::event::EventSourceIdentity::Session { session_id } =
+                &envelope.source
+        {
+            (self.on_compacted)(&session_id.to_string());
+        }
     }
 }
 
@@ -1002,7 +1040,8 @@ mod tests {
                 .is_none()
         );
 
-        // llm_writes=quarantined forces quarantine with no taint at all.
+        // llm_writes=quarantined forces quarantine with no taint at all —
+        // for first-pass LLM authors (Agent, Distiller).
         let strict = TaintLlmWriteGate::new(None, AgentMemoryLlmWrites::Quarantined);
         let reason = strict
             .quarantine_reason(
@@ -1016,18 +1055,52 @@ mod tests {
         assert!(
             strict
                 .quarantine_reason(
-                    &MemoryAuthor::Steward {
+                    &MemoryAuthor::Distiller {
                         run_id: "run-1".to_string()
                     },
                     &[]
                 )
                 .is_some()
         );
+        // Steward staged output IS the review the posture defers to: the
+        // posture branch must not re-quarantine releases and approved
+        // promotions (they would otherwise never produce an Active record).
+        assert!(
+            strict
+                .quarantine_reason(
+                    &MemoryAuthor::Steward {
+                        run_id: "run-1".to_string()
+                    },
+                    &[]
+                )
+                .is_none()
+        );
         assert!(
             strict
                 .quarantine_reason(&MemoryAuthor::Operator, &[])
                 .is_none()
         );
+    }
+
+    #[test]
+    fn quarantined_posture_still_gates_steward_on_tainted_evidence() {
+        // The steward's posture exemption is posture-branch-only: a steward
+        // batch citing a tainted session still quarantines through the
+        // evidence-range branch (§10.1).
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let session = SessionId::new();
+        tracker.observe_agent_event("identity:a", &run_started(&session));
+        tracker.observe_agent_event("identity:a", &tool_result("web_search"));
+
+        let gate = TaintLlmWriteGate::new(Some(tracker), AgentMemoryLlmWrites::Quarantined);
+        let steward = MemoryAuthor::Steward {
+            run_id: "run-1".to_string(),
+        };
+        assert!(gate.quarantine_reason(&steward, &[]).is_none());
+        let reason = gate
+            .quarantine_reason(&steward, &evidence_for(&session))
+            .expect("tainted evidence still quarantines steward output");
+        assert!(reason.contains("evidence session tainted"), "{reason}");
     }
 
     fn evidence_for(session: &SessionId) -> Vec<EvidenceRef> {

@@ -5,7 +5,7 @@
 # per-deployment without a new profile file.
 
 stage         = "steward"
-version       = "0"
+version       = "1"
 model         = "claude-sonnet-4-6"
 prompt_bundle = "prompts/steward-v0.md"
 

@@ -1033,6 +1033,16 @@ impl DistillOutcome {
 /// runs strictly AFTER the distiller's harvest for that boundary.
 pub type CompactionFollowUp = Arc<dyn Fn(&str, &str, &DistillOutcome) + Send + Sync>;
 
+/// Compaction-observation hook: invoked synchronously with
+/// `(identity, session_key)` the moment a `CompactionCompleted` event is
+/// observed — before, and regardless of, the harvest attempt (skipped and
+/// budget-denied harvests included). For harvest/hygiene sequencing
+/// observers only. Deliberately NOT the recall budget-reset path: distiller
+/// sinks register only when the distiller is enabled, so the coordinator's
+/// `on_session_compacted` reset is driven by the gateway's always-on
+/// member-event sink instead — do not couple it back here.
+pub type CompactionObserved = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 pub struct DistillerEngine {
     profile: DistillerProfile,
     config: DistillerConfig,
@@ -1054,6 +1064,8 @@ pub struct DistillerEngine {
     /// §8.6 trigger sequencing: the Hygienist's post-compaction pass runs
     /// through this hook, strictly after the harvest attempt.
     compaction_follow_up: Mutex<Option<CompactionFollowUp>>,
+    /// Synchronous compaction-observation hook (see [`CompactionObserved`]).
+    compaction_observed: Mutex<Option<CompactionObserved>>,
 }
 
 impl DistillerEngine {
@@ -1090,6 +1102,7 @@ impl DistillerEngine {
             pre_rotation_timeout: PRE_ROTATION_TIMEOUT,
             run_counter: std::sync::atomic::AtomicU64::new(0),
             compaction_follow_up: Mutex::new(None),
+            compaction_observed: Mutex::new(None),
         }
     }
 
@@ -1117,6 +1130,29 @@ impl DistillerEngine {
             .compaction_follow_up
             .lock()
             .unwrap_or_else(|err| err.into_inner()) = Some(hook);
+    }
+
+    /// Wire the synchronous compaction-observation hook (see
+    /// [`CompactionObserved`]).
+    pub fn set_compaction_observed(&self, hook: CompactionObserved) {
+        *self
+            .compaction_observed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(hook);
+    }
+
+    /// Fire the compaction-observation hook. Called by the trigger sink at
+    /// the earliest session-attributed observation of a compaction, before
+    /// the harvest is even spawned.
+    fn note_compaction_observed(&self, identity: &str, session_key: &str) {
+        let hook = self
+            .compaction_observed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(identity, session_key);
+        }
     }
 
     /// Transcript index up to which interaction/rotation distillation has
@@ -1500,11 +1536,17 @@ impl DistillerEngine {
         }
 
         self.with_window(identity, session_key, |state| {
+            // Interaction-window bookkeeping is consumed only by runs that
+            // actually covered the window [cursor, end). A compaction-cause
+            // harvest reads the discard ledger (window_end=None) — clearing
+            // `recorder_wrote` there would defeat the §8.4 mutual exclusion
+            // for a window the agent already curated, and zeroing
+            // `completed_runs` would silently defer the interaction trigger.
             if let Some(end) = window_end {
                 state.cursor = end;
+                state.recorder_wrote = false;
+                state.completed_runs = 0;
             }
-            state.recorder_wrote = false;
-            state.completed_runs = 0;
             state.last_run_at = Some(Instant::now());
         });
         DistillOutcome::Completed {
@@ -1664,6 +1706,10 @@ impl MemberAgentEventSink for DistillerTriggers {
             }
             AgentEvent::CompactionCompleted { .. } => {
                 if let Some(session) = current_session_of(envelope) {
+                    // Sequencing observers hear about the boundary here —
+                    // synchronously, before the detached harvest, and even
+                    // when that harvest is later skipped or budget-denied.
+                    self.engine.note_compaction_observed(identity, &session);
                     self.engine
                         .spawn_detached(identity, &session, DistillCause::Compaction);
                 } else {
@@ -2555,5 +2601,143 @@ mod tests {
         assert_eq!(engine.distilled_cursor("identity:never", "sess-x"), 0);
         engine.with_window("identity:a", "sess-1", |state| state.cursor = 7);
         assert_eq!(engine.distilled_cursor("identity:a", "sess-1"), 7);
+    }
+
+    struct StaticDiscards(Vec<DiscardEntry>);
+
+    #[async_trait]
+    impl CompactionDiscardSource for StaticDiscards {
+        async fn read_discards(
+            &self,
+            _session_key: &str,
+            _limit: usize,
+        ) -> Result<Vec<DiscardEntry>, DistillerError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_harvest_preserves_interaction_window_state() {
+        let provider = Arc::new(CapturingProvider::default());
+        let client = Arc::new(ScriptedLlm::new(vec![ONE_OP_REPLY]));
+        let engine = Arc::new(DistillerEngine::new(
+            DistillerProfile::embedded_default(),
+            enabled_config(),
+            Arc::new(ScriptedHandle { client }),
+            provider,
+            Arc::new(StaticTombstones(Vec::new())),
+            Arc::new(StaticTranscript(Some(slice(&[
+                ("user", "use the wrapper"),
+                ("assistant", "noted"),
+            ])))),
+            Some(Arc::new(StaticDiscards(vec![DiscardEntry {
+                content: "discarded: wrapper reminder".to_string(),
+                range: Some((0, 5)),
+            }]))),
+            None,
+            "family",
+        ));
+        // The agent's Recorder wrote in the interaction window, and one run
+        // completed toward the interaction trigger.
+        engine.note_recorder_write("identity:a", "sess-1");
+        assert!(!engine.note_run_completed("identity:a", "sess-1"));
+
+        // A compaction-cause harvest COMPLETES over the discard ledger…
+        let outcome = engine
+            .distill_now("identity:a", "sess-1", DistillCause::Compaction)
+            .await;
+        assert!(
+            matches!(outcome, DistillOutcome::Completed { written: 1, .. }),
+            "{outcome:?}"
+        );
+
+        // …without consuming the interaction window it never covered: the
+        // cursor stays put, the §8.4 mutual-exclusion flag survives, and the
+        // interaction counter is not silently deferred.
+        let (cursor, recorder_wrote, completed_runs) =
+            engine.with_window("identity:a", "sess-1", |state| {
+                (state.cursor, state.recorder_wrote, state.completed_runs)
+            });
+        assert_eq!(cursor, 0, "compaction never advances the transcript cursor");
+        assert!(
+            recorder_wrote,
+            "compaction-cause harvests must not clear the recorder \
+             mutual-exclusion flag for a window they did not distill"
+        );
+        assert_eq!(
+            completed_runs, 1,
+            "compaction-cause harvests must not zero the interaction counter"
+        );
+
+        // The next interactions-cause run therefore still skips the window
+        // the agent already curated itself.
+        let outcome = engine
+            .distill_now("identity:a", "sess-1", DistillCause::Interactions)
+            .await;
+        assert!(
+            matches!(&outcome, DistillOutcome::Skipped { reason } if reason.contains("mutual exclusion")),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_observed_hook_fires_at_observation_even_without_discards() {
+        let provider = Arc::new(CapturingProvider::default());
+        // No discard source wired: the harvest itself will skip — the
+        // observation hook must fire regardless (sequencing observers must
+        // not depend on the harvest being viable).
+        let (engine, _client) = engine_with(
+            vec![NOOP_REPLY],
+            provider,
+            Some(slice(&[("user", "hello")])),
+            Vec::new(),
+            None,
+            enabled_config(),
+        );
+        let seen: Arc<StdMutex<Vec<(String, String)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let observed = seen.clone();
+        engine.set_compaction_observed(Arc::new(move |identity, session| {
+            observed
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push((identity.to_string(), session.to_string()));
+        }));
+
+        let session = meerkat_core::types::SessionId::new();
+        let sink = DistillerTriggers::new(engine.clone());
+        sink.observe(
+            "identity:a",
+            &envelope(
+                &session,
+                AgentEvent::CompactionCompleted {
+                    summary_tokens: 10,
+                    messages_before: 20,
+                    messages_after: 2,
+                },
+            ),
+        );
+        // Fired synchronously at observation time — no detached harvest to
+        // await.
+        assert_eq!(
+            seen.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+            vec![("identity:a".to_string(), session.to_string())]
+        );
+
+        // Non-compaction events never fire it.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                &session,
+                AgentEvent::RunCompleted {
+                    session_id: session.clone(),
+                    result: "done".to_string(),
+                    structured_output: None,
+                    extraction_required: false,
+                    usage: Default::default(),
+                    terminal_cause_kind: None,
+                },
+            ),
+        );
+        assert_eq!(seen.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
     }
 }

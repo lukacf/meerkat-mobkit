@@ -40,6 +40,11 @@ DENIED_CRATE_SUBSTRINGS = (
     "lancedb",
     "faiss",
     "annoy",
+    # meerkat-memory is an HNSW embedding store (pulls in hnsw_rs). Its ONE
+    # sanctioned use — the Distiller's §8.4 read-only compaction-discard
+    # harvest of meerkat's OWN session store — is pinned by allowlist entries
+    # carrying the boundary justification; anything else fails here.
+    "meerkat-memory",
 )
 
 # Source patterns are named so an allowlist entry can suppress exactly one
@@ -55,6 +60,12 @@ SOURCE_PATTERNS = (
     ("sql-match", re.compile(r"\bMATCH\b"), "SQL MATCH against a virtual table"),
     ("embedding", re.compile(r"(?i)\bembedding"), "embedding machinery"),
     ("vector_", re.compile(r"(?i)\bvector_"), "vector-index identifier"),
+    ("hnsw", re.compile(r"(?i)hnsw"), "HNSW vector-index identifier"),
+    (
+        "meerkat-memory",
+        re.compile(r"(?i)\bmeerkat_memory\b"),
+        "meerkat session semantic-memory store access",
+    ),
 )
 
 BRIGHT_LINE_QUOTE = f"""\

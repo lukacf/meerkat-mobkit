@@ -629,6 +629,23 @@ impl AgentMemoryRuntimeInjector {
         self
     }
 
+    /// Install the §7.2 mob-scope resolver on the turn-path coordinator so
+    /// injection and the selector compose the member's bound mob scopes.
+    pub fn with_mob_resolver(
+        mut self,
+        resolver: Option<Arc<dyn crate::memory::coordinator::MobScopeResolver>>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_mob_resolver(resolver);
+        self
+    }
+
+    /// §9.1 as-built compaction reset: drops the session's cross-turn dedup
+    /// set, cumulative injection budget, and cached sweep. Driven by the
+    /// gateway's always-on member-event sink on `CompactionCompleted`.
+    pub fn on_session_compacted(&self, session_key: &str) {
+        self.coordinator.on_session_compacted(session_key);
+    }
+
     /// Attach the §8.6 Hygienist for the on-demand curation entry point.
     pub fn with_hygienist(
         mut self,
@@ -812,6 +829,16 @@ impl AgentMemoryCustomizer {
         self.coordinator = self.coordinator.with_operator_resolver(resolver);
         self
     }
+
+    /// Install the §7.2 mob-scope resolver on the build-time coordinator so
+    /// materialization composes the member's bound mob scopes into the index.
+    pub fn with_mob_resolver(
+        mut self,
+        resolver: Option<Arc<dyn crate::memory::coordinator::MobScopeResolver>>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_mob_resolver(resolver);
+        self
+    }
 }
 
 #[async_trait]
@@ -900,6 +927,10 @@ selection reads when deciding whether to recall the record.\n\
 - Mark epistemic status honestly: \"operator_said\" for facts the operator told you, \
 \"observed\" (default) for things you inferred or saw, \"verified_claim\" only when you actually \
 checked, with `verification_evidence` describing what you checked.\n\
+- Convert relative dates to absolute at write time (\"2026-07-01\", never \"today\" or \
+\"next week\") — a future session cannot recover what \"today\" meant.\n\
+- An open_loop record must state its explicit resolution condition (\"resolved when X\") so \
+steward dreams can close it.\n\
 - Do not save what the repository, configuration, or platform already records.\n\
 - Mob-shared knowledge goes through action \"propose_to_mob\" for steward review; you cannot \
 write mob scope directly.";
@@ -913,6 +944,9 @@ fn memory_tool_description() -> String {
      fact, \"observed\" (default) when you inferred or observed it yourself, or \
      \"verified_claim\" with `verification_evidence` when you actually verified it (verification \
      is recorded as a claim for steward review — it does not raise the record's trust tier). \
+     Convert relative dates to absolute at write time (a future session cannot recover what \
+     \"today\" meant), and give every open_loop record an explicit resolution condition \
+     (\"resolved when X\") so steward dreams can close it. \
      Do not save what the repo or config already records. `propose_to_mob` queues a record for \
      mob scope; a steward or operator must commit it."
         .to_string()
@@ -1249,9 +1283,10 @@ impl MemoryRecorder {
                     realm: self.config.realm.clone(),
                     mob: mob.to_string(),
                 };
-                // TODO(P2/P3): proposals do not carry the session taint fact
-                // yet; the steward's quarantine-aware review of proposals
-                // lands with the proposal queue work (§8.5).
+                // §10.1: the store consults the LLM write gate at propose
+                // time and persists the taint fact on the proposal row; a
+                // tainted proposal's steward "accept" downgrades to an
+                // operator gate (deterministic shell law in the steward).
                 let proposal_id = self
                     .provider
                     .propose(&scope, record, self.author())
@@ -1641,10 +1676,21 @@ fn flush_record(
     };
     let body_text = body.join("\n").trim().to_string();
     body.clear();
+    // Loud-skip policy (§7.3 invites hand edits): a dropped record must
+    // never vanish silently — the warn is the parser-level counterpart of
+    // the import's skip accounting.
     if body_text.is_empty() {
+        tracing::warn!(
+            title,
+            "agent memory markdown parse: record dropped (empty body)"
+        );
         return;
     }
     let Some(metadata) = metadata else {
+        tracing::warn!(
+            title,
+            "agent memory markdown parse: record dropped (missing or invalid metadata line)"
+        );
         return;
     };
     records.push(AgentMemoryRecord {

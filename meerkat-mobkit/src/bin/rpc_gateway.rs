@@ -1234,6 +1234,113 @@ actions = ["agent.view"]
         );
     }
 
+    // §7.2 mob-scope binding: the exact resolver the gateway installs on the
+    // customizer and injector. The hosting mob composes only for the
+    // configured realm — a foreign realm gets no mob scope.
+    #[test]
+    fn gateway_mob_binding_resolves_hosting_mob_only_for_matching_realm() {
+        use meerkat_mobkit::memory::coordinator::{MobScopeResolver, StaticMobBinding};
+
+        let binding = StaticMobBinding {
+            realm: "default".to_string(),
+            mob: "mob:example".to_string(),
+        };
+        assert_eq!(
+            binding.active_mobs("default", "identity:frontdesk"),
+            vec!["mob:example".to_string()],
+            "matching realm must compose the hosting mob"
+        );
+        assert!(
+            binding
+                .active_mobs("other-realm", "identity:frontdesk")
+                .is_empty(),
+            "foreign realm must compose no mob scope"
+        );
+    }
+
+    // §9.1 always-on compaction reset: the sink the gateway registers
+    // unconditionally next to the taint tracker. CompactionCompleted with
+    // session attribution fires the reset callback with that session key
+    // (the gateway binds it to AgentMemoryRuntimeInjector::
+    // on_session_compacted); other events and unattributed sources do not.
+    #[test]
+    fn compaction_reset_sink_fires_on_attributed_compaction_only() {
+        use meerkat_core::event::AgentEvent;
+
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = meerkat_mobkit::CompactionResetSink::new({
+            let seen = seen.clone();
+            Arc::new(move |session: &str| {
+                seen.lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(session.to_string());
+            })
+        });
+
+        let session = meerkat_core::types::SessionId::new();
+        let envelope = |source, payload| meerkat_core::event::EventEnvelope {
+            event_id: Default::default(),
+            source,
+            seq: 0,
+            mob_id: None,
+            timestamp_ms: 0,
+            payload,
+        };
+        let compaction = || AgentEvent::CompactionCompleted {
+            summary_tokens: 10,
+            messages_before: 20,
+            messages_after: 2,
+        };
+
+        use meerkat_mobkit::MemberAgentEventSink as _;
+        // Attributed compaction fires with the envelope's session key.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Session {
+                    session_id: session.clone(),
+                },
+                compaction(),
+            ),
+        );
+        assert_eq!(
+            seen.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+            vec![session.to_string()],
+            "reset must fire with the compacted session's key"
+        );
+
+        // A non-compaction event on the same session never fires it.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Session {
+                    session_id: session.clone(),
+                },
+                AgentEvent::RunCompleted {
+                    session_id: session.clone(),
+                    result: "done".to_string(),
+                    structured_output: None,
+                    extraction_required: false,
+                    usage: Default::default(),
+                    terminal_cause_kind: None,
+                },
+            ),
+        );
+        // Compaction without session attribution has no key to reset.
+        sink.observe(
+            "identity:a",
+            &envelope(
+                meerkat_core::event::EventSourceIdentity::Callback,
+                compaction(),
+            ),
+        );
+        assert_eq!(
+            seen.lock().unwrap_or_else(|err| err.into_inner()).len(),
+            1,
+            "only attributed compaction events reset"
+        );
+    }
+
     #[test]
     fn gateway_runtime_options_parse_agent_memory_taint_knobs() {
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -3895,6 +4002,12 @@ external_addressable = true
             None
         };
         let mut agent_memory_taint: Option<meerkat_mobkit::SessionTaintTracker> = None;
+        // Late-bound target for the always-on compaction reset sink: the
+        // sink joins the observer before the injector exists, so it calls
+        // through this slot (empty until wiring completes = no-op).
+        let agent_memory_compaction_reset: Arc<
+            std::sync::OnceLock<meerkat_mobkit::AgentMemoryRuntimeInjector>,
+        > = Arc::new(std::sync::OnceLock::new());
         let mut agent_memory_distiller: Option<
             Arc<meerkat_mobkit::memory::distiller::DistillerEngine>,
         > = None;
@@ -4211,6 +4324,18 @@ external_addressable = true
                                 "agent memory hygienist installed"
                             );
                         }
+                        // §9.1 as-built: ALWAYS-ON compaction reset for the
+                        // coordinator's session budgets — deliberately NOT
+                        // gated on distiller.enabled (gate finding: budgeted
+                        // injection without a distiller never reset).
+                        let compaction_reset_slot = agent_memory_compaction_reset.clone();
+                        sinks.push(Arc::new(meerkat_mobkit::CompactionResetSink::new(
+                            Arc::new(move |session: &str| {
+                                if let Some(injector) = compaction_reset_slot.get() {
+                                    injector.on_session_compacted(session);
+                                }
+                            }),
+                        )));
                         // Observe-stream feed lives for the gateway process;
                         // forgetting the guard keeps the task running.
                         std::mem::forget(meerkat_mobkit::spawn_member_event_observer(
@@ -4233,6 +4358,36 @@ external_addressable = true
         let agent_memory_operator_resolver: Option<
             Arc<dyn meerkat_mobkit::memory::coordinator::OperatorResolver>,
         > = None;
+        // Degrade LOUD, not silent: recall composition of the Operator scope
+        // needs BOTH the knob and a resolver (coordinator.rs scope_set), so a
+        // resolver-less provisional deployment gets steward proposal-routing
+        // only. Without this warning that half-activation is invisible.
+        if agent_memory_operator_resolver.is_none()
+            && gateway_options.agent_memory.as_ref().is_some_and(|memory| {
+                memory.config.operator_scope
+                    == meerkat_mobkit::AgentMemoryOperatorScope::Provisional
+            })
+        {
+            tracing::warn!(
+                "agent_memory.operator_scope=\"provisional\" is configured but this gateway \
+                 installs no operator resolver: operator-scope recall composition is INERT \
+                 (records routed to the operator scope will not be recalled or injected); \
+                 steward routing of operator-scope proposals remains active; the provisional \
+                 console-auth-principal keying requires session-to-principal plumbing that \
+                 has not landed"
+            );
+        }
+        // §7.2 mob-scope binding: every identity this gateway hosts runs
+        // inside the one mob the runtime fronts, so a static binding closes
+        // the mob-memory read path (write-only otherwise — gate blocker).
+        let agent_memory_mob_resolver: Option<
+            Arc<dyn meerkat_mobkit::memory::coordinator::MobScopeResolver>,
+        > = gateway_options.agent_memory.as_ref().map(|memory| {
+            Arc::new(meerkat_mobkit::memory::coordinator::StaticMobBinding {
+                realm: memory.config.realm.clone(),
+                mob: runtime.mob_handle().mob_id().to_string(),
+            }) as Arc<dyn meerkat_mobkit::memory::coordinator::MobScopeResolver>
+        });
         let customizer: Option<
             Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
         > = if let (Some(agent_memory), Some(provider)) = (
@@ -4245,7 +4400,8 @@ external_addressable = true
                     provider,
                     agent_memory.config.clone(),
                 )
-                .with_operator_resolver(agent_memory_operator_resolver.clone()),
+                .with_operator_resolver(agent_memory_operator_resolver.clone())
+                .with_mob_resolver(agent_memory_mob_resolver.clone()),
             ))
         } else {
             base_customizer
@@ -4271,6 +4427,11 @@ external_addressable = true
                 injector = injector.with_hygienist(hygienist);
             }
             injector = injector.with_operator_resolver(agent_memory_operator_resolver.clone());
+            injector = injector.with_mob_resolver(agent_memory_mob_resolver.clone());
+            // Arm the always-on compaction reset sink (state is Arc-shared
+            // across injector clones, so resetting through this clone
+            // resets the delivery path's budgets too).
+            let _ = agent_memory_compaction_reset.set(injector.clone());
             Some(injector)
         } else {
             None

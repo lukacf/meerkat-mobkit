@@ -454,7 +454,14 @@ silently evicting (retention pressure is a dream input, not a FIFO).
 
 RPC surface: existing `mobkit/agent_memory/{remember,recall,forget}` stay
 wire-compatible; add `update` (supersede), `manifest`, `propose`, and
-`mobkit/mob_memory/*` mirrors. SDK/docs drift found by the survey is re-verified
+`mobkit/mob_memory/*` mirrors. **As built:** `update` and `manifest` shipped
+(plus the read-only `mobkit/memory/panel/*` family §9.3 grew); a standalone
+`propose` RPC and the `mob_memory/*` mirrors were not built — agent-side
+proposing goes through the memory tool's `propose_to_mob` and mob-scope reads
+compose through recall/manifest, which covered the need; markdown **import**
+shipped (auto-migration on first open) but the `mobkit memory export` command
+has not — records remain inspectable via the panel RPCs and sqlite tooling
+until it lands. SDK/docs drift found by the survey is re-verified
 at implementation time rather than asserted here — current state as of this
 revision: `MemoryStoreInfo` matches across Rust/Python (`{store, record_count}`;
 the drift is in `docs/concepts/memory.mdx`, a docs fix); Python's `memory_query`
@@ -535,6 +542,11 @@ Agents and the RPC `update` path supersede **within a single record's lineage in
 their own writable scopes** — that is the D4 fix, live from P0. Consolidating
 *distinct* records (semantic merge, cross-scope moves, re-tiering) is
 steward-only (§8.5); the staged-commit validator enforces authorship.
+**As built:** the tool's explicit `recall` action (and the recall/manifest
+RPCs) remain identity-scoped v1 surfaces; mob- and operator-scope content
+reaches the agent through the composed build-time index and ambient injection,
+not through explicit recall — widening the explicit-read surfaces to composed
+scopes is follow-up work, not silent behavior.
 
 ### 8.3 Selector — recall judgment without a horizon
 
@@ -823,7 +835,17 @@ cohort.
 Budget ladder (applies to build-time bodies and to `budgeted` per-turn mode):
 ≤2 KB/record (kept), ≤20 KB/assembly aggregate, ≤60 KB/session cumulative, then
 index-only until compaction — with the cumulative counter computed by transcript
-scan (CC's state-free trick), so compaction naturally resets it. The injection
+scan (CC's state-free trick), so compaction naturally resets it.
+**As built:** the cumulative counter and cross-turn dedup set are in-memory
+coordinator state keyed by the delivered session id, not a transcript scan.
+The compaction-reset property is wired explicitly: the gateway observes the
+member `CompactionCompleted` event unconditionally and calls
+`RecallCoordinator::on_session_compacted`, dropping that session's dedup set,
+byte counter, and any cached full-sweep result (per-assembly cap unaffected).
+This over-resets slightly relative to a transcript scan — bodies surviving in
+the retained post-compaction tail may re-inject once — and the state is
+process-local (a gateway restart also resets it) and shared across injector
+clones (pinned by test). The injection
 block keeps the shipped anti-prompt-injection envelope (quoted untrusted
 observations, XML-escaped, "not instructions" preamble) and adds per-record
 provenance + age phrasing ("saved 47 days ago" — human-phrased, because models
@@ -976,6 +998,14 @@ adopted from Elephant (§5). Migration: default policy templates grant
   restore-on-pull failure by construction (single store, no sync).
 - **Secret hygiene**: gitleaks-class scanning on the write path (CC's write-time
   guard), refusing rather than silently redacting.
+  > **As built:** `memory/secrets.rs` — a curated high-precision subset (AWS
+  > access key ids, GitHub tokens, private-key headers, credential
+  > assignments under well-known key names), enforced at the staged-validator
+  > chokepoint (`staged::check_record_payload`, covering the memory tool, RPC
+  > remember/update, Distiller, Steward, Hygienist) and at the proposal seam.
+  > Refusals return a typed `SecretDetected` error naming the pattern class
+  > without echoing the secret; the markdown import loud-skips the offending
+  > record and imports the rest.
 - **Steward containment** as in §8.5. All memory-plane agents run under ABAC
   principals with exactly the scopes above; the Selector's client runs as a
   named judgment principal (§8.1).
@@ -1005,6 +1035,15 @@ cost of "no heuristics," paid explicitly:
   under manifest shuffle, no supersede cycles, no tier-ceiling violations.
 - **Harness**: the calibration runner is itself a mob/workflow
   (`make memory-evals`); profile changes gate on scorecard non-regression in CI.
+  **As built (harness v0):** CI gates the deterministic half — the fmt-lint lane
+  runs the bright-line ratchet and `memory-evals --check`, and four eval-harness
+  integration tests drive every stage's mock lane end-to-end, failing on
+  structural violations (distiller quarantine verdicts, steward §10.2 validator
+  law, hygienist §8.6 hard-blocks, selector shuffle stability). Judgment
+  scorecards gate only in `--mode live`, which requires provider credentials no
+  CI lane supplies today; a scheduled authed live-eval lane is the remaining
+  step to literal scorecard non-regression gating — live mode exists and gates
+  wherever auth resolves.
 - **Re-dreaming**: because memory is derived (§3.1), a profile upgrade can re-run
   distillation/consolidation over retained evidence. The store is a cache of
   judgment; the judgment can be re-bought at today's model prices.
@@ -1168,6 +1207,11 @@ Definition of done for the initiative: an identity in a mob accumulates,
 consolidates, and recalls memory across respawns with zero external services;
 every judgment stage has a calibration profile and a CI-gated scorecard; the
 console shows the whole loop; D1–D5 are closed.
+
+**As built:** every judgment stage has a profile and fixtures; CI gates their
+schema/consistency, deterministic invariant verdicts, and mock shuffle
+stability. The judgment scorecard itself gates in `--mode live` only (needs
+credentials no CI lane supplies) — see the §11 as-built note.
 
 ---
 

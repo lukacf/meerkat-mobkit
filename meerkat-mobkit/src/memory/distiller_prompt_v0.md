@@ -48,6 +48,12 @@ Rules, in order of importance:
    content the operator deliberately removed. Do not extract records that
    restate it, even paraphrased — deletion was a decision, and re-learning
    it would override the operator.
+9. **Write dates absolutely; give open loops a resolution condition.**
+   Convert relative dates ("yesterday", "next week") to absolute dates at
+   write time from the transcript's own time references — a future session
+   cannot recover what "yesterday" meant. An `open_loop` record must state
+   the explicit condition that resolves it ("resolved when X"), so steward
+   dreams can close it.
 
 ## Existing records (manifest)
 

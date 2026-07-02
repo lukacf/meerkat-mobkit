@@ -73,7 +73,12 @@ CREATE TABLE IF NOT EXISTS records (
     created_at_ms   INTEGER NOT NULL,
     updated_at_ms   INTEGER NOT NULL,
     usage_stats     TEXT NOT NULL DEFAULT '{}',
-    tombstoned_at_ms INTEGER
+    tombstoned_at_ms INTEGER,
+    -- §10.2 durable taint marker: 1 when the record landed quarantined or
+    -- descends from a record that did. Survives the tombstone that a
+    -- quarantine release applies to the origin (which erases the
+    -- `quarantined` status), so the transitive ceiling holds forever.
+    ever_quarantined INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS records_scope_idx
     ON records(scope_kind, scope_key, status_kind);
@@ -87,7 +92,11 @@ CREATE TABLE IF NOT EXISTS proposals (
     record        TEXT NOT NULL,
     author        TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending',
-    created_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL,
+    -- §10.1: quarantine decision captured AT PROPOSE TIME (the taint
+    -- tracker is in-memory and session-sticky; re-deriving at dream time
+    -- both under- and over-quarantines). NULL = clean at propose time.
+    taint         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit (
@@ -284,6 +293,33 @@ impl SqliteAgentMemoryStore {
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))
             .map_err(sql_err)?;
         conn.execute_batch(SCHEMA_SQL).map_err(sql_err)?;
+        // Column migrations for stores created before the columns joined
+        // SCHEMA_SQL (CREATE TABLE IF NOT EXISTS never alters).
+        if ensure_column(
+            &conn,
+            "records",
+            "ever_quarantined",
+            "INTEGER NOT NULL DEFAULT 0",
+        )? {
+            // Backfill the durable §10.2 marker: currently-quarantined rows
+            // directly; tombstoned rows through their audit trail (the
+            // tombstone apply nulls status_detail, so the audit row's
+            // `"quarantined":"<reason>"` is the only remaining evidence
+            // that a row once landed quarantined).
+            conn.execute(
+                "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'quarantined'",
+                [],
+            )
+            .map_err(sql_err)?;
+            conn.execute(
+                "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'tombstoned' \
+                 AND memory_id IN (SELECT memory_id FROM audit \
+                 WHERE detail LIKE '%\"quarantined\":\"%')",
+                [],
+            )
+            .map_err(sql_err)?;
+        }
+        ensure_column(&conn, "proposals", "taint", "TEXT")?;
         let now = now_ms();
         // Stage GC spares tokens referenced by a still-pending gated
         // promotion (§10.2) — the operator's decision window outranks the
@@ -305,6 +341,14 @@ impl SqliteAgentMemoryStore {
     /// preserved; kind=fact, trust=agent_observed, identity scope, agent
     /// author with empty evidence) and renamed to `<file>.imported` —
     /// user-inspectable data is never deleted.
+    ///
+    /// §7.3 invites hand edits, so content problems must never make the
+    /// realm store unopenable: an invalid record is skipped loudly (warn +
+    /// count in the import audit row) and the rest of the file imports; a
+    /// file that fails wholesale (bad identity stem, over the size cap,
+    /// residual batch-validation failure) is warned about, set aside as
+    /// `<file>.import-failed`, and the remaining files continue. Only real
+    /// I/O errors propagate into the open.
     fn import_markdown_realm(
         &self,
         conn: &mut Connection,
@@ -322,7 +366,24 @@ impl SqliteAgentMemoryStore {
             .collect();
         files.sort();
         for path in files {
-            self.import_markdown_file(conn, realm, &path)?;
+            match self.import_markdown_file(conn, realm, &path) {
+                Ok(()) => {}
+                Err(MarkdownImportError::Content(reason)) => {
+                    tracing::warn!(
+                        file = %path.display(),
+                        reason,
+                        "agent memory markdown import: file failed and was set aside as \
+                         .import-failed (fix and rename back to .md to retry); the realm \
+                         store stays open"
+                    );
+                    record_import_audit(conn, &path, 0, 1, std::slice::from_ref(&reason))?;
+                    let mut failed_name = path.as_os_str().to_owned();
+                    failed_name.push(".import-failed");
+                    fs::rename(&path, PathBuf::from(failed_name))
+                        .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+                }
+                Err(MarkdownImportError::Io(err)) => return Err(err),
+            }
         }
         Ok(())
     }
@@ -332,18 +393,21 @@ impl SqliteAgentMemoryStore {
         conn: &mut Connection,
         realm: &str,
         path: &Path,
-    ) -> Result<(), AgentMemoryError> {
+    ) -> Result<(), MarkdownImportError> {
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
             return Ok(());
         };
         let identity_str = decode_path_segment(stem);
         let identity = AgentIdentity::parse(&identity_str).map_err(|err| {
-            AgentMemoryError::Parse(format!(
-                "markdown import: '{}' does not decode to an agent identity: {err}",
+            MarkdownImportError::Content(format!(
+                "'{}' does not decode to an agent identity: {err}",
                 path.display()
             ))
         })?;
-        let records = read_markdown_records(path)?;
+        let records = read_markdown_records(path).map_err(|err| match err {
+            AgentMemoryError::Io(_) => MarkdownImportError::Io(err),
+            other => MarkdownImportError::Content(other.to_string()),
+        })?;
         let scope = MemoryScope::Identity {
             realm: realm.to_string(),
             identity: identity.as_str().to_string(),
@@ -352,6 +416,7 @@ impl SqliteAgentMemoryStore {
         // failed) and dedup ids within the file (hand-edits happen).
         let mut seen = std::collections::HashSet::new();
         let mut ops = Vec::new();
+        let mut skip_reasons: Vec<String> = Vec::new();
         for record in records {
             if !seen.insert(record.memory_id.clone()) {
                 continue;
@@ -363,8 +428,37 @@ impl SqliteAgentMemoryStore {
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(sql_err)?;
+                .map_err(sql_err)
+                .map_err(MarkdownImportError::Io)?;
             if exists.is_some() {
+                continue;
+            }
+            // Pre-validate each record with the same deterministic checks
+            // the staged validator applies, so one bad hand-edited record
+            // skips loudly instead of failing the whole batch.
+            let mut skip = |record_id: &str, reason: String| {
+                tracing::warn!(
+                    file = %path.display(),
+                    memory_id = record_id,
+                    reason,
+                    "agent memory markdown import: record skipped"
+                );
+                skip_reasons.push(format!("{record_id}: {reason}"));
+            };
+            if let Err(reason) = validate_record_fields(&record.title, "", &record.body) {
+                skip(&record.memory_id, reason);
+                continue;
+            }
+            if let Some(class) = crate::memory::secrets::detect_record_secret(
+                &record.title,
+                "",
+                &record.body,
+                &record.tags,
+            ) {
+                skip(
+                    &record.memory_id,
+                    format!("matches the '{class}' secret pattern class (§10.4)"),
+                );
                 continue;
             }
             ops.push(StagedOp::Create {
@@ -386,6 +480,7 @@ impl SqliteAgentMemoryStore {
                 updated_at_ms: Some(record.updated_at_ms),
             });
         }
+        let imported = ops.len();
         if !ops.is_empty() {
             let batch = StagedMutationBatch {
                 realm: realm.to_string(),
@@ -398,16 +493,17 @@ impl SqliteAgentMemoryStore {
             // Gate deliberately absent: the import migrates records the
             // markdown store already accepted; it is not a new LLM write.
             apply_batch_tx(conn, &batch, None, None, &token, now_ms()).map_err(|err| {
-                AgentMemoryError::InvalidRecord(format!(
-                    "markdown import of '{}' failed: {err}",
-                    path.display()
-                ))
+                MarkdownImportError::Content(format!("batch validation failed: {err}"))
             })?;
+        }
+        if !skip_reasons.is_empty() {
+            record_import_audit(conn, path, imported, skip_reasons.len(), &skip_reasons)
+                .map_err(MarkdownImportError::Io)?;
         }
         let mut imported_name = path.as_os_str().to_owned();
         imported_name.push(".imported");
         fs::rename(path, PathBuf::from(imported_name))
-            .map_err(|err| AgentMemoryError::Io(err.to_string()))?;
+            .map_err(|err| MarkdownImportError::Io(AgentMemoryError::Io(err.to_string())))?;
         Ok(())
     }
 
@@ -894,11 +990,43 @@ impl SqliteAgentMemoryStore {
     ) -> Result<ProposalId, AgentMemoryError> {
         validate_record_fields(&record.title, &record.description, &record.body)
             .map_err(AgentMemoryError::InvalidRecord)?;
+        // §10.4 secret hygiene: proposals bypass the staged validator (the
+        // row is not a record yet), so the write-seam refusal is applied
+        // here directly.
+        if let Some(class) = crate::memory::secrets::detect_record_secret(
+            &record.title,
+            &record.description,
+            &record.body,
+            &record.tags,
+        ) {
+            return Err(AgentMemoryError::InvalidRecord(
+                crate::memory::staged::StagedBatchError::SecretDetected { op_index: 0, class }
+                    .to_string(),
+            ));
+        }
+        // §10.1: capture the quarantine decision AT PROPOSE TIME. The taint
+        // tracker is in-memory and session-sticky; re-deriving when the
+        // steward dreams would both under-quarantine (tracker restart,
+        // reset boundary, eviction) and over-quarantine (identity tainted
+        // later by an unrelated ingestion). The persisted fact makes the
+        // steward's accept downgrade deterministic shell law.
+        let taint = self
+            .gate()
+            .and_then(|gate| gate.quarantine_reason(&author, &record.evidence));
+        if let Some(reason) = taint.as_deref() {
+            tracing::warn!(
+                realm = scope.realm(),
+                author = ?author,
+                reason,
+                "agent memory: proposal from tainted context recorded as tainted; a plain \
+                 steward accept will downgrade to an operator gate"
+            );
+        }
         let proposal_id = mint_token("prop");
         self.with_realm_conn(scope.realm(), |conn| {
             conn.execute(
                 "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, author, \
-                 status, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+                 status, created_at_ms, taint) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
                 params![
                     proposal_id,
                     scope.kind_str(),
@@ -906,6 +1034,7 @@ impl SqliteAgentMemoryStore {
                     json_string(&record)?,
                     json_string(&author)?,
                     now_ms() as i64,
+                    taint,
                 ],
             )
             .map_err(sql_err)?;
@@ -1190,6 +1319,10 @@ pub struct PendingProposal {
     pub author: MemoryAuthor,
     pub status: String,
     pub created_at_ms: u64,
+    /// §10.1 propose-time taint fact: `Some(reason)` when the write gate
+    /// would have quarantined this author at propose time. A plain steward
+    /// "accept" on a tainted proposal downgrades to an operator gate.
+    pub taint: Option<String>,
 }
 
 /// One retired identity awaiting an exit-interview harvest (§8.5).
@@ -1296,7 +1429,7 @@ impl SqliteAgentMemoryStore {
                 let mut stmt = conn
                     .prepare(
                         "SELECT proposal_id, scope_kind, scope_key, record, author, status, \
-                         created_at_ms FROM proposals WHERE status IN ('pending', 'held') \
+                         created_at_ms, taint FROM proposals WHERE status IN ('pending', 'held') \
                          ORDER BY created_at_ms ASC LIMIT ?1",
                     )
                     .map_err(sql_err)?;
@@ -1310,13 +1443,22 @@ impl SqliteAgentMemoryStore {
                             row.get::<_, String>(4)?,
                             row.get::<_, String>(5)?,
                             row.get::<_, i64>(6)?,
+                            row.get::<_, Option<String>>(7)?,
                         ))
                     })
                     .map_err(sql_err)?;
                 let mut proposals = Vec::new();
                 for row in rows {
-                    let (proposal_id, scope_kind, scope_key, record, author, status, created) =
-                        row.map_err(sql_err)?;
+                    let (
+                        proposal_id,
+                        scope_kind,
+                        scope_key,
+                        record,
+                        author,
+                        status,
+                        created,
+                        taint,
+                    ) = row.map_err(sql_err)?;
                     proposals.push(PendingProposal {
                         proposal_id,
                         scope: scope_from_parts(&scope_kind, &scope_key, &realm)?,
@@ -1326,6 +1468,7 @@ impl SqliteAgentMemoryStore {
                             .map_err(|err| AgentMemoryError::Parse(err.to_string()))?,
                         status,
                         created_at_ms: created as u64,
+                        taint,
                     });
                 }
                 Ok(proposals)
@@ -2192,6 +2335,45 @@ impl crate::memory::selector::SelectedRecordFetch for SqliteAgentMemoryStore {
         })
         .await
     }
+
+    async fn fetch_records_annotated(
+        &self,
+        scopes: &[MemoryScope],
+        ids: &[String],
+    ) -> Result<Vec<crate::memory::selector::AnnotatedRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let scopes = scopes.to_vec();
+        let ids = ids.to_vec();
+        run_blocking(move || {
+            let mut records = Vec::new();
+            for id in &ids {
+                for scope in &scopes {
+                    let found = store.with_realm_conn(scope.realm(), |conn| {
+                        load_record(conn, scope.realm(), id)
+                    })?;
+                    if let Some(record) = found
+                        && record.scope == *scope
+                        && matches!(record.status, RecordStatus::Active)
+                    {
+                        // The full MemoryRecord is in hand before projection
+                        // strips it — carry scope + trust so injected bodies
+                        // render their §7.2 labels.
+                        let provenance = Some(crate::memory::selector::RecordProvenance {
+                            scope: record.scope.clone(),
+                            trust: record.trust,
+                        });
+                        records.push(crate::memory::selector::AnnotatedRecord {
+                            record: project_record(record),
+                            provenance,
+                        });
+                        break;
+                    }
+                }
+            }
+            Ok(records)
+        })
+        .await
+    }
 }
 
 // ---- blocking internals ----
@@ -2521,13 +2703,25 @@ fn insert_record(
         Some(reason) => ("quarantined", Some(reason)),
         None => ("active", None),
     };
+    // §10.2 durable taint: set when landing quarantined, inherited from any
+    // direct ancestor (derivation source or superseded prior) that carries
+    // it or currently sits quarantined. Materialized transitively at each
+    // insert, so one level suffices; the validator's chain walk remains the
+    // enforcement.
+    let ever_quarantined = quarantine.is_some() || {
+        let mut ancestors: Vec<&str> = derived_from.iter().map(String::as_str).collect();
+        if let Some(prior) = supersedes.as_deref() {
+            ancestors.push(prior);
+        }
+        ancestors_reach_quarantine(conn, &ancestors)?
+    };
     conn.execute(
         "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, description, \
          body, tags, provenance, trust, status_kind, status_detail, supersedes, derived_from, \
          working_set_rank, rank_set_at_ms, content_hash, created_at_ms, updated_at_ms, \
-         usage_stats, tombstoned_at_ms) \
+         usage_stats, tombstoned_at_ms, ever_quarantined) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-         ?16, ?17, ?18, ?19, ?20, NULL)",
+         ?16, ?17, ?18, ?19, ?20, NULL, ?21)",
         params![
             memory_id,
             scope.kind_str(),
@@ -2549,10 +2743,37 @@ fn insert_record(
             created_at_ms as i64,
             updated_at_ms as i64,
             json_string(&UsageStats::default())?,
+            ever_quarantined,
         ],
     )
     .map_err(sql_err)?;
     Ok(())
+}
+
+/// One-level ancestor check backing the materialized `ever_quarantined`
+/// inheritance in [`insert_record`].
+fn ancestors_reach_quarantine(
+    conn: &Connection,
+    ancestors: &[&str],
+) -> Result<bool, AgentMemoryError> {
+    if ancestors.is_empty() {
+        return Ok(false);
+    }
+    let placeholders = (1..=ancestors.len())
+        .map(|slot| format!("?{slot}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT 1 FROM records WHERE memory_id IN ({placeholders}) \
+         AND (ever_quarantined = 1 OR status_kind = 'quarantined') LIMIT 1"
+    );
+    let hit: Option<i64> = conn
+        .query_row(&sql, rusqlite::params_from_iter(ancestors.iter()), |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(sql_err)?;
+    Ok(hit.is_some())
 }
 
 /// Validator view over a live connection/transaction. Rows in a realm DB
@@ -2568,7 +2789,8 @@ impl StagedBatchView for ConnBatchView<'_> {
         self.conn
             .query_row(
                 "SELECT scope_kind, scope_key, trust, status_kind, status_detail, supersedes, \
-                 derived_from, content_hash, provenance FROM records WHERE memory_id = ?1",
+                 derived_from, content_hash, provenance, ever_quarantined \
+                 FROM records WHERE memory_id = ?1",
                 params![id],
                 |row| {
                     let scope_kind: String = row.get(0)?;
@@ -2580,6 +2802,7 @@ impl StagedBatchView for ConnBatchView<'_> {
                     let derived_from: String = row.get(6)?;
                     let hash: String = row.get(7)?;
                     let provenance: String = row.get(8)?;
+                    let ever_quarantined: bool = row.get(9)?;
                     Ok((
                         scope_kind,
                         scope_key,
@@ -2590,6 +2813,7 @@ impl StagedBatchView for ConnBatchView<'_> {
                         derived_from,
                         hash,
                         provenance,
+                        ever_quarantined,
                     ))
                 },
             )
@@ -2607,6 +2831,7 @@ impl StagedBatchView for ConnBatchView<'_> {
                     derived_from,
                     hash,
                     provenance,
+                    ever_quarantined,
                 )| {
                     let scope = scope_from_parts(&scope_kind, &scope_key, self.realm).ok()?;
                     let provenance: MemoryProvenance = serde_json::from_str(&provenance).ok()?;
@@ -2618,6 +2843,7 @@ impl StagedBatchView for ConnBatchView<'_> {
                         derived_from: serde_json::from_str(&derived_from).unwrap_or_default(),
                         content_hash: hash,
                         has_verification: provenance.verification.is_some(),
+                        ever_quarantined,
                     })
                 },
             )
@@ -2934,6 +3160,70 @@ fn scope_floor_warning(
         return Some(format!("{bytes} bytes > floor {floor_bytes}"));
     }
     None
+}
+
+/// Markdown-import failure split: content problems are contained (skip the
+/// file, keep the store open); I/O problems propagate into the open.
+enum MarkdownImportError {
+    Content(String),
+    Io(AgentMemoryError),
+}
+
+/// One summary audit row per markdown-import file with skips or a wholesale
+/// failure: the durable, operator-visible counterpart of the tracing warns.
+fn record_import_audit(
+    conn: &Connection,
+    file: &Path,
+    imported: usize,
+    skipped: usize,
+    reasons: &[String],
+) -> Result<(), AgentMemoryError> {
+    const MAX_AUDITED_REASONS: usize = 8;
+    let detail = serde_json::json!({
+        "op": "markdown_import",
+        "file": file.display().to_string(),
+        "imported": imported,
+        "skipped": skipped,
+        "skip_reasons": reasons.iter().take(MAX_AUDITED_REASONS).collect::<Vec<_>>(),
+    });
+    conn.execute(
+        "INSERT INTO audit (stage_token, op_index, op_kind, memory_id, detail, applied_at_ms) \
+         VALUES (?1, 0, 'import_summary', NULL, ?2, ?3)",
+        params![
+            mint_token("import-audit"),
+            detail.to_string(),
+            now_ms() as i64,
+        ],
+    )
+    .map_err(sql_err)?;
+    Ok(())
+}
+
+/// Add `column` to `table` when absent. Returns true when the column was
+/// just added (the caller's cue to run a one-time backfill).
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<bool, AgentMemoryError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(sql_err)?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sql_err)?
+        .collect::<Result<_, _>>()
+        .map_err(sql_err)?;
+    if existing.iter().any(|name| name == column) {
+        return Ok(false);
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+        [],
+    )
+    .map_err(sql_err)?;
+    Ok(true)
 }
 
 fn json_string<T: serde::Serialize>(value: &T) -> Result<String, AgentMemoryError> {
@@ -3288,27 +3578,167 @@ mod tests {
         Ok(())
     }
 
+    /// Stores created before the `ever_quarantined`/`taint` columns existed
+    /// migrate on open, with the conservative backfill: currently-quarantined
+    /// rows flagged directly, tombstoned rows flagged through their audit
+    /// trail (the tombstone apply nulled the `quarantined` status_detail).
+    #[tokio::test]
+    async fn ever_quarantined_migration_backfills_old_stores() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let db_path = {
+            let store = SqliteAgentMemoryStore::open(dir.path())?;
+            store.path_for_realm("family")
+        };
+        {
+            let conn = Connection::open(&db_path)?;
+            conn.execute_batch(
+                "CREATE TABLE records (
+                    memory_id       TEXT PRIMARY KEY,
+                    scope_kind      TEXT NOT NULL,
+                    scope_key       TEXT NOT NULL,
+                    kind            TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    description     TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL,
+                    tags            TEXT NOT NULL DEFAULT '[]',
+                    provenance      TEXT NOT NULL,
+                    trust           TEXT NOT NULL,
+                    status_kind     TEXT NOT NULL,
+                    status_detail   TEXT,
+                    supersedes      TEXT,
+                    derived_from    TEXT NOT NULL DEFAULT '[]',
+                    working_set_rank INTEGER,
+                    rank_set_at_ms  INTEGER,
+                    content_hash    TEXT NOT NULL,
+                    created_at_ms   INTEGER NOT NULL,
+                    updated_at_ms   INTEGER NOT NULL,
+                    usage_stats     TEXT NOT NULL DEFAULT '{}',
+                    tombstoned_at_ms INTEGER
+                );
+                CREATE TABLE proposals (
+                    proposal_id   TEXT PRIMARY KEY,
+                    scope_kind    TEXT NOT NULL,
+                    scope_key     TEXT NOT NULL,
+                    record        TEXT NOT NULL,
+                    author        TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    created_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE audit (
+                    audit_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stage_token   TEXT NOT NULL,
+                    op_index      INTEGER NOT NULL,
+                    op_kind       TEXT NOT NULL,
+                    memory_id     TEXT,
+                    detail        TEXT NOT NULL,
+                    applied_at_ms INTEGER NOT NULL
+                );",
+            )?;
+            let provenance = "{\"author\":{\"author\":\"application\"}}";
+            let insert = |id: &str, status_kind: &str, detail: Option<&str>| {
+                conn.execute(
+                    "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, \
+                     description, body, tags, provenance, trust, status_kind, status_detail, \
+                     supersedes, derived_from, content_hash, created_at_ms, updated_at_ms, \
+                     usage_stats) VALUES (?1, 'identity', 'identity:luka', 'fact', ?1, '', \
+                     'body', '[]', ?2, 'agent_observed', ?3, ?4, NULL, '[]', ?1, 1, 1, '{}')",
+                    params![id, provenance, status_kind, detail],
+                )
+            };
+            insert("mem-clean", "active", None)?;
+            insert("mem-quarantined", "quarantined", Some("tainted session"))?;
+            insert("mem-tombstoned-was-quarantined", "tombstoned", None)?;
+            insert("mem-tombstoned-clean", "tombstoned", None)?;
+            conn.execute(
+                "INSERT INTO audit (stage_token, op_index, op_kind, memory_id, detail, \
+                 applied_at_ms) VALUES ('direct-1', 0, 'create', \
+                 'mem-tombstoned-was-quarantined', \
+                 '{\"op\":\"create\",\"quarantined\":\"llm_writes=quarantined policy\"}', 1)",
+                params![],
+            )?;
+        }
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        // Any realm operation opens the connection and runs the migration;
+        // pending_proposals also exercises the proposals `taint` migration.
+        assert!(store.pending_proposals("family", 4).await?.is_empty());
+        let conn = store.realm_connection("family")?;
+        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let flag = |id: &str| -> Result<bool, Box<dyn Error>> {
+            Ok(guard.query_row(
+                "SELECT ever_quarantined FROM records WHERE memory_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?)
+        };
+        assert!(!flag("mem-clean")?);
+        assert!(flag("mem-quarantined")?);
+        assert!(flag("mem-tombstoned-was-quarantined")?);
+        assert!(
+            !flag("mem-tombstoned-clean")?,
+            "ordinary tombstones must not be poisoned by the backfill"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stale_stage_tokens_gc_on_open() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let store = SqliteAgentMemoryStore::open(dir.path())?;
-        let token = store
-            .stage(StagedMutationBatch {
-                realm: "family".to_string(),
-                author: MemoryAuthor::Application,
-                ops: vec![StagedOp::Create {
-                    id: None,
-                    scope: identity_scope("family")?,
-                    record: payload("Stale", "Stale body"),
-                    trust: TrustTier::AgentObserved,
-                    derived_from: Vec::new(),
+        let stage_create = |title: &str| StagedMutationBatch {
+            realm: "family".to_string(),
+            author: MemoryAuthor::Application,
+            ops: vec![StagedOp::Create {
+                id: None,
+                scope: identity_scope("family").expect("scope"),
+                record: payload(title, &format!("{title} body")),
+                trust: TrustTier::AgentObserved,
+                derived_from: Vec::new(),
+                rationale: None,
+                created_at_ms: None,
+                updated_at_ms: None,
+            }],
+        };
+        let ungated = store.stage(stage_create("Stale")).await?;
+        // A stage referenced by a still-PENDING gated promotion: the
+        // operator's decision window outranks the dead-producer sweep.
+        let pending_gated = store.stage(stage_create("Gated pending")).await?;
+        store
+            .record_pending_promotion(
+                "family",
+                PendingPromotion {
+                    pending_id: "gate-pending".to_string(),
+                    stage_token: pending_gated.token.clone(),
+                    record_id: "mem-src-1".to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "mob:home".to_string(),
                     rationale: None,
-                    created_at_ms: None,
-                    updated_at_ms: None,
-                }],
-            })
+                    status: "pending".to_string(),
+                    created_at_ms: now_ms(),
+                },
+            )
             .await?;
-        // Age the row past the 24h GC horizon, then reopen.
+        // A stage referenced by a RESOLVED promotion must NOT be exempt —
+        // this pins the `status = 'pending'` filter in the GC query.
+        let resolved_gated = store.stage(stage_create("Gated resolved")).await?;
+        store
+            .record_pending_promotion(
+                "family",
+                PendingPromotion {
+                    pending_id: "gate-resolved".to_string(),
+                    stage_token: resolved_gated.token.clone(),
+                    record_id: "mem-src-2".to_string(),
+                    scope_kind: "mob".to_string(),
+                    scope_key: "mob:home".to_string(),
+                    rationale: None,
+                    status: "pending".to_string(),
+                    created_at_ms: now_ms(),
+                },
+            )
+            .await?;
+        store
+            .resolve_pending_promotion("family", "gate-resolved", "denied")
+            .await?;
+        // Age every stage row past the 24h GC horizon, then reopen.
         {
             let conn = store.realm_connection("family")?;
             let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
@@ -3318,11 +3748,20 @@ mod tests {
             )?;
         }
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
-        let result = reopened.commit(token).await;
+        let result = reopened.commit(ungated).await;
         assert!(
             matches!(result, Err(AgentMemoryError::InvalidRecord(_))),
-            "aged-out stage token must be garbage-collected on open"
+            "aged-out ungated stage token must be garbage-collected on open"
         );
+        let result = reopened.commit(resolved_gated).await;
+        assert!(
+            matches!(result, Err(AgentMemoryError::InvalidRecord(_))),
+            "a stage referenced only by a RESOLVED promotion must still be collected"
+        );
+        let receipt = reopened.commit(pending_gated).await.map_err(|err| {
+            format!("a stage referenced by a pending gated promotion must survive GC: {err}")
+        })?;
+        assert_eq!(receipt.applied_ops, 1);
         Ok(())
     }
 
@@ -3504,6 +3943,330 @@ mod tests {
         // Reopening does not re-import (file renamed) and keeps counts.
         let reopened = SqliteAgentMemoryStore::open(dir.path())?;
         assert_eq!(reopened.recall(recall_all(id, "family")).await?.len(), 2);
+        Ok(())
+    }
+
+    /// Store-seam gate stand-in: quarantines LLM writes whose evidence
+    /// cites the tainted session.
+    struct TaintedSessionGate;
+
+    impl crate::memory::taint::LlmWriteGate for TaintedSessionGate {
+        fn quarantine_reason(
+            &self,
+            author: &MemoryAuthor,
+            evidence: &[crate::memory::records::EvidenceRef],
+        ) -> Option<String> {
+            if !author.is_llm() {
+                return None;
+            }
+            evidence
+                .iter()
+                .any(|reference| reference.session_id == "tainted-sess")
+                .then(|| "evidence cites a tainted session".to_string())
+        }
+    }
+
+    fn tainted_evidence() -> Vec<crate::memory::records::EvidenceRef> {
+        vec![crate::memory::records::EvidenceRef {
+            session_id: "tainted-sess".to_string(),
+            generation: 0,
+            revision: None,
+            range: None,
+        }]
+    }
+
+    #[tokio::test]
+    async fn release_then_retier_of_formerly_quarantined_origin_rejected()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        store.set_llm_write_gate(std::sync::Arc::new(TaintedSessionGate));
+        let scope = identity_scope("family")?;
+
+        // Agent write from a tainted session lands quarantined, carrying a
+        // verification claim (so the later retier passes the claim check
+        // and only the taint ceiling can stop it).
+        let mut record = payload("Quarantined origin", "possibly poisoned content");
+        record.evidence = tainted_evidence();
+        record.verification = Some(crate::memory::records::VerificationClaim {
+            checked: "claims to have checked".to_string(),
+            evidence: Vec::new(),
+        });
+        let receipt = store
+            .remember_authored(
+                &scope,
+                record,
+                MemoryAuthor::Agent {
+                    identity: identity()?.as_str().to_string(),
+                },
+            )
+            .await?;
+        assert!(matches!(receipt.status, RecordStatus::Quarantined { .. }));
+        let origin = receipt.memory_id;
+
+        // Steward release: create a copy derived from the origin, tombstone
+        // the origin (exactly the dream's release group).
+        let mut copy_payload =
+            payload("Quarantined origin", "possibly poisoned content (released)");
+        copy_payload.verification = Some(crate::memory::records::VerificationClaim {
+            checked: "claims to have checked".to_string(),
+            evidence: Vec::new(),
+        });
+        let release = StagedMutationBatch {
+            realm: "family".to_string(),
+            author: MemoryAuthor::Steward {
+                run_id: "dream-1".to_string(),
+            },
+            ops: vec![
+                StagedOp::Create {
+                    id: Some("mem-released-copy".to_string()),
+                    scope: scope.clone(),
+                    record: copy_payload,
+                    trust: TrustTier::AgentObserved,
+                    derived_from: vec![origin.clone()],
+                    rationale: Some("quarantine release".to_string()),
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                },
+                StagedOp::Tombstone {
+                    id: origin.clone(),
+                    rationale: Some("superseded by quarantine release".to_string()),
+                },
+            ],
+        };
+        let token = store.stage(release).await?;
+        store.commit(token).await?;
+        let released = store
+            .record_by_id("family", "mem-released-copy")
+            .await?
+            .ok_or("released copy exists")?;
+        assert_eq!(released.status, RecordStatus::Active);
+        let origin_record = store
+            .record_by_id("family", &origin)
+            .await?
+            .ok_or("origin exists")?;
+        assert_eq!(origin_record.status, RecordStatus::Tombstoned);
+
+        // The durable taint marker persisted through the release: both the
+        // tombstoned origin and the copy (inherited via derived_from).
+        {
+            let conn = store.realm_connection("family")?;
+            let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+            let flags: Vec<(String, bool)> = {
+                let mut stmt = guard.prepare(
+                    "SELECT memory_id, ever_quarantined FROM records ORDER BY memory_id",
+                )?;
+                let rows = stmt
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            for (memory_id, flag) in &flags {
+                assert!(
+                    flag,
+                    "'{memory_id}' must carry ever_quarantined after the release"
+                );
+            }
+        }
+
+        // §10.2 "capped forever": retiering the released copy to
+        // agent_verified must be rejected even though the quarantined
+        // origin is now tombstoned.
+        let retier = StagedMutationBatch {
+            realm: "family".to_string(),
+            author: MemoryAuthor::Steward {
+                run_id: "dream-2".to_string(),
+            },
+            ops: vec![StagedOp::Retier {
+                id: "mem-released-copy".to_string(),
+                trust: TrustTier::AgentVerified,
+                rationale: Some("post-release launder attempt".to_string()),
+            }],
+        };
+        let err = store.stage(retier).await.expect_err("ceiling must hold");
+        assert!(
+            err.to_string().contains("provenance chain reaches"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn markdown_import_skips_bad_records_and_files_loudly() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let id = identity()?;
+        let markdown = MarkdownAgentMemoryStore::open(dir.path())?;
+        let valid = markdown.remember("family", &id, new_memory("Valid fact", "Valid body."))?;
+        let md_path = markdown.path_for("family", &id);
+
+        // Hand-edits happen (§7.3 invites them): append one record with an
+        // oversized title and one carrying a secret. Both must skip loudly;
+        // the valid record must still import; the open must succeed.
+        let oversized_title = "T".repeat(crate::memory::records::MAX_RECORD_TITLE_BYTES + 10);
+        let mut content = fs::read_to_string(&md_path)?;
+        content.push_str(&format!(
+            "## {oversized_title}\n<!-- mobkit-agent-memory \
+             {{\"memory_id\":\"mem-bad-title\",\"tags\":[],\"created_at_ms\":1,\
+             \"updated_at_ms\":1}} -->\nSome body.\n<!-- /mobkit-agent-memory -->\n\n"
+        ));
+        content.push_str(
+            "## Leaked credential\n<!-- mobkit-agent-memory \
+             {\"memory_id\":\"mem-secret\",\"tags\":[],\"created_at_ms\":2,\
+             \"updated_at_ms\":2} -->\nthe key was AKIAIOSFODNN7EXAMPLE\n\
+             <!-- /mobkit-agent-memory -->\n\n",
+        );
+        fs::write(&md_path, content)?;
+
+        // A file whose stem is not an agent identity (whitespace never
+        // validates) fails wholesale: set aside as .import-failed, never
+        // taking the realm store down.
+        let junk_path = dir.path().join("family").join("not an identity.md");
+        fs::write(&junk_path, "## Orphan\nnot a memory file\n")?;
+
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let records = store.recall(recall_all(id.clone(), "family")).await?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.memory_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![valid.memory_id.as_str()],
+            "only the valid record imports"
+        );
+        assert!(!md_path.exists(), "identity file renamed after import");
+        assert!(md_path.with_extension("md.imported").exists());
+        assert!(!junk_path.exists(), "junk file set aside");
+        assert!(junk_path.with_extension("md.import-failed").exists());
+
+        // The skips are counted in import audit rows.
+        let conn = store.realm_connection("family")?;
+        let guard = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let summaries: Vec<String> = {
+            let mut stmt =
+                guard.prepare("SELECT detail FROM audit WHERE op_kind = 'import_summary'")?;
+            let rows = stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        assert_eq!(summaries.len(), 2, "one summary per skipping/failing file");
+        let identity_summary = summaries
+            .iter()
+            .find(|detail| detail.contains("mem-bad-title"))
+            .ok_or("identity-file summary present")?;
+        assert!(
+            identity_summary.contains("\"skipped\":2"),
+            "{identity_summary}"
+        );
+        assert!(
+            identity_summary.contains("secret pattern class"),
+            "{identity_summary}"
+        );
+        assert!(
+            !identity_summary.contains("AKIAIOSFODNN7EXAMPLE"),
+            "audit must not echo the secret: {identity_summary}"
+        );
+        drop(guard);
+
+        // Reopen: no re-import attempts, store stays healthy.
+        let reopened = SqliteAgentMemoryStore::open(dir.path())?;
+        assert_eq!(reopened.recall(recall_all(id, "family")).await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn propose_captures_taint_at_propose_time_and_refuses_secrets()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        store.set_llm_write_gate(std::sync::Arc::new(TaintedSessionGate));
+        let mob = MemoryScope::Mob {
+            realm: "family".to_string(),
+            mob: "mob:home".to_string(),
+        };
+        let author = MemoryAuthor::Agent {
+            identity: identity()?.as_str().to_string(),
+        };
+
+        // Tainted at propose time: the fact is persisted on the row.
+        let mut tainted = payload("Shared gotcha", "from a poisoned session");
+        tainted.evidence = tainted_evidence();
+        let tainted_id = store.propose(&mob, tainted, author.clone()).await?;
+        // Clean propose: no taint.
+        let clean_id = store
+            .propose(
+                &mob,
+                payload("Clean gotcha", "from a clean session"),
+                author.clone(),
+            )
+            .await?;
+        let proposals = store.pending_proposals("family", 8).await?;
+        let by_id: std::collections::HashMap<&str, &PendingProposal> = proposals
+            .iter()
+            .map(|proposal| (proposal.proposal_id.as_str(), proposal))
+            .collect();
+        let tainted_row = by_id.get(tainted_id.as_str()).ok_or("tainted present")?;
+        assert!(
+            tainted_row
+                .taint
+                .as_deref()
+                .is_some_and(|reason| reason.contains("tainted")),
+            "{:?}",
+            tainted_row.taint
+        );
+        assert!(
+            by_id
+                .get(clean_id.as_str())
+                .ok_or("clean present")?
+                .taint
+                .is_none()
+        );
+
+        // §10.4: the proposal seam refuses secrets with the class named.
+        let err = store
+            .propose(
+                &mob,
+                payload("Creds", "api_key = \"zXy1aB2cD3eF4gH5iJ6k\""),
+                author,
+            )
+            .await
+            .expect_err("secret-bearing proposal refused");
+        let message = err.to_string();
+        assert!(message.contains("credential-assignment"), "{message}");
+        assert!(!message.contains("zXy1aB2cD3eF4gH5iJ6k"), "{message}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn secret_bearing_writes_refused_at_store_seam() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let id = identity()?;
+        // The wire remember path flows through the staged validator's
+        // §10.4 chokepoint.
+        let err = store
+            .remember(
+                "family",
+                &id,
+                new_memory("AWS key", "found AKIAIOSFODNN7EXAMPLE in the logs"),
+            )
+            .await
+            .expect_err("secret-bearing remember refused");
+        let message = err.to_string();
+        assert!(message.contains("aws-access-key-id"), "{message}");
+        assert!(!message.contains("AKIAIOSFODNN7EXAMPLE"), "{message}");
+
+        // Clean writes pass.
+        store
+            .remember(
+                "family",
+                &id,
+                new_memory(
+                    "Key location",
+                    "The AWS key lives in the vault, path infra/aws.",
+                ),
+            )
+            .await?;
         Ok(())
     }
 

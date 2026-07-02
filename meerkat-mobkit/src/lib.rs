@@ -117,10 +117,10 @@ pub use identity_first::{
     MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use memory::{
-    ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine, DreamOutcome, DreamRun,
-    HygieneCause, HygieneOutcome, HygienistConfig, HygienistEngine, ManifestTier,
-    MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge, MemoryKind,
-    MemoryRecord, MemoryScope, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
+    CompactionResetSink, ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine,
+    DreamOutcome, DreamRun, HygieneCause, HygieneOutcome, HygienistConfig, HygienistEngine,
+    ManifestTier, MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge,
+    MemoryKind, MemoryRecord, MemoryScope, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
     OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
     SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
     StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,

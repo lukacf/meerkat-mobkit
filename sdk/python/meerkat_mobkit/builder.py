@@ -162,6 +162,45 @@ class MobKitBuilder:
             self._config.agent_memory_config = config
             return self
 
+        # Fail loud on unknown keys instead of silently dropping them: a
+        # typo'd option would otherwise be scrubbed here and the gateway's
+        # own unknown-field rejection would never fire.
+        known = {
+            "enabled",
+            "realm",
+            "selection",
+            "max_entries",
+            "maxEntries",
+            "recall_timeout_ms",
+            "recallTimeoutMs",
+            "recall_failure_policy",
+            "recallFailurePolicy",
+            "instruction_header",
+            "instructionHeader",
+            "per_turn_injection",
+            "perTurnInjection",
+            "defang_inbound",
+            "defangInbound",
+            "store",
+            "llm_writes",
+            "llmWrites",
+            "recorder_tool",
+            "recorderTool",
+            "content_trust",
+            "contentTrust",
+            "selector",
+            "distiller",
+            "steward",
+            "operator_scope",
+            "operatorScope",
+            "hygienist",
+        }
+        unknown = sorted(set(config) - known)
+        if unknown:
+            raise ValueError(
+                "agent_memory got unsupported option(s): " + ", ".join(unknown)
+            )
+
         wire: dict[str, Any] = {}
         if "enabled" in config:
             wire["enabled"] = config["enabled"]
@@ -209,9 +248,29 @@ class MobKitBuilder:
             wire["content_trust"] = config["contentTrust"]
         if "selector" in config:
             wire["selector"] = config["selector"]
+        if "operator_scope" in config:
+            wire["operator_scope"] = config["operator_scope"]
+        elif "operatorScope" in config:
+            wire["operator_scope"] = config["operatorScope"]
         distiller = config.get("distiller")
         if distiller is not None:
             if isinstance(distiller, dict):
+                unknown = sorted(
+                    set(distiller)
+                    - {
+                        "enabled",
+                        "runs_per_hour",
+                        "runsPerHour",
+                        "min_interactions",
+                        "minInteractions",
+                        "model",
+                    }
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory distiller got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
                 distiller_wire: dict[str, Any] = {}
                 if "enabled" in distiller:
                     distiller_wire["enabled"] = distiller["enabled"]
@@ -231,6 +290,25 @@ class MobKitBuilder:
         steward = config.get("steward")
         if steward is not None:
             if isinstance(steward, dict):
+                unknown = sorted(
+                    set(steward)
+                    - {
+                        "enabled",
+                        "cadence",
+                        "model",
+                        "per_mob",
+                        "perMob",
+                        "runs_per_day",
+                        "runsPerDay",
+                        "min_signals",
+                        "minSignals",
+                    }
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory steward got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
                 steward_wire: dict[str, Any] = {}
                 if "enabled" in steward:
                     steward_wire["enabled"] = steward["enabled"]
@@ -253,6 +331,29 @@ class MobKitBuilder:
                 wire["steward"] = steward_wire
             else:
                 wire["steward"] = steward
+        hygienist = config.get("hygienist")
+        if hygienist is not None:
+            if isinstance(hygienist, dict):
+                unknown = sorted(
+                    set(hygienist) - {"enabled", "runs_per_day", "runsPerDay", "model"}
+                )
+                if unknown:
+                    raise ValueError(
+                        "agent_memory hygienist got unsupported option(s): "
+                        + ", ".join(unknown)
+                    )
+                hygienist_wire: dict[str, Any] = {}
+                if "enabled" in hygienist:
+                    hygienist_wire["enabled"] = hygienist["enabled"]
+                if "runs_per_day" in hygienist:
+                    hygienist_wire["runs_per_day"] = hygienist["runs_per_day"]
+                elif "runsPerDay" in hygienist:
+                    hygienist_wire["runs_per_day"] = hygienist["runsPerDay"]
+                if "model" in hygienist:
+                    hygienist_wire["model"] = hygienist["model"]
+                wire["hygienist"] = hygienist_wire
+            else:
+                wire["hygienist"] = hygienist
         self._config.agent_memory_config = wire
         return self
 

@@ -5,9 +5,11 @@ Calibration corpus and runner for the agent-memory judgment stages
 versioned, evaluated artifact — this directory holds the artifacts (profiles,
 prompt bundles, fixtures) and `scripts/memory-evals` runs them.
 
-v0 covers the **Selector** stage (§8.3) mock-first: the deterministic schema
-check gates CI today; the live scorecard wires in when the Selector lands
-(P1.3).
+All four judgment stages (Selector, Distiller, Steward, Hygienist) have
+profiles, fixtures, and mock lanes; the deterministic checks and mock-lane
+invariant verdicts gate CI today. `--mode live` is wired for every stage and
+runs real model calls where provider auth resolves (exit-3 SKIP otherwise),
+gating on judgment scorecards — it runs in no CI lane yet (credentials).
 
 ## Layout
 
@@ -53,7 +55,7 @@ One TOML file per `{stage, version}` in `profiles/`:
 ```toml
 stage        = "selector"           # judgment stage this profile calibrates
 version      = "0"                  # bumped on any prompt/params change
-model        = "PLACEHOLDER"        # resolved at P1.3; small fast tier per §8.3
+model        = "PLACEHOLDER"        # per-stage default lives in the embedded profile; override here
 prompt_bundle = "prompts/selector-v0.md"   # path relative to memory-evals/
 
 [params]
@@ -145,7 +147,7 @@ selector fixtures' PascalCase kinds:
   consolidation carries the provenance ceiling (§10.2;
   `transitive_taint_ceiling`).
 
-## The selector-eval seam (P1.3)
+## The stage-eval seam (selector-eval, distiller-eval, steward-eval, hygienist-eval)
 
 `--mode live` drives the Selector's single entry point
 (`memory::selector::select` — manifest + turn text + suppression list in,

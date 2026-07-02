@@ -30,7 +30,7 @@ use meerkat_core::{Message, Provider, SessionLlmIdentity, UserMessage};
 use crate::identity_first::agent_memory::{
     AgentMemoryError, AgentMemoryRecord, compact_whitespace, truncate_utf8_boundary,
 };
-use crate::memory::records::{MemoryScope, RecordMeta};
+use crate::memory::records::{MemoryScope, RecordMeta, TrustTier};
 
 /// Operator switch for the selector stage. Off by default: the model/auth
 /// binding choice belongs to the operator (§8.1 open question 3); flipping
@@ -709,6 +709,25 @@ impl SelectorStage {
 // Body fetch for selector-chosen ids
 // ---------------------------------------------------------------------------
 
+/// §7.2/§9.1 per-record provenance for rendered bodies: the scope the
+/// record was read from and its trust tier, so the injection envelope can
+/// label each quoted observation instead of co-rendering scopes
+/// indistinguishably.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordProvenance {
+    pub scope: MemoryScope,
+    pub trust: TrustTier,
+}
+
+/// A fetched record body plus its provenance, when the store can supply
+/// it. `provenance: None` renders the body without scope/trust labels
+/// (age still renders from the record's own timestamps).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotatedRecord {
+    pub record: AgentMemoryRecord,
+    pub provenance: Option<RecordProvenance>,
+}
+
 /// Fetch active record bodies by id across the composed scopes, in the
 /// order the ids were selected. Deliberately a standalone trait rather
 /// than an `AgentMemoryProvider` method: the v2 provider trait is owned by
@@ -721,6 +740,26 @@ pub trait SelectedRecordFetch: Send + Sync {
         scopes: &[MemoryScope],
         ids: &[String],
     ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError>;
+
+    /// Bodies plus §7.2 provenance labels. The default delegates to
+    /// [`Self::fetch_records`] with no provenance so existing stores keep
+    /// compiling; stores that know each record's scope and trust tier
+    /// should override so injected bodies carry their labels.
+    async fn fetch_records_annotated(
+        &self,
+        scopes: &[MemoryScope],
+        ids: &[String],
+    ) -> Result<Vec<AnnotatedRecord>, AgentMemoryError> {
+        Ok(self
+            .fetch_records(scopes, ids)
+            .await?
+            .into_iter()
+            .map(|record| AnnotatedRecord {
+                record,
+                provenance: None,
+            })
+            .collect())
+    }
 }
 
 // ---------------------------------------------------------------------------

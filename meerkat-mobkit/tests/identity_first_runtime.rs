@@ -7552,3 +7552,283 @@ async fn identity_first_runtime_retire_without_distiller_is_unaffected() {
         .unwrap();
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
 }
+
+// ===========================================================================
+// §8.4 reset-path memory wiring: quarantine boundary + detached distillation
+// + taint clear ordering (runtime-level integration)
+// ===========================================================================
+
+/// Distiller LLM that proposes exactly one remember op, so the reset path
+/// has a distillate whose landing status the test can assert (`[]` replies
+/// write nothing and can never prove quarantine).
+struct OneOpDistillerLlm;
+
+const RESET_ONE_OP_REPLY: &str = r#"[{"action": "remember", "kind": "gotcha",
+    "title": "Cargo goes through the wrapper",
+    "description": "When running cargo commands in this repo",
+    "body": "Always ./scripts/repo-cargo, never raw cargo.",
+    "tags": [], "epistemic": "operator_said"}]"#;
+
+#[async_trait]
+impl meerkat_client::LlmClient for OneOpDistillerLlm {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a meerkat_client::LlmRequest,
+    ) -> meerkat_client::types::LlmStream<'a> {
+        Box::pin(futures::stream::iter(vec![
+            Ok(meerkat_client::LlmEvent::TextDelta {
+                delta: RESET_ONE_OP_REPLY.to_string(),
+                meta: None,
+            }),
+            Ok(meerkat_client::LlmEvent::Done {
+                outcome: meerkat_client::LlmDoneOutcome::Success {
+                    stop_reason: meerkat_core::StopReason::EndTurn,
+                },
+            }),
+        ]))
+    }
+
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::Other
+    }
+
+    async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+        Ok(())
+    }
+}
+
+struct OneOpDistillerHandle;
+
+#[async_trait]
+impl meerkat_mobkit::memory::distiller::DistillerClientHandle for OneOpDistillerHandle {
+    async fn client(
+        &self,
+    ) -> Result<Arc<dyn meerkat_client::LlmClient>, meerkat_mobkit::memory::distiller::DistillerError>
+    {
+        Ok(Arc::new(OneOpDistillerLlm))
+    }
+    fn invalidate(&self) {}
+}
+
+/// Transcript source gated on a semaphore: parks the DETACHED reset
+/// distillation at its evidence read until the test releases it — the
+/// ordering probe that separates the runtime's `note_reset_boundary` from
+/// the engine's own defensive re-mark (which happens after this read).
+struct GatedTranscripts {
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl meerkat_mobkit::memory::distiller::TranscriptSource for GatedTranscripts {
+    async fn read(
+        &self,
+        session_key: &str,
+        from_index: u64,
+    ) -> Result<
+        Option<meerkat_mobkit::memory::distiller::TranscriptSlice>,
+        meerkat_mobkit::memory::distiller::DistillerError,
+    > {
+        self.release
+            .acquire()
+            .await
+            .expect("gate semaphore stays open")
+            .forget();
+        Ok(Some(meerkat_mobkit::memory::distiller::TranscriptSlice {
+            session_key: session_key.to_string(),
+            start_index: from_index,
+            end_index: from_index + 1,
+            messages: vec![meerkat_mobkit::memory::distiller::TranscriptMessage {
+                index: from_index,
+                role: "user",
+                text: "never run raw cargo; always ./scripts/repo-cargo".to_string(),
+            }],
+        }))
+    }
+}
+
+/// Spec §8.4: reset marks the OUTGOING session's boundary before the
+/// detached distillation is spawned, distillates over it land
+/// `Quarantined`, the new session starts clean, and none of it blocks the
+/// reset critical path. Composes runtime → tracker → engine → gated store
+/// exactly as the gateway wires them (same tracker in the engine and the
+/// store's write gate).
+async fn reset_distillation_quarantine_case(with_bridge: bool) {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = if with_bridge {
+        make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge.clone())
+    } else {
+        Arc::new(make_runtime(store.clone(), lease_prov.clone()))
+    };
+
+    let id = make_identity("agent:reset-distill");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(g) => g.clone(),
+        _ => panic!("expected Acquired"),
+    };
+    let record = make_record("agent:reset-distill", 0, 5);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("agent:reset-distill"),
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(initial_grant),
+        )
+        .await;
+
+    // Production wiring shape (rpc_gateway): ONE tracker shared by the
+    // store's LLM write gate, the engine, and the injector.
+    let memory_dir = tempfile::tempdir().unwrap();
+    let memory_store =
+        Arc::new(meerkat_mobkit::SqliteAgentMemoryStore::open(memory_dir.path()).unwrap());
+    let tracker =
+        meerkat_mobkit::SessionTaintTracker::new(meerkat_mobkit::ContentTrustConfig::default());
+    memory_store.set_llm_write_gate(Arc::new(meerkat_mobkit::TaintLlmWriteGate::new(
+        Some(tracker.clone()),
+        meerkat_mobkit::AgentMemoryLlmWrites::Observed,
+    )));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let engine = Arc::new(meerkat_mobkit::memory::distiller::DistillerEngine::new(
+        meerkat_mobkit::memory::distiller::DistillerProfile::embedded_default(),
+        meerkat_mobkit::memory::distiller::DistillerConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        Arc::new(OneOpDistillerHandle),
+        memory_store.clone(),
+        memory_store.clone(),
+        Arc::new(GatedTranscripts {
+            release: release.clone(),
+        }),
+        None,
+        Some(tracker.clone()),
+        "default",
+    ));
+    runtime
+        .set_agent_memory(Some(
+            AgentMemoryRuntimeInjector::new(memory_store.clone(), AgentMemoryConfig::default())
+                .with_taint_tracker(tracker.clone())
+                .with_distiller(engine),
+        ))
+        .await;
+
+    let old_session_key = record.session_id.to_string();
+
+    // Reset must complete while the detached distillation is still parked
+    // at the gated evidence read — distillation is OFF the critical path.
+    let new_record = tokio::time::timeout(Duration::from_secs(10), runtime.reset(&id))
+        .await
+        .expect("reset must not wait on the detached distillation")
+        .unwrap();
+    let new_session_key = new_record.session_id.to_string();
+    assert_ne!(new_session_key, old_session_key);
+
+    // The RUNTIME marked the outgoing session's boundary before spawning
+    // the distillation (the engine's defensive re-mark is still gated), and
+    // targeted the OLD key, not the new one.
+    let reason = tracker
+        .evidence_quarantine_reason(&old_session_key)
+        .expect("reset() must mark the outgoing session's §8.4 boundary before distilling");
+    assert!(reason.contains("reset boundary"), "{reason}");
+    assert!(
+        tracker
+            .evidence_quarantine_reason(&new_session_key)
+            .is_none(),
+        "the incoming session must not be over-quarantined"
+    );
+
+    // Release the gate: the detached distillate must land QUARANTINED over
+    // the old session — the §8.4 poisoned-session escape hatch.
+    release.add_permits(10);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let distillate = loop {
+        let mut quarantined = memory_store
+            .quarantined_records("default", 10)
+            .await
+            .unwrap();
+        if let Some(found) = quarantined.pop() {
+            break found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached reset distillate never landed in the store"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    match &distillate.status {
+        meerkat_mobkit::memory::records::RecordStatus::Quarantined { reason } => {
+            assert!(reason.contains("reset boundary"), "{reason}");
+        }
+        other => panic!("reset distillate must land Quarantined, got {other:?}"),
+    }
+    assert!(matches!(
+        distillate.provenance.author,
+        meerkat_mobkit::memory::records::MemoryAuthor::Distiller { .. }
+    ));
+    assert_eq!(
+        distillate
+            .provenance
+            .evidence
+            .first()
+            .expect("distillate carries evidence")
+            .session_id,
+        old_session_key,
+        "the reset distillation must cite the OUTGOING session"
+    );
+
+    // A later LLM-authored write citing the NEW session passes the same
+    // gate cleanly: the boundary quarantines the outgoing session only.
+    let receipt = meerkat_mobkit::AgentMemoryProvider::remember_authored(
+        memory_store.as_ref(),
+        &meerkat_mobkit::memory::records::MemoryScope::Identity {
+            realm: "default".to_string(),
+            identity: id.as_str().to_string(),
+        },
+        meerkat_mobkit::memory::records::NewMemoryRecord {
+            kind: meerkat_mobkit::memory::records::MemoryKind::Fact,
+            title: "post-reset fact".to_string(),
+            description: "written after the clean-slate boundary".to_string(),
+            body: "fresh session, clean gate".to_string(),
+            tags: Vec::new(),
+            evidence: vec![meerkat_mobkit::memory::records::EvidenceRef {
+                session_id: new_session_key.clone(),
+                generation: new_record.generation.get(),
+                revision: None,
+                range: None,
+            }],
+            verification: None,
+        },
+        meerkat_mobkit::memory::records::MemoryAuthor::Distiller {
+            run_id: "post-reset-run".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            receipt.status,
+            meerkat_mobkit::memory::records::RecordStatus::Active
+        ),
+        "writes citing the incoming session must land Active, got {:?}",
+        receipt.status
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reset_distillate_quarantines_with_bridge() {
+    reset_distillation_quarantine_case(true).await;
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reset_distillate_quarantines_without_bridge() {
+    reset_distillation_quarantine_case(false).await;
+}

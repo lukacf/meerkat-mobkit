@@ -200,6 +200,61 @@ class TestBuilderChain:
         params = MobKitRuntime(b._config)._build_init_params()
         assert params["runtime_options"]["agent_memory"] == {"steward": True}
 
+    def test_agent_memory_operator_scope_serializes_to_gateway_wire_key(self):
+        b = MobKit.builder().agent_memory(store="sqlite", operator_scope="provisional")
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "store": "sqlite",
+            "operator_scope": "provisional",
+        }
+
+    def test_agent_memory_operator_scope_accepts_camel_case(self):
+        b = MobKit.builder().agent_memory(operatorScope="off")
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"operator_scope": "off"}
+
+    def test_agent_memory_hygienist_serializes_to_gateway_wire_keys(self):
+        b = MobKit.builder().agent_memory(
+            hygienist={
+                "enabled": True,
+                "runs_per_day": 3,
+                "model": "claude-haiku-4-5",
+            },
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "hygienist": {
+                "enabled": True,
+                "runs_per_day": 3,
+                "model": "claude-haiku-4-5",
+            },
+        }
+
+    def test_agent_memory_hygienist_accepts_camel_case_and_bool(self):
+        b = MobKit.builder().agent_memory(hygienist={"runsPerDay": 2})
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {
+            "hygienist": {"runs_per_day": 2},
+        }
+
+        b = MobKit.builder().agent_memory(hygienist=True)
+        params = MobKitRuntime(b._config)._build_init_params()
+        assert params["runtime_options"]["agent_memory"] == {"hygienist": True}
+
+    def test_agent_memory_unknown_option_raises_instead_of_silently_dropping(self):
+        with pytest.raises(ValueError, match="per_turn_injecton"):
+            MobKit.builder().agent_memory(per_turn_injecton="budgeted")
+
+    def test_agent_memory_unknown_nested_option_raises(self):
+        with pytest.raises(ValueError, match="distiller.*runsperhour_typo"):
+            MobKit.builder().agent_memory(
+                distiller={"runs_per_hour": 2, "runsperhour_typo": 9},
+            )
+        with pytest.raises(ValueError, match="steward.*cadance"):
+            MobKit.builder().agent_memory(steward={"cadance": "*/6h"})
+        with pytest.raises(ValueError, match="hygienist.*runs_per_dya"):
+            MobKit.builder().agent_memory(hygienist={"runs_per_dya": 2})
+
     def test_external_authoritative_path_requires_all_three_parts(self):
         class Store:
             pass

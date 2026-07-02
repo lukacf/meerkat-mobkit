@@ -12,6 +12,7 @@ pub mod events;
 pub mod guards;
 pub mod hygienist;
 pub mod records;
+pub mod secrets;
 pub mod selector;
 pub mod sqlite_store;
 pub mod staged;
@@ -19,8 +20,9 @@ pub mod steward;
 pub mod taint;
 
 pub use coordinator::{
-    OperatorResolver, RecallCoordinator, ScopeBudget, compose_identity_scope_set,
-    compose_identity_scope_set_with_operator, compose_scope_budgets,
+    MobScopeResolver, OperatorResolver, RecallCoordinator, ScopeBudget, compose_identity_scope_set,
+    compose_identity_scope_set_with_bindings, compose_identity_scope_set_with_operator,
+    compose_scope_budgets,
 };
 pub use distiller::{
     CompactionDiscardSource, CompactionFollowUp, DistillCause, DistillOutcome,
@@ -44,9 +46,9 @@ pub use records::{
     RecordMeta, RecordStatus, TrustTier, UsageEvent, UsageStats, VerificationClaim, content_hash,
 };
 pub use selector::{
-    Coverage, FactorySelectorHandle, SELECTOR_ENV_VAR, SelectedRecordFetch, Selection,
-    SelectorError, SelectorHandle, SelectorProfile, SelectorRuntime, SelectorSpec, SelectorStage,
-    select,
+    AnnotatedRecord, Coverage, FactorySelectorHandle, RecordProvenance, SELECTOR_ENV_VAR,
+    SelectedRecordFetch, Selection, SelectorError, SelectorHandle, SelectorProfile,
+    SelectorRuntime, SelectorSpec, SelectorStage, select,
 };
 pub use sqlite_store::{
     EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, ScopeOverview,
@@ -62,7 +64,7 @@ pub use steward::{
     StewardConfig, StewardEngine, StewardError, StewardProfile, StewardTriggers,
 };
 pub use taint::{
-    ContentTrustConfig, LlmWriteGate, MemberAgentEventSink, SessionTaintTracker, TaintLlmWriteGate,
-    TaintObserverGuard, TaintState, ToolContentTrust, spawn_member_event_observer,
-    spawn_taint_observer,
+    CompactionResetSink, ContentTrustConfig, LlmWriteGate, MemberAgentEventSink,
+    SessionTaintTracker, TaintLlmWriteGate, TaintObserverGuard, TaintState, ToolContentTrust,
+    spawn_member_event_observer, spawn_taint_observer,
 };

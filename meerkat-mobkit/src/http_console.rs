@@ -1848,6 +1848,32 @@ fn memory_panel_record_visible(
     true
 }
 
+/// Per-row visibility for pending-promotion queue rows, mirroring
+/// [`memory_panel_record_visible`] on the promotion's *target* scope:
+/// promotions carry the scope key and steward rationale, so they leak the
+/// same cross-scope metadata as record rows. `memory.quarantine.review` is
+/// the queue's entry gate but is deliberately not sufficient per row.
+/// Unknown scope kinds are denied.
+fn memory_panel_promotion_visible(
+    view: Option<&AccessView>,
+    scope_kind: &str,
+    scope_key: &str,
+) -> bool {
+    let Some(view) = view.filter(|view| view.enforced()) else {
+        return true;
+    };
+    match scope_kind {
+        "identity" => {
+            view.allows_agent(ACTION_AGENT_MEMORY_READ, scope_key)
+                && view.allows_agent(ACTION_AGENT_VIEW, scope_key)
+        }
+        "mob" => view.allows(ACTION_MOB_MEMORY_READ),
+        "operator" => view.allows(ACTION_OPERATOR_MEMORY_READ),
+        "realm" => view.allows(ACTION_AGENT_MEMORY_READ),
+        _ => false,
+    }
+}
+
 /// Serialize a record for the panel. List rows are body-free (`body_bytes`
 /// stands in); only the record-detail surface carries the body.
 fn memory_panel_record_json(
@@ -2077,6 +2103,7 @@ async fn handle_memory_panel_record(
 
 async fn handle_memory_panel_quarantine(
     store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2097,22 +2124,36 @@ async fn handle_memory_panel_quarantine(
             Err(err) => return memory_panel_store_error(response_id, err),
         }
         match store.pending_promotions(realm).await {
-            Ok(rows) => pending.extend(rows.into_iter().map(|promotion| {
-                // stage_token is a commit capability — never surfaced.
-                json!({
-                    "realm": realm,
-                    "pending_id": promotion.pending_id,
-                    "record_id": promotion.record_id,
-                    "scope_kind": promotion.scope_kind,
-                    "scope_key": promotion.scope_key,
-                    "rationale": promotion.rationale,
-                    "status": promotion.status,
-                    "created_at_ms": promotion.created_at_ms,
-                })
-            })),
+            Ok(rows) => pending.extend(
+                rows.into_iter()
+                    .filter(|promotion| {
+                        memory_panel_promotion_visible(
+                            view,
+                            &promotion.scope_kind,
+                            &promotion.scope_key,
+                        )
+                    })
+                    .map(|promotion| {
+                        // stage_token is a commit capability — never surfaced.
+                        json!({
+                            "realm": realm,
+                            "pending_id": promotion.pending_id,
+                            "record_id": promotion.record_id,
+                            "scope_kind": promotion.scope_kind,
+                            "scope_key": promotion.scope_key,
+                            "rationale": promotion.rationale,
+                            "status": promotion.status,
+                            "created_at_ms": promotion.created_at_ms,
+                        })
+                    }),
+            ),
             Err(err) => return memory_panel_store_error(response_id, err),
         }
     }
+    // The reviewer entry gate is necessary but not sufficient: each queue row
+    // still needs the caller's per-scope read grant, and hidden rows must not
+    // consume the page budget.
+    records.retain(|record| memory_panel_record_visible(view, record));
     records.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
     records.truncate(limit);
     // Queue rows stay body-free even for reviewers: verdicts are decided on
@@ -5011,7 +5052,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await
         }
         "mobkit/memory/panel/quarantine" => {
-            handle_memory_panel_quarantine(memory_panel, &request.params, response_id).await
+            handle_memory_panel_quarantine(memory_panel, access_view, &request.params, response_id)
+                .await
         }
         "mobkit/memory/panel/dreams" => {
             handle_memory_panel_dreams(memory_panel, &request.params, response_id).await
