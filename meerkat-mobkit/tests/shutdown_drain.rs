@@ -22,7 +22,8 @@ use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
-    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, UnifiedRuntime,
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
+    RestartPolicy, UnifiedRuntime,
 };
 
 fn mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
@@ -67,6 +68,15 @@ fn empty_module_config(namespace: &str) -> MobKitConfig {
     }
 }
 
+fn shell_module(id: &str, script: &str) -> ModuleConfig {
+    ModuleConfig {
+        id: id.to_string(),
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script.to_string()],
+        restart_policy: RestartPolicy::Never,
+    }
+}
+
 fn member_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         profile.to_string(),
@@ -75,6 +85,42 @@ fn member_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
         None,
         None,
     )
+}
+
+#[tokio::test]
+async fn shutdown_stops_mob_before_tearing_down_loaded_modules() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(mob_spec(&temp_dir))
+            .module_config(MobKitConfig {
+                modules: vec![shell_module(
+                    "router",
+                    r#"printf '%s\n' '{"event_id":"evt-router-ready","source":"module","timestamp_ms":10,"event":{"kind":"module","module":"router","event_type":"ready","payload":{"ok":true}}}'; exec sleep 30"#,
+                )],
+                discovery: DiscoverySpec {
+                    namespace: "shutdown-loaded-module".to_string(),
+                    modules: vec!["router".to_string()],
+                },
+                pre_spawn: vec![],
+            })
+            .timeout(Duration::from_secs(2))
+            .drain_timeout(Duration::from_millis(200))
+            .build(),
+    )
+    .await
+    .expect("build");
+
+    assert_eq!(runtime.loaded_modules().await, vec!["router".to_string()]);
+
+    let shutdown = runtime.shutdown().await;
+
+    assert_eq!(
+        shutdown.module_shutdown.terminated_modules,
+        vec!["router".to_string()]
+    );
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob stop should succeed");
 }
 
 #[tokio::test]
