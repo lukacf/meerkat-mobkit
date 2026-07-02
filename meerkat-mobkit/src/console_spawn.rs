@@ -537,10 +537,10 @@ mod tests {
             "no kickoff may project under the reserved identity: {replay:#?}"
         );
         assert!(
-            sink.identity_labels_snapshot()
+            !sink
+                .identity_labels_snapshot()
                 .await
-                .get(crate::console_contracts::SYSTEM_EVENT_IDENTITY)
-                .is_none(),
+                .contains_key(crate::console_contracts::SYSTEM_EVENT_IDENTITY),
             "no identity metadata may register under the reserved identity"
         );
     }

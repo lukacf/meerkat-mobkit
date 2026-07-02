@@ -689,7 +689,10 @@ fn emit_timeline_events(runtime: &UnifiedRuntime, ids: &SeededIds) {
 fn access_controller(mode: &str) -> Option<AccessController> {
     let everyone = |id: &str, actions: &[&str]| AccessRule {
         id: id.to_string(),
-        actions: actions.iter().map(|action| action.to_string()).collect(),
+        actions: actions
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         ..AccessRule::default()
     };
     let mut rules = vec![
