@@ -108,6 +108,43 @@ pub enum MemoryTimelineEvent {
         session_key: String,
         cause: String,
     },
+    /// A hygiene pass produced a validated revision proposal (§8.6). The
+    /// audited apply follows as `HygieneApplied` unless the seam refuses
+    /// (e.g. the session is mid-turn).
+    HygieneProposed {
+        identity: String,
+        session_key: String,
+        cause: String,
+        ops: usize,
+        /// Active records whose evidence spans the revision touches — the
+        /// §8.6 audit flag, allowed but on the record.
+        flagged_active_records: Vec<String>,
+    },
+    /// An audited transcript revision committed (§8.6).
+    HygieneApplied {
+        identity: String,
+        session_key: String,
+        cause: String,
+        parent_revision: String,
+        revision: String,
+        ops: usize,
+        flagged_active_records: Vec<String>,
+    },
+    /// The §8.6 validator refused a revision (quarantine-referenced span,
+    /// ordering invariant unmet, malformed ranges).
+    HygieneBlocked {
+        identity: String,
+        session_key: String,
+        cause: String,
+        reason: String,
+    },
+    /// A hygiene pass was skipped (budget, no-op judgment, seam refusal).
+    HygieneSkipped {
+        identity: String,
+        session_key: String,
+        cause: String,
+        reason: String,
+    },
 }
 
 impl MemoryTimelineEvent {
@@ -126,6 +163,10 @@ impl MemoryTimelineEvent {
             Self::PromotionPendingGate { .. } => "memory.promotion.pending_gate",
             Self::HarvestCompleted { .. } => "memory.harvest.completed",
             Self::DistillationTimedOut { .. } => "memory.distill.timed_out",
+            Self::HygieneProposed { .. } => "memory.hygiene.proposed",
+            Self::HygieneApplied { .. } => "memory.hygiene.applied",
+            Self::HygieneBlocked { .. } => "memory.hygiene.blocked",
+            Self::HygieneSkipped { .. } => "memory.hygiene.skipped",
         }
     }
 
@@ -136,7 +177,11 @@ impl MemoryTimelineEvent {
         match self {
             Self::TaintTransition { identity, .. } => identity.as_deref(),
             Self::HarvestCompleted { identity, .. }
-            | Self::DistillationTimedOut { identity, .. } => Some(identity),
+            | Self::DistillationTimedOut { identity, .. }
+            | Self::HygieneProposed { identity, .. }
+            | Self::HygieneApplied { identity, .. }
+            | Self::HygieneBlocked { identity, .. }
+            | Self::HygieneSkipped { identity, .. } => Some(identity),
             _ => None,
         }
     }
@@ -263,6 +308,58 @@ impl MemoryTimelineEvent {
                 "identity": identity,
                 "session_key": session_key,
                 "cause": cause,
+            }),
+            Self::HygieneProposed {
+                identity,
+                session_key,
+                cause,
+                ops,
+                flagged_active_records,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
+                "cause": cause,
+                "ops": ops,
+                "flagged_active_records": flagged_active_records,
+            }),
+            Self::HygieneApplied {
+                identity,
+                session_key,
+                cause,
+                parent_revision,
+                revision,
+                ops,
+                flagged_active_records,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
+                "cause": cause,
+                "parent_revision": parent_revision,
+                "revision": revision,
+                "ops": ops,
+                "flagged_active_records": flagged_active_records,
+            }),
+            Self::HygieneBlocked {
+                identity,
+                session_key,
+                cause,
+                reason,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
+                "cause": cause,
+                "reason": reason,
+            }),
+            Self::HygieneSkipped {
+                identity,
+                session_key,
+                cause,
+                reason,
+            } => json!({
+                "identity": identity,
+                "session_key": session_key,
+                "cause": cause,
+                "reason": reason,
             }),
         }
     }

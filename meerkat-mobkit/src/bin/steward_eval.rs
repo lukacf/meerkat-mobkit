@@ -8,6 +8,7 @@
 //!               "trust", "status", "has_verification"?}],
 //!  "proposals": [{"proposal_id", "scope_kind", "scope_key", "title", "body"}],
 //!  "mob_context": {"mob": "...", "purpose": "..."},
+//!  "operator_routing": false,
 //!  "scripted_reply": {...consolidate JSON...},
 //!  "profile_path": "optional/path.toml"}
 //! ```
@@ -102,6 +103,10 @@ struct EvalInput {
     scripted_reply: Option<serde_json::Value>,
     #[serde(default)]
     profile_path: Option<PathBuf>,
+    /// §7.2 P4: operator-scope routing active for this fixture (mirrors
+    /// `agent_memory.operator_scope = "provisional"`).
+    #[serde(default)]
+    operator_routing: bool,
 }
 
 fn fail(code: i32, message: &str) -> ! {
@@ -133,6 +138,10 @@ fn scope_of(realm: &str, kind: &str, key: &str) -> Result<MemoryScope, String> {
         "mob" => Ok(MemoryScope::Mob {
             realm: realm.to_string(),
             mob: key.to_string(),
+        }),
+        "operator" => Ok(MemoryScope::Operator {
+            realm: realm.to_string(),
+            operator: key.to_string(),
         }),
         other => Err(format!("unsupported fixture scope kind '{other}'")),
     }
@@ -225,6 +234,11 @@ fn render_fixture_sections(input: &EvalInput, realm: &str) -> (String, String, S
     }
     if !any {
         signals.push_str("(none)\n");
+    }
+    if input.operator_routing {
+        signals.push_str("\nOPERATOR SCOPE: active (provisional keying).\n");
+    } else {
+        signals.push_str("\nOPERATOR SCOPE: inactive.\n");
     }
     let mob_context = match input.mob_context.as_ref() {
         Some(context) => format!(
@@ -365,7 +379,13 @@ async fn main() {
         }
     };
 
-    let outcome = match eval::parse_and_map_consolidate(&reply, realm, run_id, &known_ids) {
+    let outcome = match eval::parse_and_map_consolidate(
+        &reply,
+        realm,
+        run_id,
+        &known_ids,
+        input.operator_routing,
+    ) {
         Ok(outcome) => outcome,
         Err(err) => fail(
             EXIT_STEWARD_ERROR,

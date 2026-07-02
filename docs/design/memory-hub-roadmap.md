@@ -117,16 +117,21 @@ fallback. New deployments default to hub-backed memory; docs and examples flip.
    in a dedicated space MobKit queries separately (with the initiative's
    declassification gate for realm-crossing facts), or Elephant grows a sharing
    primitive. Decide before F2.
-2. **TM detection routing** (feeds the parallel LLM-TM work): conflict
-   *detection* today is purely structural — same
-   `subject::predicate[::context]::security_hash` slot with >1 claim rows; it
-   never compares values, identical values register as conflicts, and
-   same-subject different-object rel conflicts never meet in a slot
-   (`Cardinality::One` is prompt-interpolated, not enforced). Beyond making the
-   reasoner LLM-powered, detection must *route* value-level and cardinality
-   conflicts to it at all, and the reasoner gate
-   (`should_use_reasoner` requiring a deterministic `NeedsReview`) needs
-   loosening — production resolvers essentially never return it.
+2. **TM detection routing — RESOLVED (Elephant PR #25, merged 2026-07-02).**
+   The survey-era finding (detection purely structural, values never compared,
+   cross-object rel conflicts structurally invisible, reasoner effectively
+   unreachable) is fixed: detection now partitions claims by value (identical
+   values corroborate — evidence merges, no bogus supersession windows; only
+   real divergence opens conflicts), new `rel_set` slots catch cross-object
+   contradictions, and real conflicts route to an LLM adjudicator that sees
+   actual values, per-claim fact-times (ingestion timestamps deliberately
+   withheld), and rendered evidence; verdicts carry supersession dates
+   extracted from text, and predicates without semantics get LLM-proposed
+   cardinality/temporal models persisted to the registry. Proven by a
+   real-LLM e2e (two conflicting documents through the full chain, validity
+   window closing at the verdict date, not ingestion date) plus a
+   deterministic CI sibling. F1/F2's "one conflict resolver in the stack"
+   premise is now real on the hub side.
 3. **Wire-contract surface.** Which REST/MCP endpoints the provider pins
    (ingest, search, truth slots, outbox stream, staged commit), versioned and
    CI-checked on the Elephant side the way its MCP tool counts already are.

@@ -123,6 +123,14 @@ pub struct AgentMemoryConfig {
     /// §10.1 content-trust classification feeding the session taint tracker.
     #[serde(default)]
     pub content_trust: crate::memory::taint::ContentTrustConfig,
+    /// §7.2 operator-scope activation (`agent_memory.operator_scope`).
+    /// PROVISIONAL keying (§16 Q1): the enum leaves room for a final keying
+    /// mode; `provisional` keys the scope by whatever the installed
+    /// [`crate::memory::coordinator::OperatorResolver`] yields (the intended
+    /// resolver is the console auth principal). Off by default; provisional
+    /// with no resolver installed composes nothing (inert, not an error).
+    #[serde(default)]
+    pub operator_scope: AgentMemoryOperatorScope,
 }
 
 impl Default for AgentMemoryConfig {
@@ -139,8 +147,23 @@ impl Default for AgentMemoryConfig {
             llm_writes: AgentMemoryLlmWrites::Observed,
             recorder_tool: true,
             content_trust: crate::memory::taint::ContentTrustConfig::default(),
+            operator_scope: AgentMemoryOperatorScope::Off,
         }
     }
+}
+
+/// §7.2 operator-scope activation semantics. `Off` keeps the scope schema
+/// present but unpopulated (the P0 posture); `Provisional` activates
+/// composition (resolver-keyed) and steward routing under the §16 Q1
+/// provisional keying. A final keying mode gets its own variant when the
+/// open question closes — deployments on `provisional` accept that the
+/// keying may change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMemoryOperatorScope {
+    #[default]
+    Off,
+    Provisional,
 }
 
 fn default_recorder_tool() -> bool {
@@ -558,6 +581,7 @@ pub struct AgentMemoryRuntimeInjector {
     taint: Option<crate::memory::taint::SessionTaintTracker>,
     distiller: Option<Arc<crate::memory::distiller::DistillerEngine>>,
     steward: Option<Arc<crate::memory::steward::StewardEngine>>,
+    hygienist: Option<Arc<crate::memory::hygienist::HygienistEngine>>,
 }
 
 impl AgentMemoryRuntimeInjector {
@@ -567,6 +591,7 @@ impl AgentMemoryRuntimeInjector {
             taint: None,
             distiller: None,
             steward: None,
+            hygienist: None,
         }
     }
 
@@ -592,6 +617,49 @@ impl AgentMemoryRuntimeInjector {
     pub fn with_steward(mut self, steward: Arc<crate::memory::steward::StewardEngine>) -> Self {
         self.steward = Some(steward);
         self
+    }
+
+    /// Install the §7.2 provisional operator resolver on the turn-path
+    /// coordinator. Effective only with `operator_scope = "provisional"`.
+    pub fn with_operator_resolver(
+        mut self,
+        resolver: Option<Arc<dyn crate::memory::coordinator::OperatorResolver>>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_operator_resolver(resolver);
+        self
+    }
+
+    /// Attach the §8.6 Hygienist for the on-demand curation entry point.
+    pub fn with_hygienist(
+        mut self,
+        hygienist: Arc<crate::memory::hygienist::HygienistEngine>,
+    ) -> Self {
+        self.hygienist = Some(hygienist);
+        self
+    }
+
+    /// §8.6 on-demand hygiene pass over `session_key`'s transcript. Never
+    /// on a delivery path — callers treat it as an operator-initiated
+    /// background action. No-op (`Skipped`) without a wired Hygienist.
+    pub async fn hygiene_now(
+        &self,
+        identity: &AgentIdentity,
+        session_key: &str,
+    ) -> crate::memory::hygienist::HygieneOutcome {
+        match self.hygienist.as_ref() {
+            Some(hygienist) => {
+                hygienist
+                    .hygiene_now(
+                        identity.as_str(),
+                        session_key,
+                        crate::memory::hygienist::HygieneCause::OnDemand,
+                    )
+                    .await
+            }
+            None => crate::memory::hygienist::HygieneOutcome::Skipped {
+                reason: "no hygienist wired".to_string(),
+            },
+        }
     }
 
     /// Authoritative "identity is about to run in this session" hint from
@@ -732,6 +800,17 @@ impl AgentMemoryCustomizer {
             inner,
             coordinator: RecallCoordinator::new(provider, config),
         }
+    }
+
+    /// Install the §7.2 provisional operator resolver on the build-time
+    /// coordinator (the composed index and build bodies see the operator
+    /// scope through the same seam as the turn path).
+    pub fn with_operator_resolver(
+        mut self,
+        resolver: Option<Arc<dyn crate::memory::coordinator::OperatorResolver>>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_operator_resolver(resolver);
+        self
     }
 }
 

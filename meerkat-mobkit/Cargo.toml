@@ -94,6 +94,12 @@ path = "src/bin/distiller_eval.rs"
 name = "steward-eval"
 path = "src/bin/steward_eval.rs"
 
+# Calibration-harness seam for the memory Hygienist (§8.6/§11): fixture in /
+# parsed ops + §8.6 revision-validator verdict out.
+[[bin]]
+name = "hygienist-eval"
+path = "src/bin/hygienist_eval.rs"
+
 [[example]]
 name = "incident_command_center"
 path = "../examples/001-incident-command-center-pack/server.rs"

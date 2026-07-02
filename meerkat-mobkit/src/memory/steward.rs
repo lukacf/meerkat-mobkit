@@ -119,6 +119,9 @@ const MAX_PROPOSALS_PER_DREAM: usize = 32;
 const MAX_QUARANTINE_PER_DREAM: usize = 16;
 const MAX_HARVESTS_PER_DREAM: usize = 4;
 const MAX_TOMBSTONES_RENDERED: usize = 32;
+/// §7.2 P4: operator-fact candidates rendered per dream while operator
+/// routing is active.
+const MAX_OPERATOR_CANDIDATES_RENDERED: usize = 16;
 const MAX_DISTILLATES_RENDERED: usize = 8;
 
 /// Usage audit bounds (§9.2).
@@ -861,6 +864,11 @@ pub struct StewardEngine {
     mob_context: Option<Arc<dyn MobPurposeSource>>,
     budget: BackgroundBudget,
     realm: String,
+    /// §7.2 P4: operator-scope routing is active (`operator_scope =
+    /// "provisional"`). Deterministic law, not prompt guidance: with this
+    /// off, operator-targeted ops drop and operator-scope proposal accepts
+    /// downgrade to holds (the un-hold re-dream path).
+    operator_routing: bool,
     /// Sessions completed since the last dream (event-gate signal).
     signals: AtomicU64,
     run_counter: AtomicU64,
@@ -893,6 +901,7 @@ impl StewardEngine {
             mob_context: None,
             budget,
             realm: realm.into(),
+            operator_routing: false,
             signals: AtomicU64::new(0),
             run_counter: AtomicU64::new(0),
         }
@@ -916,6 +925,16 @@ impl StewardEngine {
 
     pub fn with_mob_context(mut self, source: Arc<dyn MobPurposeSource>) -> Self {
         self.mob_context = Some(source);
+        self
+    }
+
+    /// Activate §7.2 operator-scope routing (P4, `operator_scope =
+    /// "provisional"`): the op mapper accepts operator-scope creates, and
+    /// held operator-scope proposals become acceptable on this and every
+    /// later dream (the §7.2 un-hold — held verdicts re-enter each dream's
+    /// signals by construction).
+    pub fn with_operator_routing(mut self, active: bool) -> Self {
+        self.operator_routing = active;
         self
     }
 
@@ -1429,6 +1448,23 @@ impl StewardEngine {
             .map(|scope| scope.scope.clone())
             .collect();
         let manifest = self.store.manifest(&scopes, ManifestTier::Full).await?;
+        let operator_candidates: Vec<MemoryRecord> = if self.operator_routing {
+            recent
+                .iter()
+                .filter(|record| {
+                    matches!(record.scope, MemoryScope::Identity { .. })
+                        && record.status == RecordStatus::Active
+                        && record
+                            .tags
+                            .iter()
+                            .any(|tag| tag == "epistemic:operator_said")
+                })
+                .take(MAX_OPERATOR_CANDIDATES_RENDERED)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(SignalPacket {
             proposals,
             quarantine,
@@ -1437,6 +1473,7 @@ impl StewardEngine {
             distillates,
             tombstones,
             manifest,
+            operator_candidates,
         })
     }
 
@@ -1542,6 +1579,41 @@ impl StewardEngine {
                 .collect::<HashSet<_>>()
                 .len()
         ));
+        // §7.2 P4: the activation fact is rendered as data (the static
+        // prompt teaches both modes); the deterministic op mapper and the
+        // accept-verdict gate enforce it regardless of what the model does.
+        if self.operator_routing {
+            out.push_str(
+                "\nOPERATOR SCOPE: active (provisional keying). Operator-scope proposals may \
+                 be accepted; operator-fact records held at identity scope may be re-dreamed \
+                 into operator scope when a concrete operator key is in evidence (for example \
+                 a held operator-scope proposal names one) — create the operator-scope record \
+                 with derived_from citing the identity-scope source, and tombstone the source \
+                 only if it should move rather than copy.\n",
+            );
+            out.push_str(
+                "Operator-fact candidates (identity scope, tagged epistemic:operator_said):\n",
+            );
+            if signals.operator_candidates.is_empty() {
+                out.push_str("(none)\n");
+            }
+            for record in &signals.operator_candidates {
+                out.push_str(&format!(
+                    "- {} [{}] (identity '{}') {}\n",
+                    record.id,
+                    record.kind.as_str(),
+                    record.scope.key(),
+                    compact_whitespace(&record.title),
+                ));
+            }
+        } else {
+            out.push_str(
+                "\nOPERATOR SCOPE: inactive. Do not create operator-scope records or accept \
+                 operator-scope proposals (the shell holds them); keep operator facts at \
+                 identity scope tagged epistemic:operator_said — they re-dream into operator \
+                 scope when it activates.\n",
+            );
+        }
         out
     }
 
@@ -1879,7 +1951,14 @@ impl StewardEngine {
         run_id: &str,
         run: &mut DreamRun,
     ) -> (Vec<StagedOp>, HashMap<String, String>) {
-        map_consolidate_ops_impl(&self.realm, raw_ops, known_ids, run_id, run)
+        map_consolidate_ops_impl(
+            &self.realm,
+            raw_ops,
+            known_ids,
+            run_id,
+            run,
+            self.operator_routing,
+        )
     }
 }
 
@@ -1891,6 +1970,7 @@ fn map_consolidate_ops_impl(
     known_ids: &HashSet<String>,
     run_id: &str,
     run: &mut DreamRun,
+    allow_operator: bool,
 ) -> (Vec<StagedOp>, HashMap<String, String>) {
     // First pass: collect declared create ids for namespacing.
     let mut created_ids: HashMap<String, String> = HashMap::new();
@@ -1979,11 +2059,9 @@ fn map_consolidate_ops_impl(
                 let derived_from: Vec<String> =
                     raw.derived_from.iter().map(|id| resolve(id)).collect();
                 if raw.op == "create" {
-                    let Some(scope) = raw
-                        .scope
-                        .as_ref()
-                        .and_then(|scope| scope_for_realm(realm, &scope.kind, &scope.key))
-                    else {
+                    let Some(scope) = raw.scope.as_ref().and_then(|scope| {
+                        scope_for_realm(realm, &scope.kind, &scope.key, allow_operator)
+                    }) else {
                         drop_op(
                             "create op with missing/unknown scope, dropped".to_string(),
                             run,
@@ -2162,6 +2240,28 @@ impl StewardEngine {
                 continue;
             };
             match verdict.verdict.as_str() {
+                // §7.2 P4 deterministic law: with operator routing off, an
+                // accept of an operator-scope proposal downgrades to a hold
+                // — held proposals re-enter every later dream, so the
+                // proposal is re-dreamed (and becomes acceptable) when the
+                // scope activates. Never silent: recorded as a skip.
+                "accept"
+                    if matches!(proposal.scope, MemoryScope::Operator { .. })
+                        && !self.operator_routing =>
+                {
+                    run.skips.push(format!(
+                        "proposal '{}' targets operator scope while operator_scope is off;                          held for re-dream",
+                        verdict.proposal_id
+                    ));
+                    if self
+                        .store
+                        .set_proposal_status(&self.realm, &proposal.proposal_id, "held")
+                        .await
+                        .is_ok()
+                    {
+                        run.verdicts.proposals_held += 1;
+                    }
+                }
                 "accept" => {
                     let op = StagedOp::Create {
                         id: None,
@@ -2847,6 +2947,10 @@ struct SignalPacket {
     distillates: Vec<MemoryRecord>,
     tombstones: Vec<crate::memory::distiller::TombstoneMeta>,
     manifest: Vec<RecordMeta>,
+    /// §7.2 P4 re-dream surface: identity-scope operator-fact records
+    /// (tagged `epistemic:operator_said`), gathered only while operator
+    /// routing is active.
+    operator_candidates: Vec<MemoryRecord>,
 }
 
 fn render_usage_verdicts(verdicts: &[(String, String, String)]) -> String {
@@ -2892,7 +2996,12 @@ fn release_copy(record: &MemoryRecord) -> NewMemoryRecord {
     }
 }
 
-fn scope_for_realm(realm: &str, kind: &str, key: &str) -> Option<MemoryScope> {
+fn scope_for_realm(
+    realm: &str,
+    kind: &str,
+    key: &str,
+    allow_operator: bool,
+) -> Option<MemoryScope> {
     match kind {
         "identity" => Some(MemoryScope::Identity {
             realm: realm.to_string(),
@@ -2902,8 +3011,15 @@ fn scope_for_realm(realm: &str, kind: &str, key: &str) -> Option<MemoryScope> {
             realm: realm.to_string(),
             mob: key.to_string(),
         }),
-        // Operator-scope routing stays HELD until P4 (§7.2): the dream may
-        // not create operator-scope records at all.
+        // §7.2 P4: operator-scope routing activates with
+        // `agent_memory.operator_scope = "provisional"`; before activation
+        // operator-targeted ops stay held — the dream may not create
+        // operator-scope records at all. The scope is keyed with the batch
+        // realm by construction (realm confinement stays validator law).
+        "operator" if allow_operator && !key.trim().is_empty() => Some(MemoryScope::Operator {
+            realm: realm.to_string(),
+            operator: key.to_string(),
+        }),
         _ => None,
     }
 }
@@ -2990,11 +3106,18 @@ pub mod eval {
         realm: &str,
         run_id: &str,
         known_ids: &HashSet<String>,
+        allow_operator: bool,
     ) -> Result<EvalConsolidateOutcome, String> {
         let parsed: ConsolidateReply = parse_object(reply)?;
         let mut run = DreamRun::default();
-        let (ops, _created) =
-            map_consolidate_ops_impl(realm, parsed.ops, known_ids, run_id, &mut run);
+        let (ops, _created) = map_consolidate_ops_impl(
+            realm,
+            parsed.ops,
+            known_ids,
+            run_id,
+            &mut run,
+            allow_operator,
+        );
         Ok(EvalConsolidateOutcome {
             ops,
             proposal_verdicts: parsed
@@ -4266,5 +4389,233 @@ mod tests {
         assert_eq!(harvests.len(), 1);
         assert_eq!(harvests[0].identity, "identity:gone");
         assert_eq!(harvests[0].cause, "delete");
+    }
+
+    // -- §7.2 P4 operator-scope routing --------------------------------------
+
+    fn operator_scope() -> MemoryScope {
+        MemoryScope::Operator {
+            realm: REALM.to_string(),
+            operator: "op:luka".to_string(),
+        }
+    }
+
+    /// The same fixture with §7.2 operator routing activated.
+    fn build_operator_fixture(replies: Vec<String>, pending_ids: Vec<&str>) -> Fixture {
+        let mut fixture = build_fixture(replies, pending_ids);
+        let engine = Arc::into_inner(fixture.engine).expect("sole engine handle");
+        fixture.engine = Arc::new(engine.with_operator_routing(true));
+        fixture
+    }
+
+    #[test]
+    fn scope_for_realm_gates_operator_routing() {
+        assert_eq!(scope_for_realm(REALM, "operator", "op:luka", false), None);
+        assert_eq!(
+            scope_for_realm(REALM, "operator", "op:luka", true),
+            Some(operator_scope())
+        );
+        // Empty keys never route; identity/mob are unaffected by the flag.
+        assert_eq!(scope_for_realm(REALM, "operator", "  ", true), None);
+        assert!(scope_for_realm(REALM, "identity", "identity:a", false).is_some());
+        assert!(scope_for_realm(REALM, "mob", "mob:home", false).is_some());
+    }
+
+    #[test]
+    fn consolidate_op_mapper_holds_operator_creates_until_activation() {
+        let raw = || {
+            vec![RawStewardOp {
+                op: "create".to_string(),
+                id: Some("op-fact".to_string()),
+                prior: None,
+                scope: Some(RawScope {
+                    kind: "operator".to_string(),
+                    key: "op:luka".to_string(),
+                }),
+                kind: Some("preference".to_string()),
+                title: "Operator prefers terse updates".to_string(),
+                description: "Matters when reporting to the operator.".to_string(),
+                body: "Keep updates short.".to_string(),
+                tags: Vec::new(),
+                trust: None,
+                derived_from: Vec::new(),
+                rationale: None,
+            }]
+        };
+        let known = HashSet::new();
+        let mut run = DreamRun::default();
+        let (ops, _) = map_consolidate_ops_impl(REALM, raw(), &known, "run-1", &mut run, false);
+        assert!(ops.is_empty(), "inactive routing must drop the op");
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains("missing/unknown scope")),
+            "{:?}",
+            run.skips
+        );
+        let mut run = DreamRun::default();
+        let (ops, _) = map_consolidate_ops_impl(REALM, raw(), &known, "run-1", &mut run, true);
+        assert_eq!(ops.len(), 1, "{:?}", run.skips);
+        assert!(matches!(
+            &ops[0],
+            StagedOp::Create { scope, .. } if *scope == operator_scope()
+        ));
+    }
+
+    /// §7.2 un-hold: an operator-scope proposal accepted by the dream while
+    /// routing is OFF downgrades to a hold (deterministic law) and stays in
+    /// the pending queue; the SAME store re-dreamed with routing ON commits
+    /// it into operator scope.
+    #[tokio::test]
+    async fn operator_proposal_accept_holds_then_commits_on_activation() {
+        let accept_reply = |proposal_id: &str| {
+            json_reply(serde_json::json!({
+                "ops": [], "quarantine_verdicts": [], "open_loop_escalations": [],
+                "contradictions": [], "working_set": [],
+                "proposal_verdicts": [
+                    {"proposal_id": proposal_id, "verdict": "accept",
+                     "rationale": "operator preference, cross-identity"}
+                ]
+            }))
+        };
+
+        // Phase 1: routing OFF — the accept is downgraded to a hold.
+        let fixture = build_fixture(vec![empty_gather(), "SLOT".to_string()], vec![]);
+        let proposal_id = fixture
+            .store
+            .propose(
+                &operator_scope(),
+                new_record("Terse updates", "operator said: keep updates short"),
+                MemoryAuthor::Agent {
+                    identity: "identity:worker".to_string(),
+                },
+            )
+            .await
+            .expect("propose to operator scope");
+        {
+            let mut replies = fixture.llm.replies.lock().unwrap();
+            *replies.iter_mut().find(|r| r.as_str() == "SLOT").unwrap() =
+                accept_reply(&proposal_id);
+        }
+        fixture.engine.note_session_completed();
+        let outcome = fixture.engine.dream_now().await;
+        let DreamOutcome::Completed(run) = outcome else {
+            panic!("dream must complete: {outcome:?}");
+        };
+        assert_eq!(run.verdicts.proposals_held, 1, "{:?}", run.skips);
+        assert_eq!(run.verdicts.proposals_accepted, 0);
+        assert!(
+            run.skips
+                .iter()
+                .any(|skip| skip.contains("operator scope while operator_scope is off")),
+            "{:?}",
+            run.skips
+        );
+        let manifest = fixture
+            .store
+            .manifest(&[operator_scope()], ManifestTier::Full)
+            .await
+            .expect("manifest");
+        assert!(manifest.is_empty(), "nothing may land in operator scope");
+        // The held proposal stays re-dream eligible (§7.2 un-hold).
+        let pending = fixture
+            .store
+            .pending_proposals(REALM, 8)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].status, "held");
+
+        // Phase 2: routing ON over the same store — the re-dream commits.
+        let llm = Arc::new(ScriptedLlm::new(vec![
+            empty_gather(),
+            accept_reply(&proposal_id),
+        ]));
+        let engine = Arc::new(
+            StewardEngine::new(
+                StewardProfile::embedded_default(),
+                StewardConfig {
+                    enabled: true,
+                    min_signals: 1,
+                    ..StewardConfig::default()
+                },
+                Arc::new(ScriptedHandle {
+                    client: llm.clone(),
+                }),
+                fixture.store.clone(),
+                Arc::new(ScriptedTranscripts::new()),
+                REALM,
+            )
+            .with_operator_routing(true),
+        );
+        engine.note_session_completed();
+        let outcome = engine.dream_now().await;
+        let DreamOutcome::Completed(run) = outcome else {
+            panic!("re-dream must complete: {outcome:?}");
+        };
+        assert_eq!(run.verdicts.proposals_accepted, 1, "{:?}", run.skips);
+        let manifest = fixture
+            .store
+            .manifest(&[operator_scope()], ManifestTier::Full)
+            .await
+            .expect("manifest");
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].title, "Terse updates");
+    }
+
+    /// The prompt renders the activation fact as data, and operator-fact
+    /// candidates (identity scope, tagged epistemic:operator_said) surface
+    /// only while routing is active.
+    #[tokio::test]
+    async fn operator_candidates_render_only_when_active() {
+        let seed_tagged = |store: Arc<SqliteAgentMemoryStore>| async move {
+            let mut record = new_record("Operator wants EU clusters", "operator said: eu-west");
+            record.tags = vec!["epistemic:operator_said".to_string()];
+            let batch = StagedMutationBatch {
+                realm: REALM.to_string(),
+                author: MemoryAuthor::Application,
+                ops: vec![StagedOp::Create {
+                    id: Some("mem-opfact".to_string()),
+                    scope: identity_scope("identity:worker"),
+                    record,
+                    trust: TrustTier::AgentObserved,
+                    derived_from: Vec::new(),
+                    rationale: None,
+                    created_at_ms: None,
+                    updated_at_ms: None,
+                }],
+            };
+            let token = store.stage(batch).await.expect("stage");
+            store.commit(token).await.expect("commit");
+        };
+
+        let fixture = build_operator_fixture(vec![empty_gather(), empty_consolidate()], vec![]);
+        seed_tagged(fixture.store.clone()).await;
+        fixture.engine.note_session_completed();
+        let DreamOutcome::Completed(_) = fixture.engine.dream_now().await else {
+            panic!("dream must complete");
+        };
+        let prompts = fixture.llm.prompts();
+        let consolidate_prompt = prompts.last().expect("consolidate prompt");
+        assert!(consolidate_prompt.contains("OPERATOR SCOPE: active"));
+        assert!(consolidate_prompt.contains("Operator-fact candidates"));
+        assert!(
+            consolidate_prompt.contains("- mem-opfact [fact]"),
+            "{consolidate_prompt}"
+        );
+
+        let fixture = build_fixture(vec![empty_gather(), empty_consolidate()], vec![]);
+        seed_tagged(fixture.store.clone()).await;
+        fixture.engine.note_session_completed();
+        let DreamOutcome::Completed(_) = fixture.engine.dream_now().await else {
+            panic!("dream must complete");
+        };
+        let prompts = fixture.llm.prompts();
+        let consolidate_prompt = prompts.last().expect("consolidate prompt");
+        assert!(consolidate_prompt.contains("OPERATOR SCOPE: inactive"));
+        // The record still shows in the store overview/manifest (it IS an
+        // active record); only the candidates re-dream section is absent.
+        assert!(!consolidate_prompt.contains("Operator-fact candidates"));
+        assert!(!consolidate_prompt.contains("- mem-opfact [fact]"));
     }
 }

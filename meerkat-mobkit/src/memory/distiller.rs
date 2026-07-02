@@ -1005,6 +1005,34 @@ pub enum DistillOutcome {
     },
 }
 
+/// Compaction-skip reasons that mean "there was nothing to harvest", not
+/// "the harvest failed" — shared with the §8.6 ordering check so the
+/// strings cannot drift apart.
+pub(crate) const SKIP_NO_DISCARD_SOURCE: &str = "no compaction discard source wired";
+pub(crate) const SKIP_NO_DISCARDS: &str = "no compaction discards to harvest";
+
+impl DistillOutcome {
+    /// §8.6 ordering invariant input: whether a compaction-cause run left
+    /// the boundary's evidence harvested (completed) or provably empty
+    /// (nothing to harvest). Budget denials, read failures, and extraction
+    /// failures are NOT satisfied — hygiene must not discard material the
+    /// distiller never saw.
+    pub fn compaction_harvest_satisfied(&self) -> bool {
+        match self {
+            Self::Completed { .. } => true,
+            Self::Skipped { reason } => {
+                reason == SKIP_NO_DISCARDS || reason == SKIP_NO_DISCARD_SOURCE
+            }
+        }
+    }
+}
+
+/// Post-compaction follow-up hook (§8.6 trigger sequencing): invoked with
+/// `(identity, session_key, outcome)` after every compaction-cause
+/// distillation attempt, on the same detached task — so a wired Hygienist
+/// runs strictly AFTER the distiller's harvest for that boundary.
+pub type CompactionFollowUp = Arc<dyn Fn(&str, &str, &DistillOutcome) + Send + Sync>;
+
 pub struct DistillerEngine {
     profile: DistillerProfile,
     config: DistillerConfig,
@@ -1023,6 +1051,9 @@ pub struct DistillerEngine {
     /// Test-only override for the pre-rotation timeout.
     pre_rotation_timeout: Duration,
     run_counter: std::sync::atomic::AtomicU64,
+    /// §8.6 trigger sequencing: the Hygienist's post-compaction pass runs
+    /// through this hook, strictly after the harvest attempt.
+    compaction_follow_up: Mutex<Option<CompactionFollowUp>>,
 }
 
 impl DistillerEngine {
@@ -1058,6 +1089,7 @@ impl DistillerEngine {
             windows: Mutex::new(HashMap::new()),
             pre_rotation_timeout: PRE_ROTATION_TIMEOUT,
             run_counter: std::sync::atomic::AtomicU64::new(0),
+            compaction_follow_up: Mutex::new(None),
         }
     }
 
@@ -1076,6 +1108,27 @@ impl DistillerEngine {
 
     pub fn pre_rotation_timeout(&self) -> Duration {
         self.pre_rotation_timeout
+    }
+
+    /// Wire the §8.6 post-compaction follow-up (the Hygienist). Invoked
+    /// after every compaction-cause distillation attempt with its outcome.
+    pub fn set_compaction_follow_up(&self, hook: CompactionFollowUp) {
+        *self
+            .compaction_follow_up
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(hook);
+    }
+
+    /// Transcript index up to which interaction/rotation distillation has
+    /// run for `(identity, session_key)` (§8.4 window cursor). 0 when the
+    /// window was never distilled. Read-only: never creates window state.
+    pub fn distilled_cursor(&self, identity: &str, session_key: &str) -> u64 {
+        self.windows
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&(identity.to_string(), session_key.to_string()))
+            .map(|state| state.cursor)
+            .unwrap_or(0)
     }
 
     fn with_window<T>(
@@ -1168,6 +1221,16 @@ impl DistillerEngine {
         self.with_window(identity, session_key, |state| {
             state.in_flight = false;
         });
+        if cause == DistillCause::Compaction {
+            let follow_up = self
+                .compaction_follow_up
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
+            if let Some(follow_up) = follow_up {
+                follow_up(identity, session_key, &outcome);
+            }
+        }
         match &outcome {
             DistillOutcome::Skipped { reason } => {
                 tracing::debug!(
@@ -1214,7 +1277,7 @@ impl DistillerEngine {
             DistillCause::Compaction => {
                 let Some(compaction) = self.compaction.as_ref() else {
                     return DistillOutcome::Skipped {
-                        reason: "no compaction discard source wired".to_string(),
+                        reason: SKIP_NO_DISCARD_SOURCE.to_string(),
                     };
                 };
                 let entries = match compaction
@@ -1236,7 +1299,7 @@ impl DistillerEngine {
                 };
                 if entries.is_empty() {
                     return DistillOutcome::Skipped {
-                        reason: "no compaction discards to harvest".to_string(),
+                        reason: SKIP_NO_DISCARDS.to_string(),
                     };
                 }
                 let range = discard_evidence_range(&entries);
@@ -2413,5 +2476,84 @@ mod tests {
             .with_model_override("claude-haiku-4-5")
             .expect("catalog model accepted");
         assert_eq!(overridden.model, "claude-haiku-4-5");
+    }
+
+    // -- §8.6 seams: harvest classification, follow-up hook, cursor ----------
+
+    #[test]
+    fn compaction_harvest_satisfaction_classifies_skip_reasons() {
+        assert!(
+            DistillOutcome::Completed {
+                run_id: "r".to_string(),
+                written: 0,
+                quarantined: 0,
+            }
+            .compaction_harvest_satisfied()
+        );
+        assert!(
+            DistillOutcome::Skipped {
+                reason: SKIP_NO_DISCARDS.to_string(),
+            }
+            .compaction_harvest_satisfied()
+        );
+        assert!(
+            DistillOutcome::Skipped {
+                reason: SKIP_NO_DISCARD_SOURCE.to_string(),
+            }
+            .compaction_harvest_satisfied()
+        );
+        for reason in [
+            "budget denied: window budget exhausted (2/2 runs)",
+            "compaction harvest failed: io",
+            "extraction failed: parse",
+        ] {
+            assert!(
+                !DistillOutcome::Skipped {
+                    reason: reason.to_string(),
+                }
+                .compaction_harvest_satisfied(),
+                "{reason}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_follow_up_fires_with_outcome_and_cursor_is_readable() {
+        let provider = Arc::new(CapturingProvider::default());
+        // No compaction source wired ⇒ the run skips with the benign
+        // "nothing to harvest" reason, and the follow-up still fires.
+        let (engine, _client) = engine_with(
+            vec![NOOP_REPLY],
+            provider,
+            Some(slice(&[("user", "hello")])),
+            Vec::new(),
+            None,
+            enabled_config(),
+        );
+        let seen: Arc<StdMutex<Vec<(String, String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sink = seen.clone();
+        engine.set_compaction_follow_up(Arc::new(move |identity, session, outcome| {
+            sink.lock().unwrap_or_else(|err| err.into_inner()).push((
+                identity.to_string(),
+                session.to_string(),
+                outcome.compaction_harvest_satisfied(),
+            ));
+        }));
+        engine
+            .distill_now("identity:a", "sess-1", DistillCause::Compaction)
+            .await;
+        // Non-compaction causes never fire the hook.
+        engine
+            .distill_now("identity:a", "sess-1", DistillCause::Interactions)
+            .await;
+        let seen = seen.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        assert_eq!(
+            seen,
+            vec![("identity:a".to_string(), "sess-1".to_string(), true)]
+        );
+        // The §8.4 window cursor is readable without creating state.
+        assert_eq!(engine.distilled_cursor("identity:never", "sess-x"), 0);
+        engine.with_window("identity:a", "sess-1", |state| state.cursor = 7);
+        assert_eq!(engine.distilled_cursor("identity:a", "sess-1"), 7);
     }
 }

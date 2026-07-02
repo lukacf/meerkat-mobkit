@@ -21,10 +21,10 @@ use rand_core::{OsRng, RngCore};
 
 use crate::identity_first::AgentIdentity;
 use crate::identity_first::agent_memory::{
-    AgentMemoryConfig, AgentMemoryError, AgentMemoryPerTurnInjection, AgentMemoryProvider,
-    AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
-    AgentMemorySelection, compact_whitespace, escape_attr, escape_xml_text, normalize_config,
-    terms_from_value, truncate_utf8_boundary,
+    AgentMemoryConfig, AgentMemoryError, AgentMemoryOperatorScope, AgentMemoryPerTurnInjection,
+    AgentMemoryProvider, AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest,
+    AgentMemoryRecord, AgentMemorySelection, compact_whitespace, escape_attr, escape_xml_text,
+    normalize_config, terms_from_value, truncate_utf8_boundary,
 };
 use crate::memory::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryScope, RecordMeta, UsageEvent,
@@ -83,9 +83,11 @@ pub struct ScopeBudget {
     pub budget_bytes: usize,
 }
 
-/// The identity's readable scope set (§7.2): Identity ∪ Realm today. Mob and
-/// Operator scopes join in P3/P4 — callers treat the result as an opaque
-/// ordered set, so nothing changes structurally when they arrive.
+/// The identity's readable scope set (§7.2): Identity ∪ Realm today. Mob
+/// scope joins recall composition when identity→mob binding lands; Operator
+/// joins through [`compose_identity_scope_set_with_operator`] (P4) — callers
+/// treat the result as an opaque ordered set, so nothing changes
+/// structurally when scopes arrive.
 pub fn compose_identity_scope_set(realm: &str, identity: &AgentIdentity) -> Vec<MemoryScope> {
     vec![
         MemoryScope::Identity {
@@ -96,6 +98,50 @@ pub fn compose_identity_scope_set(realm: &str, identity: &AgentIdentity) -> Vec<
             realm: realm.to_string(),
         },
     ]
+}
+
+/// §7.2 composition with an active operator: `Identity ∪ Operator ∪ Realm`,
+/// operator between private and shared (render order follows scope weight).
+/// Same-realm only by construction — the operator scope is keyed with the
+/// composing realm, never a foreign one (realm confinement is also §7.2
+/// validator law on the write side).
+pub fn compose_identity_scope_set_with_operator(
+    realm: &str,
+    identity: &AgentIdentity,
+    operator: Option<&str>,
+) -> Vec<MemoryScope> {
+    let mut scopes = compose_identity_scope_set(realm, identity);
+    if let Some(operator) = operator {
+        let operator = operator.trim();
+        if !operator.is_empty() {
+            scopes.insert(
+                1,
+                MemoryScope::Operator {
+                    realm: realm.to_string(),
+                    operator: operator.to_string(),
+                },
+            );
+        }
+    }
+    scopes
+}
+
+/// §7.2 / §16 Q1 — PROVISIONAL operator keying seam.
+///
+/// `OperatorId` keying is an explicitly open question (§16 Q1); the
+/// provisional answer is "the console auth principal", resolved through this
+/// trait so the keying decision stays swappable. Deployments activate the
+/// scope with `agent_memory.operator_scope = "provisional"`; without a
+/// resolver installed the scope stays **inert** (composition is unchanged),
+/// so activation is always config AND resolver, never config alone. The
+/// console-auth-principal implementation is one line of wiring where the
+/// console principal is known; this module only defines the seam.
+pub trait OperatorResolver: Send + Sync {
+    /// The active operator for `identity`'s turns in `realm`, or `None`
+    /// when no operator is resolvable right now. Implementations must key
+    /// within the given realm only — cross-realm operator profiles are
+    /// explicitly future work (§7.2).
+    fn active_operator(&self, realm: &str, identity: &str) -> Option<String>;
 }
 
 /// Render-order weight of a scope inside a shared budget. Private working
@@ -202,6 +248,10 @@ pub struct RecallCoordinator {
     // Escalation results keyed by session key. Same wholesale-clear bound
     // as session_state; a cleared entry just costs one re-escalation.
     sweeps: Arc<Mutex<HashMap<String, SweepState>>>,
+    // §7.2 operator scope (P4): consulted per composition when
+    // `operator_scope = provisional`. None (the default) keeps the scope
+    // inert regardless of config.
+    operator_resolver: Option<Arc<dyn OperatorResolver>>,
 }
 
 impl RecallCoordinator {
@@ -213,6 +263,7 @@ impl RecallCoordinator {
             nonces: Arc::new(Mutex::new(HashMap::new())),
             selector: crate::memory::selector::installed(),
             sweeps: Arc::new(Mutex::new(HashMap::new())),
+            operator_resolver: None,
         }
     }
 
@@ -221,6 +272,28 @@ impl RecallCoordinator {
     pub fn with_selector(mut self, selector: Option<Arc<SelectorRuntime>>) -> Self {
         self.selector = selector;
         self
+    }
+
+    /// Install the §7.2 provisional operator resolver. Effective only when
+    /// the config also opts in (`operator_scope = "provisional"`); either
+    /// half alone leaves composition unchanged.
+    pub fn with_operator_resolver(mut self, resolver: Option<Arc<dyn OperatorResolver>>) -> Self {
+        self.operator_resolver = resolver;
+        self
+    }
+
+    /// The identity's composed readable scope set for this assembly (§7.2):
+    /// `Identity ∪ Operator(provisional, resolver-yielded) ∪ Realm`.
+    fn scope_set(&self, identity: &AgentIdentity) -> Vec<MemoryScope> {
+        let operator = match self.config.operator_scope {
+            AgentMemoryOperatorScope::Off => None,
+            AgentMemoryOperatorScope::Provisional => {
+                self.operator_resolver.as_ref().and_then(|resolver| {
+                    resolver.active_operator(&self.config.realm, identity.as_str())
+                })
+            }
+        };
+        compose_identity_scope_set_with_operator(&self.config.realm, identity, operator.as_deref())
     }
 
     pub fn provider(&self) -> Arc<dyn AgentMemoryProvider> {
@@ -390,7 +463,7 @@ impl RecallCoordinator {
         if turn_text.is_empty() || !self.provider.supports_manifest() {
             return Ok(None);
         }
-        let scopes = compose_identity_scope_set(&self.config.realm, identity);
+        let scopes = self.scope_set(identity);
         let suppressed = skip_ids.cloned().unwrap_or_default();
         let ready_sweep = session_key
             .map(|key| self.take_ready_sweep(key))
@@ -509,7 +582,7 @@ impl RecallCoordinator {
             state.in_flight = true;
         }
         let provider = self.provider.clone();
-        let scopes = compose_identity_scope_set(&self.config.realm, identity);
+        let scopes = self.scope_set(identity);
         let turn_text = turn_text.to_string();
         let suppressed = suppressed.clone();
         let sweeps = Arc::clone(&self.sweeps);
@@ -626,7 +699,7 @@ impl RecallCoordinator {
         &self,
         identity: &AgentIdentity,
     ) -> Result<Option<String>, AgentMemoryError> {
-        let scopes = compose_identity_scope_set(&self.config.realm, identity);
+        let scopes = self.scope_set(identity);
         let budgets = compose_scope_budgets(&scopes, BUILD_INDEX_BUDGET_BYTES);
         let mut sections = Vec::new();
         for ScopeBudget {
@@ -1375,6 +1448,120 @@ mod tests {
         assert!(budgets[1].budget_bytes >= budgets[2].budget_bytes);
 
         assert!(compose_scope_budgets(&[], 1000).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn operator_scope_composes_between_identity_and_realm() -> Result<(), Box<dyn Error>> {
+        let id = identity()?;
+        let scopes = compose_identity_scope_set_with_operator("family", &id, Some("op:luka"));
+        assert_eq!(
+            scopes,
+            vec![
+                MemoryScope::Identity {
+                    realm: "family".to_string(),
+                    identity: "identity:luka".to_string(),
+                },
+                MemoryScope::Operator {
+                    realm: "family".to_string(),
+                    operator: "op:luka".to_string(),
+                },
+                MemoryScope::Realm {
+                    realm: "family".to_string(),
+                },
+            ]
+        );
+        // Same-realm confinement by construction: the operator scope is
+        // keyed with the composing realm.
+        assert!(scopes.iter().all(|scope| scope.realm() == "family"));
+        // No operator (or a blank one) leaves composition unchanged.
+        assert_eq!(
+            compose_identity_scope_set_with_operator("family", &id, None),
+            compose_identity_scope_set("family", &id)
+        );
+        assert_eq!(
+            compose_identity_scope_set_with_operator("family", &id, Some("  ")),
+            compose_identity_scope_set("family", &id)
+        );
+        // The operator scope gets a real, non-zero sub-budget slice.
+        let scopes = compose_identity_scope_set_with_operator("family", &id, Some("op:luka"));
+        let budgets = compose_scope_budgets(&scopes, BUILD_INDEX_BUDGET_BYTES);
+        assert_eq!(budgets.len(), 3);
+        assert!(budgets[1].budget_bytes > 0, "{budgets:?}");
+        assert!(budgets[0].budget_bytes > budgets[1].budget_bytes);
+        assert_eq!(
+            budgets.iter().map(|b| b.budget_bytes).sum::<usize>(),
+            BUILD_INDEX_BUDGET_BYTES
+        );
+        Ok(())
+    }
+
+    struct FixedOperator(&'static str);
+
+    impl OperatorResolver for FixedOperator {
+        fn active_operator(&self, realm: &str, _identity: &str) -> Option<String> {
+            // Same-realm law: a resolver keyed for another realm yields
+            // nothing — composition stays confined by construction.
+            (realm == "family").then(|| self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn coordinator_scope_set_activation_matrix() -> Result<(), Box<dyn Error>> {
+        let id = identity()?;
+        let provider = Arc::new(FakeProvider::with_manifest(vec![], vec![], vec![]));
+        let config = |scope: AgentMemoryOperatorScope| AgentMemoryConfig {
+            realm: "family".to_string(),
+            operator_scope: scope,
+            ..AgentMemoryConfig::default()
+        };
+        let operator = MemoryScope::Operator {
+            realm: "family".to_string(),
+            operator: "op:luka".to_string(),
+        };
+
+        // provisional + resolver ⇒ operator scope joins.
+        let coordinator = RecallCoordinator::new(
+            provider.clone(),
+            config(AgentMemoryOperatorScope::Provisional),
+        )
+        .with_operator_resolver(Some(Arc::new(FixedOperator("op:luka"))));
+        assert!(coordinator.scope_set(&id).contains(&operator));
+
+        // provisional + NO resolver ⇒ inert (the scope's activation is
+        // config AND resolver, never config alone).
+        let coordinator = RecallCoordinator::new(
+            provider.clone(),
+            config(AgentMemoryOperatorScope::Provisional),
+        );
+        assert_eq!(
+            coordinator.scope_set(&id),
+            compose_identity_scope_set("family", &id)
+        );
+
+        // off + resolver ⇒ inert (the resolver alone activates nothing).
+        let coordinator =
+            RecallCoordinator::new(provider.clone(), config(AgentMemoryOperatorScope::Off))
+                .with_operator_resolver(Some(Arc::new(FixedOperator("op:luka"))));
+        assert_eq!(
+            coordinator.scope_set(&id),
+            compose_identity_scope_set("family", &id)
+        );
+
+        // provisional + resolver that yields nothing for this realm ⇒ inert.
+        let coordinator = RecallCoordinator::new(
+            provider,
+            AgentMemoryConfig {
+                realm: "other".to_string(),
+                operator_scope: AgentMemoryOperatorScope::Provisional,
+                ..AgentMemoryConfig::default()
+            },
+        )
+        .with_operator_resolver(Some(Arc::new(FixedOperator("op:luka"))));
+        assert_eq!(
+            coordinator.scope_set(&id),
+            compose_identity_scope_set("other", &id)
+        );
         Ok(())
     }
 

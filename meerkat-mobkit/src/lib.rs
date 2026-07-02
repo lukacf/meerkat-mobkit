@@ -111,18 +111,20 @@ pub use http_sse::{
 };
 pub use identity_first::{
     AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryLlmWrites,
-    AgentMemoryPerTurnInjection, AgentMemoryProvider, AgentMemoryRecallFailurePolicy,
-    AgentMemoryRecallRequest, AgentMemoryRecord, AgentMemoryRuntimeInjector, AgentMemorySelection,
-    AuthoredWriteReceipt, MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
+    AgentMemoryOperatorScope, AgentMemoryPerTurnInjection, AgentMemoryProvider,
+    AgentMemoryRecallFailurePolicy, AgentMemoryRecallRequest, AgentMemoryRecord,
+    AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
+    MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use memory::{
     ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine, DreamOutcome, DreamRun,
-    ManifestTier, MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge,
-    MemoryKind, MemoryRecord, MemoryScope, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
-    PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver, SessionTaintTracker,
-    SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp, StewardConfig,
-    StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard, TrustTier,
-    spawn_member_event_observer, spawn_taint_observer,
+    HygieneCause, HygieneOutcome, HygienistConfig, HygienistEngine, ManifestTier,
+    MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge, MemoryKind,
+    MemoryRecord, MemoryScope, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
+    OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
+    SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
+    StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,
+    TrustTier, spawn_member_event_observer, spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,

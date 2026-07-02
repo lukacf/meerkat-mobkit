@@ -219,7 +219,14 @@ skills.
 **Adopt from Elephant** (as discipline, not dependency — §12): staged artifact
 commit (LLM output is never written directly; it stages, validates, then commits
 atomically); provenance on every record including extractor model + prompt id;
-per-principal visibility patterns for shared stores.
+per-principal visibility patterns for shared stores. (Status note, 2026-07-02:
+Elephant's truth maintenance is now LLM-powered — value-partitioned detection,
+`rel_set` cross-object slots, adjudication over fact-times with ingestion
+timestamps withheld; see the roadmap §4.2. Two of its calibration lessons are
+imported here: recency judgments should prefer *fact-time over capture-time*
+where evidence carries one — a steward-prompt refinement with a fixture behind
+it — and its golden-case harness caught two prompt regressions during its own
+development, which is §11's thesis validated independently.)
 
 ---
 
@@ -368,6 +375,25 @@ instructions (§10).
 Write authority differs by scope: identities write their own scope freely
 (subject to trust-tier rules); **Mob and Operator scope writes are proposals**
 that the steward commits (§8.5). Realm scope is application/SDK-only.
+
+> **P4 as-built (operator scope).** Activation is
+> `agent_memory.operator_scope = "off" | "provisional"` — the value name
+> says PROVISIONAL on purpose (§16 Q1 stays open; the enum leaves room for a
+> final keying). Recall composition activates on config **and** an
+> `OperatorResolver` (the §16 Q1 provisional keying: the console auth
+> principal, resolved through a trait seam so the keying stays swappable;
+> the console-principal implementation is one line of glue where console
+> auth lives). Steward routing activates on the config knob alone, because
+> operator-scope *proposals carry their own operator key*. The un-hold
+> ships as specified for proposals: pre-activation, an accept verdict on an
+> operator-scope proposal is deterministically downgraded to a hold, and
+> held proposals re-enter every dream — so activation makes the next dream
+> the re-dream. One honesty note: identity-scope operator-fact records
+> (tagged `epistemic:operator_said`) surface to the active dream as
+> re-dream candidates, but the steward has no realm-level operator registry
+> under provisional keying, so it may only route them to an operator key
+> already in evidence (e.g. named by a held operator-scope proposal) —
+> never invent one.
 
 ### 7.3 Provider trait v2 and the bundled store
 
@@ -732,6 +758,31 @@ semantically pristine.
 
 Phase-wise this ships last (§15); it is the highest-risk stage and depends on
 calibration infrastructure being real first.
+
+> **P4 as-built (Hygienist).** The apply seam is real: meerkat 0.7.9's
+> `PersistentSessionService` implements `SessionServiceTranscriptEditExt`,
+> and the gateway threads the concrete typed handle to the Hygienist
+> (`memory/hygienist.rs`; the erased mob-layer session service does not
+> carry the edit extension). Two deliberate narrowings against the text
+> above, both structural safety: (1) the curation vocabulary is
+> `prune_tool_results` (stub tool-result payloads in place, preserving the
+> tool_use/tool_result pairing provider APIs require) and `collapse`
+> (replace a contiguous non-tool run with one typed system notice) —
+> free-form message deletion is not expressible, and role legality is
+> validator law, not prompt guidance; (2) the proposal is a stage-local
+> `RevisionProposal` through its own §8.6 validator rather than a literal
+> `StagedMutationBatch` (the store validator's ops don't model transcript
+> ranges), with the same shape: LLM output is never applied without
+> deterministic validation, and the commit is meerkat's audited revision.
+> Ordering: the post-compaction pass is sequenced via the distiller's
+> compaction follow-up hook (it runs only after the harvest attempt, and
+> only when the harvest completed or was provably empty — budget-denied or
+> failed harvests withhold hygiene loudly); on-demand passes consult the
+> distiller's window cursor and refuse ranges beyond it. Mid-turn sessions
+> are refused by meerkat's `TranscriptEditRunningBehavior::Reject` default.
+> Known gap (upstream-asks.md, ask 4 refinement): no service-level
+> head-revision read exists, so rewrites send `expected_parent_revision:
+> None` and §7.1 revision pinning stays `None` at capture time.
 
 ---
 
@@ -1107,7 +1158,11 @@ initiative scope; hub work is the roadmap's.
   ranking; console Memory panel + timeline events; the §10.3 action additions.
 - **P4 — Operator scope + Hygienist.** Operator profiles (realm-keyed; once
   `OperatorId` keying is settled); transcript-revision curation at compaction
-  boundaries with the span-reference validator rules.
+  boundaries with the span-reference validator rules. *Status: shipped under
+  the §16 Q1 provisional keying (`operator_scope = "provisional"`, resolver
+  seam for the console auth principal) — see the §7.2 and §8.6 as-built
+  notes for the precise activation semantics and the two deliberate
+  Hygienist narrowings.*
 
 Definition of done for the initiative: an identity in a mob accumulates,
 consolidates, and recalls memory across respawns with zero external services;

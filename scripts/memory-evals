@@ -72,9 +72,10 @@ PROFILES_DIR = EVALS_DIR / "profiles"
 SELECTOR_FIXTURES_DIR = EVALS_DIR / "fixtures" / "selector"
 DISTILLER_FIXTURES_DIR = EVALS_DIR / "fixtures" / "distiller"
 STEWARD_FIXTURES_DIR = EVALS_DIR / "fixtures" / "steward"
+HYGIENIST_FIXTURES_DIR = EVALS_DIR / "fixtures" / "hygienist"
 INVARIANT_FIXTURES_DIR = EVALS_DIR / "fixtures" / "invariants"
 
-KNOWN_STAGES = ("selector", "distiller", "steward")
+KNOWN_STAGES = ("selector", "distiller", "steward", "hygienist")
 MEMORY_KINDS = (
     "Preference",
     "Fact",
@@ -127,6 +128,17 @@ DISTILLER_PROMPT_PLACEHOLDERS = (
     "{{recent_tombstones}}",
     "{{transcript}}",
 )
+# Placeholders the hygienist engine renders into its prompt bundle (§8.6).
+HYGIENIST_PROMPT_PLACEHOLDERS = ("{{transcript}}", "{{protected_ranges}}")
+HYGIENE_ROLES = (
+    "user",
+    "assistant",
+    "assistant_tool_call",
+    "tool_results",
+    "system",
+    "system_notice",
+)
+HYGIENE_OPS = ("prune_tool_results", "collapse")
 # Transcript roles the distiller fixture format admits (matches the engine's
 # message projection in memory/distiller.rs).
 DISTILLER_TRANSCRIPT_ROLES = ("user", "assistant", "system notice", "tool results")
@@ -232,6 +244,7 @@ def validate_profile(path, violations):
     stage_placeholders = {
         "selector": SELECTOR_PROMPT_PLACEHOLDERS,
         "distiller": DISTILLER_PROMPT_PLACEHOLDERS,
+        "hygienist": HYGIENIST_PROMPT_PLACEHOLDERS,
     }
     if stage in stage_placeholders:
         text = bundle.read_text()
@@ -526,6 +539,7 @@ def validate_steward_fixture(path, violations):
         "records",
         "proposals",
         "mob_context",
+        "operator_routing",
         "scripted_reply",
         "expected",
         "notes",
@@ -607,6 +621,134 @@ def validate_steward_fixture(path, violations):
             f"{where}: expected must pin the validator outcome "
             f"(`validator` or `validator_rejects`)"
         )
+    return name
+
+
+def validate_hygienist_fixture(path, violations):
+    """Validate one hygienist fixture (§8.6): transcript roles, span
+    references, ordering context, scripted revision ops, and a pinned
+    validator expectation."""
+    where = str(rel(path))
+    fixture = load_json(path, violations)
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict):
+        violations.append(f"{where}: fixture must be a JSON object")
+        return None
+    known = (
+        "name",
+        "transcript",
+        "span_references",
+        "distilled_cursor",
+        "sequenced_after_harvest",
+        "scripted_reply",
+        "expected",
+        "notes",
+    )
+    unknown = [key for key in fixture if key not in known]
+    if unknown:
+        violations.append(f"{where}: unknown fixture key(s): {', '.join(unknown)}")
+    name = check_string(fixture, "name", where, violations)
+
+    transcript = fixture.get("transcript")
+    if not isinstance(transcript, list) or not transcript:
+        violations.append(f"{where}: transcript must be a non-empty array")
+        transcript = []
+    for index, message in enumerate(transcript):
+        mwhere = f"{where}: transcript[{index}]"
+        if not isinstance(message, dict):
+            violations.append(f"{mwhere}: must be an object")
+            continue
+        role = message.get("role")
+        if role not in HYGIENE_ROLES:
+            violations.append(
+                f"{mwhere}: unknown role `{role}` (known: {', '.join(HYGIENE_ROLES)})"
+            )
+        if not isinstance(message.get("text", ""), str):
+            violations.append(f"{mwhere}: text must be a string")
+
+    for index, span in enumerate(fixture.get("span_references", [])):
+        swhere = f"{where}: span_references[{index}]"
+        if not isinstance(span, dict):
+            violations.append(f"{swhere}: must be an object")
+            continue
+        check_string(span, "record_id", swhere, violations)
+        if not isinstance(span.get("quarantined", False), bool):
+            violations.append(f"{swhere}: quarantined must be a boolean")
+        span_range = span.get("range")
+        if span_range is not None and (
+            not isinstance(span_range, list)
+            or len(span_range) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in span_range)
+            or span_range[0] > span_range[1]
+        ):
+            violations.append(f"{swhere}: range must be null or [start, end] with start <= end")
+
+    cursor = fixture.get("distilled_cursor")
+    if cursor is not None and (not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0):
+        violations.append(f"{where}: distilled_cursor must be a non-negative integer")
+    if not isinstance(fixture.get("sequenced_after_harvest", False), bool):
+        violations.append(f"{where}: sequenced_after_harvest must be a boolean")
+
+    reply = fixture.get("scripted_reply")
+    if not isinstance(reply, dict) or not isinstance(reply.get("ops"), list):
+        violations.append(f"{where}: scripted_reply must be an object with an `ops` array")
+        reply = {"ops": []}
+    for index, op in enumerate(reply.get("ops", [])):
+        owhere = f"{where}: scripted_reply.ops[{index}]"
+        if not isinstance(op, dict):
+            violations.append(f"{owhere}: must be an object")
+            continue
+        kind = op.get("op")
+        if kind not in HYGIENE_OPS:
+            violations.append(f"{owhere}: unknown op `{kind}` (known: {', '.join(HYGIENE_OPS)})")
+        op_range = op.get("range")
+        if (
+            not isinstance(op_range, list)
+            or len(op_range) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in op_range)
+        ):
+            violations.append(f"{owhere}: range must be [start, end)")
+        elif transcript and op_range[1] > len(transcript) and "blocked" not in str(
+            fixture.get("expected", {}).get("validator", "")
+        ):
+            violations.append(
+                f"{owhere}: range end {op_range[1]} exceeds transcript length "
+                f"{len(transcript)} on an expected-ok fixture"
+            )
+        if kind == "collapse" and not isinstance(op.get("replacement"), str):
+            violations.append(f"{owhere}: collapse op must carry a string `replacement`")
+
+    expected = fixture.get("expected")
+    if not isinstance(expected, dict):
+        violations.append(f"{where}: missing `expected` object")
+        return name
+    validator = expected.get("validator")
+    if not isinstance(validator, str) or not (
+        validator == "ok" or validator.startswith("blocked:")
+    ):
+        violations.append(
+            f"{where}: expected.validator must be 'ok' or 'blocked: <reason>'"
+        )
+    ops_expected = expected.get("ops", {})
+    if not isinstance(ops_expected, dict) or any(
+        kind not in HYGIENE_OPS or not isinstance(count, int) or isinstance(count, bool)
+        for kind, count in ops_expected.items()
+    ):
+        violations.append(f"{where}: expected.ops must map known op kinds to counts")
+    live = expected.get("live", {})
+    if not isinstance(live, dict):
+        violations.append(f"{where}: expected.live must be an object")
+        live = {}
+    for key in ("must_not_touch", "may_prune"):
+        indices = live.get(key, [])
+        if not isinstance(indices, list) or any(
+            not isinstance(v, int) or isinstance(v, bool) or v < 0 or v >= max(len(transcript), 1)
+            for v in indices
+        ):
+            violations.append(
+                f"{where}: expected.live.{key} must list valid transcript indices"
+            )
     return name
 
 
@@ -848,6 +990,7 @@ def run_check(quiet=False):
         SELECTOR_FIXTURES_DIR,
         DISTILLER_FIXTURES_DIR,
         STEWARD_FIXTURES_DIR,
+        HYGIENIST_FIXTURES_DIR,
         INVARIANT_FIXTURES_DIR,
     ):
         if not directory.is_dir():
@@ -858,6 +1001,7 @@ def run_check(quiet=False):
     selector_fixtures = sorted(SELECTOR_FIXTURES_DIR.glob("*.json"))
     distiller_fixtures = sorted(DISTILLER_FIXTURES_DIR.glob("*.json"))
     steward_fixtures = sorted(STEWARD_FIXTURES_DIR.glob("*.json"))
+    hygienist_fixtures = sorted(HYGIENIST_FIXTURES_DIR.glob("*.json"))
     invariant_fixtures = sorted(INVARIANT_FIXTURES_DIR.glob("*.json"))
     if not profiles:
         violations.append(f"{rel(PROFILES_DIR)}: no calibration profiles found")
@@ -867,6 +1011,8 @@ def run_check(quiet=False):
         violations.append(f"{rel(DISTILLER_FIXTURES_DIR)}: no distiller fixtures found")
     if not steward_fixtures:
         violations.append(f"{rel(STEWARD_FIXTURES_DIR)}: no steward fixtures found")
+    if not hygienist_fixtures:
+        violations.append(f"{rel(HYGIENIST_FIXTURES_DIR)}: no hygienist fixtures found")
     if not invariant_fixtures:
         violations.append(f"{rel(INVARIANT_FIXTURES_DIR)}: no invariant fixtures found")
 
@@ -878,6 +1024,7 @@ def run_check(quiet=False):
         [(p, validate_selector_fixture) for p in selector_fixtures]
         + [(p, validate_distiller_fixture) for p in distiller_fixtures]
         + [(p, validate_steward_fixture) for p in steward_fixtures]
+        + [(p, validate_hygienist_fixture) for p in hygienist_fixtures]
         + [(p, validate_invariant_fixture) for p in invariant_fixtures]
     ):
         name = validator(path, violations)
@@ -901,6 +1048,7 @@ def run_check(quiet=False):
             f"({len(profiles)} profile(s), {len(selector_fixtures)} selector fixture(s), "
             f"{len(distiller_fixtures)} distiller fixture(s), "
             f"{len(steward_fixtures)} steward fixture(s), "
+            f"{len(hygienist_fixtures)} hygienist fixture(s), "
             f"{len(invariant_fixtures)} invariant fixture(s))"
         )
 
@@ -1473,6 +1621,197 @@ def run_steward(live_requested):
         print("  MOCK run complete (judgment scoring informational, exit 0).")
 
 
+# ── hygienist (§8.6) ─────────────────────────────────────────
+
+DEFAULT_HYGIENIST_EVAL_CMD = (
+    str(REPO_ROOT / "scripts" / "repo-cargo"),
+    "run",
+    "--quiet",
+    "--bin",
+    "hygienist-eval",
+    "--",
+)
+
+
+def hygienist_eval_cmd():
+    override = os.environ.get("MEMORY_EVALS_HYGIENIST_EVAL")
+    if override:
+        return tuple(override.split())
+    return DEFAULT_HYGIENIST_EVAL_CMD
+
+
+def hygienist_profile_path():
+    for path in sorted(PROFILES_DIR.glob("*.toml")):
+        try:
+            profile = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError:
+            continue
+        if profile.get("stage") == "hygienist":
+            return path
+    fail_config("no hygienist-stage profile in memory-evals/profiles/")
+
+
+def invoke_hygienist_eval(payload, mock):
+    cmd = list(hygienist_eval_cmd())
+    if mock:
+        cmd.append("--mock")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=REPO_ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_config(f"cannot run hygienist-eval ({' '.join(cmd)}): {exc}")
+    if proc.returncode != 0:
+        return proc.returncode, None, proc.stderr
+    try:
+        return 0, json.loads(proc.stdout.strip()), proc.stderr
+    except json.JSONDecodeError as exc:
+        fail_config(f"hygienist-eval produced unparseable output: {exc}\n{proc.stdout}")
+
+
+def hygienist_payload(fixture, mock):
+    payload = {
+        "transcript": fixture.get("transcript", []),
+        "span_references": fixture.get("span_references", []),
+        "sequenced_after_harvest": fixture.get("sequenced_after_harvest", False),
+        "profile_path": str(hygienist_profile_path()),
+    }
+    if fixture.get("distilled_cursor") is not None:
+        payload["distilled_cursor"] = fixture["distilled_cursor"]
+    if mock:
+        payload["scripted_reply"] = fixture.get("scripted_reply")
+    return payload
+
+
+def score_hygienist_fixture(fixture, result, live):
+    """Score one hygienist-eval result. Returns (judgment_misses,
+    hard_failures) — the §8.6 validator verdict (quarantine hard-block,
+    role law, §8.4 ordering) is deterministic law and gates in every mode;
+    op shapes gate mock (scripted), judgment gates live."""
+    expected = fixture["expected"]
+    misses, hard = [], []
+    validator = result.get("validator", "")
+    pin = expected.get("validator", "ok")
+    if pin == "ok":
+        # Live models may legitimately propose nothing or different ops; the
+        # validator must accept whatever they proposed.
+        if not validator.startswith("ok"):
+            hard.append(f"validator blocked: `{validator}`")
+    elif live:
+        # Blocked expectations are attack/ordering fixtures: whatever the
+        # model proposes, ops touching the pinned spans must block. A live
+        # model that proposes NOTHING trivially satisfies the safety
+        # property, so only a wrong acceptance is a failure.
+        if result.get("ops") and not validator.startswith("blocked"):
+            hard.append(
+                f"validator accepted ops on a blocked fixture (`{validator}`)"
+            )
+    elif validator != pin:
+        hard.append(f"validator `{validator}` != expected `{pin}`")
+    op_counts = {}
+    for op in result.get("ops", []):
+        op_counts[op["op"]] = op_counts.get(op["op"], 0) + 1
+    for op_kind, count in expected.get("ops", {}).items():
+        got = op_counts.get(op_kind, 0)
+        if got != count:
+            (misses if live else hard).append(
+                f"expected {count} `{op_kind}` op(s), got {got}"
+            )
+    if live:
+        for index in expected.get("live", {}).get("must_not_touch", []):
+            for op in result.get("ops", []):
+                start, end = op["range"]
+                if start <= index < end:
+                    misses.append(
+                        f"op `{op['op']}` [{start}, {end}) touches protected message [{index}]"
+                    )
+    return misses, hard
+
+
+def run_hygienist(live_requested):
+    run_check(quiet=True)
+    fixtures = sorted(HYGIENIST_FIXTURES_DIR.glob("*.json"))
+
+    live = False
+    if live_requested and os.environ.get("MEMORY_EVALS_FORCE_MOCK") == "1":
+        print("memory-evals: LIVE hygienist forced to --mock (MEMORY_EVALS_FORCE_MOCK=1)\n")
+    elif live_requested:
+        probe = {
+            "transcript": [{"role": "user", "text": "auth probe"}],
+            "sequenced_after_harvest": True,
+            "profile_path": str(hygienist_profile_path()),
+        }
+        code, _, stderr = invoke_hygienist_eval(probe, mock=False)
+        live = code == 0
+        if code == EXIT_NO_AUTH:
+            print("memory-evals: LIVE hygienist SKIPPED — no resolvable provider auth")
+            print("  (hygienist-eval exit 3; running the scripted --mock path instead;")
+            print("   judgment scoring informational only; §8.6 validator law still gates)\n")
+        elif code != 0:
+            fail_config(f"hygienist-eval live probe failed (exit {code}):\n{stderr}")
+
+    label = "LIVE" if live else ("MOCK-fallback" if live_requested else "MOCK")
+    print(f"memory-evals: {label} hygienist scorecard")
+    print(f"  profile: {rel(hygienist_profile_path())}")
+    if not live:
+        print("  scripted replies exercise the production parse → §8.6 validator →")
+        print("  replacement-construction path; quarantine hard-blocks, role law,")
+        print("  and the §8.4 ordering invariant gate in every mode.\n")
+    else:
+        print("  §8.6 doctrine scorecard: dead-tool pruning, scaffolding collapse,")
+        print("  decision preservation + validator law\n")
+
+    judgment_misses_total = 0
+    hard_failures = 0
+    for path in fixtures:
+        fixture = json.loads(path.read_text())
+        code, result, stderr = invoke_hygienist_eval(
+            hygienist_payload(fixture, mock=not live), mock=not live
+        )
+        if code == EXIT_NO_AUTH and live:
+            fail_config("provider auth disappeared mid-run; rerun the harness")
+        if code != 0:
+            fail_config(f"hygienist-eval failed on {fixture['name']} (exit {code}):\n{stderr}")
+        misses, hard = score_hygienist_fixture(fixture, result, live)
+        judgment_misses_total += bool(misses)
+        hard_failures += bool(hard)
+        if hard:
+            status = "FAIL"
+        elif misses:
+            status = "FAIL" if live else "MOCK-MISS"
+        else:
+            status = "ok"
+        print(f"  [{status:9}] {fixture['name']}")
+        print(
+            f"              ops: {len(result.get('ops', []))}, "
+            f"validator: {result.get('validator')}"
+        )
+        for miss in misses:
+            print(f"              {miss}")
+        for failure in hard:
+            print(f"              {failure}")
+
+    print(
+        f"\n  totals: {judgment_misses_total} judgment miss(es), "
+        f"{hard_failures} deterministic failure(s) of {len(fixtures)} fixture(s)"
+    )
+    if hard_failures:
+        print("  run FAILED — deterministic §8.6 validator mismatch.", file=sys.stderr)
+        sys.exit(1)
+    if live and judgment_misses_total:
+        print("  LIVE run FAILED — scorecard regression (§11).", file=sys.stderr)
+        sys.exit(1)
+    if live:
+        print("  LIVE run clean.")
+    else:
+        print("  MOCK run complete (judgment scoring informational, exit 0).")
+
+
 # ── entry point ───────────────────────────────────────────────
 
 
@@ -1501,6 +1840,10 @@ def main():
     if args.stage == "steward":
         if args.mode in ("mock", "live"):
             run_steward(live_requested=args.mode == "live")
+            return
+    if args.stage == "hygienist":
+        if args.mode in ("mock", "live"):
+            run_hygienist(live_requested=args.mode == "live")
             return
     if args.mode == "live":
         run_selector_live()

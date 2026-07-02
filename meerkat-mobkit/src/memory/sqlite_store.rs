@@ -1728,6 +1728,381 @@ impl SqliteAgentMemoryStore {
     }
 }
 
+// ---- console Memory panel read surface (§9.3, P3b) ----
+
+/// One page of panel records: strictly-descending `(updated_at_ms,
+/// memory_id)` keyset pagination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelRecordsPage {
+    pub records: Vec<super::records::MemoryRecord>,
+    /// Pass back as `cursor` to continue; `None` when exhausted.
+    pub next_cursor: Option<(u64, String)>,
+}
+
+/// One steward dream run reconstructed from its audit rows (every committed
+/// op records its `Steward { run_id }` author in the audit `detail`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DreamRunAudit {
+    pub run_id: String,
+    pub first_op_at_ms: u64,
+    pub last_op_at_ms: u64,
+    pub ops: u64,
+    /// op kind → count (create/supersede/tombstone/retier/set_rank).
+    pub op_kinds: std::collections::BTreeMap<String, u64>,
+    /// Ops that landed quarantined at the write seam.
+    pub quarantined_ops: u64,
+    /// Bounded sample of touched record ids, newest first.
+    pub memory_ids: Vec<String>,
+    /// Bounded sample of op rationales, newest first.
+    pub rationales: Vec<String>,
+}
+
+/// Bounds for [`SqliteAgentMemoryStore::dream_history`]: audit rows scanned
+/// per call and per-run sample sizes. The panel is a summary surface, not a
+/// full audit export.
+const DREAM_HISTORY_SCAN_ROWS: usize = 5_000;
+const DREAM_HISTORY_ID_SAMPLE: usize = 12;
+const DREAM_HISTORY_RATIONALE_SAMPLE: usize = 6;
+
+impl SqliteAgentMemoryStore {
+    /// Realms with a store file on disk (panel realm picker).
+    pub async fn panel_realms(&self) -> Result<Vec<String>, AgentMemoryError> {
+        let store = self.clone();
+        run_blocking(move || store.known_realms()).await
+    }
+
+    /// One record by id, any status.
+    pub async fn record_by_id(
+        &self,
+        realm: &str,
+        memory_id: &str,
+    ) -> Result<Option<super::records::MemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let memory_id = memory_id.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| load_record(conn, &realm, &memory_id))
+        })
+        .await
+    }
+
+    /// Panel record listing: optional scope/status filters, newest-updated
+    /// first, keyset cursor. Any status is visible here — the panel is an
+    /// inspection surface and renders status explicitly.
+    pub async fn records_page(
+        &self,
+        realm: &str,
+        scope_kind: Option<&str>,
+        scope_key: Option<&str>,
+        status_kind: Option<&str>,
+        limit: usize,
+        cursor: Option<(u64, String)>,
+    ) -> Result<PanelRecordsPage, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let scope_kind = scope_kind.map(str::to_string);
+        let scope_key = scope_key.map(str::to_string);
+        let status_kind = status_kind.map(str::to_string);
+        let limit = limit.max(1);
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut clauses: Vec<String> = Vec::new();
+                let mut values: Vec<rusqlite::types::Value> = Vec::new();
+                if let Some(kind) = &scope_kind {
+                    values.push(kind.clone().into());
+                    clauses.push(format!("scope_kind = ?{}", values.len()));
+                }
+                if let Some(key) = &scope_key {
+                    values.push(key.clone().into());
+                    clauses.push(format!("scope_key = ?{}", values.len()));
+                }
+                if let Some(status) = &status_kind {
+                    values.push(status.clone().into());
+                    clauses.push(format!("status_kind = ?{}", values.len()));
+                }
+                if let Some((after_ms, after_id)) = &cursor {
+                    values.push((*after_ms as i64).into());
+                    let ms_slot = values.len();
+                    values.push(after_id.clone().into());
+                    let id_slot = values.len();
+                    clauses.push(format!(
+                        "(updated_at_ms < ?{ms_slot} OR (updated_at_ms = ?{ms_slot} \
+                         AND memory_id < ?{id_slot}))"
+                    ));
+                }
+                let where_sql = if clauses.is_empty() {
+                    String::new()
+                } else {
+                    format!("WHERE {}", clauses.join(" AND "))
+                };
+                values.push(((limit + 1) as i64).into());
+                let sql = format!(
+                    "SELECT {RECORD_COLUMNS} FROM records {where_sql} \
+                     ORDER BY updated_at_ms DESC, memory_id DESC LIMIT ?{}",
+                    values.len()
+                );
+                let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(rusqlite::params_from_iter(values), row_to_record_row)
+                    .map_err(sql_err)?;
+                let mut records = Vec::new();
+                for row in rows {
+                    records.push(row.map_err(sql_err)?.into_record(&realm)?);
+                }
+                let next_cursor = if records.len() > limit {
+                    records.truncate(limit);
+                    records
+                        .last()
+                        .map(|record| (record.updated_at_ms, record.id.clone()))
+                } else {
+                    None
+                };
+                Ok(PanelRecordsPage {
+                    records,
+                    next_cursor,
+                })
+            })
+        })
+        .await
+    }
+
+    /// Supersede lineage around one record, oldest first: ancestors via the
+    /// `supersedes` pointer, the record itself, then committed successors
+    /// via the `Superseded { by }` status link. When the tip has no
+    /// committed successor, records *claiming* to supersede it (e.g. a
+    /// quarantined supersede that left the prior active, §10.1) are
+    /// appended without recursing — claims are visible but never extend
+    /// the walk. Bounded by `max_len`, cycle-safe.
+    pub async fn supersede_chain(
+        &self,
+        realm: &str,
+        memory_id: &str,
+        max_len: usize,
+    ) -> Result<Vec<super::records::MemoryRecord>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let memory_id = memory_id.to_string();
+        let max_len = max_len.max(1);
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let Some(origin) = load_record(conn, &realm, &memory_id)? else {
+                    return Ok(Vec::new());
+                };
+                let mut seen: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::from([origin.id.clone()]);
+                let mut ancestors: Vec<super::records::MemoryRecord> = Vec::new();
+                let mut parent_id = origin.supersedes.clone();
+                while let Some(id) = parent_id {
+                    if ancestors.len() + 1 >= max_len || !seen.insert(id.clone()) {
+                        break;
+                    }
+                    let Some(parent) = load_record(conn, &realm, &id)? else {
+                        break;
+                    };
+                    parent_id = parent.supersedes.clone();
+                    ancestors.push(parent);
+                }
+                ancestors.reverse();
+                let mut chain = ancestors;
+                chain.push(origin);
+                loop {
+                    if chain.len() >= max_len {
+                        return Ok(chain);
+                    }
+                    let tip = chain.last().unwrap_or_else(|| unreachable!());
+                    let successor_id = match &tip.status {
+                        super::records::RecordStatus::Superseded { by } => Some(by.clone()),
+                        _ => None,
+                    };
+                    match successor_id {
+                        Some(id) => {
+                            if !seen.insert(id.clone()) {
+                                return Ok(chain);
+                            }
+                            let Some(successor) = load_record(conn, &realm, &id)? else {
+                                return Ok(chain);
+                            };
+                            chain.push(successor);
+                        }
+                        None => {
+                            // Trailing claimants: visible, not walked.
+                            let tip_id = tip.id.clone();
+                            let mut stmt = conn
+                                .prepare(&format!(
+                                    "SELECT {RECORD_COLUMNS} FROM records \
+                                     WHERE supersedes = ?1 ORDER BY created_at_ms ASC"
+                                ))
+                                .map_err(sql_err)?;
+                            let rows = stmt
+                                .query_map(params![tip_id], row_to_record_row)
+                                .map_err(sql_err)?;
+                            for row in rows {
+                                if chain.len() >= max_len {
+                                    break;
+                                }
+                                let claimant = row.map_err(sql_err)?.into_record(&realm)?;
+                                if seen.insert(claimant.id.clone()) {
+                                    chain.push(claimant);
+                                }
+                            }
+                            return Ok(chain);
+                        }
+                    }
+                }
+            })
+        })
+        .await
+    }
+
+    /// Newest-first injection-ledger rows for one record (panel usage view).
+    pub async fn injection_log_for_record(
+        &self,
+        realm: &str,
+        record_id: &str,
+        limit: usize,
+    ) -> Result<Vec<InjectionLogEntry>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let record_id = record_id.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT record_id, identity, session_key, surface, at_ms \
+                         FROM injections WHERE record_id = ?1 \
+                         ORDER BY at_ms DESC, injection_id DESC LIMIT ?2",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![record_id, limit as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    })
+                    .map_err(sql_err)?;
+                let mut entries = Vec::new();
+                for row in rows {
+                    let (record_id, identity, session_key, surface, at_ms) =
+                        row.map_err(sql_err)?;
+                    let surface = InjectionSurface::parse(&surface).ok_or_else(|| {
+                        AgentMemoryError::Parse(format!("unknown injection surface '{surface}'"))
+                    })?;
+                    entries.push(InjectionLogEntry {
+                        record_id,
+                        identity,
+                        session_key,
+                        surface,
+                        at_ms: at_ms as u64,
+                    });
+                }
+                Ok(entries)
+            })
+        })
+        .await
+    }
+
+    /// Dream-run summaries reconstructed from steward audit rows, newest
+    /// run first. Bounded scan ([`DREAM_HISTORY_SCAN_ROWS`]); runs older
+    /// than the scan window fall off the panel, which is acceptable for a
+    /// history summary surface.
+    pub async fn dream_history(
+        &self,
+        realm: &str,
+        max_runs: usize,
+    ) -> Result<Vec<DreamRunAudit>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let max_runs = max_runs.max(1);
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT op_kind, memory_id, detail, applied_at_ms FROM audit \
+                         ORDER BY applied_at_ms DESC, audit_id DESC LIMIT ?1",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map(params![DREAM_HISTORY_SCAN_ROWS as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .map_err(sql_err)?;
+                let mut order: Vec<String> = Vec::new();
+                let mut runs: HashMap<String, DreamRunAudit> = HashMap::new();
+                for row in rows {
+                    let (op_kind, memory_id, detail, applied_at_ms) = row.map_err(sql_err)?;
+                    let detail: serde_json::Value =
+                        serde_json::from_str(&detail).unwrap_or_default();
+                    let author = detail.get("author");
+                    let is_steward = author
+                        .and_then(|author| author.get("author"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("steward");
+                    if !is_steward {
+                        continue;
+                    }
+                    let Some(run_id) = author
+                        .and_then(|author| author.get("run_id"))
+                        .and_then(serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    if !runs.contains_key(run_id) {
+                        if runs.len() >= max_runs {
+                            continue;
+                        }
+                        order.push(run_id.to_string());
+                    }
+                    let run = runs
+                        .entry(run_id.to_string())
+                        .or_insert_with(|| DreamRunAudit {
+                            run_id: run_id.to_string(),
+                            first_op_at_ms: applied_at_ms as u64,
+                            last_op_at_ms: applied_at_ms as u64,
+                            ..DreamRunAudit::default()
+                        });
+                    run.ops += 1;
+                    run.first_op_at_ms = run.first_op_at_ms.min(applied_at_ms as u64);
+                    run.last_op_at_ms = run.last_op_at_ms.max(applied_at_ms as u64);
+                    *run.op_kinds.entry(op_kind).or_insert(0) += 1;
+                    if !detail
+                        .get("quarantined")
+                        .map(serde_json::Value::is_null)
+                        .unwrap_or(true)
+                    {
+                        run.quarantined_ops += 1;
+                    }
+                    if let Some(memory_id) = memory_id
+                        && run.memory_ids.len() < DREAM_HISTORY_ID_SAMPLE
+                    {
+                        run.memory_ids.push(memory_id);
+                    }
+                    if let Some(rationale) =
+                        detail.get("rationale").and_then(serde_json::Value::as_str)
+                        && !rationale.is_empty()
+                        && run.rationales.len() < DREAM_HISTORY_RATIONALE_SAMPLE
+                    {
+                        run.rationales.push(rationale.to_string());
+                    }
+                }
+                Ok(order
+                    .into_iter()
+                    .filter_map(|run_id| runs.remove(&run_id))
+                    .collect())
+            })
+        })
+        .await
+    }
+}
+
 #[async_trait]
 impl crate::memory::distiller::TombstoneSource for SqliteAgentMemoryStore {
     /// Recent tombstones for the Distiller's pre-injected "never re-create
@@ -3613,6 +3988,109 @@ mod tests {
             matches!(cross, Err(AgentMemoryError::InvalidRecord(_))),
             "cross-identity update must be rejected, got {cross:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn panel_records_page_paginates_and_filters() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let scope = identity_scope("family")?;
+        for index in 0..5 {
+            store
+                .remember_authored(
+                    &scope,
+                    payload(&format!("Fact {index}"), &format!("Body {index}")),
+                    MemoryAuthor::Operator,
+                )
+                .await?;
+        }
+
+        // Keyset pagination: strictly-descending (updated_at_ms, id) with
+        // no row repeated or skipped across pages.
+        let first = store
+            .records_page("family", Some("identity"), None, None, 2, None)
+            .await?;
+        assert_eq!(first.records.len(), 2);
+        let cursor = first.next_cursor.clone().expect("more pages");
+        let second = store
+            .records_page("family", Some("identity"), None, None, 2, Some(cursor))
+            .await?;
+        assert_eq!(second.records.len(), 2);
+        let third_cursor = second.next_cursor.clone().expect("one more page");
+        let third = store
+            .records_page(
+                "family",
+                Some("identity"),
+                None,
+                None,
+                2,
+                Some(third_cursor),
+            )
+            .await?;
+        assert_eq!(third.records.len(), 1);
+        assert_eq!(third.next_cursor, None);
+        let mut seen: Vec<String> = first
+            .records
+            .iter()
+            .chain(second.records.iter())
+            .chain(third.records.iter())
+            .map(|record| record.id.clone())
+            .collect();
+        let total = seen.len();
+        seen.dedup();
+        assert_eq!(total, 5, "pages cover every record exactly once");
+
+        // Status filter.
+        let quarantined = store
+            .records_page("family", None, None, Some("quarantined"), 10, None)
+            .await?;
+        assert!(quarantined.records.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn panel_supersede_chain_walks_both_directions() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let scope = identity_scope("family")?;
+        let root = store
+            .remember_authored(&scope, payload("Fact", "v1"), MemoryAuthor::Operator)
+            .await?;
+        let mid = store
+            .supersede_authored(
+                &scope,
+                &root.memory_id,
+                payload("Fact", "v2"),
+                MemoryAuthor::Operator,
+            )
+            .await?;
+        let tip = store
+            .supersede_authored(
+                &scope,
+                &mid.memory_id,
+                payload("Fact", "v3"),
+                MemoryAuthor::Operator,
+            )
+            .await?;
+
+        // The same chain comes back oldest-first from every entry point.
+        for entry in [&root.memory_id, &mid.memory_id, &tip.memory_id] {
+            let chain = store.supersede_chain("family", entry, 16).await?;
+            let ids: Vec<&str> = chain.iter().map(|record| record.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                [
+                    root.memory_id.as_str(),
+                    mid.memory_id.as_str(),
+                    tip.memory_id.as_str()
+                ],
+                "chain from {entry}"
+            );
+        }
+        // Bounded.
+        let bounded = store.supersede_chain("family", &root.memory_id, 2).await?;
+        assert_eq!(bounded.len(), 2);
         Ok(())
     }
 }

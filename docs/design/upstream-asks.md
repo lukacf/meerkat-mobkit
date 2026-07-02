@@ -217,6 +217,28 @@ existing audited same-session transcript revisions
 `session/restore_transcript_revision`), staged and validated like any other
 memory mutation.
 
+**P4 implementation refinement (found building the Hygienist against
+meerkat 0.7.9).** The revision *apply* surface is reachable and used:
+`PersistentSessionService` implements `SessionServiceTranscriptEditExt`
+(`rewrite_session_transcript` / `restore_session_transcript_revision`) and
+MobKit threads the concrete typed handle to the Hygienist at gateway
+bootstrap (the erased `MobSessionService` does not carry the edit
+extension). One adjacent read gap remains: **no `SessionService`-level API
+exposes the current transcript head revision id.**
+`Session::transcript_revision()` computes it, but only on an owned
+`Session`; `read_transcript_revision` requires already knowing a revision
+id. Two consequences, both currently absorbed rather than closed:
+(a) rewrites cannot compare-and-swap — `expected_parent_revision` is sent
+as `None`, and the service's internal mutation guard plus
+`TranscriptEditRunningBehavior::Reject` (refuse mid-turn) are the only
+concurrency protections; (b) §7.1's revision-pinned `EvidenceRef`s cannot
+be captured at write time — Distiller/Recorder provenance keeps
+`revision: None` ("head at capture time") until a head-revision read
+exists. Nothing dangles meanwhile (revisions are additive and parent
+bodies are retained), but pinned-revision provenance resolution stays
+approximate. Small ask: expose `current_transcript_revision(id)` (and
+ideally a revision list) on `SessionService` or the history extension.
+
 ---
 
 ## Ask 5 — Comms envelope taint metadata + dispatch-time taint visibility
