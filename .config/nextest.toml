@@ -1,0 +1,31 @@
+# nextest configuration.
+#
+# `heavy-runtime`: full-`UnifiedRuntime`-boot integration binaries that each
+# spin a complete mob (actors + comms + ephemeral sessions + background drain
+# tasks) and then tear it down. Run enough of them at once and the async
+# teardown — mob stop, event drain, RPC round-trips on tight (1-2s) timeouts —
+# gets starved of CPU on a loaded runner and times out, so the tests fail on
+# *teardown* assertions (e.g. list_runs.rs:257 `shutdown.mob_stop.is_ok()`)
+# despite the behavior under test being correct. They pass 1/1 in isolation.
+#
+# Two levers, because the starvation is driven by AGGREGATE suite load (the whole
+# ~28-binary integration suite competing for CPU), not just co-running group
+# members:
+#   1. max-threads caps how many of these heavyweight tests co-run.
+#   2. retries let a test that lost the teardown-timeout race under peak load
+#      re-run — by which point most of the suite has finished, so the retry runs
+#      near-alone and the teardown completes. This is the canonical nextest
+#      answer for a load-timeout flake that passes 1/1 in isolation, and it is
+#      scoped to THIS family only (via the override), so no non-family test's
+#      intermittent failure is ever masked.
+# Neither weakens an assertion or a production timeout. This replaces the per-PR
+# "triage the list_runs/contract_009/run_flow/projected_cursor flake by running
+# it standalone" ritual with a structural fix.
+
+[test-groups]
+heavy-runtime = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence))'
+test-group = 'heavy-runtime'
+retries = 2
