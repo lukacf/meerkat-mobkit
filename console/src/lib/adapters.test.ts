@@ -7,6 +7,7 @@ import {
   buildQuickPromptSuggestions,
   buildRoutingSectionView,
   buildSidebarViewState,
+  describeMemoryTimelineEvent,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   mergeConversationFrames,
@@ -6400,4 +6401,76 @@ test("buildQuickPromptSuggestions projects stock prompt labels into runnable sug
       { label: "Merchant impact", value: "Summarize merchant impact." },
     ],
   );
+});
+
+test("memory timeline events render as clean meta entries, never raw JSON", () => {
+  const frames = [
+    {
+      id: "m1",
+      event: "memory.dream.completed",
+      timestampMs: 1000,
+      data: { realm: "default", run_id: "run-9", ops_committed: 3, detail: "distilled prefs" },
+    },
+    {
+      id: "m2",
+      event: "memory.write.quarantined",
+      timestampMs: 2000,
+      data: { realm: "default", author: "agent", reason: "low trust" },
+    },
+    {
+      id: "m3",
+      event: "memory.taint.transition",
+      timestampMs: 3000,
+      data: { session_key: "sess-1", kind: "tainted", source: "reset" },
+    },
+    {
+      id: "m4",
+      event: "memory.future.event",
+      timestampMs: 4000,
+      data: { reason: "something new" },
+    },
+  ];
+
+  const entries = mapFramesToTimelineEntries(null, frames);
+  assert.equal(entries.length, 4);
+  for (const entry of entries) {
+    assert.equal(entry.variant, "meta");
+    const text = entry.kind === "message" && "text" in entry ? entry.text || "" : "";
+    assert.ok(text.length > 0, "memory entry must have text");
+    assert.ok(!text.includes("{"), `memory entry must not leak JSON: ${text}`);
+    assert.ok(!text.includes("}"), `memory entry must not leak JSON: ${text}`);
+  }
+
+  const dream = entries[0];
+  assert.ok(
+    dream.kind === "message" && "text" in dream && dream.text?.includes("3 ops committed"),
+    "dream.completed summarizes committed ops",
+  );
+
+  const unknown = entries[3];
+  assert.ok(
+    unknown.kind === "message" && "text" in unknown && unknown.text?.startsWith("Memory future event"),
+    "unknown memory.* subtypes humanize the event name",
+  );
+});
+
+test("describeMemoryTimelineEvent produces clean lines for every documented subtype", () => {
+  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["memory.dream.started", { run_id: "run-1" }, /Dream started/],
+    ["memory.dream.skipped", { reason: "no changes" }, /Dream skipped — no changes/],
+    ["memory.record.promoted", { scope_kind: "identity", scope_key: "luka", gated: true }, /promoted to identity:luka \(gated\)/],
+    ["memory.quarantine.verdict", { verdict: "reject", rationale: "duplicate" }, /Quarantine verdict: reject — duplicate/],
+    ["memory.conflict.signal", { entity: "user", topic: "tz", reason: "mismatch" }, /Conflict signal on user \/ tz — mismatch/],
+    ["memory.budget.denied", { stage: "harvest", reason: "over cap" }, /Budget denied at harvest — over cap/],
+    ["memory.promotion.pending_gate", { scope_kind: "mob", scope_key: "main" }, /awaiting gate for mob:main/],
+    ["memory.harvest.completed", { promoted: 2, tombstoned: 1 }, /Harvest completed — 2 promoted, 1 tombstoned/],
+    ["memory.distill.timed_out", { cause: "slow" }, /Distill timed out — slow/],
+    ["memory.hygiene.applied", { cause: "reset", ops: 4 }, /Hygiene applied — 4 ops/],
+    ["memory.hygiene.blocked", { reason: "revision drift" }, /Hygiene blocked — revision drift/],
+  ];
+  for (const [event, data, expected] of cases) {
+    const line = describeMemoryTimelineEvent(event, data);
+    assert.match(line, expected, `${event}: ${line}`);
+    assert.ok(!line.includes("{") && !line.includes("}"), `${event} leaked JSON: ${line}`);
+  }
 });

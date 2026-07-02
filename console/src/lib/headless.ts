@@ -106,6 +106,10 @@ export const CONSOLE_COMMAND_NAMES = {
   setAccessGroup: "setAccessGroup",
   deleteAccessGroup: "deleteAccessGroup",
   previewAccess: "previewAccess",
+  listMemoryRecords: "listMemoryRecords",
+  getMemoryRecord: "getMemoryRecord",
+  listMemoryQuarantine: "listMemoryQuarantine",
+  listMemoryDreams: "listMemoryDreams",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -202,6 +206,22 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.previewAccess]: {
     method: CONSOLE_RPC_METHODS.accessPreview,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/access"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryRecords]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelRecords,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.getMemoryRecord]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelRecord,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryQuarantine]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelQuarantine,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryDreams]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelDreams,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
   },
 };
 

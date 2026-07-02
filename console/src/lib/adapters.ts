@@ -34,7 +34,8 @@ export type MobKitDockTarget =
   | RosterPanelTarget
   | GatesPanelTarget
   | LogsPanelTarget
-  | AccessPanelTarget;
+  | AccessPanelTarget
+  | MemoryPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -83,6 +84,10 @@ export interface LogsPanelTarget extends ConsoleDockTarget {
 
 export interface AccessPanelTarget extends ConsoleDockTarget {
   kind: "access";
+}
+
+export interface MemoryPanelTarget extends ConsoleDockTarget {
+  kind: "memory";
 }
 
 export function buildPanelConversationKey(
@@ -153,7 +158,7 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
 
 export type ControlTargetKind =
   | "routing" | "gating" | "topology" | "health"
-  | "timeline" | "roster" | "gates" | "logs" | "access";
+  | "timeline" | "roster" | "gates" | "logs" | "access" | "memory";
 
 export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
   switch (kind) {
@@ -175,6 +180,8 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
       return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
     case "access":
       return { id: "access", kind, title: "Access", subtitle: "Who can see and do what", iconName: "i-gear" };
+    case "memory":
+      return { id: "memory", kind, title: "Memory", subtitle: "Records, quarantine, dreams", iconName: "i-archive" };
     default:
       return { id: "health", kind: "health", title: "Health" };
   }
@@ -391,6 +398,139 @@ function summarizeFrameData(data: unknown): string {
     return JSON.stringify(record);
   }
   return String(data ?? "");
+}
+
+// ── Memory timeline event formatting ──────────────────────────────────────
+//
+// The runtime emits a family of `memory.*` timeline events (dream cycles,
+// promotions, quarantine verdicts, taint transitions, hygiene ops, ...). This
+// pure helper turns each `{event, data}` pair into a single clean human line.
+// Unknown `memory.*` subtypes get a humanized event name plus a best-effort
+// short reason — NEVER raw JSON. Exported so it is unit-testable and reused by
+// the SignalsRail.
+function memoryString(data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function memoryNumber(data: Record<string, unknown>, key: string): number | null {
+  const value = data[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function memoryScopeLabel(data: Record<string, unknown>): string {
+  const kind = memoryString(data, "scope_kind");
+  const key = memoryString(data, "scope_key");
+  if (kind && key) return `${kind}:${key}`;
+  return kind || key || "";
+}
+
+function humanizeMemoryEvent(event: string): string {
+  const suffix = event.startsWith("memory.") ? event.slice("memory.".length) : event;
+  const words = suffix.split(/[._]/).filter(Boolean);
+  if (words.length === 0) return "Memory event";
+  return `Memory ${words.join(" ")}`;
+}
+
+export function describeMemoryTimelineEvent(
+  event: string,
+  data: Record<string, unknown>,
+): string {
+  switch (event) {
+    case "memory.dream.started":
+      return `Dream started${memoryString(data, "run_id") ? ` (${memoryString(data, "run_id")})` : ""}`;
+    case "memory.dream.completed": {
+      const ops = memoryNumber(data, "ops_committed");
+      const detail = memoryString(data, "detail");
+      const opsText = ops !== null ? `${ops} op${ops === 1 ? "" : "s"} committed` : "completed";
+      return `Dream ${opsText}${detail ? ` — ${detail}` : ""}`;
+    }
+    case "memory.dream.skipped":
+      return `Dream skipped${memoryString(data, "reason") ? ` — ${memoryString(data, "reason")}` : ""}`;
+    case "memory.record.promoted": {
+      const scope = memoryScopeLabel(data);
+      const gated = data.gated === true ? " (gated)" : "";
+      return `Record promoted${scope ? ` to ${scope}` : ""}${gated}`;
+    }
+    case "memory.quarantine.verdict": {
+      const verdict = memoryString(data, "verdict") || "decided";
+      const rationale = memoryString(data, "rationale");
+      return `Quarantine verdict: ${verdict}${rationale ? ` — ${rationale}` : ""}`;
+    }
+    case "memory.conflict.signal": {
+      const entity = memoryString(data, "entity");
+      const topic = memoryString(data, "topic");
+      const subject = [entity, topic].filter(Boolean).join(" / ");
+      const reason = memoryString(data, "reason");
+      return `Conflict signal${subject ? ` on ${subject}` : ""}${reason ? ` — ${reason}` : ""}`;
+    }
+    case "memory.write.quarantined": {
+      const author = memoryString(data, "author");
+      const reason = memoryString(data, "reason");
+      return `Write quarantined${author ? ` from ${author}` : ""}${reason ? ` — ${reason}` : ""}`;
+    }
+    case "memory.taint.transition": {
+      const kind = memoryString(data, "kind") || "changed";
+      const label =
+        kind === "tainted"
+          ? "Session tainted"
+          : kind === "reset_boundary"
+            ? "Reset boundary"
+            : kind === "rotated_clean"
+              ? "Rotated clean"
+              : `Taint ${kind}`;
+      const source = memoryString(data, "source");
+      const session = memoryString(data, "session_key");
+      const context = [session, source].filter(Boolean).join(" · ");
+      return `${label}${context ? ` (${context})` : ""}`;
+    }
+    case "memory.budget.denied": {
+      const stage = memoryString(data, "stage");
+      const reason = memoryString(data, "reason");
+      return `Budget denied${stage ? ` at ${stage}` : ""}${reason ? ` — ${reason}` : ""}`;
+    }
+    case "memory.promotion.pending_gate": {
+      const scope = memoryScopeLabel(data);
+      return `Promotion awaiting gate${scope ? ` for ${scope}` : ""}`;
+    }
+    case "memory.harvest.completed": {
+      const promoted = memoryNumber(data, "promoted");
+      const tombstoned = memoryNumber(data, "tombstoned");
+      const parts: string[] = [];
+      if (promoted !== null) parts.push(`${promoted} promoted`);
+      if (tombstoned !== null) parts.push(`${tombstoned} tombstoned`);
+      const identity = memoryString(data, "identity");
+      return `Harvest completed${parts.length ? ` — ${parts.join(", ")}` : ""}${identity ? ` (${identity})` : ""}`;
+    }
+    case "memory.distill.timed_out": {
+      const cause = memoryString(data, "cause");
+      const session = memoryString(data, "session_key");
+      return `Distill timed out${cause ? ` — ${cause}` : ""}${session ? ` (${session})` : ""}`;
+    }
+    case "memory.hygiene.proposed":
+    case "memory.hygiene.applied":
+    case "memory.hygiene.blocked":
+    case "memory.hygiene.skipped": {
+      const phase = event.slice("memory.hygiene.".length);
+      const cause = memoryString(data, "cause");
+      const ops = memoryNumber(data, "ops");
+      const reason = memoryString(data, "reason");
+      const detail =
+        reason ||
+        (ops !== null ? `${ops} op${ops === 1 ? "" : "s"}` : "") ||
+        cause;
+      return `Hygiene ${phase}${detail ? ` — ${detail}` : ""}`;
+    }
+    default: {
+      // Unknown memory.* subtype: humanized name + best-effort short reason.
+      const reason =
+        memoryString(data, "reason") ||
+        memoryString(data, "detail") ||
+        memoryString(data, "cause") ||
+        memoryString(data, "verdict");
+      return `${humanizeMemoryEvent(event)}${reason ? ` — ${reason}` : ""}`;
+    }
+  }
 }
 
 function isSteerDeliveryTerminalFrame(frame: Pick<ConsoleFrame, "event" | "data">): boolean {
@@ -3530,6 +3670,24 @@ export function mapFramesToTimelineEntries(
     // Skip remaining tool lifecycle events (handled by tool blocks above)
     if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started"
       || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      continue;
+    }
+
+    // Memory subsystem events render as clean meta lines — never raw JSON.
+    if (frame.event.startsWith("memory.")) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        createdAt: isoFromTimestampMs(frame.timestampMs),
+        text: describeMemoryTimelineEvent(
+          frame.event,
+          frame.data && typeof frame.data === "object"
+            ? (frame.data as Record<string, unknown>)
+            : {},
+        ),
+      });
       continue;
     }
 

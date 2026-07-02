@@ -43,7 +43,7 @@ import {
   type MobKitDockTarget,
   type OptimisticUserMessage,
 } from "./lib/adapters";
-import { errorMessage } from "./lib/errors";
+import { errorMessage, jsonRpcErrorCode } from "./lib/errors";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 } from "./lib/network";
@@ -68,11 +68,19 @@ import type {
   ConsoleReplayUnavailablePayload,
   ConsoleTimelinePage,
   ConsoleTopologyNode,
+  MemoryDreamRun,
+  MemoryPanelDreamsResult,
+  MemoryPanelQuarantineResult,
+  MemoryPanelRecord,
+  MemoryPanelRecordResult,
+  MemoryPanelRecordsResult,
+  MemoryPendingPromotion,
 } from "./types";
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
+import { MemoryPanel, type MemoryRecordDetail } from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
@@ -104,6 +112,17 @@ type GatingPanelData = { pending: unknown[]; audit: unknown[] };
 type AccessPanelData = {
   status: ConsoleAccessStatus | null;
   config: ConsoleAccessConfig | null;
+  error: string | null;
+};
+type MemoryPanelData = {
+  records: MemoryPanelRecord[];
+  realms: string[];
+  quarantineRecords: MemoryPanelRecord[];
+  pendingPromotions: MemoryPendingPromotion[];
+  dreams: MemoryDreamRun[];
+  detail: MemoryRecordDetail | null;
+  detailLoading: boolean;
+  unavailable: boolean;
   error: string | null;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
@@ -537,6 +556,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     config: null,
     error: null,
   });
+  const [memoryData, setMemoryData] = React.useState<MemoryPanelData>({
+    records: [],
+    realms: [],
+    quarantineRecords: [],
+    pendingPromotions: [],
+    dreams: [],
+    detail: null,
+    detailLoading: false,
+    unavailable: false,
+    error: null,
+  });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] =
@@ -713,7 +743,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function controlWorkbenchTarget(kind: "routing" | "gating" | "access"): ConsoleWorkbenchTarget {
+  function controlWorkbenchTarget(kind: "routing" | "gating" | "access" | "memory"): ConsoleWorkbenchTarget {
     return requireWorkbenchTarget(buildControlTarget(kind));
   }
 
@@ -1884,10 +1914,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         (kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind),
       );
     if (configuredVisible.length > 0) {
-      if (experience?.access?.can_administer === true) {
-        return [...configuredVisible, "access"];
-      }
-      return configuredVisible;
+      const extra: NavKind[] = [];
+      if (experience?.access?.can_administer === true) extra.push("access");
+      // The Memory panel is gated server-side per principal, never by view
+      // config: `can_read` alone decides whether the nav entry appears.
+      if (experience?.memory?.can_read === true) extra.push("memory");
+      return extra.length > 0 ? [...configuredVisible, ...extra] : configuredVisible;
     }
     const hidden = new Set(
       (sidebarConfig?.hidden_controls || [])
@@ -1898,8 +1930,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // The Access admin surface is gated server-side per principal, never by
     // view config: administrators always get it, nobody else ever does.
     if (experience?.access?.can_administer === true) controls.push("access");
+    // Same for the Memory panel: server-side `can_read` gates the entry.
+    if (experience?.memory?.can_read === true) controls.push("memory");
     return controls;
-  }, [experience?.console_config?.sidebar, experience?.access?.can_administer, hasMobControlSurface]);
+  }, [
+    experience?.console_config?.sidebar,
+    experience?.access?.can_administer,
+    experience?.memory?.can_read,
+    hasMobControlSurface,
+  ]);
 
   // =========================================================================
   // OPEN INITIAL TARGET
@@ -1990,6 +2029,97 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl]);
 
+  const refreshMemoryData = React.useCallback(async () => {
+    const memoryTarget = controlWorkbenchTarget("memory");
+    try {
+      const recordsResult = (await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.listMemoryRecords,
+        memoryTarget,
+      )) as MemoryPanelRecordsResult | null;
+      const records = recordsResult?.records || [];
+      const realms = recordsResult?.realms || [];
+
+      let quarantineRecords: MemoryPanelRecord[] = [];
+      let pendingPromotions: MemoryPendingPromotion[] = [];
+      if (experience?.memory?.can_review_quarantine === true) {
+        try {
+          const quarantineResult = (await executeHeadlessCommand(
+            CONSOLE_COMMAND_NAMES.listMemoryQuarantine,
+            memoryTarget,
+          )) as MemoryPanelQuarantineResult | null;
+          quarantineRecords = quarantineResult?.records || [];
+          pendingPromotions = quarantineResult?.pending_promotions || [];
+        } catch (err) {
+          // Access denied to the quarantine queue leaves it empty rather than
+          // failing the whole panel.
+          if (jsonRpcErrorCode(err) !== -32030) throw err;
+        }
+      }
+
+      let dreams: MemoryDreamRun[] = [];
+      try {
+        const dreamsResult = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.listMemoryDreams,
+          memoryTarget,
+        )) as MemoryPanelDreamsResult | null;
+        dreams = dreamsResult?.runs || [];
+      } catch (err) {
+        // Tolerate access-denied for dreams: leave the list empty.
+        if (jsonRpcErrorCode(err) !== -32030) throw err;
+      }
+
+      setMemoryData((current) => ({
+        ...current,
+        records,
+        realms,
+        quarantineRecords,
+        pendingPromotions,
+        dreams,
+        unavailable: false,
+        error: null,
+      }));
+    } catch (err) {
+      // -32601 means the panel is not configured on this runtime.
+      if (jsonRpcErrorCode(err) === -32601) {
+        setMemoryData((current) => ({ ...current, unavailable: true, error: null }));
+        return;
+      }
+      setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl, experience?.memory?.can_review_quarantine]);
+
+  const loadMemoryRecordDetail = React.useCallback(
+    async (realm: string | undefined, memoryId: string) => {
+      setMemoryData((current) => ({ ...current, detail: null, detailLoading: true, error: null }));
+      try {
+        const result = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.getMemoryRecord,
+          controlWorkbenchTarget("memory"),
+          realm ? { realm, memory_id: memoryId } : { memory_id: memoryId },
+        )) as MemoryPanelRecordResult | null;
+        const detail: MemoryRecordDetail | null = result?.record
+          ? {
+              realm: result.realm,
+              record: result.record,
+              chain: result.chain || [],
+              injections: result.injections || [],
+            }
+          : null;
+        setMemoryData((current) => ({ ...current, detail, detailLoading: false }));
+      } catch (err) {
+        setMemoryData((current) => ({
+          ...current,
+          detail: null,
+          detailLoading: false,
+          error: errorMessage(err),
+        }));
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl],
+  );
+
   const runAccessMutation = React.useCallback(
     async (
       command:
@@ -2048,6 +2178,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (openPanels.some((t) => t.kind === "access")) {
       await refreshAccessData();
     }
+    if (openPanels.some((t) => t.kind === "memory")) {
+      await refreshMemoryData();
+    }
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
@@ -2064,7 +2197,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData]);
 
   React.useEffect(() => {
     void refreshPanelData().catch(() => {});
@@ -3382,6 +3515,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
               return null;
             }
           }}
+        />
+      );
+    if (target.kind === "memory")
+      return (
+        <MemoryPanel
+          records={memoryData.records}
+          realms={memoryData.realms}
+          quarantineRecords={memoryData.quarantineRecords}
+          pendingPromotions={memoryData.pendingPromotions}
+          dreams={memoryData.dreams}
+          detail={memoryData.detail}
+          detailLoading={memoryData.detailLoading}
+          canReviewQuarantine={experience?.memory?.can_review_quarantine === true}
+          unavailable={memoryData.unavailable}
+          error={memoryData.error}
+          onRefresh={() => void refreshMemoryData()}
+          onSelectRecord={(realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId)}
+          onClearDetail={() =>
+            setMemoryData((current) => ({ ...current, detail: null, detailLoading: false }))
+          }
         />
       );
     return <div className="console-panel">Unsupported panel</div>;

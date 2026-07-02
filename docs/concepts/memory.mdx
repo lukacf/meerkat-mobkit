@@ -179,8 +179,26 @@ MemoryStoreInfo {
 
 `record_count` counts stored assertions plus active conflict signals for the store. This is available through the RPC API for monitoring and diagnostics.
 
+## Console Memory panel
+
+When the bundled SQLite agent-memory store is wired, the console gains a **Memory** panel — trust through inspectability. It is strictly read-only and served by four `mobkit/memory/panel/*` RPC methods:
+
+| Method | Returns |
+|--------|---------|
+| `mobkit/memory/panel/records` | Records filtered by realm/scope/status, newest-updated first, keyset cursor (`{realm?, scope?, identity?, scope_key?, status?, limit?, cursor?}`). List rows are body-free (`body_bytes` stands in) |
+| `mobkit/memory/panel/record` | One record with body, its supersede chain (ancestors, committed successors, trailing uncommitted claimants), and its injection-ledger usage |
+| `mobkit/memory/panel/quarantine` | The quarantine queue plus pending gated promotions. The queue is read-only — verdicts belong to the memory steward's dream and the gating flow |
+| `mobkit/memory/panel/dreams` | Steward dream-run summaries reconstructed from the audit rows (op counts and kinds, quarantined ops, sampled record ids and rationales) |
+
+Memory lifecycle events (`memory.dream.*`, `memory.record.promoted`, `memory.quarantine.verdict`, `memory.write.quarantined`, `memory.taint.transition`, `memory.hygiene.*`, ...) flow onto the console timeline as standard envelopes and render in the timeline and Signals surfaces.
+
+Visibility is governed by the [access-control](/concepts/access-control) memory actions: identity-scoped records need `agent.memory.read` + `agent.view` on the identity, mob-scoped records need `mob.memory.read`, realm-scoped records and dream history need an unscoped `agent.memory.read` grant, and quarantined content needs `memory.quarantine.review`. The panel's nav entry appears when the experience projection reports `memory.can_read`.
+
+Embedders wire the panel by handing the store to the runtime: `runtime.set_memory_panel_store(store)` before building the console router.
+
 ## See also
 
 - [Gating](/concepts/gating) -- conflict-aware approval gates
+- [Access control](/concepts/access-control) -- the memory read actions governing panel visibility
 - `docs/design/memory-hub-roadmap.md` (in the repository) -- the roadmap for a real Elephant-backed memory hub
 - [RPC API](/api/rpc) -- `memory.*` methods

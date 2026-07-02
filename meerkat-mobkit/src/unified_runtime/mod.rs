@@ -159,6 +159,12 @@ pub struct UnifiedRuntime {
     // Optional ABAC enforcement shared by the console/SSE surfaces.
     access_controller: Option<crate::access::AccessController>,
 
+    // Optional bundled-store handle backing the console Memory panel's
+    // read-only RPCs (§9.3). Interior-mutable so gateways can wire it after
+    // the runtime is shared (`Arc`), wherever the store is constructed.
+    memory_panel_store:
+        std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
 
@@ -235,6 +241,7 @@ impl UnifiedRuntime {
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,
+            memory_panel_store: std::sync::RwLock::new(None),
             metadata_table,
             persistent_metadata,
         }
@@ -552,6 +559,29 @@ impl UnifiedRuntime {
     /// this call enforce (and live-serve) the ABAC configuration.
     pub fn set_access_controller(&mut self, controller: crate::access::AccessController) {
         self.access_controller = Some(controller);
+    }
+
+    /// Wire the bundled sqlite memory store into the console Memory panel
+    /// (§9.3). `&self` deliberately: gateways construct the store next to
+    /// the memory subsystem wiring, which may run after the runtime is
+    /// `Arc`-shared. Routers built *after* this call serve the panel RPCs.
+    pub fn set_memory_panel_store(
+        &self,
+        store: crate::memory::sqlite_store::SqliteAgentMemoryStore,
+    ) {
+        *self
+            .memory_panel_store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+    }
+
+    pub fn memory_panel_store(
+        &self,
+    ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+        self.memory_panel_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Borrow the shared access controller if one was installed.
