@@ -955,6 +955,10 @@ pub const MEMORY_TOOL_NAME: &str = "memory";
 /// the classic-mob spawn customizer (`crate::memory::spawn_customizer`).
 pub(crate) const RECORDER_PROTOCOL_INSTRUCTIONS: &str = "Memory recorder protocol: you have a `memory` tool \
 for durable records that survive session resets and respawns.\n\
+- Use `memory` for KNOWLEDGE — operator preferences and instructions, established facts, \
+decisions, gotchas, open loops. When the operator says \"remember\" or states a preference, \
+that goes to `memory`. Do NOT use a task/workflow tool (e.g. task_create) for this: task tools \
+track work to DO, `memory` stores what is TRUE or PREFERRED.\n\
 - Check the memory index in your context before writing; if a record already covers the fact, \
 use action \"update\" on its id instead of creating a duplicate.\n\
 - One fact per record. Write the `description` for your future self's retrieval — it is what \
@@ -971,7 +975,13 @@ steward dreams can close it.\n\
 write mob scope directly.";
 
 fn memory_tool_description() -> String {
-    "Durable identity-scoped memory: remember, update, forget, recall, and propose_to_mob. \
+    "Remember durable knowledge that must outlive this session — operator preferences and \
+     instructions, established facts, decisions, gotchas, and open loops. Use this whenever you \
+     learn something you should still know next time. This is NOT a task or workflow tool: \
+     `memory` stores what is TRUE or PREFERRED (knowledge); task/work tools track what must be \
+     DONE (action). When the operator says \"remember\" or states a preference, that is always \
+     `memory`, never a task. \
+     Durable identity-scoped memory: remember, update, forget, recall, and propose_to_mob. \
      Records persist across session resets and respawns and are injected into future builds. \
      Protocol: check your injected memory index first and prefer `update` on an existing \
      record id over writing a near-duplicate; keep one fact per record; write `description` \

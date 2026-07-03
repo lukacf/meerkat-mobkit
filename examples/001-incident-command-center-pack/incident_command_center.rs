@@ -34,8 +34,9 @@ use meerkat_mobkit::runtime::{
 };
 use meerkat_mobkit::unified_runtime::{DesiredPeerEdge, EdgeDiscovery, UnifiedRuntime};
 use meerkat_mobkit::{
-    DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy, RuntimeDecisionInputs,
-    RuntimeDecisionState, TrustedOidcRuntimeConfig, build_runtime_decision_state,
+    AgentMemoryConfig, DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy,
+    RuntimeDecisionInputs, RuntimeDecisionState, SqliteAgentMemoryStore, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state,
 };
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
@@ -202,11 +203,30 @@ async fn build_runtime_bundle_with_client(
     default_llm_client: Option<Arc<dyn LlmClient>>,
 ) -> Result<IncidentRuntimeBundle> {
     let definition = incident_definition()?;
+    // Classic-mob agent memory (no roster / IdentityRuntime): the recorder
+    // `memory` tool + build-time injection attach per member via the spawn
+    // customizer, and the bundled SQLite store auto-wires the Memory panel.
+    // Records accrue organically as the incident agents record durable facts
+    // (see the memory guidance in the commander/scribe roles).
+    let memory_dir = std::env::var("INCIDENT_COMMAND_CENTER_MEMORY_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("incident-command-center-memory"));
+    std::fs::create_dir_all(&memory_dir).ok();
+    let memory_store =
+        SqliteAgentMemoryStore::open(&memory_dir).context("open incident agent-memory store")?;
+
     let mut builder = UnifiedRuntime::builder()
         .definition(definition)
         .session_hook(Arc::new(IncidentSessionHook))
         .module_config(example_module_config(scenario)?)
         .edge_discovery(ScenarioEdgeDiscovery::new(scenario.links.clone()))
+        .agent_memory(
+            Arc::new(memory_store),
+            AgentMemoryConfig {
+                recorder_tool: true,
+                ..AgentMemoryConfig::default()
+            },
+        )
         .timeout(Duration::from_mins(1));
     if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
@@ -488,6 +508,8 @@ HOW TO OPERATE:
 - Your final operator answer should be concise, operationally useful, and mention which teammates you consulted.
 - Do not pretend a peer confirmed something if they have not replied.
 - When the operator explicitly asks you to generate an image, call `generate_image` directly without consulting peers first. Include `provider: "openai"` and the configured image model (`model: "{image_model}"`) in the image request so the example uses the selected image route instead of the provider default. If asked why a model was used, say it came from the example's image-model configuration, not from a fixed policy preference.
+- You have a `memory` tool for durable knowledge that should outlive this incident. When you establish or decide something durable — the affected service, the confirmed root cause, the chosen mitigation, an operator's stated preference — record it with `memory` (`action: "remember"`, a one-line `title`, a `description` of when it matters next time, the fact in `body`). If a durable fact you recorded is later corrected, `action: "update"` its `memory_id` so the new fact supersedes the old one. Record decisions and established facts only, not routine chatter.
+- IMPORTANT — `memory` vs `task_create`: an operator preference, instruction, or established fact is KNOWLEDGE and goes to `memory` (never `task_create`). `task_create` is only for actionable incident work items to be done. If the operator says "remember" or states how they want things done, that is always a `memory` write.
 """
 
 [skills.payments_sre_role]
@@ -554,6 +576,12 @@ JOB:
 - If you cannot identify the sender from the comms notice, say that explicitly; otherwise always send the reply.
 - When commander asks what is currently established, answer with the tightest fact pattern you have.
 - Do not invent operational actions; you summarize and confirm.
+
+DURABLE MEMORY:
+- You have a `memory` tool for durable, cross-incident knowledge. As the scribe you are the primary keeper of it.
+- When a fact becomes ESTABLISHED (the affected service, the confirmed root cause, the chosen mitigation, an operator preference on how updates are worded), call `memory` with `action: "remember"`: a one-line `title`, a `description` of when this fact matters for a future incident, and the fact itself in `body`. Set `epistemic: "operator_said"` when it came from the operator, otherwise `"observed"`.
+- If an established fact is later CORRECTED (e.g. the root cause is revised, or a mitigation is superseded by a safer one), call `memory` with `action: "update"` on the prior record's `memory_id` so the correction supersedes the stale fact rather than sitting beside it.
+- Record sparingly: durable established facts and decisions, never turn-by-turn chatter.
 """
 
 [skills.approval_gate_role]
@@ -912,7 +940,11 @@ impl SessionHook for IncidentSessionHook {
         let labels = req.labels.clone().unwrap_or_default();
         let is_commander = is_incident_commander_request(req, &labels);
         let build = req.build.get_or_insert_with(SessionBuildOptions::default);
-        build.external_tools = Some(Arc::new(IncidentToolDispatcher));
+        // COMPOSE over any existing external tools (the agent-memory recorder's
+        // `memory` tool) instead of replacing them — a plain assignment here
+        // silently dropped the recorder, so `memory` never reached the model.
+        let inner = build.external_tools.take();
+        build.external_tools = Some(Arc::new(IncidentToolDispatcher { inner }));
         if is_commander {
             build.override_mob = ToolCategoryOverride::Enable;
             build.resume_override_mask.override_mob = true;
@@ -959,7 +991,13 @@ impl SessionHook for IncidentSessionHook {
 }
 
 #[derive(Clone)]
-pub(crate) struct IncidentToolDispatcher;
+pub struct IncidentToolDispatcher {
+    /// Any external-tool dispatcher already installed on the build (e.g. the
+    /// agent-memory recorder's `memory` tool). We COMPOSE over it rather than
+    /// replace it — overwriting `build.external_tools` would silently drop the
+    /// recorder and the memory feature would never reach the model.
+    pub inner: Option<Arc<dyn AgentToolDispatcher>>,
+}
 
 fn incident_tool_provenance() -> ToolProvenance {
     ToolProvenance {
@@ -972,7 +1010,7 @@ fn incident_tool_provenance() -> ToolProvenance {
 impl AgentToolDispatcher for IncidentToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         let provenance = incident_tool_provenance();
-        vec![
+        let mut tools = vec![
             Arc::new(ToolDef {
                 name: "inspect_service".into(),
                 description: "Inspect the current health and saturation of a named service"
@@ -987,8 +1025,13 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
                 input_schema: meerkat_tools::schema_for::<AnalyzeImpactArgs>(),
                 provenance: Some(provenance),
             }),
-        ]
-        .into()
+        ];
+        // Compose: surface the inner dispatcher's tools (the `memory` recorder)
+        // alongside ours so they all reach the model.
+        if let Some(inner) = self.inner.as_ref() {
+            tools.extend(inner.tools().iter().cloned());
+        }
+        tools.into()
     }
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
@@ -1036,7 +1079,12 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
                 )
                 .into())
             }
-            _ => Err(ToolError::not_found(call.name)),
+            // Unknown to us: delegate to the composed inner dispatcher (the
+            // memory recorder), so its `memory` tool actually works.
+            other => match self.inner.as_ref() {
+                Some(inner) => inner.dispatch(call).await,
+                None => Err(ToolError::not_found(other)),
+            },
         }
     }
 }

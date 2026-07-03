@@ -42,6 +42,32 @@ fn test_definition() -> MobDefinition {
     MobDefinition::from_toml(CLASSIC_MOB_TOML).expect("parse test mob definition")
 }
 
+// A commander-like profile that ALSO enables meerkat's built-in tool
+// categories (builtins/mob/mob_tasks) — the incident-pack commander shape.
+// Guards that the recorder `memory` external tool still registers when those
+// categories are on (they compose, they do not suppress it). Diagnoses the
+// live finding that the commander reached for `task_create` (a mob_tasks tool)
+// instead of `memory`: that is tool *competition*, not a missing recorder.
+const COMMANDER_LIKE_MOB_TOML: &str = r#"
+[mob]
+id = "classic-memory-mob"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+external_addressable = true
+
+[profiles.worker.tools]
+builtins = true
+comms = true
+mob = true
+mob_tasks = true
+"#;
+
+fn commander_like_definition() -> MobDefinition {
+    MobDefinition::from_toml(COMMANDER_LIKE_MOB_TOML).expect("parse commander-like definition")
+}
+
 /// LLM stub that records every request (tool names + full JSON) so tests can
 /// assert on the member's build surface: registered tools and the system
 /// instructions the memory customizer injected.
@@ -259,6 +285,138 @@ async fn classic_member_build_registers_recorder_and_injects_memory() {
     assert!(
         first.request_json.contains("Memory recorder protocol"),
         "recorder protocol instructions must be injected"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile-spawned members ALSO get the recorder tool. The incident-command
+// pack (and every roster-less console example) populates its roster via
+// `reconcile`, not `spawn_many`; this guards that the customizer fires on the
+// reconcile spawn path too (regression: the panel stayed empty because the
+// memory tool never reached reconcile-spawned members).
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn classic_reconcile_spawned_member_registers_recorder() {
+    use meerkat_mob::runtime::reconcile::ReconcileOptions;
+
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let store = SqliteAgentMemoryStore::open(memory_dir.path()).expect("sqlite store");
+    seed_identity_record(
+        &store,
+        "helper",
+        "Deploy window",
+        "Deploys are frozen on Fridays.",
+    )
+    .await;
+
+    let client = CaptureClient::default();
+    let runtime = build_classic_runtime(
+        store,
+        AgentMemoryConfig {
+            selection: AgentMemorySelection::Always,
+            ..AgentMemoryConfig::default()
+        },
+        client.clone(),
+    )
+    .await;
+
+    runtime
+        .mob_handle()
+        .reconcile(
+            vec![SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "helper".to_string(),
+                None,
+                None,
+                None,
+            )],
+            ReconcileOptions { retire_stale: true },
+        )
+        .await
+        .expect("reconcile roster on the classic path");
+    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "helper", "hello".to_string())
+        .await
+        .expect("send message");
+
+    let captured = client.wait_for_request(1).await;
+    let first = &captured[0];
+    assert!(
+        first.tool_names.iter().any(|name| name == "memory"),
+        "recorder tool must be registered on the reconcile-spawned member: {:?}",
+        first.tool_names
+    );
+    assert!(
+        first
+            .request_json
+            .contains("Deploys are frozen on Fridays."),
+        "build-time injection must carry the seeded record body on reconcile"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+// ---------------------------------------------------------------------------
+// The recorder `memory` tool survives on a member whose profile also enables
+// meerkat's built-in tool categories (builtins/mob/mob_tasks) — the incident
+// commander shape. Diagnoses the live finding that the commander called
+// `task_create` (a mob_tasks tool) when asked to "remember": the recorder is
+// present, so that is tool *competition* in the model's selection, not a
+// missing/suppressed recorder.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn classic_recorder_survives_alongside_mob_tool_categories() {
+    use meerkat_mob::runtime::reconcile::ReconcileOptions;
+
+    let memory_dir = tempfile::tempdir().expect("memory dir");
+    let store = SqliteAgentMemoryStore::open(memory_dir.path()).expect("sqlite store");
+
+    let client = CaptureClient::default();
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(commander_like_definition())
+            .agent_memory(Arc::new(store), AgentMemoryConfig::default())
+            .default_llm_client(Arc::new(client.clone()))
+            .build(),
+    )
+    .await
+    .expect("commander-like classic runtime with agent memory must build");
+
+    runtime
+        .mob_handle()
+        .reconcile(
+            vec![SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "helper".to_string(),
+                None,
+                None,
+                None,
+            )],
+            ReconcileOptions { retire_stale: true },
+        )
+        .await
+        .expect("reconcile commander-like member");
+    meerkat_mobkit::send_message_on_mob(&runtime.mob_handle(), "helper", "hello".to_string())
+        .await
+        .expect("send message");
+
+    let captured = client.wait_for_request(1).await;
+    let first = &captured[0];
+    // Both tools are present in the same (large) surface: the recorder is NOT
+    // suppressed by the mob categories — the live "commander used task_create
+    // to remember" behavior is model mis-selection among the competing tools,
+    // not a missing recorder. Guarding both documents that root cause.
+    assert!(
+        first.tool_names.iter().any(|name| name == "memory"),
+        "recorder `memory` tool must register even when builtins/mob/mob_tasks are enabled: {:?}",
+        first.tool_names
+    );
+    assert!(
+        first.tool_names.iter().any(|name| name == "task_create"),
+        "the mob_tasks `task_create` tool must also be present (it is what the recorder competes \
+         with for \"remember\" instructions): {:?}",
+        first.tool_names
     );
     runtime.mob_handle().stop().await.expect("stop");
 }

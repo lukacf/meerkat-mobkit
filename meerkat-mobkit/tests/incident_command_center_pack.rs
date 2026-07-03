@@ -84,7 +84,7 @@ fn incident_local_tools_are_witnessed_for_delegate_inheritance() {
     // meerkat 0.7 made meerkat_mob::snapshot private; the same provenance
     // contract is asserted through the public meerkat_core::tool_scope
     // witness derivation the snapshot used internally.
-    let tools = IncidentToolDispatcher.tools();
+    let tools = IncidentToolDispatcher { inner: None }.tools();
     let defs: Vec<meerkat_core::types::ToolDef> =
         tools.iter().map(|tool| (**tool).clone()).collect();
     let filter = meerkat_core::tool_scope::ToolFilter::Allow(
@@ -100,6 +100,72 @@ fn incident_local_tools_are_witnessed_for_delegate_inheritance() {
         witnesses.contains_key("analyze_customer_impact"),
         "analyze_customer_impact must carry provenance so delegate can inherit it"
     );
+}
+
+// Regression: the incident tool dispatcher must COMPOSE over any external
+// tools already installed on the build (the agent-memory recorder's `memory`
+// tool), not replace them. The original hook overwrote build.external_tools,
+// silently dropping the recorder so `memory` never reached the model and the
+// Memory panel stayed empty.
+#[tokio::test]
+async fn incident_dispatcher_composes_inner_external_tools() {
+    use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
+    use meerkat_core::{ToolDispatchOutcome, ToolError};
+
+    struct FakeInner;
+    #[async_trait::async_trait]
+    impl AgentToolDispatcher for FakeInner {
+        fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+            vec![Arc::new(ToolDef {
+                name: "memory".into(),
+                description: "stand-in recorder".to_string(),
+                input_schema: json!({"type": "object"}),
+                provenance: None,
+            })]
+            .into()
+        }
+        async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+            Ok(ToolResult::new(call.id.to_string(), "recorded".to_string(), false).into())
+        }
+    }
+
+    let dispatcher = IncidentToolDispatcher {
+        inner: Some(Arc::new(FakeInner)),
+    };
+    let names: Vec<String> = dispatcher
+        .tools()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(names.iter().any(|n| n == "inspect_service"));
+    assert!(names.iter().any(|n| n == "analyze_customer_impact"));
+    assert!(
+        names.iter().any(|n| n == "memory"),
+        "composed inner tool (memory recorder) must surface alongside incident tools: {names:?}"
+    );
+
+    // And an unknown-to-us call must delegate to the inner dispatcher (rather
+    // than NotFound) — proving the recorder's tool is actually callable.
+    let empty_args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    dispatcher
+        .dispatch(ToolCallView {
+            id: "call-1",
+            name: "memory",
+            args: &empty_args,
+        })
+        .await
+        .expect("unknown tool must route to the inner recorder, not NotFound");
+
+    // With no inner, an unknown tool is genuinely absent.
+    let bare = IncidentToolDispatcher { inner: None };
+    let miss = bare
+        .dispatch(ToolCallView {
+            id: "call-2",
+            name: "memory",
+            args: &empty_args,
+        })
+        .await;
+    assert!(matches!(miss, Err(ToolError::NotFound { .. })));
 }
 
 #[tokio::test]
