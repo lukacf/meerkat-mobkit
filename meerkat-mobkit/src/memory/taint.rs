@@ -267,10 +267,32 @@ impl SessionTaintTracker {
             AgentEvent::RunStarted { session_id, input } => {
                 let session_key = session_id.to_string();
                 self.note_current_session(identity, &session_key);
-                // §10.1 comms taint join: peer-delivered content arrives as
-                // the run's injected input, not as a typed event.
+                // §10.1 comms taint join (legacy, belt-and-braces): before
+                // meerkat 0.7.13 the only inbound signal was projection text.
+                // It stays as a fallback for same-process senders whose taint
+                // this host tracks but who make no envelope declaration.
                 if let Some(text) = input.prompt_text() {
                     self.observe_inbound_peer_content(identity, &session_key, &text);
+                }
+            }
+            // §10.1 ask 5 (0.7.13): consume the sender's SIGNED content-taint
+            // declaration from the typed peer-ingestion event — canonical peer
+            // identity, emitted synchronously as the block commits — instead of
+            // parsing rendered projection text. Only an affirmative `Tainted`
+            // taints the receiving session; `None` ("no declaration") and
+            // `Clean` do not, and `None` is never coalesced into `Clean`.
+            AgentEvent::PeerContentIngested {
+                peer, sender_taint, ..
+            } => {
+                if *sender_taint == Some(meerkat_core::comms::SenderContentTaint::Tainted) {
+                    let sender = peer
+                        .as_ref()
+                        .and_then(|peer| peer.display_name.clone())
+                        .unwrap_or_else(|| "peer".to_string());
+                    self.mark_identity_tainted(
+                        identity,
+                        format!("peer content declared tainted by sender '{sender}'"),
+                    );
                 }
             }
             // Taint on result *ingestion*: these are the events whose content
@@ -878,6 +900,49 @@ mod tests {
             }],
             is_error: false,
         }
+    }
+
+    fn peer_ingested(taint: Option<meerkat_core::comms::SenderContentTaint>) -> AgentEvent {
+        AgentEvent::PeerContentIngested {
+            kind: meerkat_core::types::CommsNoticeKind::Message,
+            peer: None,
+            request_id: None,
+            sender_taint: taint,
+        }
+    }
+
+    // Ask 5 (0.7.13): the receiver taints on a sender's SIGNED `Tainted`
+    // declaration, from the typed event — but `None` ("no declaration") and
+    // `Clean` must never taint, and `None` is never coalesced into `Clean`.
+    #[test]
+    fn declared_peer_taint_taints_receiver_but_none_or_clean_does_not() {
+        use meerkat_core::comms::SenderContentTaint;
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        tracker.note_current_session("identity:b", "sess-b");
+
+        tracker.observe_agent_event("identity:b", &peer_ingested(None));
+        assert!(
+            tracker.session_taint("sess-b").is_none(),
+            "no declaration must not taint"
+        );
+
+        tracker.observe_agent_event(
+            "identity:b",
+            &peer_ingested(Some(SenderContentTaint::Clean)),
+        );
+        assert!(
+            tracker.session_taint("sess-b").is_none(),
+            "an affirmative Clean declaration must not taint"
+        );
+
+        tracker.observe_agent_event(
+            "identity:b",
+            &peer_ingested(Some(SenderContentTaint::Tainted)),
+        );
+        assert!(
+            tracker.session_taint("sess-b").is_some(),
+            "a declared-tainted peer delivery taints the receiving session"
+        );
     }
 
     #[test]
