@@ -182,9 +182,11 @@ async fn incident_hook_composes_memory_injection_and_tools() {
 
     // Stand in for the agent-memory customizer's pre-installed build state:
     // a recalled-memory injection line + a recorder external-tool dispatcher.
-    let mut build = SessionBuildOptions::default();
-    build.additional_instructions = Some(vec!["MEMORY-RECALL: operator name is Luka.".to_string()]);
-    build.external_tools = Some(Arc::new(RecorderMarkerDispatcher));
+    let build = SessionBuildOptions {
+        additional_instructions: Some(vec!["MEMORY-RECALL: operator name is Luka.".to_string()]),
+        external_tools: Some(Arc::new(RecorderMarkerDispatcher)),
+        ..SessionBuildOptions::default()
+    };
 
     let mut req = CreateSessionRequest {
         model: "gpt-5.5".to_string(),
