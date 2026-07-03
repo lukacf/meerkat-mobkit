@@ -7458,6 +7458,7 @@ impl meerkat_mobkit::memory::distiller::TranscriptSource for OrderWitnessTranscr
             session_key: session_key.to_string(),
             start_index: from_index,
             end_index: from_index + 1,
+            head_revision: None,
             messages: vec![meerkat_mobkit::memory::distiller::TranscriptMessage {
                 index: from_index,
                 role: "user",
@@ -7637,6 +7638,7 @@ impl meerkat_mobkit::memory::distiller::TranscriptSource for GatedTranscripts {
             session_key: session_key.to_string(),
             start_index: from_index,
             end_index: from_index + 1,
+            head_revision: None,
             messages: vec![meerkat_mobkit::memory::distiller::TranscriptMessage {
                 index: from_index,
                 role: "user",

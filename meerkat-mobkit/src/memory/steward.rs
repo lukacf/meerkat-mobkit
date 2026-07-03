@@ -3722,6 +3722,7 @@ mod tests {
                 session_key: session_key.to_string(),
                 start_index: start,
                 end_index: end,
+                head_revision: None,
                 messages: messages[start as usize..]
                     .iter()
                     .enumerate()

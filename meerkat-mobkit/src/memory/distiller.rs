@@ -515,6 +515,11 @@ pub struct TranscriptSlice {
     pub start_index: u64,
     pub end_index: u64,
     pub messages: Vec<TranscriptMessage>,
+    /// Ask 4 refinement (0.7.12): the transcript head revision id at the
+    /// instant this slice was read, so distilled records can pin the exact
+    /// revision their evidence was extracted from (§7.1). `None` when the
+    /// source cannot report a revision.
+    pub head_revision: Option<String>,
 }
 
 /// How the engine reads persisted transcripts. The real implementation is
@@ -562,6 +567,11 @@ impl TranscriptSource for SessionStoreTranscriptSource {
         let Some(session) = session else {
             return Ok(None);
         };
+        // Ask 4 refinement: pin the head revision the extractor is about to
+        // read. `transcript_revision()` is fallible serialization; a failure
+        // degrades to None ("head at capture time") rather than blocking the
+        // distillation.
+        let head_revision = session.transcript_revision().ok();
         let all = session.messages();
         let end_index = all.len() as u64;
         let start_index = from_index.min(end_index);
@@ -585,6 +595,7 @@ impl TranscriptSource for SessionStoreTranscriptSource {
             start_index,
             end_index,
             messages,
+            head_revision,
         }))
     }
 }
@@ -1385,7 +1396,7 @@ impl DistillerEngine {
 
         // Evidence read comes before the budget gate: an empty window must
         // not burn a budgeted run.
-        let (evidence_text, evidence_range, window_end) = match cause {
+        let (evidence_text, evidence_range, window_end, head_revision) = match cause {
             DistillCause::Compaction => {
                 let Some(compaction) = self.compaction.as_ref() else {
                     return DistillOutcome::Skipped {
@@ -1415,7 +1426,9 @@ impl DistillerEngine {
                     };
                 }
                 let range = discard_evidence_range(&entries);
-                (render_discards(&entries), range, None)
+                // Discards predate the current transcript head (they were
+                // evicted at compaction), so there is no head revision to pin.
+                (render_discards(&entries), range, None, None)
             }
             _ => {
                 let slice = match self.transcripts.read(session_key, cursor).await {
@@ -1455,7 +1468,13 @@ impl DistillerEngine {
                     };
                 }
                 let range = Some((slice.start_index, slice.end_index.saturating_sub(1)));
-                (render_transcript(&slice), range, Some(slice.end_index))
+                let head_revision = slice.head_revision.clone();
+                (
+                    render_transcript(&slice),
+                    range,
+                    Some(slice.end_index),
+                    head_revision,
+                )
             }
         };
 
@@ -1579,7 +1598,13 @@ impl DistillerEngine {
                     continue;
                 }
             };
-            let record = self.build_record(&op, session_key, generation, evidence_range);
+            let record = self.build_record(
+                &op,
+                session_key,
+                generation,
+                evidence_range,
+                head_revision.as_deref(),
+            );
             let result = match &op.action {
                 ProposedAction::Remember => {
                     self.provider
@@ -1638,6 +1663,7 @@ impl DistillerEngine {
         session_key: &str,
         generation: u64,
         window_range: Option<(u64, u64)>,
+        revision: Option<&str>,
     ) -> NewMemoryRecord {
         let mut tags = op.tags.clone();
         if op.epistemic == Epistemic::OperatorSaid
@@ -1667,7 +1693,10 @@ impl DistillerEngine {
             evidence: vec![EvidenceRef {
                 session_id: session_key.to_string(),
                 generation,
-                revision: None,
+                // Ask 4 refinement: pin the transcript head revision the
+                // evidence was read at (None on the compaction path, whose
+                // discards predate the current head).
+                revision: revision.map(str::to_string),
                 range,
             }],
             verification: None,
@@ -2146,6 +2175,7 @@ mod tests {
                     text: text.to_string(),
                 })
                 .collect(),
+            head_revision: Some("rev-head".to_string()),
         }
     }
 
@@ -2347,7 +2377,9 @@ mod tests {
         let evidence = &record.evidence[0];
         assert_eq!(evidence.session_id, "sess-1");
         assert_eq!(evidence.generation, 3);
-        assert_eq!(evidence.revision, None);
+        // Ask 4 refinement: transcript-path evidence pins the head revision
+        // the slice was read at (the StaticTranscript reports "rev-head").
+        assert_eq!(evidence.revision.as_deref(), Some("rev-head"));
         assert_eq!(
             evidence.range,
             Some((1, 2)),
