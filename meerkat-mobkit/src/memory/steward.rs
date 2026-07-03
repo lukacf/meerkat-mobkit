@@ -993,15 +993,24 @@ impl StewardEngine {
         format!("dream-{}-{seq}", now_ms())
     }
 
-    /// The guarded interval loop (module docs: scheduling-subsystem
-    /// integration is a documented TODO; the cadence grammar is already
-    /// the subsystem's).
+    /// The configured dream cadence as a concrete interval. The durable
+    /// schedule host (§ ask 7 / P5) uses this to drive the dream runnable;
+    /// falls back to the same 6h default the in-process loop uses when the
+    /// cadence marker is malformed.
+    pub fn dream_cadence(&self) -> Duration {
+        self.config
+            .cadence_interval()
+            .unwrap_or(Duration::from_hours(6))
+    }
+
+    /// The guarded interval loop — the in-process fallback used only on
+    /// gateways with no schedule host. When a schedule host is present the
+    /// dream is driven as a durable, misfire-aware host-runnable occurrence
+    /// instead (see `schedule_wiring::steward_dream_runnable_host` /
+    /// `ensure_steward_dream_schedule`).
     pub fn spawn_dream_loop(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let engine = self.clone();
-        let interval = self
-            .config
-            .cadence_interval()
-            .unwrap_or(Duration::from_hours(6));
+        let interval = self.dream_cadence();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
