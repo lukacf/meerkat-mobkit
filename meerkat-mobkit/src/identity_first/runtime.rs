@@ -2544,8 +2544,12 @@ impl IdentityRuntime {
         // is defanged first (§9.1 anti-spoofing — even with injection off,
         // forged memory envelopes are an inbound threat) and only then
         // considered for ambient injection.
-        let content_to_deliver = if handling_mode == HandlingMode::Steer {
-            content.clone()
+        // Ask 1: the user content and the ambient memory recall travel as
+        // SEPARATE bodies — `content_to_deliver` is the (defanged) user
+        // message, `injected_context` is the recall assembled as its own
+        // typed injected-context body. They are never fused into one text.
+        let (content_to_deliver, injected_context) = if handling_mode == HandlingMode::Steer {
+            (content.clone(), Vec::new())
         } else {
             match self.agent_memory.read().await.clone() {
                 Some(injector) => {
@@ -2560,21 +2564,27 @@ impl IdentityRuntime {
                         }
                     }
                     let defanged = injector.defang_inbound(identity, content);
-                    injector
+                    let injected_context = injector
                         .inject_for_turn(identity, memory_session_key.as_deref(), &defanged)
                         .await
                         .map_err(|err| {
                             IdentityRuntimeError::Internal(format!("agent memory recall: {err}"))
-                        })?
+                        })?;
+                    (defanged, injected_context)
                 }
-                None => content.clone(),
+                None => (content.clone(), Vec::new()),
             }
         };
 
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
             let delivered_session_id = bridge
-                .deliver_with_mode(rid, &content_to_deliver, handling_mode)
+                .deliver_with_mode_and_context(
+                    rid,
+                    &content_to_deliver,
+                    &injected_context,
+                    handling_mode,
+                )
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
             if let Some(rebound_token) = self
@@ -3742,10 +3752,23 @@ impl IdentityRuntime {
         // Bounded; deletion proceeds at the pre-rotation timeout.
         if let Some(injector) = self.agent_memory.read().await.clone() {
             if let Some(session_id) = session_id.as_ref() {
+                let session_key = session_id.to_string();
                 injector
                     .distill_before_rotation(
                         identity,
-                        &session_id.to_string(),
+                        &session_key,
+                        crate::memory::distiller::DistillCause::Delete,
+                    )
+                    .await;
+                // Ask 2 GC: delete permanently abandons this session id, and
+                // its knowledge has just been distilled into the identity-keyed
+                // MobKit store (which the exit-interview harvest below reads —
+                // a DIFFERENT store from the meerkat session-memory scope). So
+                // reclaiming the orphaned meerkat scope here frees dead
+                // re-embed weight without starving any downstream read.
+                injector
+                    .drop_orphaned_session_scope(
+                        &session_key,
                         crate::memory::distiller::DistillCause::Delete,
                     )
                     .await;

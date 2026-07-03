@@ -704,6 +704,10 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
                 Some(draft.labels.clone())
             },
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            // Meerkat 0.7.12: typed per-request ambient injection (upstream
+            // ask #1). This synthetic request only carries build-draft state;
+            // memory injection rides its own path, so it stays empty here.
+            injected_context: Vec::new(),
         };
 
         // Snapshot "before" state for unsupported-mutation detection (REQ-30).

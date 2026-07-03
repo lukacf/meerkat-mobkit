@@ -225,6 +225,22 @@ impl SqliteAgentMemoryStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
     }
 
+    /// Install the §10.1 gate only when none is present. The classic-mob
+    /// builder path uses this so it never clobbers a taint-tracking gate an
+    /// embedder (or the gateway) installed before handing the store over.
+    /// Returns whether this call installed the gate.
+    pub fn set_llm_write_gate_if_absent(&self, gate: Arc<dyn LlmWriteGate>) -> bool {
+        let mut guard = self
+            .llm_write_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(gate);
+        true
+    }
+
     /// Install the §10.2 evidence-ref resolver. The steward wiring installs
     /// it at startup; from then on every staged retier to `agent_verified`
     /// must cite evidence that resolves against the session store.
@@ -241,6 +257,24 @@ impl SqliteAgentMemoryStore {
             .event_sink
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Wire the §9.3 sink only when none is present — the classic-mob
+    /// builder path uses this so an embedder-installed sink survives.
+    /// Returns whether this call installed the sink.
+    pub fn set_event_sink_if_absent(
+        &self,
+        sink: Arc<dyn crate::memory::events::MemoryEventSink>,
+    ) -> bool {
+        let mut guard = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(sink);
+        true
     }
 
     fn gate(&self) -> Option<Arc<dyn LlmWriteGate>> {
@@ -1300,6 +1334,10 @@ impl AgentMemoryProvider for SqliteAgentMemoryStore {
 
     fn supports_authored_writes(&self) -> bool {
         true
+    }
+
+    fn as_sqlite_store(&self) -> Option<&SqliteAgentMemoryStore> {
+        Some(self)
     }
 }
 

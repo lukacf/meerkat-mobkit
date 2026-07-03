@@ -855,6 +855,69 @@ rust_test(
 )
 
 rust_test(
+    name = "classic_agent_memory_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "classic_agent_memory",
+    crate_root = "tests/classic_agent_memory.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/classic_agent_memory.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.19",
+        "CARGO_BIN_NAME": "classic_agent_memory",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "console_customization_fixtures_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -2563,6 +2626,69 @@ rust_test(
         ":package_runfiles",
         "//:repo_governance_files",
     ],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "identity_first_respawn_continuity_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "identity_first_respawn_continuity",
+    crate_root = "tests/identity_first_respawn_continuity.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/identity_first_respawn_continuity.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.19",
+        "CARGO_BIN_NAME": "identity_first_respawn_continuity",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
     env = {
         "RUST_MIN_STACK": "16777216",
     },
@@ -4893,6 +5019,7 @@ test_suite(
         ":bigquery_adapter_test",
         ":bigquery_gc_test",
         ":builder_api_test",
+        ":classic_agent_memory_test",
         ":console_experience_test",
         ":console_route_auth_test",
         ":core_types_and_rpc_test",
@@ -4916,6 +5043,7 @@ test_suite(
         ":identity_first_contracts_test",
         ":identity_first_kitchen_sink_test",
         ":identity_first_ob3_smoke_test",
+        ":identity_first_respawn_continuity_test",
         ":identity_first_runtime_test",
         ":identity_first_types_test",
         ":incident_command_center_pack_test",

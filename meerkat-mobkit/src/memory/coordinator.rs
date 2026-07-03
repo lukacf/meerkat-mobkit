@@ -432,21 +432,30 @@ impl RecallCoordinator {
 
     /// Ambient per-turn injection. `session_key` scopes the cross-turn dedup
     /// and cumulative byte budget; without it only the per-assembly cap holds.
+    /// Assemble the ambient per-turn memory recall as a SEPARATE typed
+    /// injected-context body (meerkat 0.7.12 ask 1): the return is the
+    /// `injected_context` vector to attach alongside the user's message, NOT
+    /// fused into its text. An empty vector means "inject nothing" (off,
+    /// empty query, exhausted budget, or no records) — the caller then
+    /// delivers the user content unchanged. Delivering as the typed class is
+    /// what makes injection echo-safe (excluded from compaction indexing) and
+    /// authenticated (a channel, not a text pattern) rather than the old
+    /// fused-into-user-text behavior.
     pub async fn inject_for_turn(
         &self,
         identity: &AgentIdentity,
         session_key: Option<&str>,
         content: &meerkat_core::ContentInput,
-    ) -> Result<meerkat_core::ContentInput, AgentMemoryError> {
+    ) -> Result<Vec<meerkat_core::ContentInput>, AgentMemoryError> {
         if self.config.per_turn_injection == AgentMemoryPerTurnInjection::Off {
-            return Ok(content.clone());
+            return Ok(Vec::new());
         }
         let query_text = compact_whitespace(&content.text_content());
         let query_terms = terms_from_value(&query_text)
             .into_iter()
             .collect::<Vec<_>>();
         if self.config.selection == AgentMemorySelection::Contextual && query_text.is_empty() {
-            return Ok(content.clone());
+            return Ok(Vec::new());
         }
         let (skip_ids, budget) = match session_key {
             Some(key) => {
@@ -466,7 +475,7 @@ impl RecallCoordinator {
             None => (None, MAX_INJECTED_ASSEMBLY_BYTES),
         };
         if budget < MIN_INJECTION_BUDGET_BYTES {
-            return Ok(content.clone());
+            return Ok(Vec::new());
         }
         let selected = self
             .selector_records(
@@ -499,7 +508,7 @@ impl RecallCoordinator {
             ),
         };
         if records.is_empty() {
-            return Ok(content.clone());
+            return Ok(Vec::new());
         }
         let nonce = self.nonce_for(identity, session_key);
         let Some(rendered) = render_injection_annotated(
@@ -511,7 +520,7 @@ impl RecallCoordinator {
             skip_ids.as_ref(),
             budget,
         ) else {
-            return Ok(content.clone());
+            return Ok(Vec::new());
         };
         if let Some(key) = session_key {
             let mut guard = self
@@ -548,7 +557,11 @@ impl RecallCoordinator {
             &rendered.included_ids,
         )
         .await;
-        Ok(prepend_memory_injection(content, rendered.text))
+        // Ask 1: deliver the recall as a separate injected-context body
+        // (meerkat stamps ContentInput in `injected_context` as the typed
+        // InjectedContext role → excluded from compaction indexing). The
+        // user's message text is never touched.
+        Ok(vec![meerkat_core::ContentInput::Text(rendered.text)])
     }
 
     // -----------------------------------------------------------------------
@@ -1279,25 +1292,6 @@ fn age_phrase(age_days: u64) -> String {
     }
 }
 
-pub(crate) fn prepend_memory_injection(
-    content: &meerkat_core::ContentInput,
-    injection: String,
-) -> meerkat_core::ContentInput {
-    match content {
-        meerkat_core::ContentInput::Text(text) => meerkat_core::ContentInput::Text(format!(
-            "{injection}\n\nCurrent user message:\n{text}"
-        )),
-        meerkat_core::ContentInput::Blocks(blocks) => {
-            let mut with_memory = Vec::with_capacity(blocks.len() + 1);
-            with_memory.push(meerkat_core::ContentBlock::Text {
-                text: format!("{injection}\n\nCurrent user message follows."),
-            });
-            with_memory.extend(blocks.iter().cloned());
-            meerkat_core::ContentInput::Blocks(with_memory)
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Defanging (pure)
 // ---------------------------------------------------------------------------
@@ -1443,6 +1437,24 @@ mod tests {
     use async_trait::async_trait;
     use std::error::Error;
     use std::sync::Mutex as StdMutex;
+
+    /// Ask 1 changed `inject_for_turn` to return the recall as a SEPARATE
+    /// `Vec<ContentInput>` (the typed injected-context bodies) instead of a
+    /// single ContentInput fused with the user's text. This test-only helper
+    /// flattens the returned bodies back to one string so the existing
+    /// "injection contains X" assertions read unchanged; an empty vector
+    /// (nothing injected) flattens to the empty string.
+    trait InjectionText {
+        fn text_content(&self) -> String;
+    }
+    impl InjectionText for Vec<meerkat_core::ContentInput> {
+        fn text_content(&self) -> String {
+            self.iter()
+                .map(meerkat_core::ContentInput::text_content)
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
 
     fn identity() -> Result<AgentIdentity, Box<dyn Error>> {
         AgentIdentity::parse("identity:luka").map_err(|err| {
@@ -2287,7 +2299,7 @@ mod tests {
         let second = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(second.text_content(), "hello");
+        assert!(second.is_empty(), "deduped turn injects nothing new");
         assert_eq!(
             provider.captured_injections().len(),
             1,
@@ -2500,9 +2512,8 @@ mod tests {
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
 
-        assert_eq!(
-            injected.text_content(),
-            "hello",
+        assert!(
+            injected.is_empty(),
             "an empty selection is a verdict, not a fallback"
         );
         assert!(provider.captured_injections().is_empty());
@@ -2613,9 +2624,8 @@ mod tests {
         let first = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            first.text_content(),
-            "hello",
+        assert!(
+            first.is_empty(),
             "the escalating turn itself must not block on the sweep"
         );
 
@@ -2697,7 +2707,15 @@ mod tests {
         let provider = Arc::new(FakeProvider::bodies_only(vec![record(
             "mem-1", "Fact", "Body",
         )]));
-        let coordinator = RecallCoordinator::new(provider.clone(), AgentMemoryConfig::default());
+        // Ask 1 flipped the default to Budgeted, so this test must opt Off
+        // explicitly to exercise the off-mode short-circuit it is named for.
+        let coordinator = RecallCoordinator::new(
+            provider.clone(),
+            AgentMemoryConfig {
+                per_turn_injection: AgentMemoryPerTurnInjection::Off,
+                ..AgentMemoryConfig::default()
+            },
+        );
         let id = identity()?;
         let content = meerkat_core::ContentInput::Text("hello".to_string());
 
@@ -2705,7 +2723,7 @@ mod tests {
             .inject_for_turn(&id, Some("s"), &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty(), "nothing to inject this turn");
         assert!(provider.captured_injections().is_empty());
         assert!(provider.captured_usage().is_empty());
         Ok(())
@@ -2786,9 +2804,8 @@ mod tests {
         let injected = build(false)
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            injected.text_content(),
-            "hello",
+        assert!(
+            injected.is_empty(),
             "no mob binding ⇒ mob scope stays out of composition"
         );
         Ok(())
@@ -2843,9 +2860,8 @@ mod tests {
         let first = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            first.text_content(),
-            "hello",
+        assert!(
+            first.is_empty(),
             "failed attempt falls back to (empty) lexical recall"
         );
         assert_eq!(
@@ -2911,7 +2927,7 @@ mod tests {
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty(), "nothing to inject this turn");
         assert_eq!(
             ready_sweep_of(&coordinator, "session-a"),
             Some(vec!["mem-deep".to_string()]),
@@ -2979,11 +2995,7 @@ mod tests {
         let starved = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            starved.text_content(),
-            "hello",
-            "nothing fits the starved budget"
-        );
+        assert!(starved.is_empty(), "nothing fits the starved budget");
         assert_eq!(
             ready_sweep_of(&coordinator, "session-a"),
             Some(vec!["mem-deep".to_string()]),
@@ -3049,7 +3061,10 @@ mod tests {
         let deduped = coordinator
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(deduped.text_content(), "hello", "dedup before compaction");
+        assert!(
+            deduped.is_empty(),
+            "dedup before compaction injects nothing new"
+        );
         seed_ready_sweep(&coordinator, "session-a", &["mem-sweep"]);
 
         coordinator.on_session_compacted("session-a");
@@ -3093,7 +3108,10 @@ mod tests {
         let still_deduped = coordinator
             .inject_for_turn(&id, Some("session-b"), &content)
             .await?;
-        assert_eq!(still_deduped.text_content(), "hello");
+        assert!(
+            still_deduped.is_empty(),
+            "still deduped: nothing new to inject"
+        );
         Ok(())
     }
 
@@ -3195,9 +3213,8 @@ mod tests {
             .clone()
             .inject_for_turn(&id, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            second.text_content(),
-            "hello",
+        assert!(
+            second.is_empty(),
             "dedup must hold across coordinator clones"
         );
         assert_eq!(provider.captured_injections().len(), 1);
@@ -3236,7 +3253,7 @@ mod tests {
                 .clone()
                 .inject_for_turn(&id, Some("session-x"), &content)
                 .await?;
-            let overhead = injected.text_content().len() - content.text_content().len();
+            let overhead = injected.text_content().len();
             assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
             if overhead == 0 {
                 saw_passthrough_at = Some(turn);

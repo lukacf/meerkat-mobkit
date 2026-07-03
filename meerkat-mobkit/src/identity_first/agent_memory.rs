@@ -70,8 +70,14 @@ pub enum AgentMemoryRecallFailurePolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMemoryPerTurnInjection {
-    #[default]
     Off,
+    /// Ambient per-turn recall, budget-laddered and dedup'd, delivered as a
+    /// separate typed injected-context body (meerkat 0.7.12 ask 1). Now the
+    /// default: echo-safe by construction (excluded from compaction indexing)
+    /// and delivered on an authenticated channel rather than fused into user
+    /// text. Active on the identity-first path; the classic (roster-less) mob
+    /// path still injects at build time only (§9.1).
+    #[default]
     Budgeted,
 }
 
@@ -142,7 +148,7 @@ impl Default for AgentMemoryConfig {
             recall_timeout_ms: DEFAULT_RECALL_TIMEOUT_MS,
             recall_failure_policy: AgentMemoryRecallFailurePolicy::Skip,
             instruction_header: None,
-            per_turn_injection: AgentMemoryPerTurnInjection::Off,
+            per_turn_injection: AgentMemoryPerTurnInjection::Budgeted,
             defang_inbound: true,
             llm_writes: AgentMemoryLlmWrites::Observed,
             recorder_tool: true,
@@ -424,6 +430,13 @@ pub trait AgentMemoryProvider: Send + Sync {
 
     fn supports_authored_writes(&self) -> bool {
         false
+    }
+
+    /// Bundled-store downcast seam: the builder wires the console Memory
+    /// panel (§9.3) when — and only when — the configured provider is the
+    /// bundled SQLite store. External providers keep the default `None`.
+    fn as_sqlite_store(&self) -> Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+        None
     }
 }
 
@@ -736,6 +749,23 @@ impl AgentMemoryRuntimeInjector {
         }
     }
 
+    /// Ask 2 GC: after distilling a permanently-orphaned session, reclaim its
+    /// meerkat semantic-memory rows (respawn/reset mint a fresh id; delete
+    /// discards it — the old scope is dead weight that every future build in
+    /// the realm re-embeds). Best-effort; no-op without a wired distiller.
+    /// MUST NOT be called for resumable retires.
+    pub async fn drop_orphaned_session_scope(
+        &self,
+        session_key: &str,
+        cause: crate::memory::distiller::DistillCause,
+    ) {
+        if let Some(distiller) = self.distiller.as_ref() {
+            distiller
+                .drop_orphaned_session_scope(session_key, cause)
+                .await;
+        }
+    }
+
     /// §8.5 exit interviews: record a retired/deleted identity in the
     /// pending-harvest queue so the NEXT dream harvests its store. One
     /// fast local write, best-effort — rotation never fails on it. No-op
@@ -777,12 +807,16 @@ impl AgentMemoryRuntimeInjector {
 
     /// Ambient per-turn injection. `session_key` scopes the cross-turn dedup
     /// and cumulative byte budget; without it only the per-assembly cap holds.
+    /// Assemble the ambient per-turn recall as a separate `injected_context`
+    /// body (meerkat 0.7.12 ask 1). Returns the vector to deliver alongside
+    /// the user message; empty means inject nothing. See
+    /// [`RecallCoordinator::inject_for_turn`].
     pub async fn inject_for_turn(
         &self,
         identity: &AgentIdentity,
         session_key: Option<&str>,
         content: &meerkat_core::ContentInput,
-    ) -> Result<meerkat_core::ContentInput, AgentMemoryError> {
+    ) -> Result<Vec<meerkat_core::ContentInput>, AgentMemoryError> {
         self.coordinator
             .inject_for_turn(identity, session_key, content)
             .await
@@ -917,9 +951,14 @@ pub const MEMORY_TOOL_NAME: &str = "memory";
 
 /// Build-time behavioral protocol for members that carry the Recorder.
 /// Injected as an additional instruction alongside the memory index — the
-/// write-side counterpart of the coordinator's recall protocol.
-const RECORDER_PROTOCOL_INSTRUCTIONS: &str = "Memory recorder protocol: you have a `memory` tool \
+/// write-side counterpart of the coordinator's recall protocol. Shared with
+/// the classic-mob spawn customizer (`crate::memory::spawn_customizer`).
+pub(crate) const RECORDER_PROTOCOL_INSTRUCTIONS: &str = "Memory recorder protocol: you have a `memory` tool \
 for durable records that survive session resets and respawns.\n\
+- Use `memory` for KNOWLEDGE — operator preferences and instructions, established facts, \
+decisions, gotchas, open loops. When the operator says \"remember\" or states a preference, \
+that goes to `memory`. Do NOT use a task/workflow tool (e.g. task_create) for this: task tools \
+track work to DO, `memory` stores what is TRUE or PREFERRED.\n\
 - Check the memory index in your context before writing; if a record already covers the fact, \
 use action \"update\" on its id instead of creating a duplicate.\n\
 - One fact per record. Write the `description` for your future self's retrieval — it is what \
@@ -936,7 +975,13 @@ steward dreams can close it.\n\
 write mob scope directly.";
 
 fn memory_tool_description() -> String {
-    "Durable identity-scoped memory: remember, update, forget, recall, and propose_to_mob. \
+    "Remember durable knowledge that must outlive this session — operator preferences and \
+     instructions, established facts, decisions, gotchas, and open loops. Use this whenever you \
+     learn something you should still know next time. This is NOT a task or workflow tool: \
+     `memory` stores what is TRUE or PREFERRED (knowledge); task/work tools track what must be \
+     DONE (action). When the operator says \"remember\" or states a preference, that is always \
+     `memory`, never a task. \
+     Durable identity-scoped memory: remember, update, forget, recall, and propose_to_mob. \
      Records persist across session resets and respawns and are injected into future builds. \
      Protocol: check your injected memory index first and prefer `update` on an existing \
      record id over writing a near-duplicate; keep one fact per record; write `description` \
@@ -1061,6 +1106,23 @@ pub(crate) struct MemoryRecorder {
 }
 
 impl MemoryRecorder {
+    /// Shared constructor for the two recorder hosts: the identity-first
+    /// `AgentMemoryCustomizer` and the classic-mob
+    /// `crate::memory::spawn_customizer::MemorySpawnCustomizer`.
+    pub(crate) fn new(
+        provider: Arc<dyn AgentMemoryProvider>,
+        config: AgentMemoryConfig,
+        identity: AgentIdentity,
+        mob: Option<String>,
+    ) -> Self {
+        Self {
+            provider,
+            config,
+            identity,
+            mob,
+        }
+    }
+
     fn identity_scope(&self) -> MemoryScope {
         MemoryScope::Identity {
             realm: self.config.realm.clone(),
@@ -1744,7 +1806,7 @@ fn build_query_text(context: &AgentBuildContext, spec: &DurableAgentSpec) -> Opt
     (!text.is_empty()).then_some(text)
 }
 
-fn insert_terms(terms: &mut BTreeSet<String>, value: &str) {
+pub(crate) fn insert_terms(terms: &mut BTreeSet<String>, value: &str) {
     for term in value
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
         .map(str::trim)
@@ -2016,6 +2078,24 @@ mod tests {
     use async_trait::async_trait;
     use meerkat_mob::ProfileName;
     use std::error::Error;
+
+    /// Ask 1: `inject_for_turn` now returns the recall as a SEPARATE
+    /// `Vec<ContentInput>` (typed injected-context bodies), not fused with the
+    /// user's text. This helper flattens the bodies to one string so
+    /// "injection contains X" assertions read unchanged; an empty vector
+    /// (nothing injected) flattens to the empty string — and, unlike the old
+    /// fused return, it no longer echoes the user's own message back.
+    trait InjectionText {
+        fn text_content(&self) -> String;
+    }
+    impl InjectionText for Vec<meerkat_core::ContentInput> {
+        fn text_content(&self) -> String {
+            self.iter()
+                .map(meerkat_core::ContentInput::text_content)
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Barrier, Mutex};
     use std::time::Duration;
@@ -2915,8 +2995,10 @@ mod tests {
         );
         let injected_text = injected.text_content();
         assert!(injected_text.contains("Passport location"));
-        assert!(injected_text.contains("Current user message"));
-        assert!(injected_text.contains("Where did I put my passport?"));
+        // Ask 1: the injection is a SEPARATE body — it must NOT echo the
+        // user's own message (that travels on the user channel).
+        assert!(!injected_text.contains("Current user message"));
+        assert!(!injected_text.contains("Where did I put my passport?"));
         Ok(())
     }
 
@@ -2935,7 +3017,7 @@ mod tests {
             .inject_for_turn(&identity()?, None, &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -2976,7 +3058,7 @@ mod tests {
             .inject_for_turn(&identity()?, None, &content)
             .await?;
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -3024,7 +3106,7 @@ mod tests {
             Err(_) => return Err("locked markdown recall should respect timeout".into()),
         };
 
-        assert_eq!(injected.text_content(), "hello");
+        assert!(injected.is_empty());
         Ok(())
     }
 
@@ -3058,7 +3140,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn per_turn_injection_defaults_off() -> Result<(), Box<dyn Error>> {
+    async fn per_turn_injection_defaults_budgeted() -> Result<(), Box<dyn Error>> {
+        // Ask 1 flipped the platform default from Off to Budgeted (ambient
+        // injection is now echo-safe: delivered as a separate typed
+        // injected-context body, excluded from compaction indexing). Default
+        // config must now recall AND inject.
+        assert_eq!(
+            AgentMemoryConfig::default().per_turn_injection,
+            AgentMemoryPerTurnInjection::Budgeted,
+            "per-turn injection now defaults to budgeted"
+        );
         let provider = Arc::new(CapturingProvider {
             request: Mutex::new(None),
             records: vec![AgentMemoryRecord {
@@ -3078,13 +3169,16 @@ mod tests {
             .inject_for_turn(&identity()?, Some("session-1"), &content)
             .await?;
 
-        assert_eq!(injected.text_content(), content.text_content());
+        // Recall ran and the record was injected as its own body — and the
+        // user's message is NOT echoed back into it.
+        assert!(injected.text_content().contains("Fact"));
+        assert!(!injected.text_content().contains("where is the fact?"));
         let captured = provider
             .request
             .lock()
             .map_err(|err| format!("capture mutex poisoned: {err}"))?
             .clone();
-        assert!(captured.is_none(), "off mode must not recall at all");
+        assert!(captured.is_some(), "budgeted default must recall");
         Ok(())
     }
 
@@ -3119,9 +3213,8 @@ mod tests {
         let second = injector
             .inject_for_turn(&identity()?, Some("session-a"), &content)
             .await?;
-        assert_eq!(
-            second.text_content(),
-            "hello",
+        assert!(
+            second.is_empty(),
             "already-injected record must not re-inject in the same session"
         );
 
@@ -3158,7 +3251,7 @@ mod tests {
             blocks < 12,
             "assembly budget must exclude some of 12 x 2KB records (got {blocks})"
         );
-        let overhead = text.len() - content.text_content().len();
+        let overhead = text.len();
         assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
         Ok(())
     }
@@ -3184,7 +3277,7 @@ mod tests {
             let injected = injector
                 .inject_for_turn(&identity()?, Some("session-x"), &content)
                 .await?;
-            let overhead = injected.text_content().len() - content.text_content().len();
+            let overhead = injected.text_content().len();
             assert!(overhead <= MAX_INJECTED_ASSEMBLY_BYTES + 64);
             if overhead == 0 {
                 saw_passthrough_at = Some(turn);

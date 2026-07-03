@@ -369,13 +369,23 @@ pub struct AppliedRevision {
 /// extension, so the gateway threads a typed handle to here at bootstrap.
 #[async_trait]
 pub trait TranscriptRevisionSeam: Send + Sync {
-    /// The session's current transcript (full message list, revision head).
+    /// The session's current transcript together with its head revision id at
+    /// read time (ask 4 refinement: `list_transcript_revisions` now exposes
+    /// the head, so the caller can pin what it read and compare-and-swap on
+    /// the rewrite). The head is `None` when the source cannot report one.
     /// `Ok(None)` when the session does not exist.
-    async fn read_messages(&self, session_key: &str) -> Result<Option<Vec<Message>>, String>;
+    async fn read_messages(
+        &self,
+        session_key: &str,
+    ) -> Result<Option<(Vec<Message>, Option<String>)>, String>;
 
     /// Commit one audited rewrite replacing `[start, end)` with
     /// `replacement`. Implementations must refuse mid-turn sessions
     /// (meerkat's `TranscriptEditRunningBehavior::Reject` default).
+    /// `expected_parent_revision` (the head observed by the matching
+    /// `read_messages`) is a compare-and-swap guard: the rewrite is rejected
+    /// if the head advanced since, so hygiene never commits against a
+    /// transcript that changed under it.
     async fn rewrite(
         &self,
         session_key: &str,
@@ -383,6 +393,7 @@ pub trait TranscriptRevisionSeam: Send + Sync {
         end: usize,
         replacement: Vec<Message>,
         note: &str,
+        expected_parent_revision: Option<String>,
     ) -> Result<AppliedRevision, String>;
 }
 
@@ -418,10 +429,13 @@ impl SessionServiceRevisionSeam {
 
 #[async_trait]
 impl TranscriptRevisionSeam for SessionServiceRevisionSeam {
-    async fn read_messages(&self, session_key: &str) -> Result<Option<Vec<Message>>, String> {
+    async fn read_messages(
+        &self,
+        session_key: &str,
+    ) -> Result<Option<(Vec<Message>, Option<String>)>, String> {
         let session_id = meerkat_core::types::SessionId::parse(session_key)
             .map_err(|err| format!("invalid session key '{session_key}': {err}"))?;
-        match self
+        let messages = match self
             .service
             .read_history(
                 &session_id,
@@ -432,10 +446,30 @@ impl TranscriptRevisionSeam for SessionServiceRevisionSeam {
             )
             .await
         {
-            Ok(page) => Ok(Some(page.messages)),
-            Err(meerkat_core::SessionError::NotFound { .. }) => Ok(None),
-            Err(err) => Err(err.to_string()),
-        }
+            Ok(page) => page.messages,
+            Err(meerkat_core::SessionError::NotFound { .. }) => return Ok(None),
+            Err(err) => return Err(err.to_string()),
+        };
+        // Ask 4 refinement: capture the head revision for the rewrite CAS.
+        // `limit: Some(0)` fetches the head without the commit log. A store
+        // that does not support revision listing degrades to `None` (no CAS,
+        // same as before) rather than failing the hygiene read.
+        let head_revision = match self
+            .service
+            .list_transcript_revisions(
+                &session_id,
+                meerkat_core::service::SessionTranscriptRevisionListQuery {
+                    limit: Some(0),
+                    offset: None,
+                },
+            )
+            .await
+        {
+            Ok(list) => Some(list.head_revision),
+            Err(meerkat_core::SessionError::Unsupported(_)) => None,
+            Err(err) => return Err(err.to_string()),
+        };
+        Ok(Some((messages, head_revision)))
     }
 
     async fn rewrite(
@@ -445,6 +479,7 @@ impl TranscriptRevisionSeam for SessionServiceRevisionSeam {
         end: usize,
         replacement: Vec<Message>,
         note: &str,
+        expected_parent_revision: Option<String>,
     ) -> Result<AppliedRevision, String> {
         let session_id = meerkat_core::types::SessionId::parse(session_key)
             .map_err(|err| format!("invalid session key '{session_key}': {err}"))?;
@@ -462,12 +497,12 @@ impl TranscriptRevisionSeam for SessionServiceRevisionSeam {
                     replacement,
                     reason,
                     actor: Some("mobkit-hygienist".to_string()),
-                    // No head-read API exists on SessionService, so there is
-                    // no revision id to compare-and-swap against; the
-                    // mutation guard + running-behavior Reject are the
-                    // concurrency protection (documented upstream ask
-                    // refinement).
-                    expected_parent_revision: None,
+                    // Ask 4 refinement: compare-and-swap against the head the
+                    // matching read observed (via list_transcript_revisions).
+                    // If the head advanced since, meerkat rejects the rewrite,
+                    // so hygiene never commits against a changed transcript.
+                    // Belt-and-braces with the mutation guard + Reject default.
+                    expected_parent_revision,
                     running_behavior: meerkat_core::TranscriptEditRunningBehavior::default(),
                 },
             )
@@ -1244,8 +1279,8 @@ impl HygienistEngine {
     ) -> HygieneOutcome {
         // Reads come before the budget gate: an empty transcript must not
         // burn a budgeted run.
-        let messages = match self.seam.read_messages(session_key).await {
-            Ok(Some(messages)) => messages,
+        let (messages, head_revision) = match self.seam.read_messages(session_key).await {
+            Ok(Some(read)) => read,
             Ok(None) => {
                 return HygieneOutcome::Skipped {
                     reason: "session not found".to_string(),
@@ -1370,7 +1405,14 @@ impl HygienistEngine {
         let note = truncate_utf8_boundary(&format!("{run_id}: {rationales}"), 512);
         match self
             .seam
-            .rewrite(session_key, hull_start, hull_end, replacement, &note)
+            .rewrite(
+                session_key,
+                hull_start,
+                hull_end,
+                replacement,
+                &note,
+                head_revision,
+            )
             .await
         {
             Ok(revision) => HygieneOutcome::Applied {
@@ -1872,12 +1914,27 @@ mod tests {
         messages: Vec<Message>,
         rewrites: StdMutex<Vec<(usize, usize, usize)>>,
         refuse: bool,
+        /// CAS value the engine forwarded from read_messages to rewrite. The
+        /// outer `Option` records whether rewrite was called at all; the inner
+        /// is the forwarded `expected_parent_revision` — two distinct facts.
+        #[allow(clippy::option_option)]
+        last_expected_parent: StdMutex<Option<Option<String>>>,
     }
+
+    // The head this scripted seam reports at read time — the CAS value the
+    // engine must forward verbatim to the rewrite.
+    const SCRIPTED_HEAD_REVISION: &str = "rev-head-at-read";
 
     #[async_trait]
     impl TranscriptRevisionSeam for ScriptedSeam {
-        async fn read_messages(&self, _session_key: &str) -> Result<Option<Vec<Message>>, String> {
-            Ok(Some(self.messages.clone()))
+        async fn read_messages(
+            &self,
+            _session_key: &str,
+        ) -> Result<Option<(Vec<Message>, Option<String>)>, String> {
+            Ok(Some((
+                self.messages.clone(),
+                Some(SCRIPTED_HEAD_REVISION.to_string()),
+            )))
         }
 
         async fn rewrite(
@@ -1887,7 +1944,13 @@ mod tests {
             end: usize,
             replacement: Vec<Message>,
             _note: &str,
+            expected_parent_revision: Option<String>,
         ) -> Result<AppliedRevision, String> {
+            *self
+                .last_expected_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(expected_parent_revision);
             if self.refuse {
                 return Err("session is running".to_string());
             }
@@ -1996,6 +2059,7 @@ mod tests {
             messages: transcript(),
             rewrites: StdMutex::new(Vec::new()),
             refuse: false,
+            last_expected_parent: StdMutex::new(None),
         })
     }
 
@@ -2025,6 +2089,17 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
             &[(2, 3, 1)]
+        );
+        // Ask 4 refinement: the head observed at read time is forwarded to the
+        // rewrite as the compare-and-swap parent (no longer None).
+        assert_eq!(
+            scripted
+                .last_expected_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            Some(Some(SCRIPTED_HEAD_REVISION.to_string())),
+            "hygiene must CAS against the head it read"
         );
         assert_eq!(
             sink.types(),
@@ -2115,6 +2190,7 @@ mod tests {
             messages: transcript(),
             rewrites: StdMutex::new(Vec::new()),
             refuse: true,
+            last_expected_parent: StdMutex::new(None),
         });
         let engine = engine_with(PRUNE_REPLY, scripted, Vec::new(), None, 2);
         let outcome = engine

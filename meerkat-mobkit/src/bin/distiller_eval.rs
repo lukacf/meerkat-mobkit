@@ -220,6 +220,7 @@ async fn main() {
         session_key: "fixture-session".to_string(),
         start_index: 0,
         end_index: input.transcript.len() as u64,
+        head_revision: None,
         messages: input
             .transcript
             .iter()

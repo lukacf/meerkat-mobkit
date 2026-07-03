@@ -14,6 +14,7 @@ pub mod hygienist;
 pub mod records;
 pub mod secrets;
 pub mod selector;
+pub mod spawn_customizer;
 pub mod sqlite_store;
 pub mod staged;
 pub mod steward;
@@ -50,6 +51,7 @@ pub use selector::{
     SelectedRecordFetch, Selection, SelectorError, SelectorHandle, SelectorProfile,
     SelectorRuntime, SelectorSpec, SelectorStage, select,
 };
+pub use spawn_customizer::MemorySpawnCustomizer;
 pub use sqlite_store::{
     EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, ScopeOverview,
     SqliteAgentMemoryStore,

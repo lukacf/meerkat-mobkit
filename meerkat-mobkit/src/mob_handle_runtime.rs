@@ -2255,6 +2255,10 @@ pub struct MobBootstrapSpec {
     /// service's `runtime_store` can stay `None` (keeping the checkpointer
     /// enabled). See meerkat-session#checkpointer-enabled-flag.
     pub runtime_adapter: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    /// Pre-build customizer applied to every mob member spawn (classic-path
+    /// agent memory rides here — see `crate::memory::spawn_customizer`).
+    /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
+    pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -2287,6 +2291,7 @@ impl MobBootstrapSpec {
                 default_llm_client: None,
             },
             runtime_adapter: None,
+            spawn_member_customizer: None,
             _ephemeral_dir: None,
         }
     }
@@ -2915,6 +2920,10 @@ impl MobRuntime {
             .with_session_service(session_service.clone())
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
+
+        if let Some(customizer) = spec.spawn_member_customizer.clone() {
+            builder = builder.with_spawn_member_customizer(customizer);
+        }
 
         if let Some(client) = default_llm_client {
             builder = builder.with_default_llm_client(client);
@@ -3892,6 +3901,7 @@ shell = true
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         ensure_shell_tooling_build_substrate(&mut req);
@@ -3940,6 +3950,7 @@ shell = true
             }),
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         ensure_shell_tooling_build_substrate(&mut req);
@@ -4500,6 +4511,7 @@ realm_profile = "worker-v2"
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
 
         // create_session will fail (no LLM) but the hook runs first.
@@ -4560,6 +4572,7 @@ realm_profile = "worker-v2"
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::Discard,
+            injected_context: Vec::new(),
         };
 
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
@@ -5212,6 +5225,7 @@ image_generation = true
     fn normalize_runtime_turn_request_strips_runtime_owned_semantics() {
         let req = meerkat_core::service::StartTurnRequest {
             prompt: meerkat_core::ContentInput::Text("checkpoint".to_string()),
+            injected_context: Vec::new(),
             system_prompt: Some("system".to_string()),
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
@@ -5289,6 +5303,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         // before_create must succeed with default impl.
         hook.before_create(&mut req).await.unwrap();
@@ -5327,6 +5342,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         let result = hook.before_create(&mut req).await;
         assert!(result.is_err());
@@ -5360,6 +5376,7 @@ image_generation = true
             build: None,
             labels: None,
             deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            injected_context: Vec::new(),
         };
         hook.before_create(&mut req).await.unwrap();
         assert_eq!(req.model, "hook-overridden");
