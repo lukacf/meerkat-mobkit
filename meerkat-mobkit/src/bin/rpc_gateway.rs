@@ -4156,6 +4156,40 @@ external_addressable = true
                         let memory_events = runtime.memory_event_sink();
                         store.set_event_sink(memory_events.clone());
                         tracker.set_event_sink(memory_events.clone());
+                        // §10.1 ask 5 (outbound half): make the member's comms
+                        // runtime the authenticated carrier of the host's taint
+                        // fact. When a session ingests untrusted content the
+                        // tracker stamps the member Tainted; peers then read the
+                        // sender's own signed declaration instead of
+                        // reconstructing taint from host-side joins, closing the
+                        // cross-process loop. Fire-and-forget: the member may not
+                        // be materialized (transient / definition-mob members
+                        // that never took a lease), so a miss is logged, not
+                        // fatal.
+                        let taint_mob_handle = runtime.mob_handle();
+                        tracker.set_outbound_taint_declarer(std::sync::Arc::new(
+                            move |identity: &str,
+                                  taint: Option<meerkat_core::comms::SenderContentTaint>| {
+                                let handle = taint_mob_handle.clone();
+                                let member =
+                                    meerkat_mobkit::member_comms_id::mob_member_id(identity);
+                                let identity_owned = identity.to_string();
+                                tokio::spawn(async move {
+                                    if let Err(err) = handle
+                                        .declare_member_outbound_taint(member, taint)
+                                        .await
+                                    {
+                                        tracing::debug!(
+                                            identity = %identity_owned,
+                                            ?taint,
+                                            error = %err,
+                                            "agent memory taint: outbound taint declaration \
+                                             failed (member may not be materialized)"
+                                        );
+                                    }
+                                });
+                            },
+                        ));
                         // §9.3 console Memory panel (P3b): a read handle on
                         // this realm store enables the read-only
                         // mobkit/memory/panel/* RPCs and the panel nav.

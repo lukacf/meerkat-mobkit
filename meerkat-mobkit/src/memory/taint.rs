@@ -221,6 +221,16 @@ struct TaintInner {
     reset_boundaries: HashMap<String, u64>,
 }
 
+/// Host callback that stamps a member's OUTBOUND content-taint declaration
+/// (§10.1 ask 5, outbound half). Invoked with the member's public identity and
+/// the taint to declare — `Some(Tainted)` when the member's session ingests
+/// untrusted content, `None` when it rotates back to a clean session — so the
+/// member's peer sends carry the sender's signed declaration and receivers can
+/// propagate taint cross-process. The callback is fire-and-forget (the real
+/// declare is async on the mob runtime); it must not block.
+pub type OutboundTaintDeclarer =
+    Arc<dyn Fn(&str, Option<meerkat_core::comms::SenderContentTaint>) + Send + Sync>;
+
 /// Session-sticky taint tracker (§10.1, coarse P1). Cheap to clone; clones
 /// share state.
 #[derive(Clone, Default)]
@@ -229,6 +239,10 @@ pub struct SessionTaintTracker {
     inner: Arc<Mutex<TaintInner>>,
     /// §9.3 timeline sink for taint transitions; shared across clones.
     event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
+    /// §10.1 ask 5 outbound half: declares a member's outbound content-taint
+    /// on the mob runtime so its peer sends carry the flag. Shared across
+    /// clones; `None` until the gateway wires the mob handle.
+    outbound_declarer: Arc<Mutex<Option<OutboundTaintDeclarer>>>,
 }
 
 impl SessionTaintTracker {
@@ -237,6 +251,34 @@ impl SessionTaintTracker {
             config: Arc::new(config),
             inner: Arc::new(Mutex::new(TaintInner::default())),
             event_sink: Arc::new(Mutex::new(None)),
+            outbound_declarer: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Wire the §10.1 outbound-taint declarer (bound to the mob handle at
+    /// gateway bootstrap). Shared across clones.
+    pub fn set_outbound_taint_declarer(&self, declarer: OutboundTaintDeclarer) {
+        *self
+            .outbound_declarer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(declarer);
+    }
+
+    /// Declare a member's outbound content-taint, if a declarer is wired.
+    /// Called on taint transitions (set/clear); must be invoked WITHOUT the
+    /// `inner` lock held (the callback may take time to hand off).
+    fn declare_outbound(
+        &self,
+        identity: &str,
+        taint: Option<meerkat_core::comms::SenderContentTaint>,
+    ) {
+        if let Some(declarer) = self
+            .outbound_declarer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            declarer(identity, taint);
         }
     }
 
@@ -328,9 +370,9 @@ impl SessionTaintTracker {
         let previous = inner
             .current_session
             .insert(identity.to_string(), session_key.to_string());
-        if previous.as_deref() != Some(session_key)
-            && previous.is_some_and(|prior| inner.tainted.contains_key(&prior))
-        {
+        let rotated_away_from_tainted = previous.as_deref() != Some(session_key)
+            && previous.is_some_and(|prior| inner.tainted.contains_key(&prior));
+        if rotated_away_from_tainted {
             tracing::warn!(
                 identity,
                 session_key,
@@ -346,8 +388,17 @@ impl SessionTaintTracker {
                 },
             );
         }
+        // A held pre-attribution taint re-lands on the new session — it stays
+        // tainted, so do not clear the outbound declaration below.
+        let pending_reapplied = pending.is_some();
         if let Some(state) = pending {
             self.insert_taint(&mut inner, session_key.to_string(), state);
+        }
+        // §10.1 outbound half: on a clean rotation with no re-landed taint, the
+        // identity's live session is clean again — clear its outbound stamp.
+        if rotated_away_from_tainted && !pending_reapplied {
+            drop(inner);
+            self.declare_outbound(identity, None);
         }
     }
 
@@ -365,6 +416,10 @@ impl SessionTaintTracker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.pending_identity_taint.remove(identity);
         inner.current_session.remove(identity);
+        // §10.1 outbound half: reset is a fresh-context boundary — the identity
+        // no longer speaks for a tainted session, so clear its outbound stamp.
+        drop(inner);
+        self.declare_outbound(identity, None);
     }
 
     /// Mark a `reset()` boundary on the outgoing session (§8.4): every
@@ -551,6 +606,14 @@ impl SessionTaintTracker {
                 }
             }
         }
+        // §10.1 outbound half: the identity has ingested untrusted content, so
+        // stamp its peer sends Tainted (whether the taint landed on the current
+        // session or is held pending). Declare OUTSIDE the `inner` lock.
+        drop(inner);
+        self.declare_outbound(
+            identity,
+            Some(meerkat_core::comms::SenderContentTaint::Tainted),
+        );
     }
 
     fn insert_taint(&self, inner: &mut TaintInner, session: String, state: TaintState) {
@@ -1121,6 +1184,60 @@ mod tests {
                 .evidence_quarantine_reason(&session.to_string())
                 .is_some()
         );
+    }
+
+    #[test]
+    fn outbound_declarer_stamps_tainted_on_ingestion_and_clears_on_boundaries() {
+        use std::sync::{Arc, Mutex};
+        type Recorded = Vec<(String, Option<meerkat_core::comms::SenderContentTaint>)>;
+        let tracker = SessionTaintTracker::new(ContentTrustConfig::default());
+        let calls: Arc<Mutex<Recorded>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = calls.clone();
+        tracker.set_outbound_taint_declarer(Arc::new(move |identity, taint| {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((identity.to_string(), taint));
+        }));
+
+        let session = SessionId::new();
+        tracker.observe_agent_event("identity:a", &run_started(&session));
+        // A benign tool makes no declaration.
+        tracker.observe_agent_event("identity:a", &tool_result("shell"));
+        assert!(calls.lock().unwrap().is_empty());
+
+        // Untrusted ingestion stamps the member Tainted for outbound peer sends.
+        tracker.observe_agent_event("identity:a", &tool_result("web_search"));
+        {
+            let recorded = calls.lock().unwrap();
+            assert_eq!(recorded.len(), 1, "one declaration expected: {recorded:?}");
+            assert_eq!(recorded[0].0, "identity:a");
+            assert_eq!(
+                recorded[0].1,
+                Some(meerkat_core::comms::SenderContentTaint::Tainted)
+            );
+        }
+
+        // Rotation to a fresh clean session clears the declaration (None, not
+        // Clean — an absent declaration, never coalesced into clean).
+        let fresh = SessionId::new();
+        tracker.note_current_session("identity:a", &fresh.to_string());
+        {
+            let recorded = calls.lock().unwrap();
+            assert_eq!(recorded.len(), 2, "rotation clears: {recorded:?}");
+            assert_eq!(recorded[1].1, None);
+        }
+
+        // Reset (the operator escape hatch) is also a fresh-context boundary.
+        tracker.observe_agent_event("identity:a", &tool_result("web_fetch"));
+        tracker.clear_identity("identity:a");
+        {
+            let recorded = calls.lock().unwrap();
+            assert_eq!(
+                recorded.last().expect("a clear declaration").1,
+                None,
+                "reset clears the outbound declaration: {recorded:?}"
+            );
+        }
     }
 
     #[test]
