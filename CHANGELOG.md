@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-07-03
+
 ### Added
 
 - Identity-first agent memory injection for Rust, JSON-RPC, Python, and
