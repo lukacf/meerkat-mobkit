@@ -31,7 +31,8 @@ use tower::ServiceExt;
 mod incident_command_center;
 
 use incident_command_center::{
-    IncidentToolDispatcher, build_runtime_bundle_with_default_client, scenario_path,
+    IncidentSessionHook, IncidentToolDispatcher, build_runtime_bundle_with_default_client,
+    scenario_path,
 };
 
 struct IncidentPackTestClient;
@@ -166,6 +167,93 @@ async fn incident_dispatcher_composes_inner_external_tools() {
         })
         .await;
     assert!(matches!(miss, Err(ToolError::NotFound { .. })));
+}
+
+// Regression: before_create must COMPOSE both external_tools AND
+// additional_instructions over what the agent-memory customizer already
+// installed on the build. Overwriting additional_instructions dropped the
+// build-time memory-recall injection, so a respawned/fresh member never
+// recalled its stored memories (the "respawn forgets my name" report).
+#[tokio::test]
+async fn incident_hook_composes_memory_injection_and_tools() {
+    use meerkat_core::config::SystemPromptOverride;
+    use meerkat_core::service::{CreateSessionRequest, InitialTurnPolicy, SessionBuildOptions};
+    use meerkat_mobkit::SessionHook;
+
+    // Stand in for the agent-memory customizer's pre-installed build state:
+    // a recalled-memory injection line + a recorder external-tool dispatcher.
+    let mut build = SessionBuildOptions::default();
+    build.additional_instructions = Some(vec!["MEMORY-RECALL: operator name is Luka.".to_string()]);
+    build.external_tools = Some(Arc::new(RecorderMarkerDispatcher));
+
+    let mut req = CreateSessionRequest {
+        model: "gpt-5.5".to_string(),
+        prompt: meerkat_core::ContentInput::Text(String::new()),
+        system_prompt: SystemPromptOverride::Inherit,
+        max_tokens: None,
+        event_tx: None,
+        initial_turn: InitialTurnPolicy::Defer,
+        build: Some(build),
+        labels: None,
+        deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+        injected_context: Vec::new(),
+    };
+
+    IncidentSessionHook
+        .before_create(&mut req)
+        .await
+        .expect("before_create");
+
+    let build = req.build.expect("build present");
+    let instructions = build.additional_instructions.expect("instructions present");
+    assert!(
+        instructions
+            .iter()
+            .any(|line| line.contains("operator name is Luka")),
+        "the pre-installed memory-recall injection must survive (composed, not overwritten): {instructions:?}"
+    );
+    assert!(
+        instructions
+            .iter()
+            .any(|line| line.contains("incident command center")),
+        "the incident framing must also be present"
+    );
+    let tool_names: Vec<String> = build
+        .external_tools
+        .expect("external tools present")
+        .tools()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(
+        tool_names.iter().any(|n| n == "memory-marker"),
+        "the pre-installed recorder tool must survive alongside incident tools: {tool_names:?}"
+    );
+    assert!(tool_names.iter().any(|n| n == "inspect_service"));
+}
+
+struct RecorderMarkerDispatcher;
+
+#[async_trait::async_trait]
+impl AgentToolDispatcher for RecorderMarkerDispatcher {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        vec![Arc::new(meerkat_core::types::ToolDef {
+            name: "memory-marker".into(),
+            description: "stand-in recorder".to_string(),
+            input_schema: json!({"type": "object"}),
+            provenance: None,
+        })]
+        .into()
+    }
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        Ok(
+            meerkat_core::types::ToolResult::new(call.id.to_string(), "ok".to_string(), false)
+                .into(),
+        )
+    }
 }
 
 #[tokio::test]

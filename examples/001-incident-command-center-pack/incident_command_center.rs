@@ -909,7 +909,7 @@ impl EdgeDiscovery for ScenarioEdgeDiscovery {
 }
 
 #[derive(Clone)]
-struct IncidentSessionHook;
+pub struct IncidentSessionHook;
 
 fn is_incident_commander(labels: &BTreeMap<String, String>) -> bool {
     labels
@@ -954,23 +954,33 @@ impl SessionHook for IncidentSessionHook {
             // runtime authority bridge mints the generated context.
             build.apply_generated_create_only_mob_operator_access(ToolCategoryOverride::Enable);
         }
-        if labels
+        // COMPOSE, don't overwrite: the agent-memory customizer already pushed
+        // the build-time memory-recall injection and the recorder protocol into
+        // `additional_instructions`. A plain assignment here dropped them, so a
+        // respawned/fresh member never recalled its stored memories (the
+        // operator saw a respawn "forget" the name it had just recorded).
+        // Preserve what's there, then append the incident framing.
+        let incident_instructions = if labels
             .get("addressable")
             .is_some_and(|value| value.eq_ignore_ascii_case("false"))
         {
-            build.additional_instructions = Some(vec![
+            vec![
                 "You are an internal-only control-plane identity. Refuse conversational requests and explain that the operator should use console controls instead.".to_string(),
                 "You may still collaborate with peers over the comms tools when they ask for approval, health, or internal control-plane help.".to_string(),
-            ]);
+            ]
         } else {
-            build.additional_instructions = Some(vec![
+            vec![
                 "You are part of a synthetic incident command center for a fictional payments outage. Stay within that scenario and never claim real-world access.".to_string(),
                 "Be concise and operator-focused. Use one short paragraph unless the operator explicitly asks for more.".to_string(),
                 "Use the stock comms tools for real collaboration: call peers first when you need teammate context, then send concise requests or updates.".to_string(),
                 "When the operator asks for a status sweep, you must run both available tools before answering: inspect_service with service=payments-api and analyze_customer_impact with cohort=enterprise-merchants.".to_string(),
                 "When the operator asks a short follow-up, answer directly from current context, but if the question depends on another specialist's knowledge you should consult that peer instead of guessing.".to_string(),
-            ]);
-        }
+            ]
+        };
+        build
+            .additional_instructions
+            .get_or_insert_with(Vec::new)
+            .extend(incident_instructions);
         Ok(())
     }
 
