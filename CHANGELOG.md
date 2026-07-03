@@ -13,6 +13,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   TypeScript users, including bundled markdown persistence, contextual recall,
   explicit remember/recall/forget APIs, and next-turn injection for live
   identity sends.
+- Classic (roster-less) agent memory: the recorder `memory` tool and build-time
+  recall injection now attach to any mob member keyed on its `AgentIdentity`,
+  without requiring the roster/IdentityRuntime layer.
+- Ambient per-turn memory recall is delivered as a typed injected-context
+  message (excluded from compaction indexing) rather than fused into the user's
+  text, and is now **on by default** on the identity-first path — echo-safe by
+  construction (meerkat 0.7.12 upstream ask 1).
+- Compaction-discard harvest reads the exact session-memory range via
+  `enumerate_scoped`, and permanently-orphaned session scopes are reclaimed via
+  `drop_scope` at the identity-delete seam (asks 2 + 8).
+- Distilled memory records pin the transcript head revision their evidence was
+  read at, and Hygienist rewrites compare-and-swap on it (ask 4 refinement).
+- The taint tracker consumes the typed `AgentEvent::PeerContentIngested`
+  sender-taint declaration (canonical peer id, synchronous at ingestion),
+  superseding the projection-text join for declared taint (ask 5, inbound).
+
+### Changed
+
+- Upgraded the meerkat dependency family to 0.7.13.
+
+### Fixed
+
+- Host `SessionHook`/customizers that install `external_tools` or
+  `additional_instructions` on the session build now compose over the
+  agent-memory recorder instead of overwriting it — a plain assignment silently
+  dropped the `memory` tool and the build-time recall injection (fixed in the
+  incident-command-center example; the recorder is unaffected on paths that
+  compose).
 
 ## [0.6.39] - 2026-05-21
 
