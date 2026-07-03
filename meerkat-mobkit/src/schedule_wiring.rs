@@ -414,6 +414,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     adapter: Arc<MeerkatMachine>,
     schedule_service: ScheduleService,
     mob_state: Option<Arc<MobMcpState>>,
+    runnable_host: Option<Arc<dyn meerkat::ScheduleRunnableHost>>,
     owner_id: impl Into<String>,
 ) -> Option<ScheduleHostHandle> {
     let mob_host: Arc<dyn SurfaceScheduleMobHost> = match mob_state {
@@ -422,6 +423,9 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
             "scheduled mob targets are not supported: no mob runtime",
         )),
     };
+    // meerkat 0.7.13 (upstream ask 10): thread a host-runnable registry so
+    // host-registered runnables (e.g. the memory steward's dream) can be
+    // driven as schedule occurrences. `None` keeps mob/session targets only.
     spawn_runtime_backed_schedule_host_with_mobs(
         service,
         adapter,
@@ -429,6 +433,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
         schedule_service,
         SessionBuildOptions::default(),
         mob_host,
+        runnable_host,
         owner_id,
     )
 }
