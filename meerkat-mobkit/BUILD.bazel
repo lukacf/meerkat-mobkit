@@ -563,6 +563,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/access_control.rs",
@@ -625,6 +626,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/agent_lifecycle.rs",
@@ -691,6 +693,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/bigquery_adapter.rs",
@@ -754,6 +757,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/bigquery_gc.rs",
@@ -817,6 +821,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/builder_api.rs",
@@ -825,6 +830,69 @@ rust_test(
     rustc_env = {
         "CARGO_PKG_VERSION": "0.7.19",
         "CARGO_BIN_NAME": "builder_api",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "classic_agent_memory_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "classic_agent_memory",
+    crate_root = "tests/classic_agent_memory.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/classic_agent_memory.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.19",
+        "CARGO_BIN_NAME": "classic_agent_memory",
         "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
     },
     tags = [
@@ -879,6 +947,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/console_customization_fixtures.rs",
@@ -940,6 +1009,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/console_experience.rs",
@@ -1002,6 +1072,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/console_route_auth.rs",
@@ -1066,6 +1137,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/core_types_and_rpc.rs",
@@ -1128,6 +1200,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/cross_mob_signed.rs",
@@ -1190,6 +1263,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/cross_mob_tcp.rs",
@@ -1252,6 +1326,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/cross_mob_uds.rs",
@@ -1314,6 +1389,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/discovery_bootstrap.rs",
@@ -1376,6 +1452,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/distiller_eval_harness.rs",
@@ -1441,6 +1518,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/e2e_sdk_wire.rs",
@@ -1502,6 +1580,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/e2e_target_contracts.rs",
@@ -1568,6 +1647,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/event_log_recovery.rs",
@@ -1632,6 +1712,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/external_boundary.rs",
@@ -1694,6 +1775,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/gateway_external.rs",
@@ -1756,6 +1838,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/gateway_memory_config.rs",
@@ -1820,6 +1903,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/gating_policy.rs",
@@ -1886,6 +1970,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/governance_contracts.rs",
@@ -1950,6 +2035,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/hooks.rs",
@@ -2012,6 +2098,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/http_router.rs",
@@ -2074,6 +2161,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/hygienist_eval_harness.rs",
@@ -2139,6 +2227,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_boundary.rs",
@@ -2201,6 +2290,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_builder.rs",
@@ -2263,6 +2353,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_choke.rs",
@@ -2325,6 +2416,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_contracts.rs",
@@ -2387,6 +2479,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_e2e.rs",
@@ -2448,6 +2541,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_kitchen_sink.rs",
@@ -2513,6 +2607,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_ob3_smoke.rs",
@@ -2531,6 +2626,69 @@ rust_test(
         ":package_runfiles",
         "//:repo_governance_files",
     ],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "identity_first_respawn_continuity_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "identity_first_respawn_continuity",
+    crate_root = "tests/identity_first_respawn_continuity.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/identity_first_respawn_continuity.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.19",
+        "CARGO_BIN_NAME": "identity_first_respawn_continuity",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
     env = {
         "RUST_MIN_STACK": "16777216",
     },
@@ -2578,6 +2736,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_runtime.rs",
@@ -2643,6 +2802,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/identity_first_types.rs",
@@ -2705,6 +2865,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/incident_command_center_pack.rs",
@@ -2767,6 +2928,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/jwks_cache_and_auth.rs",
@@ -2829,6 +2991,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/jwt_oidc_auth.rs",
@@ -2891,6 +3054,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/jwt_rsa.rs",
@@ -2953,6 +3117,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/legacy_session_resume.rs",
@@ -3015,6 +3180,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/list_flows_run_flow.rs",
@@ -3077,6 +3243,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/list_runs.rs",
@@ -3139,6 +3306,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mcp_boundary.rs",
@@ -3205,6 +3373,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/memory_comms_taint_contract.rs",
@@ -3267,6 +3436,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/memory_store.rs",
@@ -3329,6 +3499,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_events_cursor_persistence.rs",
@@ -3391,6 +3562,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_events_ingestion.rs",
@@ -3453,6 +3625,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_events_query.rs",
@@ -3515,6 +3688,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_events_query_ledger.rs",
@@ -3577,6 +3751,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_events_streaming.rs",
@@ -3639,6 +3814,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mob_run_labels.rs",
@@ -3701,6 +3877,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/mobkit_gateway_bootstrap.rs",
@@ -3767,6 +3944,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/module_restart.rs",
@@ -3829,6 +4007,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/reference_app.rs",
@@ -3894,6 +4073,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/routing_delivery.rs",
@@ -3959,6 +4139,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/rpc_builtins.rs",
@@ -4021,6 +4202,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/runtime_bootstrap.rs",
@@ -4083,6 +4265,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/schedule_dispatch.rs",
@@ -4145,6 +4328,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/sdk_parity.rs",
@@ -4210,6 +4394,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/sdk_productization.rs",
@@ -4275,6 +4460,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/selector_eval_harness.rs",
@@ -4340,6 +4526,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/session_store_jsonl.rs",
@@ -4403,6 +4590,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/shutdown_drain.rs",
@@ -4465,6 +4653,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/sse_auth_gate.rs",
@@ -4527,6 +4716,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/steward_eval_harness.rs",
@@ -4592,6 +4782,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/swarm_integration.rs",
@@ -4657,6 +4848,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/tool_event_stream_contracts.rs",
@@ -4719,6 +4911,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/unified_console.rs",
@@ -4781,6 +4974,7 @@ rust_test(
         "src/memory/selector_prompt_v0.md",
         "src/memory/steward_prompt_v0.md",
         "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
     ],
     srcs = [
         "tests/wildcard_routes.rs",
@@ -4825,6 +5019,7 @@ test_suite(
         ":bigquery_adapter_test",
         ":bigquery_gc_test",
         ":builder_api_test",
+        ":classic_agent_memory_test",
         ":console_experience_test",
         ":console_route_auth_test",
         ":core_types_and_rpc_test",
@@ -4848,6 +5043,7 @@ test_suite(
         ":identity_first_contracts_test",
         ":identity_first_kitchen_sink_test",
         ":identity_first_ob3_smoke_test",
+        ":identity_first_respawn_continuity_test",
         ":identity_first_runtime_test",
         ":identity_first_types_test",
         ":incident_command_center_pack_test",
