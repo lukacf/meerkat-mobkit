@@ -79,6 +79,16 @@ pub enum BridgeError {
     Mob(String),
     /// A required field was missing or invalid.
     InvalidInput(String),
+    /// Resume was rejected while a durable session row exists. The identity →
+    /// session binding MUST stay intact: callers mark the identity degraded
+    /// (Broken) with this error attached and retry on the next reconcile.
+    /// Never fresh-spawn on this error — the durable transcript is the only
+    /// copy of the conversation, and rebinding the identity to a fresh empty
+    /// session permanently abandons it (the HomeCore restart-loss regression).
+    ResumeRejected {
+        kind: ResumeRejectionKind,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for BridgeError {
@@ -86,11 +96,75 @@ impl std::fmt::Display for BridgeError {
         match self {
             Self::Mob(msg) => write!(f, "session bridge mob error: {msg}"),
             Self::InvalidInput(msg) => write!(f, "session bridge invalid input: {msg}"),
+            Self::ResumeRejected { kind, detail } => write!(
+                f,
+                "session bridge resume rejected ({kind:?}): {detail}; durable session preserved, \
+                 identity degraded pending retry"
+            ),
         }
     }
 }
 
 impl std::error::Error for BridgeError {}
+
+/// Typed classification of a rejected resume, derived from meerkat's typed
+/// errors where available (report ask: don't bucket every resume error into
+/// one "runtime_identity_incompatible" reason).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeRejectionKind {
+    /// meerkat's typed restore failure (`MobError::MemberRestoreFailed`): the
+    /// member is Broken-in-roster upstream with restore diagnostics preserved.
+    MemberRestoreFailed,
+    /// The session store rejected the resume as a transcript-continuity
+    /// violation ("incoming transcript is not a continuation of persisted
+    /// revision") — the meerkat ≤0.7.14 cold-restart re-projection class.
+    TranscriptContinuity,
+    /// Any other resume-time failure.
+    Other,
+}
+
+/// Log and construct the typed resume rejection for one failed resume step.
+/// Deliberately loud: a rejected resume degrades the identity until a
+/// reconcile retry succeeds, and the operator needs the real (classified)
+/// error — not a generic fallback reason.
+fn resume_rejected(
+    identity: &AgentIdentity,
+    session_id: &meerkat_core::types::SessionId,
+    error: &meerkat_mob::MobError,
+    step: &str,
+) -> BridgeError {
+    let kind = classify_resume_error(error);
+    tracing::error!(
+        identity = %identity,
+        session_id = %session_id,
+        kind = ?kind,
+        step,
+        error = %error,
+        "resume rejected; durable session preserved, identity degraded pending reconcile retry \
+         (refusing fresh-spawn fallback)"
+    );
+    BridgeError::ResumeRejected {
+        kind,
+        detail: format!("{step}: {error}"),
+    }
+}
+
+/// Classify a resume-spawn failure. Typed variants first; the string probe is
+/// belt-and-braces for continuity violations that reach us stringified through
+/// the provisioning path (`MobError::Internal`).
+fn classify_resume_error(error: &meerkat_mob::MobError) -> ResumeRejectionKind {
+    if matches!(error, meerkat_mob::MobError::MemberRestoreFailed { .. }) {
+        return ResumeRejectionKind::MemberRestoreFailed;
+    }
+    let text = error.to_string();
+    if text.contains("not a continuation of persisted revision")
+        || text.contains("TranscriptContinuityViolation")
+        || text.contains("continuity preflight")
+    {
+        return ResumeRejectionKind::TranscriptContinuity;
+    }
+    ResumeRejectionKind::Other
+}
 
 /// Typed reason a requested resume could not reuse the persisted runtime
 /// binding and had to fall back to a fresh member spawn.
@@ -610,34 +684,6 @@ impl MobSessionBridge {
                 .map(|_| ())
         }
     }
-
-    async fn spawn_member_spec_replacing_collision(
-        &self,
-        runtime_id: &AgentRuntimeId,
-        member_id: &MobAgentIdentity,
-        spawn_spec: SpawnMemberSpec,
-    ) -> Result<(), meerkat_mob::MobError> {
-        match self.spawn_member_spec(spawn_spec.clone()).await {
-            Ok(()) => Ok(()),
-            Err(error) if is_member_already_exists_error(&error) => {
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    member_id = %member_id,
-                    error = %error,
-                    "fresh-spawn fallback collided with an existing member; retiring and retrying with adopted spec"
-                );
-                match self.handle.retire(member_id.clone()).await {
-                    Ok(()) => {}
-                    Err(err)
-                        if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
-                    Err(err) => return Err(err),
-                }
-                self.forget_runtime_member(runtime_id).await;
-                self.spawn_member_spec(spawn_spec).await
-            }
-            Err(error) => Err(error),
-        }
-    }
 }
 
 /// Project meerkat 0.7's tri-state peer connectivity into an inspect-level
@@ -779,6 +825,33 @@ pub(crate) fn build_spawn_spec(
     spawn_spec
 }
 
+/// Build the spawn spec for a RESUME of `session_id`.
+///
+/// Differs from a fresh spawn in two deliberate ways:
+/// - `launch_mode = Resume`, so meerkat loads the persisted session
+///   (conversation history intact) instead of creating a new one.
+/// - `system_prompt_override` is cleared (Inherit): the persisted System
+///   message is authoritative on resume. Re-sending the draft's explicit
+///   prompt makes meerkat re-assemble the prompt, and on meerkat ≤0.7.14 that
+///   trips the session store's transcript-continuity guard whenever the
+///   persisted prompt carries runtime context appends — the exact cold-restart
+///   transcript-loss class (HomeCore). Dynamic per-boot context belongs in
+///   runtime system-context appends, never the base prompt.
+pub(crate) fn build_resume_spawn_spec(
+    runtime_id: &AgentRuntimeId,
+    spec: &DurableAgentSpec,
+    draft: &AgentBuildDraft,
+    base_profile: Option<&meerkat_mob::Profile>,
+    session_id: &meerkat_core::types::SessionId,
+) -> SpawnMemberSpec {
+    let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft, base_profile);
+    spawn_spec.launch_mode = MemberLaunchMode::Resume {
+        bridge_session_id: session_id.clone(),
+    };
+    spawn_spec.system_prompt_override = None;
+    spawn_spec
+}
+
 fn runtime_binding_from_wire(
     binding: meerkat_contracts::WireRuntimeBinding,
 ) -> Option<meerkat_mob::RuntimeBinding> {
@@ -832,7 +905,7 @@ impl SessionBridge for MobSessionBridge {
 
     async fn resume_session(
         &self,
-        _identity: &AgentIdentity,
+        identity: &AgentIdentity,
         runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
@@ -840,19 +913,17 @@ impl SessionBridge for MobSessionBridge {
         _snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
         if spec_uses_external_binding(spec) {
-            let mut spawn_spec = build_spawn_spec(
+            let spawn_spec = build_resume_spawn_spec(
                 runtime_id,
                 spec,
                 draft,
                 self.base_profile_for_spec(spec).as_ref(),
+                session_id,
             );
-            spawn_spec.launch_mode = MemberLaunchMode::Resume {
-                bridge_session_id: session_id.clone(),
-            };
             let mid = member_id_for_spawn_spec(runtime_id, spec);
-            self.spawn_member_spec(spawn_spec)
-                .await
-                .map_err(|e| BridgeError::Mob(e.to_string()))?;
+            self.spawn_member_spec(spawn_spec).await.map_err(|error| {
+                resume_rejected(identity, session_id, &error, "external-binding resume")
+            })?;
             self.remember_runtime_member(runtime_id, &mid).await;
             self.remember_runtime_session(runtime_id, session_id).await;
             return Ok(ResumeSessionOutcome::Resumed {
@@ -860,21 +931,19 @@ impl SessionBridge for MobSessionBridge {
             });
         }
 
-        // Try MemberLaunchMode::Resume first — this loads the existing session
-        // from the session store (conversation history intact).
-        let mut spawn_spec = build_spawn_spec(
+        // MemberLaunchMode::Resume loads the existing session from the session
+        // store (conversation history intact).
+        let spawn_spec = build_resume_spawn_spec(
             runtime_id,
             spec,
             draft,
             self.base_profile_for_spec(spec).as_ref(),
+            session_id,
         );
-        spawn_spec.launch_mode = MemberLaunchMode::Resume {
-            bridge_session_id: session_id.clone(),
-        };
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
 
-        match self.spawn_member_spec(spawn_spec).await {
+        match self.spawn_member_spec(spawn_spec.clone()).await {
             Ok(()) => {
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
@@ -882,42 +951,53 @@ impl SessionBridge for MobSessionBridge {
                     session_id: session_id.clone(),
                 })
             }
-            Err(e) => {
-                // Resume can fail if the old session's comms identity is still
-                // claimed (e.g., in-process restart where the previous mob actor
-                // hasn't fully terminated). Fall back to a fresh spawn.
+            Err(error) if is_member_already_exists_error(&error) => {
+                // Genuine roster collision: an in-process restart where the
+                // previous member actor hasn't fully terminated, or a Broken
+                // roster entry left by an earlier rejected resume. Retire the
+                // collision and retry the RESUME — never a fresh spawn; the
+                // durable session must stay bound to the identity.
                 tracing::warn!(
-                    identity = %_identity,
+                    identity = %identity,
                     session_id = %session_id,
-                    error = %e,
-                    reason = "runtime_identity_incompatible",
-                    "resume_session incompatible with current runtime binding, falling back to fresh spawn"
+                    error = %error,
+                    "resume_session hit a roster collision; retiring the stale member and retrying resume"
                 );
-                let fresh_spec = build_spawn_spec(
-                    runtime_id,
-                    spec,
-                    draft,
-                    self.base_profile_for_spec(spec).as_ref(),
-                );
-                self.spawn_member_spec_replacing_collision(runtime_id, &mid, fresh_spec)
-                    .await
-                    .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
-
+                match self.handle.retire(mid.clone()).await {
+                    Ok(()) => {}
+                    Err(err)
+                        if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
+                    Err(err) => {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &err,
+                            "collision retire before resume retry",
+                        ));
+                    }
+                }
+                self.forget_runtime_member(runtime_id).await;
+                self.spawn_member_spec(spawn_spec).await.map_err(|error| {
+                    resume_rejected(identity, session_id, &error, "resume retry after collision")
+                })?;
                 self.remember_runtime_member(runtime_id, &mid).await;
-                let session_id = self
-                    .resolve_runtime_session_id(
-                        runtime_id,
-                        &mid,
-                        "member spawned (fresh fallback) but has no session ID",
-                    )
-                    .await?;
-                Ok(ResumeSessionOutcome::FreshSpawned {
-                    session_id,
-                    reason: ResumeFallbackReason::RuntimeIdentityIncompatible {
-                        detail: e.to_string(),
-                    },
+                self.remember_runtime_session(runtime_id, session_id).await;
+                Ok(ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
                 })
             }
+            // Any other resume failure: REFUSE to fall back to a fresh spawn.
+            // The durable session row exists and is the only copy of the
+            // conversation; rebinding the identity to a fresh empty session
+            // would permanently abandon it (the HomeCore restart-loss bug).
+            // Surface a typed rejection so the caller marks the identity
+            // degraded and the next reconcile retries the resume.
+            Err(error) => Err(resume_rejected(
+                identity,
+                session_id,
+                &error,
+                "resume spawn",
+            )),
         }
     }
 
@@ -1311,7 +1391,7 @@ impl SessionBridge for MobSessionBridge {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
 
@@ -1636,5 +1716,64 @@ mod tests {
             ),
             "ordinary respawn failures must still fail bridge repair"
         );
+    }
+
+    /// The persisted System message is authoritative on resume: even when the
+    /// draft carries an explicit customizer prompt, the resume spawn spec must
+    /// NOT re-send it (meerkat ≤0.7.14 re-assembles the prompt and trips the
+    /// transcript-continuity guard — the HomeCore cold-restart loss class).
+    #[test]
+    fn resume_spawn_spec_inherits_persisted_system_prompt() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: None,
+            system_prompt: Some("explicit customizer prompt".to_string()),
+            additional_instructions: Vec::new(),
+            labels: std::collections::BTreeMap::new(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        let spawn =
+            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id);
+
+        assert_eq!(
+            spawn.system_prompt_override, None,
+            "resume must inherit the persisted System message, never re-send the base prompt"
+        );
+        match &spawn.launch_mode {
+            MemberLaunchMode::Resume { bridge_session_id } => {
+                assert_eq!(bridge_session_id, &session_id);
+            }
+            other => panic!("expected Resume launch mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_error_classification_is_typed_first() {
+        let restore_failed = meerkat_mob::MobError::MemberRestoreFailed {
+            member_id: meerkat_mob::ids::AgentIdentity::from("agent-alpha"),
+            session_id: None,
+            reason: "durable snapshot missing".to_string(),
+        };
+        assert_eq!(
+            classify_resume_error(&restore_failed),
+            ResumeRejectionKind::MemberRestoreFailed
+        );
+
+        let continuity = meerkat_mob::MobError::Internal(
+            "session save rejected: incoming transcript is not a continuation of persisted \
+             revision sha256:d57e07"
+                .to_string(),
+        );
+        assert_eq!(
+            classify_resume_error(&continuity),
+            ResumeRejectionKind::TranscriptContinuity
+        );
+
+        let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
+        assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);
     }
 }

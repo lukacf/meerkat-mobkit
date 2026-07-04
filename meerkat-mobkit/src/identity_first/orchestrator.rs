@@ -701,6 +701,12 @@ pub async fn restore_flow(
                     }
                 };
                 let mut abandoned_session_registration = None;
+                // The bridge's authoritative resume verdict, when a bridge ran:
+                // `Some(true)` = the persisted session was resumed, `Some(false)`
+                // = the bridge fresh-spawned (typed fallback). Reporting keys on
+                // THIS, not on snapshot presence — reconcile must never report
+                // `resumed` for a fresh-spawned member (the HomeCore lie).
+                let mut bridge_resumed: Option<bool> = None;
 
                 // Bridge: resume or create the real mob member when available.
                 // Skip if the identity is already active (mob member exists).
@@ -755,100 +761,76 @@ pub async fn restore_flow(
                         }
                     }
                     let registered_session_id = record.session_id.clone();
-                    let resumed_session_id = match &snapshot {
-                        Some(snap) => match bridge
-                            .resume_session(
-                                identity,
-                                &record.agent_runtime_id,
-                                spec,
-                                &draft,
-                                &record.session_id,
-                                snap,
-                            )
-                            .await
-                        {
-                            Ok(outcome) => outcome.session_id().clone(),
-                            Err(err) => {
-                                let unregister_error = bridge
-                                    .unregister_session_runtime_state(&registered_session_id)
-                                    .await
-                                    .err();
-                                let cleanup_error =
-                                    bridge.retire_member(&record.agent_runtime_id).await.err();
-                                let lease_cleanup_error = release_unactivated_restore_grants(
-                                    runtime,
-                                    &grants,
-                                    &activated_identities,
-                                )
-                                .await;
-                                return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                    format!(
-                                        "bridge resume_session: {err}{}{}",
-                                        unregister_error
-                                            .as_ref()
-                                            .map(|e| format!("; unregister session failed: {e}"))
-                                            .unwrap_or_default(),
-                                        cleanup_error
-                                            .as_ref()
-                                            .map(|e| format!("; cleanup retire failed: {e}"))
-                                            .unwrap_or_default(),
-                                    ),
-                                    lease_cleanup_error,
-                                )));
-                            }
-                        },
-                        None => {
-                            // No snapshot but record exists — resume from session
-                            // store using the session_id from the continuity record.
-                            // The session data lives in the mob's session store,
-                            // not the continuity store's snapshot.
-                            match bridge
-                                .resume_session(
-                                    identity,
-                                    &record.agent_runtime_id,
-                                    spec,
-                                    &draft,
-                                    &record.session_id,
-                                    &SessionSnapshot { data: Vec::new() },
-                                )
+                    // When no checkpoint snapshot exists the session data still
+                    // lives in the mob's session store; resume passes an empty
+                    // snapshot and the bridge loads the persisted session by id.
+                    let resume_snapshot = snapshot
+                        .clone()
+                        .unwrap_or(SessionSnapshot { data: Vec::new() });
+                    let resumed_session_id = match bridge
+                        .resume_session(
+                            identity,
+                            &record.agent_runtime_id,
+                            spec,
+                            &draft,
+                            &record.session_id,
+                            &resume_snapshot,
+                        )
+                        .await
+                    {
+                        Ok(outcome) => {
+                            bridge_resumed = Some(outcome.fallback_reason().is_none());
+                            outcome.session_id().clone()
+                        }
+                        Err(err) => {
+                            // A rejected resume must not fail the whole restore
+                            // flow, and must NEVER abandon the durable session —
+                            // the transcript is the only copy. Keep the
+                            // identity → session binding intact, surface the
+                            // identity as Broken with the error attached, and
+                            // let the next reconcile retry the resume. Cleanup
+                            // is bookkeeping only: unregister the session
+                            // runtime state registered above (retried next
+                            // reconcile); do NOT retire the member (meerkat
+                            // keeps Broken-in-roster restore diagnostics) and
+                            // do NOT touch the continuity record.
+                            tracing::error!(
+                                %identity,
+                                session_id = %registered_session_id,
+                                error = %err,
+                                "restore resume rejected; marking identity Broken and preserving \
+                                 the durable session for reconcile retry"
+                            );
+                            if let Err(unregister_err) = bridge
+                                .unregister_session_runtime_state(&registered_session_id)
                                 .await
                             {
-                                Ok(outcome) => outcome.session_id().clone(),
-                                Err(err) => {
-                                    let unregister_error = bridge
-                                        .unregister_session_runtime_state(&registered_session_id)
-                                        .await
-                                        .err();
-                                    let cleanup_error =
-                                        bridge.retire_member(&record.agent_runtime_id).await.err();
-                                    let lease_cleanup_error = release_unactivated_restore_grants(
-                                        runtime,
-                                        &grants,
-                                        &activated_identities,
-                                    )
-                                    .await;
-                                    return Err(IdentityRuntimeError::Internal(
-                                        append_cleanup_error(
-                                            format!(
-                                                "bridge resume_session (no snapshot): {err}{}{}",
-                                                unregister_error
-                                                    .as_ref()
-                                                    .map(|e| format!(
-                                                        "; unregister session failed: {e}"
-                                                    ))
-                                                    .unwrap_or_default(),
-                                                cleanup_error
-                                                    .as_ref()
-                                                    .map(|e| format!(
-                                                        "; cleanup retire failed: {e}"
-                                                    ))
-                                                    .unwrap_or_default(),
-                                            ),
-                                            lease_cleanup_error,
-                                        ),
-                                    ));
-                                }
+                                tracing::warn!(
+                                    %identity,
+                                    error = %unregister_err,
+                                    "failed to unregister session runtime state after rejected resume"
+                                );
                             }
+                            runtime
+                                .register(
+                                    spec.clone(),
+                                    IdentityLifecycleState::Broken,
+                                    Some(record.clone()),
+                                    None,
+                                )
+                                .await;
+                            outcomes.insert(
+                                identity.clone(),
+                                RestoreOutcome::Broken(ContinuityFailure {
+                                    identity: identity.clone(),
+                                    kind: ContinuityFailureKind::ResumeRejected,
+                                    record: Some(record.clone()),
+                                    detail: err.to_string(),
+                                }),
+                            );
+                            // Not added to activated_identities: the final
+                            // cleanup releases this identity's lease grant.
+                            continue;
                         }
                     };
                     record.session_id = resumed_session_id;
@@ -1066,28 +1048,34 @@ pub async fn restore_flow(
                     .await;
                 activated_identities.insert(identity.clone());
 
-                match snapshot {
-                    Some(snap) => {
-                        outcomes.insert(
-                            identity.clone(),
-                            RestoreOutcome::Resumed {
-                                record: record.clone(),
-                                snapshot: snap,
-                                draft,
-                            },
-                        );
-                    }
-                    None => {
-                        // Record exists but no snapshot — treat as fresh create
-                        // with existing record (first checkpoint hasn't happened yet)
-                        outcomes.insert(
-                            identity.clone(),
-                            RestoreOutcome::Created {
-                                record: record.clone(),
-                                draft,
-                            },
-                        );
-                    }
+                // Outcome honesty: when a bridge ran, ITS verdict decides. A
+                // typed fresh-spawn fallback reports `Created` — never
+                // `Resumed` — regardless of snapshot presence; a successful
+                // bridge resume reports `Resumed` even without a checkpoint
+                // snapshot (the persisted mob session carried the history).
+                // Without a bridge (metadata-only restore) the checkpoint
+                // snapshot remains the only signal, as before.
+                let resumed = match bridge_resumed {
+                    Some(resumed) => resumed,
+                    None => snapshot.is_some(),
+                };
+                if resumed {
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Resumed {
+                            record: record.clone(),
+                            snapshot: snapshot.unwrap_or(SessionSnapshot { data: Vec::new() }),
+                            draft,
+                        },
+                    );
+                } else {
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Created {
+                            record: record.clone(),
+                            draft,
+                        },
+                    );
                 }
             }
 

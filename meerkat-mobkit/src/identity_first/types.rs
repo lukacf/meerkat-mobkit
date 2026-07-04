@@ -288,6 +288,10 @@ pub enum ContinuityFailureKind {
     SnapshotCorrupted,
     GenerationMismatch,
     StoreUnavailable,
+    /// The bridge refused a resume while the durable session row exists (e.g.
+    /// a transcript-continuity rejection). The identity → session binding is
+    /// intact; the identity is degraded until a reconcile retry succeeds.
+    ResumeRejected,
 }
 
 /// A typed failure payload for broken continuity.

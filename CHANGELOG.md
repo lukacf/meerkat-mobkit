@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A rejected resume no longer destroys the conversation.** The identity-first
+  session bridge used to catch *any* resume error and fall back to a fresh,
+  empty member spawn — permanently abandoning the durable transcript (the
+  HomeCore restart-loss bug). A resume failure now keeps the identity → session
+  binding intact, marks the identity **Broken** with the real error attached,
+  and the next reconcile retries the resume. A roster collision (in-process
+  restart) retires the stale member and retries the *resume*, never a fresh
+  spawn.
+- Reconcile outcome reporting is honest: a bridge resume that fresh-spawned
+  reports `created` (never `resumed`), and a successful resume without a
+  checkpoint snapshot reports `resumed` (the persisted mob session carried the
+  history). Resume errors are classified from meerkat's typed errors
+  (`MemberRestoreFailed`, transcript-continuity violations) instead of being
+  bucketed into one `runtime_identity_incompatible` reason.
+- Resume inherits the persisted System message instead of re-sending the
+  spec's explicit prompt. Re-sending made meerkat re-assemble the prompt,
+  which trips the session store's transcript-continuity guard on meerkat
+  ≤0.7.14 whenever the persisted prompt carries runtime context appends —
+  the cold-restart transcript-loss class. Dynamic per-boot context belongs in
+  runtime system-context appends, not the base prompt.
+
+### Added
+
+- The cold-restart continuity regression now runs in CI (previously an
+  ignored scaffold): boot → turn → full restart against the same on-disk
+  store → assert the identity resumes onto the same session id with the
+  transcript replayed, twice (second-restart variant). Its earlier "harness"
+  failure was in fact the outcome-reporting lie this release fixes.
+
 ## [0.7.21] - 2026-07-04
 
 ### Changed

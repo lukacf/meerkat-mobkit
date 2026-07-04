@@ -846,6 +846,7 @@ struct CountingBridge {
     fail_current_wires: AtomicBool,
     fail_retire: AtomicBool,
     force_resume_fallback: AtomicBool,
+    reject_resume_times: AtomicUsize,
     resume_delay: tokio::sync::Mutex<Option<Duration>>,
     resume_barrier: tokio::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
@@ -871,6 +872,13 @@ impl CountingBridge {
     async fn set_force_resume_fallback(&self, session_id: meerkat_core::types::SessionId) {
         self.force_resume_fallback.store(true, Ordering::SeqCst);
         *self.fallback_session_id.lock().await = Some(session_id);
+    }
+
+    /// Reject the next `times` resume attempts with the typed
+    /// `BridgeError::ResumeRejected` (the transcript-continuity class), then
+    /// succeed — models a resume that heals on a later reconcile retry.
+    fn reject_resume_times(&self, times: usize) {
+        self.reject_resume_times.store(times, Ordering::SeqCst);
     }
 
     async fn set_create_session_id(&self, session_id: meerkat_core::types::SessionId) {
@@ -949,6 +957,19 @@ impl SessionBridge for CountingBridge {
         let barrier = self.resume_barrier.lock().await.clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
+        }
+        if self
+            .reject_resume_times
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(BridgeError::ResumeRejected {
+                kind: meerkat_mobkit::identity_first::ResumeRejectionKind::TranscriptContinuity,
+                detail: "scripted: incoming transcript is not a continuation of persisted revision"
+                    .to_string(),
+            });
         }
         if self.force_resume_fallback.load(Ordering::SeqCst) {
             let fallback_session_id = self
@@ -4731,6 +4752,150 @@ async fn identity_first_runtime_restore_flow_resumes_ready() {
             assert_eq!(snapshot.data, b"snapshot data");
         }
         other => panic!("expected Resumed, got: {other:?}"),
+    }
+}
+
+/// Regression for the HomeCore restart transcript loss: a rejected resume must
+/// keep the identity → session binding intact (the durable transcript is the
+/// only copy), degrade the identity to Broken with the error attached, and let
+/// the next reconcile retry the resume — never fresh-spawn, never retire, and
+/// never fail the whole restore flow.
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_rejected_resume_marks_broken_then_retries() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.reject_resume_times(1);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    store
+        .save_session_snapshot(
+            &id,
+            &record.session_id,
+            record.generation,
+            CheckpointVersion::new(1),
+            FencingToken::new(0),
+            &SessionSnapshot {
+                data: b"snapshot data".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+
+    // Flow 1: resume rejected. The flow itself succeeds; the identity comes
+    // back Broken with the typed failure attached.
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Broken(failure) => {
+            assert_eq!(
+                failure.kind,
+                meerkat_mobkit::identity_first::ContinuityFailureKind::ResumeRejected
+            );
+            assert!(
+                failure.detail.contains("not a continuation"),
+                "the real error must be attached, got: {}",
+                failure.detail
+            );
+            assert_eq!(
+                failure.record.as_ref().map(|r| r.session_id.clone()),
+                Some(original_session_id.clone()),
+                "the failure must still reference the durable session"
+            );
+        }
+        other => panic!("expected Broken, got: {other:?}"),
+    }
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+
+    // Destruction must not have happened: no fresh spawn, no retire, and the
+    // continuity binding still points at the original durable session.
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        0,
+        "a rejected resume must never fresh-spawn"
+    );
+    assert_eq!(
+        bridge.retire_calls.load(Ordering::SeqCst),
+        0,
+        "a rejected resume must not retire the member"
+    );
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record: bound } = resolved.get(&id).unwrap() else {
+        panic!("continuity record must survive a rejected resume");
+    };
+    assert_eq!(
+        bound.session_id, original_session_id,
+        "identity → session binding must stay intact"
+    );
+
+    // Flow 2 (the reconcile retry): resume now succeeds onto the SAME durable
+    // session — history intact, reported honestly as resumed.
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Resumed { record, .. } => {
+            assert_eq!(record.session_id, original_session_id);
+        }
+        other => panic!("expected Resumed on retry, got: {other:?}"),
+    }
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Active);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
+}
+
+/// Regression for the reconcile-outcome lie: a bridge resume that fell back to
+/// a fresh spawn (typed `FreshSpawned`) must be reported as `created`, never
+/// `resumed` — reporting keyed on snapshot presence hid the HomeCore loss.
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_reports_fresh_spawned_resume_as_created() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let fallback_session_id = meerkat_core::types::SessionId::new();
+    bridge
+        .set_force_resume_fallback(fallback_session_id.clone())
+        .await;
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    store
+        .save_session_snapshot(
+            &id,
+            &record.session_id,
+            record.generation,
+            CheckpointVersion::new(1),
+            FencingToken::new(0),
+            &SessionSnapshot {
+                data: b"snapshot data".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Created { record, .. } => {
+            assert_eq!(
+                record.session_id, fallback_session_id,
+                "the fresh-spawned session id must be reported"
+            );
+        }
+        other => panic!("a fresh-spawned resume must report Created, got: {other:?}"),
     }
 }
 

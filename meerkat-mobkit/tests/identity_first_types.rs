@@ -246,6 +246,7 @@ fn identity_first_types_failure_kind_all_variants() {
         ContinuityFailureKind::SnapshotCorrupted,
         ContinuityFailureKind::GenerationMismatch,
         ContinuityFailureKind::StoreUnavailable,
+        ContinuityFailureKind::ResumeRejected,
     ];
     for kind in &kinds {
         let json = serde_json::to_string(kind).expect("serialize");
