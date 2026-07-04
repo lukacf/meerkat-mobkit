@@ -88,141 +88,123 @@ jobs:
         run: make fmt-check
 
   build_binaries:
-    name: Build gateway binaries (BuildBuddy RBE)
+    name: Build gateway binaries (${{ matrix.target }})
     needs: [release_validate]
-    # Self-hosted runner has bb (BuildBuddy CLI) + the toolchain; the actual
-    # compiles run on hosted-BuildBuddy RBE (linux/macOS) and king.europe (windows).
-    runs-on: ["self-hosted", "mobkit-temp-linux"]
-    env:
-      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-      CARGO_BAZEL_REPIN: "true"
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
+    # Migrated off the self-hosted BuildBuddy/GCP infra to GitHub-hosted runners
+    # (mirrors meerkat's release build): each target builds natively on its own
+    # runner with plain cargo — no bazel, no BuildBuddy, no self-hosted runner.
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runs-on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runs-on: macos-15
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - runs-on: macos-15-large
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
 
-      - name: Build + package all targets via BuildBuddy RBE
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build gateway binaries
         shell: bash
         env:
+          CARGO_TARGET_DIR: target
+        run: |
+          set -euo pipefail
+          # Build BOTH gateways for this target with plain cargo. (The repo-cargo
+          # wrapper redirects CARGO_TARGET_DIR for dev-worktree isolation; a clean
+          # release runner wants the predictable ./target path.) rpc_gateway is the
+          # SDK stdin-RPC gateway; mobkit_gateway is the console/HTTP one — SDK
+          # users need rpc_gateway, so both ship.
+          cargo build -p meerkat-mobkit --bin mobkit_gateway --bin rpc_gateway \
+            --release --target "${{ matrix.target }}"
+
+      - name: Ad-hoc codesign macOS binaries
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in mobkit_gateway rpc_gateway; do
+            codesign --force --sign - "target/${{ matrix.target }}/release/${bin}"
+          done
+
+      - name: Package artifacts
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
           VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
           set -euo pipefail
           VERSION="${VERSION#v}"; VERSION="${VERSION//\//-}"
-          hdr=(--remote_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}" --bes_header=x-buildbuddy-api-key="${BUILDBUDDY_API_KEY}")
-          # target : .bazelrc RBE config : archive ext
-          targets=(
-            "x86_64-unknown-linux-gnu:buildbuddy-linux-rbe:tar.gz"
-            "aarch64-unknown-linux-gnu:buildbuddy-linux-arm64-rbe:tar.gz"
-            "aarch64-apple-darwin:buildbuddy-macos-rbe:tar.gz"
-            "x86_64-apple-darwin:buildbuddy-macos-x86-rbe:tar.gz"
-            "x86_64-pc-windows-msvc:buildbuddy-windows-rbe:zip"
-          )
-          mkdir -p dist logs
-
-          # Build+package one target. Each target gets its OWN --output_base so the
-          # five bazel servers run concurrently (one server serializes commands per
-          # workspace). The compiles are remote, so the local runner just drives five
-          # RBE clients in parallel; the targets fill the executor fleet during each
-          # other's serial tails instead of building one-after-another. Combined with
-          # opt-1 (see .bazelrc) this turns a ~7h serial build into ~one target's
-          # wall-clock. opt-level lives in .bazelrc so build and cquery share the
-          # exact same configuration (otherwise cquery resolves a different path).
-          build_one() {
-            local target="$1" cfg="$2" ext="$3"
-            local ob="${HOME}/.cache/bazel-mob/${target}"
-            local log="logs/${target}.log"
-            local n=0
-            # Retry the whole invocation: hosted RBE occasionally drops a task
-            # ("stream closed with task still claimed") and fails after bazel's own
-            # per-action retries; re-invoking resumes from cache and usually succeeds.
-            # Build BOTH gateways in one invocation so they share the (expensive)
-            # meerkat-mobkit lib compile; linking the second bin is cheap.
-            until bb --output_base="${ob}" build --config="${cfg}" --compilation_mode=opt \
-                --jobs=200 "${hdr[@]}" --remote_download_outputs=toplevel \
-                //meerkat-mobkit:mobkit_gateway_bin //meerkat-mobkit:rpc_gateway_bin >"${log}" 2>&1; do
-              n=$((n+1))
-              if [ "${n}" -ge 3 ]; then
-                echo "::error::build ${target} failed after ${n} attempts"; tail -40 "${log}"; return 1
-              fi
-              echo "::warning::transient RBE failure on ${target}; retry ${n}/3"; sleep 20
-            done
-            local execroot
-            execroot=$(bb --output_base="${ob}" info execution_root 2>/dev/null)
-            # Package one bazel binary target into its own archive. cquery returns a
-            # path relative to the execution root; with --symlink_prefix=/ there is NO
-            # bazel-out convenience symlink in the workspace, so prepend the execution
-            # root to get the real file (this was the v0.7.5 attach bug).
-            package_bin() {
-              local bazel_target="$1" archive_prefix="$2"
-              local binname="${bazel_target##*:}"
-              local relbin bin files
-              files=$(bb --output_base="${ob}" cquery --config="${cfg}" --compilation_mode=opt \
-                  "${hdr[@]}" --output=files "${bazel_target}" 2>/dev/null)
-              # Prefer the output whose basename is the bin target (so we never pick
-              # an aux output like a windows .pdb); fall back to the last line.
-              relbin=$(printf '%s\n' "${files}" | grep -E "/${binname}(\.exe)?$" | tail -1)
-              [ -n "${relbin}" ] || relbin=$(printf '%s\n' "${files}" | tail -1)
-              bin="${execroot}/${relbin}"
-              if [ -z "${relbin}" ] || [ ! -f "${bin}" ]; then
-                echo "::error::missing binary ${bazel_target} for ${target}: '${bin}'"; tail -40 "${log}"; return 1
-              fi
-              local name="${archive_prefix}-${VERSION}-${target}.${ext}"
-              local out="${GITHUB_WORKSPACE}/dist/${name}"
-              if [ "${ext}" = "zip" ]; then
-                # The self-hosted runner has no `zip`; build the archive with python.
-                python3 -c 'import sys,os,zipfile; z=zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[1],arcname=os.path.basename(sys.argv[1])); z.close()' "${bin}" "${out}" \
-                  || { echo "::error::failed to zip ${name}"; return 1; }
-              else
-                tar -czf "${out}" -C "$(dirname "${bin}")" "$(basename "${bin}")" \
-                  || { echo "::error::failed to tar ${name}"; return 1; }
-              fi
-              # Catch silent packaging failure / truncation before reporting success.
-              [ -s "${out}" ] || { echo "::error::archive ${name} missing or empty after packaging"; return 1; }
-              echo "packaged dist/${name} ($(du -h "${out}" | cut -f1))"
-            }
-            # Ship BOTH: the console/HTTP gateway (mobkit_gateway) and the SDK
-            # stdin-RPC gateway (rpc_gateway). SDK users need rpc_gateway; before
-            # 0.7.8 only the console gateway was published, so SDK setups that
-            # grabbed the release binary ran the wrong one and hung on the first
-            # post-init RPC (the HomeCore reconcile "deadlock").
-            package_bin //meerkat-mobkit:mobkit_gateway_bin mobkit-gateway || return 1
-            package_bin //meerkat-mobkit:rpc_gateway_bin mobkit-rpc-gateway || return 1
-          }
-
-          pids=(); labels=()
-          for entry in "${targets[@]}"; do
-            IFS=: read -r target cfg ext <<< "$entry"
-            echo "launching ${target} (${cfg})"
-            build_one "${target}" "${cfg}" "${ext}" &
-            pids+=("$!"); labels+=("${target}")
-            # Small stagger so the five crate_universe repins don't all start cold at
-            # the same instant (the first warms the shared cargo cache for the rest).
-            sleep 8
-          done
-
-          # Ship whatever succeeded — a single flaky target (e.g. windows on the
-          # separate king.europe instance) must not throw away the other binaries.
-          ok=0; failed=""
-          for i in "${!pids[@]}"; do
-            if wait "${pids[$i]}"; then
-              echo "OK ${labels[$i]}"; ok=$((ok+1))
+          mkdir -p dist
+          # cargo bin name -> published archive prefix
+          BINS=("mobkit_gateway:mobkit-gateway" "rpc_gateway:mobkit-rpc-gateway")
+          for entry in "${BINS[@]}"; do
+            bin="${entry%%:*}"; prefix="${entry##*:}"
+            if [[ "${RUNNER_OS}" == "Windows" ]]; then
+              src="target/${TARGET}/release/${bin}.exe"
             else
-              echo "::error::FAILED ${labels[$i]}"; failed="${failed} ${labels[$i]}"
+              src="target/${TARGET}/release/${bin}"
             fi
+            if [[ ! -f "$src" ]]; then
+              echo "::error::missing expected binary at $src" >&2
+              exit 1
+            fi
+            artifact="${prefix}-${VERSION}-${TARGET}.${ARCHIVE_EXT}"
+            if [[ "$ARCHIVE_EXT" == "zip" ]]; then
+              7z a -tzip "dist/${artifact}" "$(cygpath -w "$src")" >/dev/null
+            else
+              tar -czf "dist/${artifact}" -C "$(dirname "$src")" "$(basename "$src")"
+            fi
+            if [[ ! -s "dist/${artifact}" ]]; then
+              echo "::error::archive dist/${artifact} missing or empty" >&2
+              exit 1
+            fi
+            echo "packaged dist/${artifact}"
           done
-          echo "=== dist ==="; ls -la dist/ || true
-          [ -n "${failed}" ] && echo "::warning::targets failed:${failed} — shipping the ${ok} that succeeded"
-          [ "${ok}" -ge 1 ] || { echo "::error::all targets failed"; exit 1; }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mobkit-gateway-binaries
+          name: mobkit-gateway-binaries-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
   publish_github_release:
     name: Publish GitHub release assets
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
+    # always(): the build matrix is fail-fast:false, so publish whatever targets
+    # succeeded even if one (e.g. a flaky runner) failed — the checksum step
+    # still fails loudly if NOTHING built.
+    if: >-
+      always() &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''))
     needs: [build_binaries]
     runs-on: ubuntu-latest
     steps:
@@ -281,7 +263,9 @@ jobs:
             release-artifacts/checksums.sha256
             release-artifacts/index.json
           draft: false
-          fail_on_unmatched_files: true
+          # false: a missing target class (e.g. no Windows zip if that leg
+          # failed) must not block shipping the binaries that did build.
+          fail_on_unmatched_files: false
           generate_release_notes: true
 
   publish_registries:
