@@ -63,6 +63,11 @@ fn assert_bootstraps(persistent_sessions: bool) {
         // key-independent / CI-safe.
         .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
         .env("OPENAI_API_KEY", "sk-regression-test")
+        // Isolate the gateway's state dir (peer keys) into this test's temp
+        // workspace: the default ~/.local/state/meerkat-mobkit is shared
+        // across concurrent test processes on CI runners and intermittently
+        // fails the peer-key load/mint (a recurring CI flake).
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -174,6 +179,9 @@ fn mobkit_gateway_rejects_post_init_stdin_rpc_loudly() {
         .current_dir(workspace.path())
         .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
         .env("OPENAI_API_KEY", "sk-regression-test")
+        // Isolated state dir (peer keys) — see the sibling spawn above; the
+        // shared ~/.local/state default is a recurring CI peer-key flake.
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
