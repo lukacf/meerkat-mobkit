@@ -23,8 +23,8 @@ pub use agent_memory::{
     MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeSessionOutcome,
-    SessionBridge,
+    BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind,
+    ResumeSessionOutcome, SessionBridge,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

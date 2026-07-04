@@ -1337,24 +1337,49 @@ impl IdentityRuntime {
                 let outcome = match outcome {
                     Ok(outcome) => outcome,
                     Err(err) => {
+                        // A rejected resume must NEVER abandon the durable
+                        // session (the transcript is the only copy). Keep the
+                        // identity → session binding intact — no retire, no
+                        // continuity rebind — mark the identity Broken with
+                        // the error attached so this send fails loudly, and
+                        // let the next reconcile retry the resume. Unregister
+                        // only the session-runtime-state bookkeeping (it is
+                        // re-registered on retry).
+                        tracing::error!(
+                            %identity,
+                            session_id = %registered_session_id,
+                            error = %err,
+                            "materialize resume rejected; marking identity Broken and preserving \
+                             the durable session for reconcile retry"
+                        );
                         let unregister_error = Self::unregister_bridge_session_runtime_states(
                             bridge.as_ref(),
                             std::slice::from_ref(&registered_session_id),
                         )
                         .await;
-                        let cleanup_error =
-                            bridge.retire_member(&record.agent_runtime_id).await.err();
                         let lease_cleanup_error =
                             self.release_uninstalled_materialize_lease(&grant).await;
+                        {
+                            let mut entries = self.entries.write().await;
+                            if let Some(entry) = entries.get_mut(identity) {
+                                entry.state = IdentityLifecycleState::Broken;
+                                entry.lease = None;
+                            }
+                        }
+                        self.emit_event(
+                            identity,
+                            IdentityEvent::StateChanged {
+                                identity: identity.clone(),
+                                new_state: IdentityLifecycleState::Broken,
+                            },
+                        )
+                        .await;
                         let detail = format!(
-                            "bridge resume_session: {err}{}{}{}",
+                            "bridge resume_session rejected (identity degraded, durable session \
+                             preserved for reconcile retry): {err}{}{}",
                             unregister_error
                                 .as_ref()
                                 .map(|e| format!("; unregister session failed: {e}"))
-                                .unwrap_or_default(),
-                            cleanup_error
-                                .as_ref()
-                                .map(|e| format!("; cleanup retire failed: {e}"))
                                 .unwrap_or_default(),
                             lease_cleanup_error
                                 .as_ref()
