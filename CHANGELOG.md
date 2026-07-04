@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.21] - 2026-07-04
+
+### Changed
+
+- Upgraded the meerkat family 0.7.13 → 0.7.14. No API breaks.
+
+### Fixed
+
+- Carried schedule stores authored before 0.7.20 (which hold `schedule_json`
+  as TEXT) now read after upgrade instead of failing every read with
+  `Invalid column type Text at index: 0, name: schedule_json` — meerkat 0.7.14
+  reads schedule JSON columns through a `Text`/`Blob`-tolerant boundary
+  (upstream ask A). This unblocks the identity-target schedule repair and the
+  steward-dream find-or-create on upgraded deployments.
+- A full process restart against a carried on-disk store now resumes each
+  agent's transcript instead of falling back to an empty fresh spawn. meerkat
+  0.7.14's append-only continuity guard compares the shared transcript prefix
+  by content address, tolerating the bookkeeping-only divergence (re-stamped
+  run identity + timestamps) a re-created runtime authority produces on cold
+  restart (upstream ask B).
+
+### Added
+
+- **P3-outbound (upstream ask 5, outbound half):** a member whose session
+  ingests untrusted content now stamps its own signed content-taint on outbound
+  peer envelopes (`declare_member_outbound_taint`), cleared on a clean session
+  rotation or reset. Receivers read the sender's declaration instead of
+  reconstructing taint from host-side joins, propagating taint cross-process.
+- **P5 (upstream ask 7):** the memory steward's dream now runs as a durable,
+  misfire-aware host-runnable schedule occurrence (idempotent find-or-create
+  against the persistent schedule store) instead of a bare in-process interval
+  loop; the loop is kept only as the fallback on gateways with no schedule host.
+- Upgrade-carry regression tests crossing a store-version boundary
+  (`schedule_store_text_carry`; `identity_first_cold_restart_continuity` as an
+  ignored scaffold).
+
 ## [0.7.20] - 2026-07-03
 
 ### Added
