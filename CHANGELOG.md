@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the meerkat family 0.7.14 → 0.7.15. Carries the upstream
+  transcript-restart-loss guard fix: on resume, a byte-identical re-sent base
+  prompt is preserved untouched and a changed prompt becomes an audited
+  transcript rewrite — both survive, composing with this release's
+  Inherit-on-resume default.
+
 ### Fixed
 
 - **A rejected resume no longer destroys the conversation.** The identity-first
