@@ -4156,6 +4156,40 @@ external_addressable = true
                         let memory_events = runtime.memory_event_sink();
                         store.set_event_sink(memory_events.clone());
                         tracker.set_event_sink(memory_events.clone());
+                        // §10.1 ask 5 (outbound half): make the member's comms
+                        // runtime the authenticated carrier of the host's taint
+                        // fact. When a session ingests untrusted content the
+                        // tracker stamps the member Tainted; peers then read the
+                        // sender's own signed declaration instead of
+                        // reconstructing taint from host-side joins, closing the
+                        // cross-process loop. Fire-and-forget: the member may not
+                        // be materialized (transient / definition-mob members
+                        // that never took a lease), so a miss is logged, not
+                        // fatal.
+                        let taint_mob_handle = runtime.mob_handle();
+                        tracker.set_outbound_taint_declarer(std::sync::Arc::new(
+                            move |identity: &str,
+                                  taint: Option<meerkat_core::comms::SenderContentTaint>| {
+                                let handle = taint_mob_handle.clone();
+                                let member =
+                                    meerkat_mobkit::member_comms_id::mob_member_id(identity);
+                                let identity_owned = identity.to_string();
+                                tokio::spawn(async move {
+                                    if let Err(err) = handle
+                                        .declare_member_outbound_taint(member, taint)
+                                        .await
+                                    {
+                                        tracing::debug!(
+                                            identity = %identity_owned,
+                                            ?taint,
+                                            error = %err,
+                                            "agent memory taint: outbound taint declaration \
+                                             failed (member may not be materialized)"
+                                        );
+                                    }
+                                });
+                            },
+                        ));
                         // §9.3 console Memory panel (P3b): a read handle on
                         // this realm store enables the read-only
                         // mobkit/memory/panel/* RPCs and the panel nav.
@@ -4334,10 +4368,17 @@ external_addressable = true
                             sinks.push(Arc::new(memory_steward::StewardTriggers::new(
                                 engine.clone(),
                             )));
-                            // The dream loop runs for the gateway process;
-                            // forgetting the handle keeps it alive (same
-                            // pattern as the member-event observer).
-                            std::mem::forget(engine.spawn_dream_loop());
+                            // Dream cadence (§ ask 7 / P5): when this gateway
+                            // runs a schedule host, the dream is driven as a
+                            // durable, misfire-aware host-runnable occurrence
+                            // (registered below at the schedule-host spawn).
+                            // Only gateways WITHOUT a schedule host keep the
+                            // in-process interval loop as a fallback. Forgetting
+                            // the handle keeps it alive (same pattern as the
+                            // member-event observer).
+                            if schedule_host_inputs.is_none() {
+                                std::mem::forget(engine.spawn_dream_loop());
+                            }
                             agent_memory_steward = Some(engine);
                             tracing::info!(
                                 model = %model,
@@ -4620,12 +4661,33 @@ external_addressable = true
                 );
             }
         }
+        // §8.5 / upstream ask 7 (P5): drive the memory steward's dream through
+        // the durable schedule host instead of a bare interval loop. Register
+        // the dream as a host runnable and find-or-create its cadence schedule
+        // (idempotent across boots via the persistent store). The in-process
+        // fallback loop is spawned only when there is no schedule host.
+        let runnable_host = meerkat_mobkit::schedule_wiring::steward_dream_runnable_host(
+            agent_memory_steward.clone(),
+        );
+        if let Some(steward) = agent_memory_steward.as_ref()
+            && let Err(error) = meerkat_mobkit::schedule_wiring::ensure_steward_dream_schedule(
+                &schedule_service,
+                steward.dream_cadence(),
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to ensure steward dream schedule; the steward will not dream on this gateway",
+            );
+        }
         meerkat_mobkit::schedule_wiring::spawn_schedule_host(
             service,
             adapter,
             schedule_service,
             mob_state,
-            None,
+            runnable_host,
             schedule_owner_id.clone(),
         )
     } else {

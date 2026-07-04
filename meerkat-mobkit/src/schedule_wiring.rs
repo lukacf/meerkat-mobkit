@@ -12,6 +12,11 @@
 //! actually fire: at due time it materializes a session and runs the prompt as
 //! a real agent turn). Both back onto a single durable [`ScheduleService`].
 //!
+//! [`steward_dream_runnable_host`] + [`ensure_steward_dream_schedule`] register
+//! the memory steward's dream as a host-runnable schedule target (§8.5 /
+//! upstream ask 7), so the dream fires as a durable, misfire-aware occurrence
+//! through the same host instead of a bare in-process interval loop.
+//!
 //! This is distinct from the static cron oracle (`MobKitBuilder::scheduling`),
 //! which drives module-dispatch ticks, not per-agent schedule tools.
 
@@ -19,6 +24,7 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use meerkat::surface::{
@@ -26,18 +32,170 @@ use meerkat::surface::{
     spawn_runtime_backed_schedule_host_with_mobs,
 };
 use meerkat::{
-    Config, FactoryAgentBuilder, MobTargetBinding, PersistentSessionService, ScheduleService,
-    ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction, SessionAgentBuilder,
-    SessionTargetBinding, SqliteScheduleStore, TargetBinding, UpdateScheduleRequest,
+    Config, CreateScheduleRequest, FactoryAgentBuilder, HostRunnable, HostRunnableError,
+    HostRunnableInvocation, HostRunnableName, HostRunnableOutcome, HostRunnableRegistry,
+    HostRunnableTargetBinding, IntervalTriggerSpec, MobTargetBinding, PersistentSessionService,
+    ScheduleRunnableHost, ScheduleService, ScheduleToolDispatcher, ScheduledMobAction,
+    ScheduledSessionAction, SessionAgentBuilder, SessionTargetBinding, SqliteScheduleStore,
+    TargetBinding, TriggerSpec, UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
 use meerkat_runtime::MeerkatMachine;
 use serde_json::{Map, Value};
 
+use crate::memory::steward::StewardEngine;
+
 /// File name for the durable schedule store, kept beside the runtime DB so a
 /// gateway and a library-mode runtime pointed at the same dir share state.
 pub const SCHEDULE_STORE_FILE: &str = "schedule.sqlite";
+
+/// Reserved host-runnable name for the memory steward's scheduled dream
+/// (§8.5 / upstream ask 7). Stable across boots: the find-or-create schedule
+/// keys idempotency on a target that names this runnable.
+pub const STEWARD_DREAM_RUNNABLE: &str = "mobkit.memory.steward.dream";
+
+/// Schedule name for the steward dream, used only for operator legibility in
+/// schedule listings — idempotency keys on the host-runnable target, not this.
+const STEWARD_DREAM_SCHEDULE_NAME: &str = "mobkit-memory-steward-dream";
+
+/// A [`HostRunnable`] that runs one guarded steward dream attempt. Registered
+/// with the schedule host so the dream fires as a durable, misfire-aware
+/// schedule occurrence instead of a bare in-process interval loop.
+struct StewardDreamRunnable {
+    engine: Arc<StewardEngine>,
+}
+
+#[async_trait]
+impl HostRunnable for StewardDreamRunnable {
+    async fn run(
+        &self,
+        _invocation: HostRunnableInvocation,
+    ) -> Result<HostRunnableOutcome, HostRunnableError> {
+        // `dream_now` is fully self-gating (enabled / min-signals / budget)
+        // and never returns an error — a skipped dream is a normal outcome,
+        // not an occurrence failure. Always report completion so the
+        // occurrence lands terminal-complete.
+        self.engine.dream_now().await;
+        Ok(HostRunnableOutcome::completed())
+    }
+}
+
+/// Build a host-runnable registry exposing the steward's dream, when a steward
+/// engine is present. Returned as `Arc<dyn ScheduleRunnableHost>` for
+/// [`spawn_schedule_host`]'s `runnable_host`; `None` when there is no steward
+/// to drive (the schedule host then serves session/mob targets only).
+#[must_use]
+// The runnable name is a non-empty const and registration into a fresh
+// registry cannot duplicate — both expects are structurally infallible.
+#[allow(clippy::expect_used)]
+pub fn steward_dream_runnable_host(
+    steward: Option<Arc<StewardEngine>>,
+) -> Option<Arc<dyn ScheduleRunnableHost>> {
+    let engine = steward?;
+    let mut registry = HostRunnableRegistry::new();
+    let name = HostRunnableName::parse(STEWARD_DREAM_RUNNABLE)
+        .expect("STEWARD_DREAM_RUNNABLE is a non-empty runnable name");
+    registry
+        .register(name, Arc::new(StewardDreamRunnable { engine }))
+        .expect("first registration into a fresh registry cannot duplicate");
+    Some(Arc::new(registry))
+}
+
+/// Find-or-create the durable schedule that drives the steward dream runnable
+/// at `cadence`. Idempotent across boots against the persistent schedule
+/// store: keyed on the reserved host-runnable target, so a restart reuses the
+/// existing schedule (and its planning cursor) rather than stacking duplicate
+/// dreams. When the configured cadence changed, the existing schedule's
+/// interval is updated in place; otherwise it is left untouched.
+// The runnable name is a non-empty const, so its parse is infallible.
+#[allow(clippy::expect_used)]
+pub async fn ensure_steward_dream_schedule(
+    service: &ScheduleService,
+    cadence: Duration,
+    now_utc: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    let every_seconds = cadence.as_secs().max(1);
+    let runnable = HostRunnableName::parse(STEWARD_DREAM_RUNNABLE)
+        .expect("STEWARD_DREAM_RUNNABLE is a non-empty runnable name");
+
+    let schedules = service
+        .list()
+        .await
+        .map_err(|error| format!("list schedules: {error}"))?;
+    let existing = schedules.into_iter().find(|schedule| {
+        matches!(
+            &schedule.target,
+            TargetBinding::HostRunnable(binding) if binding.runnable == runnable
+        )
+    });
+
+    // First occurrence one interval out (parity with the old loop's initial
+    // sleep-then-dream) so a fresh gateway does not dream immediately on boot.
+    let start_at_utc = now_utc + chrono::Duration::seconds(every_seconds as i64);
+    let trigger = TriggerSpec::Interval(IntervalTriggerSpec {
+        start_at_utc,
+        every_seconds,
+        end_at_utc: None,
+    });
+    let target = TargetBinding::host_runnable(HostRunnableTargetBinding {
+        runnable,
+        params: None,
+    });
+
+    match existing {
+        Some(schedule) => {
+            let cadence_unchanged = matches!(
+                &schedule.trigger,
+                TriggerSpec::Interval(spec) if spec.every_seconds == every_seconds
+            );
+            if cadence_unchanged {
+                return Ok(());
+            }
+            service
+                .update(
+                    &schedule.schedule_id,
+                    UpdateScheduleRequest {
+                        trigger: Some(trigger),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|error| format!("update steward dream schedule cadence: {error}"))?;
+            tracing::info!(
+                schedule_id = %schedule.schedule_id,
+                every_seconds,
+                "updated steward dream schedule cadence"
+            );
+            Ok(())
+        }
+        None => {
+            let created = service
+                .create(CreateScheduleRequest {
+                    name: Some(STEWARD_DREAM_SCHEDULE_NAME.to_string()),
+                    description: Some(
+                        "MobKit memory steward dream (host-runnable target)".to_string(),
+                    ),
+                    trigger,
+                    target,
+                    misfire_policy: meerkat::MisfirePolicy::default(),
+                    overlap_policy: meerkat::OverlapPolicy::default(),
+                    missing_target_policy: meerkat::MissingTargetPolicy::default(),
+                    labels: std::collections::BTreeMap::new(),
+                    planning_horizon_days: None,
+                    planning_horizon_occurrences: None,
+                })
+                .await
+                .map_err(|error| format!("create steward dream schedule: {error}"))?;
+            tracing::info!(
+                schedule_id = %created.schedule_id,
+                every_seconds,
+                "created steward dream schedule (host-runnable target)"
+            );
+            Ok(())
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct ScheduleMobTargetRegistry {
@@ -439,7 +597,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat::{
@@ -747,6 +905,74 @@ mod tests {
         let metadata = render_metadata.as_ref().expect("render metadata");
         let metadata = serde_json::to_value(metadata).expect("metadata value");
         assert_eq!(metadata["class"], expected_class);
+    }
+
+    #[test]
+    fn steward_dream_runnable_host_is_none_without_a_steward() {
+        assert!(steward_dream_runnable_host(None).is_none());
+    }
+
+    fn dream_target_count(schedules: &[meerkat::Schedule]) -> usize {
+        let runnable = HostRunnableName::parse(STEWARD_DREAM_RUNNABLE).expect("name");
+        schedules
+            .iter()
+            .filter(|schedule| {
+                matches!(
+                    &schedule.target,
+                    TargetBinding::HostRunnable(binding) if binding.runnable == runnable
+                )
+            })
+            .count()
+    }
+
+    fn dream_interval_seconds(schedule: &meerkat::Schedule) -> u64 {
+        match &schedule.trigger {
+            TriggerSpec::Interval(spec) => spec.every_seconds,
+            other => panic!("expected interval trigger, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_steward_dream_schedule_is_idempotent_and_updates_cadence() {
+        let service = ScheduleService::new(Arc::new(MemoryScheduleStore::default()));
+        let now: chrono::DateTime<chrono::Utc> = "2026-07-01T00:00:00Z".parse().expect("fixed now");
+
+        // First call creates exactly one host-runnable schedule.
+        ensure_steward_dream_schedule(&service, Duration::from_hours(6), now)
+            .await
+            .expect("create dream schedule");
+        let schedules = service.list().await.expect("list");
+        assert_eq!(
+            dream_target_count(&schedules),
+            1,
+            "one dream schedule created"
+        );
+        assert_eq!(dream_interval_seconds(&schedules[0]), 6 * 3600);
+
+        // Re-running with the same cadence is a no-op — no duplicate stacking
+        // across boots.
+        ensure_steward_dream_schedule(&service, Duration::from_hours(6), now)
+            .await
+            .expect("idempotent re-ensure");
+        let schedules = service.list().await.expect("list");
+        assert_eq!(
+            dream_target_count(&schedules),
+            1,
+            "still one dream schedule"
+        );
+
+        // A changed cadence updates the existing schedule in place, not a new
+        // one.
+        ensure_steward_dream_schedule(&service, Duration::from_mins(30), now)
+            .await
+            .expect("update cadence");
+        let schedules = service.list().await.expect("list");
+        assert_eq!(
+            dream_target_count(&schedules),
+            1,
+            "cadence change reuses schedule"
+        );
+        assert_eq!(dream_interval_seconds(&schedules[0]), 30 * 60);
     }
 
     #[tokio::test]
