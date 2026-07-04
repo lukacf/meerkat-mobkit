@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the cold-restart transcript-loss class. Dynamic per-boot context belongs in
   runtime system-context appends, not the base prompt.
 
+### Added
+
+- The cold-restart continuity regression now runs in CI (previously an
+  ignored scaffold): boot → turn → full restart against the same on-disk
+  store → assert the identity resumes onto the same session id with the
+  transcript replayed, twice (second-restart variant). Its earlier "harness"
+  failure was in fact the outcome-reporting lie this release fixes.
+
 ## [0.7.21] - 2026-07-04
 
 ### Changed

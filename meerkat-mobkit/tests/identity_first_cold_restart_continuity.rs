@@ -196,18 +196,14 @@ async fn boot(
     (unified, identity_rt)
 }
 
-// SCAFFOLD (not yet in CI): a faithful cold-restart harness needs the gateway's
-// exact continuity+session wiring. Here the boot-1 continuity record only
-// persists to the DB when a lease grant is present (orchestrator.rs upsert is
-// grant-gated), and a hand-assembled LocalContinuityStore + UnifiedRuntime does
-// not reload the persisted session the way rpc_gateway does — so boot 2 resolves
-// Uninitialized and re-Creates. The behavior this guards (Ask B: resume tolerates
-// bookkeeping-only re-projection divergence) is verified upstream in
-// meerkat-core 0.7.14 (`append_only_guard_accepts_rebookkept_prefix_identity_and_timestamps`)
-// and, for the mobkit recovery boundary, by identity_first_respawn_continuity.
-// Left as a runnable scaffold to finish against the gateway harness (or the
-// live deployment) rather than assert on a misconfigured setup.
-#[ignore = "needs gateway-faithful cold-restart harness; Ask B verified upstream + by respawn-continuity"]
+// History: this test was first landed `#[ignore]`d as "harness can't reach
+// resume" — boot 2 appeared to re-Create. That diagnosis was wrong: the bridge
+// resumed fine, but the orchestrator reported the outcome by checkpoint-
+// snapshot presence and labeled a genuine resume `Created` — the exact
+// outcome-reporting lie from the HomeCore report. With outcomes keyed on the
+// bridge verdict (and resume inheriting the persisted System message), the
+// full cold-restart path passes deterministically and this is now a live
+// regression guard for both bugs.
 #[tokio::test(flavor = "multi_thread")]
 async fn identity_first_cold_restart_preserves_transcript() {
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -221,6 +217,7 @@ async fn identity_first_cold_restart_preserves_transcript() {
     const TOKEN: &str = "MARKER-BRAVO-9-YANKEE";
 
     // --- Boot 1: create the member, deliver turn 1 with the token, shut down ---
+    let original_session_id;
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
@@ -234,7 +231,9 @@ async fn identity_first_cold_restart_preserves_transcript() {
         .await
         .expect("restore_flow (boot 1)");
         match result.outcomes.get(&alice).expect("alice outcome") {
-            RestoreOutcome::Created { .. } => {}
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
             other => panic!("expected Created on first boot, got {other:?}"),
         }
 
@@ -273,14 +272,17 @@ async fn identity_first_cold_restart_preserves_transcript() {
         )
         .await
         .expect("restore_flow (boot 2)");
-        // A cold restart with persisted history must recover the session, never
-        // re-Create it (a re-Create is the empty fresh-spawn regression).
+        // A cold restart with persisted history must RESUME onto the same
+        // durable session — never re-Create (the empty fresh-spawn
+        // regression) and never report a resume as anything else.
         match result.outcomes.get(&alice).expect("alice outcome") {
-            RestoreOutcome::Resumed { .. } | RestoreOutcome::Dormant { .. } => {}
-            other @ RestoreOutcome::Created { .. } => {
-                panic!("cold restart re-Created the member (history dropped): {other:?}")
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "cold restart must resume the SAME durable session"
+                );
             }
-            other => panic!("unexpected restore outcome across cold restart: {other:?}"),
+            other => panic!("cold restart must report Resumed, got: {other:?}"),
         }
 
         identity_rt
@@ -308,6 +310,61 @@ async fn identity_first_cold_restart_preserves_transcript() {
             last_request.contains(TOKEN),
             "post-restart LLM request must replay the persisted transcript (token {TOKEN}); \
              cold-restart resume dropped the conversation history"
+        );
+
+        // Let turn 2 commit before the second restart.
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // --- Boot 3 (second-restart variant): the resumed-then-extended session
+    // must survive ANOTHER restart. The HomeCore report hit the loss on every
+    // restart; the second one exercises resume over a transcript that itself
+    // grew after a resume. ---
+    {
+        let capture = CaptureClient::default(); // fresh: only boot-3 requests
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 3)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "second restart must still resume the SAME durable session"
+                );
+            }
+            other => panic!("second restart must report Resumed, got: {other:?}"),
+        }
+
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("And once more: which token?".to_string()),
+            )
+            .await
+            .expect("send turn 3");
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the second post-restart turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        let last_request = capture
+            .last()
+            .expect("a second post-restart request was captured");
+        assert!(
+            last_request.contains(TOKEN),
+            "the transcript must survive a SECOND restart (token {TOKEN} missing)"
         );
 
         unified.shutdown().await;
