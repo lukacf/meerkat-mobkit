@@ -2387,6 +2387,69 @@ rust_test(
 )
 
 rust_test(
+    name = "identity_first_cold_restart_continuity_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "identity_first_cold_restart_continuity",
+    crate_root = "tests/identity_first_cold_restart_continuity.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/identity_first_cold_restart_continuity.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.20",
+        "CARGO_BIN_NAME": "identity_first_cold_restart_continuity",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "identity_first_contracts_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -4299,6 +4362,69 @@ rust_test(
 )
 
 rust_test(
+    name = "schedule_store_text_carry_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "schedule_store_text_carry",
+    crate_root = "tests/schedule_store_text_carry.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/schedule_store_text_carry.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.7.20",
+        "CARGO_BIN_NAME": "schedule_store_text_carry",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "sdk_parity_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -5040,6 +5166,7 @@ test_suite(
         ":identity_first_boundary_test",
         ":identity_first_builder_test",
         ":identity_first_choke_test",
+        ":identity_first_cold_restart_continuity_test",
         ":identity_first_contracts_test",
         ":identity_first_kitchen_sink_test",
         ":identity_first_ob3_smoke_test",
@@ -5069,6 +5196,7 @@ test_suite(
         ":rpc_builtins_test",
         ":runtime_bootstrap_test",
         ":schedule_dispatch_test",
+        ":schedule_store_text_carry_test",
         ":sdk_parity_test",
         ":sdk_productization_test",
         ":selector_eval_harness_test",
