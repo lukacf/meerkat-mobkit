@@ -130,6 +130,23 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      - name: Apply release build profile overrides
+        shell: bash
+        # The binary build checks out the RELEASE TAG, so Cargo.toml profile
+        # fixes on main don't reach re-dispatched builds of older tags. The
+        # opt-0 overrides for the meerkat mega-crates (see the workspace
+        # Cargo.toml rationale: single enormous rustc/LLVM invocations that
+        # OOM 7-16 GB hosted runners at opt-level 1) are therefore ALSO
+        # injected here, idempotently, so any tag builds with them.
+        run: |
+          set -euo pipefail
+          for crate in meerkat-core meerkat-runtime meerkat-mob meerkat-live; do
+            if ! grep -q "profile.release.package.${crate}]" Cargo.toml; then
+              printf '\n[profile.release.package.%s]\nopt-level = 0\n' "$crate" >> Cargo.toml
+              echo "injected opt-0 profile for ${crate}"
+            fi
+          done
+
       - name: Build gateway binaries
         shell: bash
         env:
