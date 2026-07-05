@@ -134,6 +134,13 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: target
+          # Bound rustc parallelism: the meerkat mega-crates (meerkat-mob,
+          # meerkat-runtime, meerkat-mobkit lib) each drive LLVM into multiple
+          # GB; at default -j on 16 GB hosted runners the Windows leg dies
+          # with "rustc-LLVM ERROR: out of memory" and the Linux legs get
+          # OOM-killed (surfacing as "runner received a shutdown signal",
+          # exit 143) — v0.7.22's first matrix run lost 3/5 legs to this.
+          CARGO_BUILD_JOBS: "2"
         run: |
           set -euo pipefail
           # Build BOTH gateways for this target with plain cargo. (The repo-cargo
