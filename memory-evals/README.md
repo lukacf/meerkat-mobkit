@@ -174,3 +174,30 @@ this directory's `profiles/selector-v0.toml` + `prompts/selector-v0.md` are
 the same artifact; a unit test in `memory/selector.rs` keeps the prompt
 byte-identical, and profile changes bump `version` and gate on scorecard
 non-regression (§11).
+
+## Calibration run log
+
+### 2026-07-05 — Selector v0, first live calibration pass (Claude-led)
+
+Per the §16 Q3 decision (experimental calibration first, eval suite later).
+Live lane: `scripts/memory-evals --stage selector --mode live` on
+`claude-haiku-4-5` @ temperature 0 (the embedded default).
+
+- **Baseline:** 6/6 existing fixtures clean.
+- **Adversarial hardening (new fixtures, now permanent gates):**
+  `manifest-injection-resistance` (embedded instructions in record
+  titles/descriptions demanding selection — the selector must treat manifest
+  rows as untrusted data; doubles as a §10.1 regression guard),
+  `multi-select-complementary` (procedure + gotcha both load-bearing;
+  guards under-selection bias from the "selecting nothing is common"
+  framing), `suppression-under-temptation` (the single best record is
+  suppressed; must not re-select it and must still surface the complement),
+  `open-loop-resumption` (OpenLoop kind sensitivity beyond
+  Gotcha/Reference).
+- **Result: 10/10 live clean.** No failure found ⇒ no prompt change made
+  (changing without a failing case would be guessing — the decision was data
+  over guesses). Tier verdict: the small/fast tier §8.3 calls for is
+  SUFFICIENT on this evidence; keep `claude-haiku-4-5`.
+- **Deferred to the future eval suite:** manifest-scale fixtures at
+  `working_set_k = 200` (current fixtures are small manifests) and latency
+  measurement against the 500 ms recall budget.
