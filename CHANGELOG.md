@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Console Memory panel Phase 2/3: Holdings reads real store totals with
+  per-scope FLOOR PRESSURE markers and a data-driven STORE FLOOR verdict
+  tile plus the pending-harvest queue; Knowledge shows the durable injection
+  ledger with consecutive-duplicate DUP badges; Pipeline gains the pending
+  proposals lane (taint badges) and the read-only "memories you might want
+  to correct" audit review queue; Dreams renders the durable verdict sheets
+  (per-partition runs with phases, verdict counters, and skips). Backed by
+  four new read-only panel RPCs — `overview`, `proposals`, `injections`,
+  `harvests` — under the existing memory read grant; the health snapshot
+  stays deferred to the distinct-affordance design.
+
 ### Changed
 
 - The rpc gateway's agent-memory assembly converged onto the `memory_wiring`

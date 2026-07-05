@@ -43,6 +43,12 @@ export const CONSOLE_RPC_METHODS = {
   memoryPanelRecord: "mobkit/memory/panel/record",
   memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
   memoryPanelDreams: "mobkit/memory/panel/dreams",
+  memoryPanelOverview: "mobkit/memory/panel/overview",
+  memoryPanelProposals: "mobkit/memory/panel/proposals",
+  memoryPanelInjections: "mobkit/memory/panel/injections",
+  memoryPanelHarvests: "mobkit/memory/panel/harvests",
+  memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
+  memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

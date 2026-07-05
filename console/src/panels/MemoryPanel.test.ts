@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MEMORY_TABS, __memoryTest } from "./MemoryPanel";
-import type { MemoryDreamRun, MemoryPanelRecord, MemoryPanelRecordsResult } from "../types";
+import type {
+  MemoryDreamRun,
+  MemoryDreamRunSheet,
+  MemoryLedgerEntry,
+  MemoryPanelRecord,
+  MemoryPanelRecordsResult,
+  MemoryScopeOverview,
+} from "../types";
 import type { ConsoleFrame } from "../types";
 
 const {
@@ -44,6 +51,17 @@ const {
   dedupeFramesById,
   countFramesBehind,
   memoryFramePivot,
+  overviewScopeKey,
+  overviewScopeLabel,
+  filterForOverviewScope,
+  visibleOverviewScopes,
+  sortOverviewScopes,
+  storeFloorVerdict,
+  annotateInjectionDups,
+  dreamRunsNewestFirst,
+  formatDurationMs,
+  dreamRunDuration,
+  normalizeDreamRunDetail,
 } = __memoryTest;
 
 function record(overrides: Partial<MemoryPanelRecord> & Pick<MemoryPanelRecord, "id" | "scope">): MemoryPanelRecord {
@@ -930,6 +948,272 @@ test("a denied load-more continuation keeps the shown rows and flags the denial"
   assert.deepEqual(state.paged?.records.map((r) => r.id), ["base-1"]);
   assert.equal(state.paged?.nextCursor, null);
   assert.equal(state.paged?.denied, true);
+});
+
+// ── Phase-2: overview scopes + STORE FLOOR tile ────────────────────────────
+
+function overviewScope(
+  overrides: Partial<MemoryScopeOverview> & Pick<MemoryScopeOverview, "scope_kind" | "scope_key">,
+): MemoryScopeOverview {
+  return { realm: "default", active: 1, body_bytes: 100, floor_pressure: false, ...overrides };
+}
+
+test("overview scope keys and labels match the loaded-records grouping scheme", () => {
+  const identity = overviewScope({ scope_kind: "identity", scope_key: "router" });
+  const mob = overviewScope({ scope_kind: "mob", scope_key: "research" });
+  const operator = overviewScope({ scope_kind: "operator", scope_key: "op-1" });
+  const realm = overviewScope({ scope_kind: "realm", scope_key: "" });
+  // Parity with scopeGroupKey/scopeGroupLabel keeps testids and pivots
+  // stable when Holdings flips from loaded rows to store totals.
+  assert.equal(
+    overviewScopeKey(identity),
+    scopeGroupKey({ scope: "identity", realm: "default", identity: "router" }),
+  );
+  assert.equal(
+    overviewScopeKey(mob),
+    scopeGroupKey({ scope: "mob", realm: "default", mob: "research" }),
+  );
+  assert.equal(
+    overviewScopeKey(realm),
+    scopeGroupKey({ scope: "realm", realm: "default" }),
+  );
+  assert.equal(
+    overviewScopeLabel(identity),
+    scopeGroupLabel({ scope: "identity", realm: "default", identity: "router" }),
+  );
+  assert.equal(
+    overviewScopeLabel(operator),
+    scopeGroupLabel({ scope: "operator", realm: "default", operator: "op-1" }),
+  );
+  assert.equal(overviewScopeLabel(realm), "Realm");
+  assert.deepEqual(filterForOverviewScope(identity), { scope: "identity", key: "router" });
+  assert.deepEqual(filterForOverviewScope(mob), { scope: "mob", key: "research" });
+  assert.deepEqual(filterForOverviewScope(realm), { scope: "realm" });
+});
+
+test("denied scope kinds vanish from the overview table (the denied row renders instead)", () => {
+  const scopes = [
+    overviewScope({ scope_kind: "identity", scope_key: "router" }),
+    overviewScope({ scope_kind: "mob", scope_key: "research" }),
+    overviewScope({ scope_kind: "operator", scope_key: "op-1" }),
+  ];
+  const visible = visibleOverviewScopes(scopes, { operatorScopeDenied: true });
+  assert.deepEqual(
+    visible.map((scope) => scope.scope_kind),
+    ["identity", "mob"],
+  );
+  const both = visibleOverviewScopes(scopes, {
+    operatorScopeDenied: true,
+    mobScopeDenied: true,
+  });
+  assert.deepEqual(both.map((scope) => scope.scope_kind), ["identity"]);
+});
+
+test("overview rows sort identities first, then mob/operator/realm", () => {
+  const sorted = sortOverviewScopes([
+    overviewScope({ scope_kind: "realm", scope_key: "" }),
+    overviewScope({ scope_kind: "operator", scope_key: "op-1" }),
+    overviewScope({ scope_kind: "identity", scope_key: "router" }),
+    overviewScope({ scope_kind: "mob", scope_key: "research" }),
+    overviewScope({ scope_kind: "identity", scope_key: "delivery" }),
+  ]);
+  assert.deepEqual(
+    sorted.map((scope) => overviewScopeLabel(scope)),
+    ["delivery", "router", "Mob: research", "Operator: op-1", "Realm"],
+  );
+});
+
+test("store floor verdict is OK with no pressure, PRESSURE otherwise", () => {
+  const calm = storeFloorVerdict([
+    overviewScope({ scope_kind: "identity", scope_key: "router" }),
+    overviewScope({ scope_kind: "realm", scope_key: "" }),
+  ]);
+  assert.equal(calm.status, "ok");
+  assert.deepEqual(calm.pressured, []);
+
+  const pressured = storeFloorVerdict([
+    overviewScope({ scope_kind: "identity", scope_key: "router", floor_pressure: true }),
+    overviewScope({ scope_kind: "realm", scope_key: "" }),
+  ]);
+  assert.equal(pressured.status, "pressure");
+  assert.equal(pressured.pressured.length, 1);
+  assert.equal(pressured.pressured[0].scope_key, "router");
+});
+
+test("store-floor tile flips from unverifiable to a data-driven verdict", () => {
+  const tileById = (tiles: ReturnType<typeof computeVerdictTiles>) =>
+    new Map(tiles.map((tile) => [tile.id, tile]));
+
+  // No overview yet → the phase-1 boot state, naming the surface.
+  const booted = tileById(computeVerdictTiles(emptyVerdictInputs)).get("store-floor");
+  assert.equal(booted?.status, "unverifiable");
+
+  // Denied → no-grant, never green.
+  const denied = tileById(
+    computeVerdictTiles({ ...emptyVerdictInputs, overviewDenied: true }),
+  ).get("store-floor");
+  assert.equal(denied?.status, "no-grant");
+
+  // Calm store → holding with the OK verdict line and the floors echoed.
+  const calm = tileById(
+    computeVerdictTiles({
+      ...emptyVerdictInputs,
+      overview: {
+        scopes: [overviewScope({ scope_kind: "identity", scope_key: "router" })],
+        floors: { records: 4000, bytes: 32 * 1024 * 1024 },
+      },
+    }),
+  ).get("store-floor");
+  assert.equal(calm?.status, "holding");
+  assert.match(calm?.lines[0] || "", /^OK — no scope at floor pressure/);
+  assert.match(calm?.lines[1] || "", /4000 records \/ 32\.0MB/);
+
+  // Pressure → degraded, naming the pressured scopes.
+  const pressure = tileById(
+    computeVerdictTiles({
+      ...emptyVerdictInputs,
+      overview: {
+        scopes: [
+          overviewScope({ scope_kind: "identity", scope_key: "router", floor_pressure: true }),
+          overviewScope({ scope_kind: "mob", scope_key: "research" }),
+        ],
+        floors: { records: 4000, bytes: 32 * 1024 * 1024 },
+      },
+    }),
+  ).get("store-floor");
+  assert.equal(pressure?.status, "degraded");
+  assert.match(pressure?.lines[0] || "", /^PRESSURE — 1 scope at floor/);
+  assert.match(pressure?.lines[1] || "", /router/);
+});
+
+// ── Phase-2: injection ledger DUP annotation ───────────────────────────────
+
+function ledgerEntry(
+  identity: string,
+  recordId: string,
+  atMs: number,
+  overrides: Partial<MemoryLedgerEntry> = {},
+): MemoryLedgerEntry {
+  return {
+    realm: "default",
+    record_id: recordId,
+    identity,
+    surface: "turn",
+    at_ms: atMs,
+    ...overrides,
+  };
+}
+
+test("consecutive duplicate injections per identity carry the DUP flag", () => {
+  // Newest-first, as panel/injections serves them.
+  const annotated = annotateInjectionDups([
+    ledgerEntry("ada", "rec-1", 400), // dup: ada's previous row was also rec-1
+    ledgerEntry("bob", "rec-1", 300), // NOT a dup — different identity
+    ledgerEntry("ada", "rec-1", 200),
+    ledgerEntry("ada", "rec-2", 100),
+  ]);
+  assert.deepEqual(
+    annotated.map(({ dup }) => dup),
+    [true, false, false, false],
+  );
+  // Original (newest-first) order is preserved.
+  assert.deepEqual(
+    annotated.map(({ entry }) => entry.at_ms),
+    [400, 300, 200, 100],
+  );
+});
+
+test("non-consecutive repeats are not DUPs; interleaved identities keep separate lanes", () => {
+  const annotated = annotateInjectionDups([
+    ledgerEntry("ada", "rec-1", 500), // ada's previous was rec-2 → not a dup
+    ledgerEntry("bob", "rec-9", 400), // dup: bob's previous was rec-9
+    ledgerEntry("ada", "rec-2", 300),
+    ledgerEntry("bob", "rec-9", 200),
+    ledgerEntry("ada", "rec-1", 100),
+  ]);
+  assert.deepEqual(
+    annotated.map(({ dup }) => dup),
+    [false, true, false, false, false],
+  );
+  assert.deepEqual(annotateInjectionDups([]), []);
+});
+
+// ── Phase-2: durable dream verdict sheets ──────────────────────────────────
+
+function sheet(
+  overrides: Partial<MemoryDreamRunSheet> & Pick<MemoryDreamRunSheet, "run_id">,
+): MemoryDreamRunSheet {
+  return { realm: "default", ...overrides };
+}
+
+test("dream run sheets sort newest-first by completion (started as fallback)", () => {
+  const sorted = dreamRunsNewestFirst([
+    sheet({ run_id: "old", completed_at_ms: 100 }),
+    sheet({ run_id: "new", completed_at_ms: 300 }),
+    sheet({ run_id: "started-only", started_at_ms: 200 }),
+  ]);
+  assert.deepEqual(
+    sorted.map((run) => run.run_id),
+    ["new", "started-only", "old"],
+  );
+});
+
+test("dream run duration formats ms/s/m buckets and degrades to a dash", () => {
+  assert.equal(formatDurationMs(412), "412ms");
+  assert.equal(formatDurationMs(3200), "3.2s");
+  assert.equal(formatDurationMs(4 * 60 * 1000 + 5 * 1000), "4m 5s");
+  assert.equal(formatDurationMs(-1), "—");
+  assert.equal(
+    dreamRunDuration({ started_at_ms: 1_000, completed_at_ms: 4_200 }),
+    "3.2s",
+  );
+  assert.equal(dreamRunDuration({ started_at_ms: 1_000 }), "—");
+  assert.equal(dreamRunDuration({}), "—");
+});
+
+test("dream run detail normalizes phases in order, non-zero verdicts, and skips", () => {
+  const detail = normalizeDreamRunDetail({
+    phases: [
+      ["orient", "ok"],
+      ["gather", "31 candidates"],
+      ["prune", ""],
+    ],
+    verdicts: {
+      proposals_accepted: 3,
+      proposals_rejected: 0,
+      quarantine_release_blocked: 1,
+      usage_dead_weight: 0,
+    },
+    skips: ["group g-2 failed"],
+  });
+  // Phase order is the steward's execution order — never re-sorted.
+  assert.deepEqual(detail.phases, [
+    ["orient", "ok"],
+    ["gather", "31 candidates"],
+    ["prune", ""],
+  ]);
+  // Zero counters drop; declaration order is preserved.
+  assert.deepEqual(detail.verdicts, [
+    ["proposals_accepted", 3],
+    ["quarantine_release_blocked", 1],
+  ]);
+  assert.deepEqual(detail.skips, ["group g-2 failed"]);
+  assert.equal(detail.raw, null);
+});
+
+test("dream run detail degrades to raw text when the stored JSON did not parse", () => {
+  const raw = normalizeDreamRunDetail("not-json");
+  assert.deepEqual(raw.phases, []);
+  assert.deepEqual(raw.verdicts, []);
+  assert.equal(raw.raw, "not-json");
+
+  const missing = normalizeDreamRunDetail(undefined);
+  assert.equal(missing.raw, null);
+  assert.deepEqual(missing.phases, []);
+
+  // Malformed phase tuples are tolerated row by row.
+  const partial = normalizeDreamRunDetail({ phases: [["solo"]] as never });
+  assert.deepEqual(partial.phases, [["solo", ""]]);
 });
 
 test("a non-denial query error keeps the prior page instead of clobbering it", async () => {
