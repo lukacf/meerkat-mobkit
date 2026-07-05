@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the meerkat family 0.7.17 → 0.7.18. Carries the fix for the
+  HomeCore cold-restart regression (meerkat #837): idle members whose
+  turn-less boots chained resume-system-prompt-refresh rewrite commits were
+  refused resume with "incoming append-only save would change retained
+  transcript revision graph" — the rewrite-chain walk now proves continuity
+  in authority order and no longer fails closed on the chained-refresh
+  shape. New mobkit-side idle-member coverage: repeated turn-less restarts
+  (with prompt drift presented) must keep resuming onto the same durable
+  session and replay history on the eventual turn.
+
 ### Added
 
 - Broken identities now self-heal: a background continuity-repair task
