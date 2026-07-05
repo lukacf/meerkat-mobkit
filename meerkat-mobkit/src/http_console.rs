@@ -1641,6 +1641,14 @@ fn console_rpc_access_requirements(
         // realm-level read posture as dream history.
         "mobkit/memory/panel/dream_runs" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/audit_verdicts" => one(ACTION_AGENT_MEMORY_READ, None),
+        // Console Phase 2 cheap reads (proposal §7): store overview,
+        // pipeline inputs, and the injection ledger — same realm-level read
+        // posture. The health snapshot is deliberately NOT here yet: the
+        // decided distinct runtime affordance lands with its own design.
+        "mobkit/memory/panel/overview" => one(ACTION_AGENT_MEMORY_READ, None),
+        "mobkit/memory/panel/proposals" => one(ACTION_AGENT_MEMORY_READ, None),
+        "mobkit/memory/panel/injections" => one(ACTION_AGENT_MEMORY_READ, None),
+        "mobkit/memory/panel/harvests" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/quarantine" => one(ACTION_MEMORY_QUARANTINE_REVIEW, None),
         // `mob.memory.propose` gates future propose surfaces and
         // `mob.memory.commit` is reserved for a future direct-commit RPC —
@@ -2336,6 +2344,177 @@ async fn handle_memory_panel_audit_verdicts(
     response_value(
         response_id,
         Some(json!({ "verdicts": rows, "realms": realms })),
+        None,
+    )
+}
+
+/// Store overview: per-scope record counts + bytes — Holdings + the STORE
+/// FLOOR verdict tile (floors included so the client renders pressure
+/// without duplicating the thresholds).
+async fn handle_memory_panel_overview(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let (floor_records, floor_bytes) = store.scope_floors();
+    let mut scopes = Vec::new();
+    for realm in &realms {
+        match store.scope_overview(realm).await {
+            Ok(rows) => scopes.extend(rows.into_iter().map(|row| {
+                json!({
+                    "realm": realm,
+                    "scope_kind": row.scope.kind_str(),
+                    "scope_key": row.scope.key(),
+                    "active": row.active,
+                    "quarantined": row.quarantined,
+                    "superseded": row.superseded,
+                    "tombstoned": row.tombstoned,
+                    "body_bytes": row.body_bytes,
+                    "floor_pressure": row.active as usize >= floor_records
+                        || row.body_bytes as usize >= floor_bytes,
+                })
+            })),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    response_value(
+        response_id,
+        Some(json!({
+            "scopes": scopes,
+            "realms": realms,
+            "floors": { "records": floor_records, "bytes": floor_bytes },
+        })),
+        None,
+    )
+}
+
+/// Pending mob/operator-scope proposals awaiting a dream verdict — the
+/// Pipeline view's inbound lane (bodies withheld: titles only; the record
+/// body stays reachable through panel/record once committed).
+async fn handle_memory_panel_proposals(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut proposals = Vec::new();
+    for realm in &realms {
+        match store.pending_proposals(realm, limit).await {
+            Ok(rows) => proposals.extend(rows.into_iter().map(|row| {
+                json!({
+                    "realm": realm,
+                    "proposal_id": row.proposal_id.to_string(),
+                    "scope_kind": row.scope.kind_str(),
+                    "scope_key": row.scope.key(),
+                    "title": row.record.title,
+                    "kind": row.record.kind.as_str(),
+                    "author": format!("{:?}", row.author),
+                    "status": row.status,
+                    "created_at_ms": row.created_at_ms,
+                    "tainted": row.taint.is_some(),
+                })
+            })),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    proposals.truncate(limit);
+    response_value(
+        response_id,
+        Some(json!({ "proposals": proposals, "realms": realms })),
+        None,
+    )
+}
+
+/// The injection ledger (most recent first): the Knowledge Lens history and
+/// the echo-safety/dup diagnostics feed.
+async fn handle_memory_panel_injections(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut injections = Vec::new();
+    for realm in &realms {
+        match store.injection_log(realm, limit).await {
+            Ok(rows) => injections.extend(rows.into_iter().map(|row| {
+                json!({
+                    "realm": realm,
+                    "record_id": row.record_id.to_string(),
+                    "identity": row.identity,
+                    "session_key": row.session_key,
+                    "surface": row.surface.as_str(),
+                    "at_ms": row.at_ms,
+                })
+            })),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    injections.sort_by_key(|row| std::cmp::Reverse(row["at_ms"].as_u64().unwrap_or(0)));
+    injections.truncate(limit);
+    response_value(
+        response_id,
+        Some(json!({ "injections": injections, "realms": realms })),
+        None,
+    )
+}
+
+/// Pending exit-interview harvests — the Health strip's harvest-queue lane.
+async fn handle_memory_panel_harvests(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut harvests = Vec::new();
+    for realm in &realms {
+        match store.pending_harvests(realm, limit).await {
+            Ok(rows) => harvests.extend(rows.into_iter().map(|row| {
+                json!({
+                    "realm": realm,
+                    "identity": row.identity,
+                    "session_key": row.session_key,
+                    "cause": row.cause,
+                    "retired_at_ms": row.retired_at_ms,
+                })
+            })),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    harvests.truncate(limit);
+    response_value(
+        response_id,
+        Some(json!({ "harvests": harvests, "realms": realms })),
         None,
     )
 }
@@ -4918,6 +5097,10 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/memory/panel/dreams",
                     "mobkit/memory/panel/dream_runs",
                     "mobkit/memory/panel/audit_verdicts",
+                    "mobkit/memory/panel/overview",
+                    "mobkit/memory/panel/proposals",
+                    "mobkit/memory/panel/injections",
+                    "mobkit/memory/panel/harvests",
                     "mobkit/memory/panel/quarantine",
                 ]);
             }
@@ -5186,6 +5369,18 @@ async fn handle_console_runtime_rpc_with_visibility(
         }
         "mobkit/memory/panel/audit_verdicts" => {
             handle_memory_panel_audit_verdicts(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/overview" => {
+            handle_memory_panel_overview(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/proposals" => {
+            handle_memory_panel_proposals(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/injections" => {
+            handle_memory_panel_injections(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/harvests" => {
+            handle_memory_panel_harvests(memory_panel, &request.params, response_id).await
         }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
