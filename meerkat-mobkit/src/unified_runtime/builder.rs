@@ -86,6 +86,7 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
     agent_memory_from_persistent_state: bool,
+    agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
@@ -235,6 +236,27 @@ impl UnifiedRuntimeBuilder {
     pub fn persistent_agent_memory(mut self, config: AgentMemoryConfig) -> Self {
         self.agent_memory_from_persistent_state = true;
         self.agent_memory_config = Some(config);
+        self
+    }
+
+    /// Enable the FULL agent-memory stack (bundled SQLite store + the taint
+    /// firewall + the enabled judgment-plane engines) — the same stack the
+    /// rpc gateway assembles, reachable from the Rust builder (the OB3
+    /// deployment shape). Requires `persistent_state()`; the store lives at
+    /// `<persistent_state>/agent-memory-sqlite`.
+    ///
+    /// v1 boundaries (documented in `memory_wiring`): the Hygienist stays
+    /// gateway-only; engines are driven by the member-event observe stream
+    /// (their primary trigger path — the gateway's additional injector-side
+    /// rotation hooks are not wired here yet); the steward dream runs on the
+    /// in-process loop (no schedule host in library mode).
+    pub fn persistent_agent_memory_stack(
+        mut self,
+        config: AgentMemoryConfig,
+        engines: crate::memory_wiring::MemoryEnginesConfig,
+    ) -> Self {
+        self.agent_memory_config = Some(config);
+        self.agent_memory_engines = Some(engines);
         self
     }
 
@@ -591,9 +613,38 @@ impl UnifiedRuntimeBuilder {
             } else {
                 None
             };
+        // Full-stack path: the bundled SQLite store is opened pre-runtime so
+        // it can serve as the provider (recorder + recall) from the first
+        // spawn; the firewall + engines attach post-construction, when the
+        // memory event sink and mob handle exist.
+        let stack_sqlite_store = if self.agent_memory_engines.is_some() {
+            let Some(state_path) = self.persistent_state_path.as_ref() else {
+                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                    "persistent_agent_memory_stack() requires persistent_state()".to_string(),
+                ));
+            };
+            let memory_path = state_path.join("agent-memory-sqlite");
+            Some(
+                crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path).map_err(
+                    |e| {
+                        UnifiedRuntimeBuilderError::Io(format!(
+                            "failed to open agent memory store at {}: {e}",
+                            memory_path.display()
+                        ))
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let agent_memory_provider = self
             .agent_memory_provider
             .clone()
+            .or_else(|| {
+                stack_sqlite_store
+                    .clone()
+                    .map(|store| Arc::new(store) as Arc<dyn AgentMemoryProvider>)
+            })
             .or(persistent_agent_memory_provider);
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
@@ -925,6 +976,59 @@ impl UnifiedRuntimeBuilder {
             ));
             store.set_event_sink_if_absent(runtime.memory_event_sink());
             runtime.set_memory_panel_store(store.clone());
+        }
+
+        // Full-stack path (persistent_agent_memory_stack): firewall + engines
+        // + observer over the pre-opened SQLite store.
+        if let (Some(store), Some(engines)) =
+            (stack_sqlite_store, self.agent_memory_engines.as_ref())
+        {
+            let config = self.agent_memory_config.clone().unwrap_or_default();
+            let persistent_state = self.persistent_state_path.clone();
+            let transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
+                if engines.distiller.enabled || engines.steward.enabled {
+                    let state = persistent_state.as_ref().ok_or_else(|| {
+                        UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                            "agent memory engines require persistent_state()".to_string(),
+                        )
+                    })?;
+                    Some(Arc::new(
+                        meerkat_store::SqliteSessionStore::open(state.join("sessions.db"))
+                            .map_err(|e| {
+                                UnifiedRuntimeBuilderError::Io(format!(
+                                    "agent memory session store: {e}"
+                                ))
+                            })?,
+                    ))
+                } else {
+                    None
+                };
+            let stack = crate::memory_wiring::attach_memory_engines(
+                store,
+                &config,
+                engines,
+                persistent_state.as_deref(),
+                transcript_store,
+                runtime.memory_event_sink(),
+                None,
+            )
+            .map_err(UnifiedRuntimeBuilderError::Io)?;
+            runtime.set_memory_panel_store(stack.store.clone());
+            // Observe-stream feed lives for the runtime's lifetime.
+            std::mem::forget(crate::spawn_member_event_observer(
+                runtime.mob_handle(),
+                stack.sinks,
+            ));
+            if let Some(steward) = stack.steward.as_ref() {
+                // Library mode has no schedule host; the guarded interval
+                // loop drives dreams.
+                std::mem::forget(steward.spawn_dream_loop());
+            }
+            tracing::info!(
+                distiller = stack.distiller.is_some(),
+                steward = stack.steward.is_some(),
+                "agent memory stack installed (builder path)"
+            );
         }
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {

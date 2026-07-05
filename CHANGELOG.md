@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The full agent-memory stack is now reachable from the Rust builder
+  (`UnifiedRuntimeBuilder::persistent_agent_memory_stack`): the bundled
+  SQLite store with the taint firewall plus the Distiller and Steward
+  engines, member-event observer, console panel registration, and the
+  steward dream loop — the same stack the rpc gateway assembles, for
+  embedders that drive the builder directly (no gateway). Assembly lives in
+  the new `memory_wiring` module. v1 boundaries documented there: the
+  Hygienist stays gateway-only, and engines are driven by the observe
+  stream (the gateway's extra injector-side rotation hooks are follow-up).
+
+### Added
+
 - Durable dream verdict sheets: every steward dream run persists to a new
   `dream_runs` table (partition label, timings, ops, and the full
   phases/verdicts/skips detail), and dead-weight usage-audit verdicts land in
