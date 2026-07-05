@@ -111,6 +111,36 @@ impl AgentCustomizer for NoopCustomizer {
     }
 }
 
+/// Injects a per-boot "host context" instruction — drifting system-prompt
+/// parts are what made field deployments commit resume refresh rewrites on
+/// every idle boot (the chain meerkat #837 fixed). Kept here so the idle
+/// cycles below at least present drift; see the test's doc for what this
+/// harness can and cannot rebuild.
+struct DriftingContextCustomizer {
+    tag: std::sync::Mutex<String>,
+}
+#[async_trait]
+impl AgentCustomizer for DriftingContextCustomizer {
+    async fn customize_build(
+        &self,
+        _context: &AgentBuildContext,
+        _spec: &DurableAgentSpec,
+        draft: &mut AgentBuildDraft,
+    ) -> Result<(), CustomizerError> {
+        let tag = self.tag.lock().unwrap().clone();
+        draft.additional_instructions = vec![format!("Host context: {tag}")];
+        Ok(())
+    }
+    async fn after_create(
+        &self,
+        _identity: &AgentIdentity,
+        _session_id: &meerkat_core::types::SessionId,
+        _context: &SessionCreatedContext,
+    ) -> Result<(), CustomizerError> {
+        Ok(())
+    }
+}
+
 /// Records the serialized LLM request each turn and answers "ok" so turns
 /// complete without a real provider.
 #[derive(Clone, Default)]
@@ -367,6 +397,158 @@ async fn identity_first_cold_restart_preserves_transcript() {
             "the transcript must survive a SECOND restart (token {TOKEN} missing)"
         );
 
+        unified.shutdown().await;
+    }
+}
+
+/// Idle-member coverage for the HomeCore 0.7.23 regression (meerkat #837): a
+/// member restarted repeatedly with NO turns in between must keep resuming
+/// onto the same durable session, and the eventual turn must replay history.
+///
+/// Field shape: turn-less boots committed chained resume-system-prompt-refresh
+/// rewrites; meerkat 0.7.16/0.7.17's rewrite-chain walk miswalked the chain
+/// and failed closed as a cycle, refusing resume on every boot (14 of 15
+/// HomeCore identities). The survivor had run a turn after its refresh — the
+/// shape the sibling test above exercises, which is why it kept passing.
+///
+/// Honesty note: the failing chain was built by PRE-0.7.21 boots (before
+/// resume inherited the persisted System message) and carried in the store;
+/// current-version code does not rebuild that legacy shape, so this test does
+/// NOT go red on meerkat 0.7.17 — the authoritative red/green repro lives
+/// upstream (#837, seeded with real 0.7.13/0.7.14/0.7.15 binaries). What this
+/// variant pins on the mobkit side: idle restart cycles (with prompt drift
+/// presented) stay Resumed end to end — the gap in our coverage that let the
+/// idle-member shape ship unexercised.
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let alice = id("personal:alice");
+    let roster = vec![spec(
+        "personal:alice",
+        AgentAddressability::Addressable,
+        "personal",
+    )];
+    const TOKEN: &str = "MARKER-IDLE-CHAIN-7-ZULU";
+    let customizer = DriftingContextCustomizer {
+        tag: std::sync::Mutex::new("boot-1".to_string()),
+    };
+
+    // --- Boot 1: create, one turn carrying the token, shut down ---
+    let original_session_id;
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&customizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
+            other => panic!("expected Created on first boot, got {other:?}"),
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for turn 1 to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // --- Boots 2-4: resume, NO turn, shut down. Each boot may stack another
+    // turn-less refresh commit onto the history graph — the chain that
+    // 0.7.16/0.7.17 miswalked. ---
+    for boot_n in 2..=4 {
+        *customizer.tag.lock().unwrap() = format!("boot-{boot_n}");
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&customizer as &dyn AgentCustomizer),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("restore_flow (turn-less boot {boot_n}): {e}"));
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "turn-less boot {boot_n} must resume the SAME durable session"
+                );
+            }
+            other => panic!(
+                "turn-less boot {boot_n} must report Resumed (idle members must not \
+                 degrade), got: {other:?}"
+            ),
+        }
+        // Give any resume-time refresh rewrite a moment to commit, then stop.
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // --- Boot 5: resume once more and run a turn. The turn's run-boundary
+    // commit is where the miswalked chain used to fail closed. ---
+    {
+        *customizer.tag.lock().unwrap() = "boot-5".to_string();
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&customizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 5)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "boot 5 must still resume the SAME durable session"
+                );
+            }
+            other => panic!("boot 5 must report Resumed, got: {other:?}"),
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send the post-idle-chain turn");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the post-idle-chain turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        let last_request = capture
+            .last()
+            .expect("a post-idle-chain request was captured");
+        assert!(
+            last_request.contains(TOKEN),
+            "after three turn-less restarts the transcript must still replay (token {TOKEN})"
+        );
         unified.shutdown().await;
     }
 }
