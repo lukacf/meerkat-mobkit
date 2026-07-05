@@ -52,16 +52,13 @@
 //! ## Scheduling
 //!
 //! MobKit's scheduling subsystem can only target mob members/sessions
-//! (verified: `TargetBinding::{Session,Mob}` in `runtime.rs`; there is no
-//! seam for an internal Rust runnable), so the dream loop is a guarded
-//! tokio interval owned by the wiring — but its cadence is expressed in
-//! the *scheduling subsystem's own interval grammar* (`*/6h`, validated by
-//! `runtime::scheduling::parse_interval_marker_ms`), so a future
-//! internal-runnable target can adopt the config unchanged.
-//! TODO(§8.5 scheduling): re-home the loop onto the scheduling subsystem
-//! when it grows an internal-runnable target binding.
+//! Scheduling: since 0.7.21 the dream runs as a durable host-runnable
+//! schedule occurrence (`schedule_wiring::steward_dream_runnable_host`);
+//! the guarded tokio interval loop survives only as the fallback on
+//! gateways with no schedule host. Cadence stays in the scheduling
+//! subsystem's interval grammar (`*/6h`).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -421,13 +418,13 @@ pub struct StewardConfig {
     /// Optional model override applied to the embedded default profile.
     pub model: Option<String>,
     /// Dream granularity knob (§8.5). `false` (default): one dream per
-    /// realm covering every scope. `true` requests per-mob dreams; the
-    /// current host (the rpc gateway) runs exactly one mob, where the two
-    /// granularities coincide — the realm dream already sees the one mob's
-    /// context through [`MobPurposeSource`]. Honest limit: a multi-mob
-    /// host would need scope partitioning this engine does not do yet
-    /// (TODO(§8.5 per-mob): partition orient/gather/consolidate per
-    /// [`MobContext`] when a multi-mob host exists).
+    /// realm covering every scope. `true`: on a multi-mob host each dream
+    /// attempt runs one partition per [`MobContext`] (that mob's scope + its
+    /// members' identity scopes, with the mob's own context only) plus a
+    /// realm-remainder partition (operator/realm scopes, unrostered
+    /// identities, promotion/operator review). Each partition run takes its
+    /// own runs-per-day budget slot. With 0–1 mobs the granularities
+    /// coincide and the whole-realm dream is used unchanged.
     pub per_mob: bool,
     /// §8.1 hard cap on dream runs per realm per 24h window.
     pub runs_per_day: u32,
@@ -565,6 +562,80 @@ pub struct MobContext {
     pub purpose: Option<String>,
     /// (identity, labels) per roster member.
     pub member_labels: Vec<(String, BTreeMap<String, String>)>,
+}
+
+/// The scope slice one dream run covers (§8.5 per-mob granularity).
+///
+/// `Realm` is the historical whole-realm dream. With `per_mob = true` and a
+/// multi-mob host, each mob dreams over its own mob scope + its members'
+/// identity scopes, and one remainder run covers what no mob owns
+/// (operator/realm scopes, identities outside every roster, and mob scopes
+/// with no [`MobContext`]).
+#[derive(Debug, Clone)]
+enum DreamPartition {
+    Realm,
+    Mob {
+        context: MobContext,
+        members: BTreeSet<String>,
+    },
+    RealmRemainder {
+        covered_mobs: BTreeSet<String>,
+        covered_identities: BTreeSet<String>,
+    },
+}
+
+impl DreamPartition {
+    fn covers(&self, scope: &MemoryScope) -> bool {
+        match self {
+            Self::Realm => true,
+            Self::Mob { context, members } => match scope {
+                MemoryScope::Mob { mob, .. } => mob == &context.mob,
+                MemoryScope::Identity { identity, .. } => members.contains(identity),
+                MemoryScope::Operator { .. } | MemoryScope::Realm { .. } => false,
+            },
+            Self::RealmRemainder {
+                covered_mobs,
+                covered_identities,
+            } => match scope {
+                MemoryScope::Mob { mob, .. } => !covered_mobs.contains(mob),
+                MemoryScope::Identity { identity, .. } => !covered_identities.contains(identity),
+                MemoryScope::Operator { .. } | MemoryScope::Realm { .. } => true,
+            },
+        }
+    }
+
+    /// Route a bare identity (harvest/ledger rows carry no scope).
+    fn covers_identity(&self, identity: &str) -> bool {
+        match self {
+            Self::Realm => true,
+            Self::Mob { members, .. } => members.contains(identity),
+            Self::RealmRemainder {
+                covered_identities, ..
+            } => !covered_identities.contains(identity),
+        }
+    }
+
+    /// Operator-candidate routing and operator/realm-level review belong to
+    /// the whole-realm views, never a single mob's dream.
+    fn covers_operator_review(&self) -> bool {
+        !matches!(self, Self::Mob { .. })
+    }
+
+    fn run_id_suffix(&self) -> String {
+        match self {
+            Self::Realm => String::new(),
+            Self::Mob { context, .. } => format!("-mob-{}", context.mob),
+            Self::RealmRemainder { .. } => "-remainder".to_string(),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Realm => "realm".to_string(),
+            Self::Mob { context, .. } => format!("mob '{}'", context.mob),
+            Self::RealmRemainder { .. } => "realm remainder".to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,24 +1147,125 @@ impl StewardEngine {
             }
         }
         // Gate 3: budget (concurrency lock + runs/day window).
-        let _permit = match self.budget.try_acquire(&self.realm, "steward") {
-            Ok(permit) => permit,
-            Err(denied) => {
-                return DreamOutcome::Skipped {
-                    reason: format!("budget denied: {denied}"),
-                };
+        // §8.5 per-mob granularity: each partition run takes its OWN budget
+        // permit (a per-mob dream is a real LLM run and counts against
+        // runs_per_day); the sequence stops when the budget says stop.
+        let partitions = self.dream_partitions();
+        let multi = partitions.len() > 1;
+        let mut last_completed: Option<DreamRun> = None;
+        for (index, partition) in partitions.iter().enumerate() {
+            let _permit = match self.budget.try_acquire(&self.realm, "steward") {
+                Ok(permit) => permit,
+                Err(denied) => {
+                    let reason = format!(
+                        "budget denied at partition {} ({}): {denied}",
+                        index + 1,
+                        partition.label()
+                    );
+                    // Partitions that already ran completed real work; report
+                    // the truncation on the last run instead of erasing it.
+                    return match last_completed.take() {
+                        Some(mut run) => {
+                            run.skips.push(reason);
+                            self.signals.store(0, Ordering::Relaxed);
+                            DreamOutcome::Completed(run)
+                        }
+                        None => DreamOutcome::Skipped { reason },
+                    };
+                }
+            };
+            match self.dream_pipeline(partition).await {
+                Ok(run) => {
+                    // One DreamCompleted per partition run keeps the timeline
+                    // symmetric; dream_now emits for the final returned run.
+                    if let Some(previous) = last_completed.replace(run) {
+                        self.emit_dream_completed(&previous);
+                    }
+                }
+                Err(err) => {
+                    let reason = format!("dream failed ({}): {err}", partition.label());
+                    return match last_completed.take() {
+                        Some(mut run) => {
+                            run.skips.push(reason);
+                            self.signals.store(0, Ordering::Relaxed);
+                            DreamOutcome::Completed(run)
+                        }
+                        None => DreamOutcome::Skipped { reason },
+                    };
+                }
             }
-        };
-        let run = self.dream_pipeline().await;
-        match run {
-            Ok(run) => {
+            if multi {
+                tracing::debug!(
+                    realm = %self.realm,
+                    partition = %partition.label(),
+                    "per-mob dream partition completed"
+                );
+            }
+        }
+        match last_completed {
+            Some(run) => {
                 self.signals.store(0, Ordering::Relaxed);
                 DreamOutcome::Completed(run)
             }
-            Err(err) => DreamOutcome::Skipped {
-                reason: format!("dream failed: {err}"),
+            None => DreamOutcome::Skipped {
+                reason: "no dream partitions (no scopes to dream over)".to_string(),
             },
         }
+    }
+
+    /// The partition set for one dream attempt. Whole-realm unless
+    /// `per_mob = true` AND the host declares 2+ mobs: then one partition per
+    /// mob plus a remainder for operator/realm scopes and unrostered
+    /// identities. With 0–1 mobs the granularities coincide (the historical
+    /// single-mob-host case) and the whole-realm dream is used unchanged.
+    fn dream_partitions(&self) -> Vec<DreamPartition> {
+        if !self.config.per_mob {
+            return vec![DreamPartition::Realm];
+        }
+        let contexts = self
+            .mob_context
+            .as_ref()
+            .map(|source| source.mob_contexts())
+            .unwrap_or_default();
+        if contexts.len() < 2 {
+            return vec![DreamPartition::Realm];
+        }
+        let covered_mobs: BTreeSet<String> =
+            contexts.iter().map(|context| context.mob.clone()).collect();
+        let covered_identities: BTreeSet<String> = contexts
+            .iter()
+            .flat_map(|context| {
+                context
+                    .member_labels
+                    .iter()
+                    .map(|(identity, _)| identity.clone())
+            })
+            .collect();
+        let mut partitions: Vec<DreamPartition> = contexts
+            .into_iter()
+            .map(|context| {
+                let members: BTreeSet<String> = context
+                    .member_labels
+                    .iter()
+                    .map(|(identity, _)| identity.clone())
+                    .collect();
+                DreamPartition::Mob { context, members }
+            })
+            .collect();
+        partitions.push(DreamPartition::RealmRemainder {
+            covered_mobs,
+            covered_identities,
+        });
+        partitions
+    }
+
+    fn emit_dream_completed(&self, run: &DreamRun) {
+        self.emit(MemoryTimelineEvent::DreamCompleted {
+            realm: self.realm.clone(),
+            run_id: run.run_id.clone(),
+            ops_committed: run.ops_committed,
+            detail: run.detail(),
+        });
     }
 
     /// Store-side half of the event gate: pending proposals + harvests.
@@ -1162,8 +1334,11 @@ impl StewardEngine {
 
     // -- the pipeline ---------------------------------------------------------
 
-    async fn dream_pipeline(self: &Arc<Self>) -> Result<DreamRun, StewardError> {
-        let run_id = self.mint_run_id();
+    async fn dream_pipeline(
+        self: &Arc<Self>,
+        partition: &DreamPartition,
+    ) -> Result<DreamRun, StewardError> {
+        let run_id = format!("{}{}", self.mint_run_id(), partition.run_id_suffix());
         self.emit(MemoryTimelineEvent::DreamStarted {
             realm: self.realm.clone(),
             run_id: run_id.clone(),
@@ -1173,10 +1348,18 @@ impl StewardEngine {
             ..DreamRun::default()
         };
 
-        self.expire_stale_promotions(&mut run).await;
+        if !matches!(partition, DreamPartition::Realm) {
+            run.phases
+                .push(("partition".to_string(), partition.label()));
+        }
+        // Promotion review is realm-level bookkeeping; per-mob runs skip it
+        // and the remainder run owns it.
+        if partition.covers_operator_review() {
+            self.expire_stale_promotions(&mut run).await;
+        }
 
         // Orient (deterministic).
-        let orient = self.orient().await.map_err(store_err)?;
+        let orient = self.orient(partition).await.map_err(store_err)?;
         run.phases.push((
             "orient".to_string(),
             format!(
@@ -1186,7 +1369,7 @@ impl StewardEngine {
         ));
 
         // Signal packet (deterministic).
-        let signals = self.gather_signals().await.map_err(store_err)?;
+        let signals = self.gather_signals(partition).await.map_err(store_err)?;
         let signals_text = self.render_signals(&signals);
 
         // Gather (bounded agentic rounds).
@@ -1199,7 +1382,7 @@ impl StewardEngine {
         let usage_text = render_usage_verdicts(&usage);
 
         // Consolidate.
-        let mob_context_text = self.render_mob_context();
+        let mob_context_text = self.render_mob_context_for(partition);
         let consolidate_template = self.profile.phase_template("consolidate")?;
         let consolidate_prompt = consolidate_template
             .replace("{{mob_context}}", &mob_context_text)
@@ -1403,12 +1586,17 @@ impl StewardEngine {
 
     // -- orient ---------------------------------------------------------------
 
-    async fn orient(&self) -> Result<OrientView, AgentMemoryError> {
+    async fn orient(&self, partition: &DreamPartition) -> Result<OrientView, AgentMemoryError> {
         let overview = self.store.scope_overview(&self.realm).await?;
         let (floor_records, floor_bytes) = self.store.scope_floors();
         let mut lines = Vec::new();
         let mut scopes_for_manifest = Vec::new();
+        let mut covered = 0usize;
         for scope in &overview {
+            if !partition.covers(&scope.scope) {
+                continue;
+            }
+            covered += 1;
             let pressure = if scope.active as usize >= floor_records
                 || scope.body_bytes as usize >= floor_bytes
             {
@@ -1454,34 +1642,42 @@ impl StewardEngine {
         }
         Ok(OrientView {
             text,
-            scopes: overview.len(),
+            scopes: covered,
             manifest_rows,
         })
     }
 
     // -- signals --------------------------------------------------------------
 
-    async fn gather_signals(&self) -> Result<SignalPacket, AgentMemoryError> {
+    async fn gather_signals(
+        &self,
+        partition: &DreamPartition,
+    ) -> Result<SignalPacket, AgentMemoryError> {
         use crate::identity_first::agent_memory::AgentMemoryProvider;
-        let proposals = self
+        let mut proposals = self
             .store
             .pending_proposals(&self.realm, MAX_PROPOSALS_PER_DREAM)
             .await?;
-        let quarantine = self
+        proposals.retain(|proposal| partition.covers(&proposal.scope));
+        let mut quarantine = self
             .store
             .quarantined_records(&self.realm, MAX_QUARANTINE_PER_DREAM)
             .await?;
-        let harvests = self
+        quarantine.retain(|record| partition.covers(&record.scope));
+        let mut harvests = self
             .store
             .pending_harvests(&self.realm, MAX_HARVESTS_PER_DREAM)
             .await?;
-        let ledger = self
+        harvests.retain(|harvest| partition.covers_identity(&harvest.identity));
+        let mut ledger = self
             .store
             .injection_log(&self.realm, USAGE_LEDGER_SAMPLE)
             .await?;
+        ledger.retain(|entry| partition.covers_identity(&entry.identity));
         let recent = self.store.recent_records(&self.realm, 64).await?;
         let distillates: Vec<MemoryRecord> = recent
             .iter()
+            .filter(|record| partition.covers(&record.scope))
             .filter(|record| matches!(record.provenance.author, MemoryAuthor::Distiller { .. }))
             .take(MAX_DISTILLATES_RENDERED)
             .cloned()
@@ -1490,6 +1686,9 @@ impl StewardEngine {
         let mut tombstones = Vec::new();
         let since = now_ms().saturating_sub(7 * 24 * 60 * 60 * 1000);
         for scope in &overview {
+            if !partition.covers(&scope.scope) {
+                continue;
+            }
             if tombstones.len() >= MAX_TOMBSTONES_RENDERED {
                 break;
             }
@@ -1505,28 +1704,35 @@ impl StewardEngine {
         }
         let scopes: Vec<MemoryScope> = overview
             .iter()
-            .filter(|scope| scope.active > 0)
+            .filter(|scope| scope.active > 0 && partition.covers(&scope.scope))
             .map(|scope| scope.scope.clone())
             .collect();
         let manifest = self.store.manifest(&scopes, ManifestTier::Full).await?;
-        let pending_promotions = self.store.pending_promotions(&self.realm).await?;
-        let operator_candidates: Vec<MemoryRecord> = if self.operator_routing {
-            recent
-                .iter()
-                .filter(|record| {
-                    matches!(record.scope, MemoryScope::Identity { .. })
-                        && record.status == RecordStatus::Active
-                        && record
-                            .tags
-                            .iter()
-                            .any(|tag| tag == "epistemic:operator_said")
-                })
-                .take(MAX_OPERATOR_CANDIDATES_RENDERED)
-                .cloned()
-                .collect()
+        // Promotion review + operator routing are realm-level review work:
+        // owned by the whole-realm / remainder runs, never a single mob's.
+        let pending_promotions = if partition.covers_operator_review() {
+            self.store.pending_promotions(&self.realm).await?
         } else {
             Vec::new()
         };
+        let operator_candidates: Vec<MemoryRecord> =
+            if self.operator_routing && partition.covers_operator_review() {
+                recent
+                    .iter()
+                    .filter(|record| {
+                        matches!(record.scope, MemoryScope::Identity { .. })
+                            && record.status == RecordStatus::Active
+                            && record
+                                .tags
+                                .iter()
+                                .any(|tag| tag == "epistemic:operator_said")
+                    })
+                    .take(MAX_OPERATOR_CANDIDATES_RENDERED)
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
         Ok(SignalPacket {
             proposals,
             quarantine,
@@ -1712,6 +1918,44 @@ impl StewardEngine {
             );
         }
         out
+    }
+
+    /// Partition-aware mob-context render: a mob partition sees ONLY its own
+    /// mob's purpose/roster (bounded per-dream context — the point of
+    /// per-mob granularity); the remainder sees none (its scopes belong to
+    /// no mob); the whole-realm dream keeps the historical all-mobs render.
+    fn render_mob_context_for(&self, partition: &DreamPartition) -> String {
+        match partition {
+            DreamPartition::Realm => self.render_mob_context(),
+            DreamPartition::Mob { context, .. } => {
+                let mut out = String::new();
+                out.push_str(&format!("mob '{}' (realm '{}')\n", context.mob, self.realm));
+                match &context.purpose {
+                    Some(purpose) => out.push_str(&format!("  purpose: {purpose}\n")),
+                    None => out.push_str(
+                        "  purpose: (none declared — infer from the roster labels below)\n",
+                    ),
+                }
+                for (identity, labels) in &context.member_labels {
+                    if labels.is_empty() {
+                        out.push_str(&format!("  member {identity}\n"));
+                    } else {
+                        let rendered: Vec<String> = labels
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}"))
+                            .collect();
+                        out.push_str(&format!("  member {identity} [{}]\n", rendered.join(", ")));
+                    }
+                }
+                out
+            }
+            DreamPartition::RealmRemainder { .. } => format!(
+                "(realm-remainder dream for realm '{}': operator/realm scopes and \
+                 unrostered identities — no single mob context; judge promotions \
+                 conservatively)",
+                self.realm
+            ),
+        }
     }
 
     fn render_mob_context(&self) -> String {
@@ -5686,5 +5930,178 @@ mod tests {
         // active record); only the candidates re-dream section is absent.
         assert!(!consolidate_prompt.contains("Operator-fact candidates"));
         assert!(!consolidate_prompt.contains("- mem-opfact [fact]"));
+    }
+
+    #[test]
+    fn dream_partition_covers_routes_scopes() {
+        let mob_a = DreamPartition::Mob {
+            context: MobContext {
+                mob: "alpha".to_string(),
+                purpose: Some("alpha things".to_string()),
+                member_labels: vec![("a1".to_string(), BTreeMap::new())],
+            },
+            members: ["a1".to_string()].into_iter().collect(),
+        };
+        let remainder = DreamPartition::RealmRemainder {
+            covered_mobs: ["alpha".to_string(), "beta".to_string()]
+                .into_iter()
+                .collect(),
+            covered_identities: ["a1".to_string(), "b1".to_string()].into_iter().collect(),
+        };
+        let scope = |k: &str| -> MemoryScope {
+            match k {
+                "mob-a" => MemoryScope::Mob {
+                    realm: REALM.to_string(),
+                    mob: "alpha".to_string(),
+                },
+                "mob-c" => MemoryScope::Mob {
+                    realm: REALM.to_string(),
+                    mob: "gamma".to_string(),
+                },
+                "id-a1" => identity_scope("a1"),
+                "id-b1" => identity_scope("b1"),
+                "id-x" => identity_scope("unrostered"),
+                "op" => MemoryScope::Operator {
+                    realm: REALM.to_string(),
+                    operator: "luka".to_string(),
+                },
+                _ => MemoryScope::Realm {
+                    realm: REALM.to_string(),
+                },
+            }
+        };
+        // The mob partition owns exactly its mob scope + its members.
+        assert!(mob_a.covers(&scope("mob-a")));
+        assert!(mob_a.covers(&scope("id-a1")));
+        assert!(!mob_a.covers(&scope("id-b1")));
+        assert!(!mob_a.covers(&scope("op")));
+        assert!(!mob_a.covers(&scope("realm")));
+        assert!(!mob_a.covers(&scope("mob-c")));
+        // The remainder owns everything no mob partition owns.
+        assert!(!remainder.covers(&scope("mob-a")));
+        assert!(remainder.covers(&scope("mob-c")));
+        assert!(!remainder.covers(&scope("id-a1")));
+        assert!(remainder.covers(&scope("id-x")));
+        assert!(remainder.covers(&scope("op")));
+        assert!(remainder.covers(&scope("realm")));
+        // Operator/promotion review is never a single mob's job.
+        assert!(!mob_a.covers_operator_review());
+        assert!(remainder.covers_operator_review());
+        assert!(DreamPartition::Realm.covers_operator_review());
+    }
+
+    struct TwoMobSource;
+    impl MobPurposeSource for TwoMobSource {
+        fn mob_contexts(&self) -> Vec<MobContext> {
+            vec![
+                MobContext {
+                    mob: "alpha".to_string(),
+                    purpose: Some("alpha work".to_string()),
+                    member_labels: vec![("a1".to_string(), BTreeMap::new())],
+                },
+                MobContext {
+                    mob: "beta".to_string(),
+                    purpose: Some("beta work".to_string()),
+                    member_labels: vec![("b1".to_string(), BTreeMap::new())],
+                },
+            ]
+        }
+    }
+
+    /// per_mob on a 2-mob host: 3 partitions (alpha, beta, remainder); each
+    /// mob's orient/signals see ONLY their own scopes, and the remainder
+    /// owns the operator scope. This is the §8.5 per-mob isolation contract.
+    #[tokio::test]
+    async fn per_mob_dream_partitions_isolate_scopes() {
+        let fixture = build_fixture(Vec::new(), Vec::new());
+        let config = StewardConfig {
+            enabled: true,
+            min_signals: 1,
+            per_mob: true,
+            ..StewardConfig::default()
+        };
+        let engine = StewardEngine::new(
+            StewardProfile::embedded_default(),
+            config,
+            Arc::new(ScriptedHandle {
+                client: fixture.llm.clone(),
+            }),
+            fixture.store.clone(),
+            fixture.transcripts.clone(),
+            REALM,
+        )
+        .with_mob_context(Arc::new(TwoMobSource));
+        let engine = Arc::new(engine);
+
+        // Seed: one identity record per mob member + one operator record.
+        for identity in ["a1", "b1"] {
+            fixture
+                .store
+                .remember_authored(
+                    &identity_scope(identity),
+                    new_record(
+                        &format!("{identity} fact"),
+                        &format!("durable fact for {identity}"),
+                    ),
+                    MemoryAuthor::Operator,
+                )
+                .await
+                .expect("seed identity record");
+        }
+        fixture
+            .store
+            .remember_authored(
+                &MemoryScope::Operator {
+                    realm: REALM.to_string(),
+                    operator: "luka".to_string(),
+                },
+                new_record("operator preference", "operator-level durable preference"),
+                MemoryAuthor::Operator,
+            )
+            .await
+            .expect("seed operator record");
+
+        let partitions = engine.dream_partitions();
+        assert_eq!(partitions.len(), 3, "alpha + beta + remainder");
+
+        let orient_alpha = engine.orient(&partitions[0]).await.expect("orient alpha");
+        assert!(orient_alpha.text.contains("a1"));
+        assert!(
+            !orient_alpha.text.contains("b1"),
+            "mob alpha's dream must not see mob beta's identity scope: {}",
+            orient_alpha.text
+        );
+        assert!(!orient_alpha.text.contains("operator"));
+
+        let signals_beta = engine
+            .gather_signals(&partitions[1])
+            .await
+            .expect("signals beta");
+        assert!(
+            signals_beta
+                .manifest
+                .iter()
+                .all(|meta| !meta.title.contains("a1 fact")),
+            "mob beta's manifest must not carry mob alpha's records"
+        );
+
+        let orient_remainder = engine
+            .orient(&partitions[2])
+            .await
+            .expect("orient remainder");
+        assert!(
+            orient_remainder.text.contains("operator"),
+            "the remainder owns the operator scope: {}",
+            orient_remainder.text
+        );
+        assert!(!orient_remainder.text.contains("a1"));
+
+        // The mob partition's consolidate context renders ONLY its own mob.
+        let context_alpha = engine.render_mob_context_for(&partitions[0]);
+        assert!(context_alpha.contains("alpha"));
+        assert!(!context_alpha.contains("beta"));
+
+        // per_mob=false (the fixture default engine) stays whole-realm.
+        assert_eq!(fixture.engine.dream_partitions().len(), 1);
     }
 }

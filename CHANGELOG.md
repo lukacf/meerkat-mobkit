@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Per-mob steward dreams (§8.5): with `agent_memory.steward.per_mob = true` on
+  a multi-mob host, each dream attempt runs one partition per mob — that mob's
+  scope plus its members' identity scopes, consolidated against that mob's own
+  purpose/roster context — plus a realm-remainder partition owning
+  operator/realm scopes, unrostered identities, and promotion/operator review.
+  Each partition run takes its own runs-per-day budget slot. With 0–1 mobs the
+  whole-realm dream is used unchanged (the flag was previously parsed but
+  inert).
+
 ### Fixed
 
 - Delivery repair no longer rotates a wedged member onto a fresh, empty
