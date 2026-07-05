@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The rpc gateway's agent-memory assembly converged onto the `memory_wiring`
+  module: the SQLite store, taint firewall, Distiller, and Steward are built
+  by the same code path the Rust builder uses
+  (`persistent_agent_memory_stack`), with the gateway's extras — outbound
+  taint declarer, console panel registration, Hygienist, compaction-reset
+  sink, observer spawn, and schedule-host dream suppression — layered as
+  seams. One assembly, two hosts; behavior unchanged.
+
 ## [0.7.23] - 2026-07-05
 
 ### Changed

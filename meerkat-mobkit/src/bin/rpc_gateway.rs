@@ -4131,74 +4131,9 @@ external_addressable = true
                     )
                         as Arc<dyn meerkat_mobkit::AgentMemoryProvider>),
                     GatewayAgentMemoryStoreKind::Sqlite => {
-                        let store =
-                            meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
-                                .unwrap_or_else(|e| {
-                                    fail_init(
-                                        &request_id,
-                                        -32603,
-                                        format!("failed to open agent memory store: {e}"),
-                                    );
-                                });
-                        // §10.1 taint firewall: the Recorder must not ship
-                        // without it. Content-trust classification feeds a
-                        // session-sticky tracker; the write gate applies
-                        // taint/posture/evidence quarantine at the store seam.
-                        let tracker = meerkat_mobkit::SessionTaintTracker::new(
-                            agent_memory.config.content_trust.clone(),
-                        );
-                        store.set_llm_write_gate(Arc::new(meerkat_mobkit::TaintLlmWriteGate::new(
-                            Some(tracker.clone()),
-                            agent_memory.config.llm_writes,
-                        )));
-                        // §9.3: memory-plane events project onto the
-                        // console timeline through this sink.
-                        let memory_events = runtime.memory_event_sink();
-                        store.set_event_sink(memory_events.clone());
-                        tracker.set_event_sink(memory_events.clone());
-                        // §10.1 ask 5 (outbound half): make the member's comms
-                        // runtime the authenticated carrier of the host's taint
-                        // fact. When a session ingests untrusted content the
-                        // tracker stamps the member Tainted; peers then read the
-                        // sender's own signed declaration instead of
-                        // reconstructing taint from host-side joins, closing the
-                        // cross-process loop. Fire-and-forget: the member may not
-                        // be materialized (transient / definition-mob members
-                        // that never took a lease), so a miss is logged, not
-                        // fatal.
-                        let taint_mob_handle = runtime.mob_handle();
-                        tracker.set_outbound_taint_declarer(std::sync::Arc::new(
-                            move |identity: &str,
-                                  taint: Option<meerkat_core::comms::SenderContentTaint>| {
-                                let handle = taint_mob_handle.clone();
-                                let member =
-                                    meerkat_mobkit::member_comms_id::mob_member_id(identity);
-                                let identity_owned = identity.to_string();
-                                tokio::spawn(async move {
-                                    if let Err(err) = handle
-                                        .declare_member_outbound_taint(member, taint)
-                                        .await
-                                    {
-                                        tracing::debug!(
-                                            identity = %identity_owned,
-                                            ?taint,
-                                            error = %err,
-                                            "agent memory taint: outbound taint declaration \
-                                             failed (member may not be materialized)"
-                                        );
-                                    }
-                                });
-                            },
-                        ));
-                        // §9.3 console Memory panel (P3b): a read handle on
-                        // this realm store enables the read-only
-                        // mobkit/memory/panel/* RPCs and the panel nav.
-                        // Must precede build_reference_app_router; the
-                        // router builds after this region.
-                        runtime.set_memory_panel_store(store.clone());
-                        // Shared read handle on the persistent session
-                        // store for the Distiller's evidence windows and
-                        // the steward's gather/usage/resolvability reads.
+                        // Shared read handle on the persistent session store
+                        // for the Distiller's evidence windows and the
+                        // steward's gather/usage/resolvability reads.
                         let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
                             if agent_memory.distiller.enabled || agent_memory.steward.enabled {
                                 let Some(state) = persistent_state.clone() else {
@@ -4231,162 +4166,108 @@ external_addressable = true
                             } else {
                                 None
                             };
-                        // §8.4 Distiller: shares the tracker's observe loop.
-                        let mut sinks: Vec<Arc<dyn meerkat_mobkit::MemberAgentEventSink>> =
-                            vec![Arc::new(tracker.clone())];
-                        if agent_memory.distiller.enabled {
-                            use meerkat_mobkit::memory::distiller as memory_distiller;
-                            let mut profile =
-                                memory_distiller::DistillerProfile::embedded_default();
-                            if let Some(model) = agent_memory.distiller.model.as_deref() {
-                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
-                                    fail_init(
-                                        &request_id,
-                                        -32602,
-                                        format!("agent memory distiller: {e}"),
-                                    );
-                                });
+                        // Converged assembly (memory_wiring): store + §10.1
+                        // firewall + Distiller + Steward, with the gateway's
+                        // late-binding bridges passed as seams. The Hygienist
+                        // and the gateway-only extras (outbound taint
+                        // declarer, panel registration, compaction reset,
+                        // observer spawn, dream scheduling) follow below.
+                        let memory_events = runtime.memory_event_sink();
+                        let engines = meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
+                            distiller: agent_memory.distiller.clone(),
+                            steward: agent_memory.steward.clone(),
+                        };
+                        let stack = match meerkat_mobkit::memory_wiring::build_sqlite_memory_stack(
+                            &agent_memory.path,
+                            &agent_memory.config,
+                            &engines,
+                            meerkat_mobkit::memory_wiring::MemoryStackSeams {
+                                persistent_state: persistent_state.clone(),
+                                transcript_store: memory_transcript_store,
+                                event_sink: Some(memory_events.clone()),
+                                mob_purpose: Some(Arc::new(GatewayMobPurposeSource {
+                                    mob: mob_definition.id.to_string(),
+                                    roster: steward_roster_slot.clone(),
+                                })),
+                                steward_gating: Some(Arc::new(GatewayMemoryGatingBridge {
+                                    runtime: steward_late_runtime.clone(),
+                                })),
+                                steward_conflicts: Some(Arc::new(GatewayMemoryConflictBridge {
+                                    runtime: steward_late_runtime.clone(),
+                                    handle: tokio::runtime::Handle::current(),
+                                })),
+                            },
+                        ) {
+                            Ok(stack) => stack,
+                            Err(e) => {
+                                let code = if e.starts_with("failed to open") {
+                                    -32603
+                                } else {
+                                    -32602
+                                };
+                                fail_init(&request_id, code, e);
                             }
-                            let Some(state) = persistent_state.clone() else {
-                                fail_init(
-                                    &request_id,
-                                    -32602,
-                                    "agent memory distiller requires persistent_state".to_string(),
-                                );
-                            };
-                            let transcript_store: Arc<dyn meerkat::SessionStore> =
-                                memory_transcript_store
-                                    .clone()
-                                    .expect("transcript store built when distiller enabled");
-                            let handle = memory_distiller::FactoryDistillerHandle::new(
-                                state.clone(),
-                                meerkat::Config::default(),
-                                agent_memory.config.realm.clone(),
-                                &profile,
+                        };
+                        let store = stack.store;
+                        let tracker = stack.taint;
+                        let mut sinks = stack.sinks;
+                        agent_memory_distiller = stack.distiller;
+                        if let Some(engine) = agent_memory_distiller.as_ref() {
+                            let _ = engine;
+                            tracing::info!(
+                                model = ?agent_memory.distiller.model,
+                                "agent memory distiller installed"
                             );
-                            let model = profile.model.clone();
-                            let engine = Arc::new(memory_distiller::DistillerEngine::new(
-                                profile,
-                                agent_memory.distiller.clone(),
-                                Arc::new(handle),
-                                Arc::new(store.clone()),
-                                Arc::new(store.clone()),
-                                Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
-                                    transcript_store,
-                                )),
-                                // Meerkat's session semantic memory lives at
-                                // <persistent_state>/memory; absent dir ⇒
-                                // nothing was preserved at compaction.
-                                Some(Arc::new(memory_distiller::HnswDiscardSource::new(
-                                    state.join("memory"),
-                                ))),
-                                Some(tracker.clone()),
-                                agent_memory.config.realm.clone(),
-                            ));
-                            engine.set_event_sink(memory_events.clone());
-                            sinks.push(Arc::new(memory_distiller::DistillerTriggers::new(
-                                engine.clone(),
-                            )));
-                            agent_memory_distiller = Some(engine);
-                            tracing::info!(model = %model, "agent memory distiller installed");
                         }
-                        // §8.5 Steward: scheduled dreams over this realm's
-                        // store. Provisioning is app-side opt-in; the
-                        // gating/conflict bridges bind late (post-Arc).
-                        if agent_memory.steward.enabled {
-                            use meerkat_mobkit::memory::distiller as memory_distiller;
-                            use meerkat_mobkit::memory::steward as memory_steward;
-                            let mut profile = memory_steward::StewardProfile::embedded_default();
-                            if let Some(model) = agent_memory.steward.model.as_deref() {
-                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
-                                    fail_init(
-                                        &request_id,
-                                        -32602,
-                                        format!("agent memory steward: {e}"),
-                                    );
-                                });
-                            }
-                            let Some(state) = persistent_state.clone() else {
-                                fail_init(
-                                    &request_id,
-                                    -32602,
-                                    "agent memory steward requires persistent_state".to_string(),
-                                );
-                            };
-                            let transcript_store: Arc<dyn meerkat::SessionStore> =
-                                memory_transcript_store
-                                    .clone()
-                                    .expect("transcript store built when steward enabled");
-                            let transcripts: Arc<
-                                dyn meerkat_mobkit::memory::distiller::TranscriptSource,
-                            > = Arc::new(memory_distiller::SessionStoreTranscriptSource::new(
-                                transcript_store,
-                            ));
-                            // §10.2 P3 validator extension: agent_verified
-                            // retiers must cite evidence that resolves
-                            // against the session store, from now on.
-                            store.set_evidence_resolver(Arc::new(
-                                memory_steward::SessionStoreEvidenceResolver::new(
-                                    transcripts.clone(),
-                                    tokio::runtime::Handle::current(),
-                                ),
-                            ));
-                            let handle = memory_steward::FactoryStewardHandle::new(
-                                state,
-                                meerkat::Config::default(),
-                                agent_memory.config.realm.clone(),
-                                &profile,
-                            );
-                            let model = profile.model.clone();
-                            let engine = memory_steward::StewardEngine::new(
-                                profile,
-                                agent_memory.steward.clone(),
-                                Arc::new(handle),
-                                Arc::new(store.clone()),
-                                transcripts,
-                                agent_memory.config.realm.clone(),
-                            )
-                            .with_events(memory_events.clone())
-                            .with_mob_context(Arc::new(GatewayMobPurposeSource {
-                                mob: mob_definition.id.to_string(),
-                                roster: steward_roster_slot.clone(),
-                            }))
-                            .with_gating(Arc::new(GatewayMemoryGatingBridge {
-                                runtime: steward_late_runtime.clone(),
-                            }))
-                            .with_conflicts(Arc::new(GatewayMemoryConflictBridge {
-                                runtime: steward_late_runtime.clone(),
-                                handle: tokio::runtime::Handle::current(),
-                            }))
-                            // §7.2 P4: operator-scope routing follows the
-                            // agent_memory.operator_scope activation knob.
-                            .with_operator_routing(
-                                agent_memory.config.operator_scope
-                                    == meerkat_mobkit::AgentMemoryOperatorScope::Provisional,
-                            );
-                            let engine = Arc::new(engine);
-                            sinks.push(Arc::new(memory_steward::StewardTriggers::new(
-                                engine.clone(),
-                            )));
+                        if let Some(engine) = stack.steward.clone() {
                             // Dream cadence (§ ask 7 / P5): when this gateway
                             // runs a schedule host, the dream is driven as a
-                            // durable, misfire-aware host-runnable occurrence
-                            // (registered below at the schedule-host spawn).
-                            // Only gateways WITHOUT a schedule host keep the
-                            // in-process interval loop as a fallback. Forgetting
-                            // the handle keeps it alive (same pattern as the
-                            // member-event observer).
+                            // durable host-runnable occurrence (registered at
+                            // the schedule-host spawn). Only gateways WITHOUT
+                            // a schedule host keep the in-process loop.
                             if schedule_host_inputs.is_none() {
                                 std::mem::forget(engine.spawn_dream_loop());
                             }
                             agent_memory_steward = Some(engine);
                             tracing::info!(
-                                model = %model,
+                                model = ?agent_memory.steward.model,
                                 cadence = %agent_memory.steward.cadence,
                                 per_mob = agent_memory.steward.per_mob,
                                 "agent memory steward installed"
                             );
                         }
+                        // §10.1 ask 5 (outbound half): make the member's comms
+                        // runtime the authenticated carrier of the host's taint
+                        // fact. Fire-and-forget: the member may not be
+                        // materialized, so a miss is logged, not fatal.
+                        let taint_mob_handle = runtime.mob_handle();
+                        tracker.set_outbound_taint_declarer(std::sync::Arc::new(
+                            move |identity: &str,
+                                  taint: Option<meerkat_core::comms::SenderContentTaint>| {
+                                let handle = taint_mob_handle.clone();
+                                let member =
+                                    meerkat_mobkit::member_comms_id::mob_member_id(identity);
+                                let identity_owned = identity.to_string();
+                                tokio::spawn(async move {
+                                    if let Err(err) = handle
+                                        .declare_member_outbound_taint(member, taint)
+                                        .await
+                                    {
+                                        tracing::debug!(
+                                            identity = %identity_owned,
+                                            ?taint,
+                                            error = %err,
+                                            "agent memory taint: outbound taint declaration \
+                                             failed (member may not be materialized)"
+                                        );
+                                    }
+                                });
+                            },
+                        ));
+                        // §9.3 console Memory panel: must precede
+                        // build_reference_app_router (the router builds after
+                        // this region).
+                        runtime.set_memory_panel_store(store.clone());
                         // §8.6 Hygienist: audited transcript curation at
                         // compaction boundaries and on demand, applied
                         // through meerkat's typed transcript-revision
@@ -4486,7 +4367,7 @@ external_addressable = true
                             sinks,
                         ));
                         agent_memory_taint = Some(tracker);
-                        Some(Arc::new(store) as Arc<dyn meerkat_mobkit::AgentMemoryProvider>)
+                        Some(stack.provider)
                     }
                 }
             } else {
