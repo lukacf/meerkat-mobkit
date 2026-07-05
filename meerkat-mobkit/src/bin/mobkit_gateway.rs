@@ -454,7 +454,7 @@ fn build_persistent_session_service(
         builder,
         64,
         session_store,
-        Some(Arc::clone(&runtime_store)),
+        Arc::clone(&runtime_store),
         blob_store,
     ));
     let schedule_host_inputs = schedule_tools.map(|tools| {
