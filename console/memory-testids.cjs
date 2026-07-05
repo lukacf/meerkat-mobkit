@@ -76,8 +76,17 @@ module.exports = {
   HOLDINGS: "memory-holdings",
   HOLDINGS_DENIED: "memory-holdings-denied", // records -32030 → "no grant" note
   // `memory-holdings-scope:${scopeGroupKey}` — scope rows; click pivots to
-  // Records pre-filtered to that scope.
+  // Records pre-filtered to that scope. Phase 2: rows render store TOTALS
+  // from panel/overview when the surface answers (same key scheme); the
+  // loaded-records fallback remains for principals the surface denies.
   holdingsScope: (scopeKey) => `memory-holdings-scope:${scopeKey}`,
+  // `memory-holdings-floor:${scopeGroupKey}` — FLOOR PRESSURE marker chip on
+  // an overview scope row at the 4,000-record/32MB floor.
+  holdingsFloor: (scopeKey) => `memory-holdings-floor:${scopeKey}`,
+  // Harvest queue (Holdings): retired identities awaiting the exit-interview
+  // dream, from panel/harvests. Row id: memory-harvest:${identity}.
+  HARVESTS: "memory-harvests",
+  harvest: (identity) => `memory-harvest:${identity}`,
   // Access-denied scope rows: the one-row probes ({scope, limit:1}) render
   // these when the principal lacks the scope grant (spec §3.1 "no grant"
   // operator row) — a denied scope must not be indistinguishable from an
@@ -102,7 +111,20 @@ module.exports = {
   // ── Pipeline tab (quarantine folded in) ──
   PIPELINE: "memory-pipeline",
   PIPELINE_STAGES: "memory-pipeline-stages", // PROPOSED ─▶ PENDING GATE ─▶ COMMITTED · QUAR strip
-  PIPELINE_PROPOSALS: "memory-pipeline-proposals", // honest "needs surface 4" note
+  // Phase 2: the inbound proposals lane (panel/proposals) — pending
+  // proposals with propose-time taint badges. Row id:
+  // memory-proposal:${proposalId}; taint chip:
+  // memory-proposal-taint:${proposalId}.
+  PIPELINE_PROPOSALS: "memory-pipeline-proposals",
+  proposal: (proposalId) => `memory-proposal:${proposalId}`,
+  proposalTaint: (proposalId) => `memory-proposal-taint:${proposalId}`,
+  // Phase 2: the usage-audit review queue (panel/audit_verdicts) —
+  // "memories you might want to correct", read-only. Row id:
+  // memory-review:${runId}:${recordId}; the record deep-link button:
+  // memory-review-record:${runId}:${recordId}.
+  REVIEW_QUEUE: "memory-review-queue",
+  review: (runId, recordId) => `memory-review:${runId}:${recordId}`,
+  reviewRecord: (runId, recordId) => `memory-review-record:${runId}:${recordId}`,
   PIPELINE_NO_GRANT: "memory-pipeline-no-grant", // shown without memory.quarantine.review
   QUARANTINE_NOTE: "memory-quarantine-note", // read-only disclaimer (kept from P3b)
   quarantineRecord: (memoryId) => `memory-quarantine-record:${memoryId}`, // now a button → Biography
@@ -127,12 +149,28 @@ module.exports = {
   // to Records filtered to that scope.
   knowledgeSegment: (label) => `memory-knowledge-segment:${label}`,
   KNOWLEDGE_AS_INJECTED: "memory-knowledge-as-injected", // honest surface-10 placeholder
-  KNOWLEDGE_HISTORY: "memory-knowledge-history", // honest surface-6/8 placeholder
+  // Phase 2: the durable injection history (panel/injections), newest first.
+  // Row id: memory-injection:${index}; the record deep-link:
+  // memory-injection-record:${index}; the consecutive-duplicate tripwire:
+  // memory-injection-dup:${index} (DUP chip).
+  KNOWLEDGE_HISTORY: "memory-knowledge-history",
+  injection: (index) => `memory-injection:${index}`,
+  injectionRecord: (index) => `memory-injection-record:${index}`,
+  injectionDup: (index) => `memory-injection-dup:${index}`,
+  KNOWLEDGE_BUDGET: "memory-knowledge-budget", // honest panel/health placeholder
 
   // ── Dreams tab ──
   dream: (runId) => `memory-dream:${runId}`,
   // `memory-dream-record:${runId}:${memoryId}` — touched-record links → Biography.
   dreamRecord: (runId, memoryId) => `memory-dream-record:${runId}:${memoryId}`,
+  // Phase 2: durable verdict sheets (panel/dream_runs). Card:
+  // memory-dream-run:${runId}; expand/collapse toggle:
+  // memory-dream-run-toggle:${runId}; expanded detail (phases in order,
+  // non-zero verdict counters, skips): memory-dream-run-detail:${runId}.
+  DREAM_RUNS: "memory-dream-runs",
+  dreamRun: (runId) => `memory-dream-run:${runId}`,
+  dreamRunToggle: (runId) => `memory-dream-run-toggle:${runId}`,
+  dreamRunDetail: (runId) => `memory-dream-run-detail:${runId}`,
 
   // ── Signals rail (SignalsRail.tsx) ──
   SIGNALS_RAIL: "signals-rail",

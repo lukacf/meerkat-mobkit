@@ -110,6 +110,12 @@ export const CONSOLE_COMMAND_NAMES = {
   getMemoryRecord: "getMemoryRecord",
   listMemoryQuarantine: "listMemoryQuarantine",
   listMemoryDreams: "listMemoryDreams",
+  getMemoryOverview: "getMemoryOverview",
+  listMemoryProposals: "listMemoryProposals",
+  listMemoryInjections: "listMemoryInjections",
+  listMemoryHarvests: "listMemoryHarvests",
+  listMemoryDreamRuns: "listMemoryDreamRuns",
+  listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -221,6 +227,30 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   },
   [CONSOLE_COMMAND_NAMES.listMemoryDreams]: {
     method: CONSOLE_RPC_METHODS.memoryPanelDreams,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.getMemoryOverview]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelOverview,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryProposals]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelProposals,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryInjections]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelInjections,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryHarvests]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelHarvests,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryDreamRuns]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelDreamRuns,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
   },
 };

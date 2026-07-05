@@ -1986,7 +1986,13 @@ var CONSOLE_RPC_METHODS = {
   memoryPanelRecords: "mobkit/memory/panel/records",
   memoryPanelRecord: "mobkit/memory/panel/record",
   memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
-  memoryPanelDreams: "mobkit/memory/panel/dreams"
+  memoryPanelDreams: "mobkit/memory/panel/dreams",
+  memoryPanelOverview: "mobkit/memory/panel/overview",
+  memoryPanelProposals: "mobkit/memory/panel/proposals",
+  memoryPanelInjections: "mobkit/memory/panel/injections",
+  memoryPanelHarvests: "mobkit/memory/panel/harvests",
+  memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
+  memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts"
 };
 
 // ../packages/console-core/src/headless.ts
@@ -2012,7 +2018,13 @@ var CONSOLE_COMMAND_NAMES = {
   listMemoryRecords: "listMemoryRecords",
   getMemoryRecord: "getMemoryRecord",
   listMemoryQuarantine: "listMemoryQuarantine",
-  listMemoryDreams: "listMemoryDreams"
+  listMemoryDreams: "listMemoryDreams",
+  getMemoryOverview: "getMemoryOverview",
+  listMemoryProposals: "listMemoryProposals",
+  listMemoryInjections: "listMemoryInjections",
+  listMemoryHarvests: "listMemoryHarvests",
+  listMemoryDreamRuns: "listMemoryDreamRuns",
+  listMemoryAuditVerdicts: "listMemoryAuditVerdicts"
 };
 var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
@@ -2113,6 +2125,30 @@ var CONSOLE_COMMAND_SPECS = {
   },
   [CONSOLE_COMMAND_NAMES.listMemoryDreams]: {
     method: CONSOLE_RPC_METHODS.memoryPanelDreams,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.getMemoryOverview]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelOverview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryProposals]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelProposals,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryInjections]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelInjections,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryHarvests]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelHarvests,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryDreamRuns]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelDreamRuns,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
+    method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   }
 };
@@ -5963,7 +5999,13 @@ var CONSOLE_RPC_METHODS2 = {
   memoryPanelRecords: "mobkit/memory/panel/records",
   memoryPanelRecord: "mobkit/memory/panel/record",
   memoryPanelQuarantine: "mobkit/memory/panel/quarantine",
-  memoryPanelDreams: "mobkit/memory/panel/dreams"
+  memoryPanelDreams: "mobkit/memory/panel/dreams",
+  memoryPanelOverview: "mobkit/memory/panel/overview",
+  memoryPanelProposals: "mobkit/memory/panel/proposals",
+  memoryPanelInjections: "mobkit/memory/panel/injections",
+  memoryPanelHarvests: "mobkit/memory/panel/harvests",
+  memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
+  memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts"
 };
 var CONSOLE_BLOB_PATH_PREFIX2 = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE2 = -32013;
@@ -6634,7 +6676,13 @@ var CONSOLE_COMMAND_NAMES2 = {
   listMemoryRecords: "listMemoryRecords",
   getMemoryRecord: "getMemoryRecord",
   listMemoryQuarantine: "listMemoryQuarantine",
-  listMemoryDreams: "listMemoryDreams"
+  listMemoryDreams: "listMemoryDreams",
+  getMemoryOverview: "getMemoryOverview",
+  listMemoryProposals: "listMemoryProposals",
+  listMemoryInjections: "listMemoryInjections",
+  listMemoryHarvests: "listMemoryHarvests",
+  listMemoryDreamRuns: "listMemoryDreamRuns",
+  listMemoryAuditVerdicts: "listMemoryAuditVerdicts"
 };
 var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
 var MIN_TIMELINE_DEDUP_KEYS = 1e3;
@@ -6737,6 +6785,30 @@ var CONSOLE_COMMAND_SPECS2 = {
   },
   [CONSOLE_COMMAND_NAMES2.listMemoryDreams]: {
     method: CONSOLE_RPC_METHODS2.memoryPanelDreams,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.getMemoryOverview]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelOverview,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.listMemoryProposals]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelProposals,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.listMemoryInjections]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelInjections,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.listMemoryHarvests]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelHarvests,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.listMemoryDreamRuns]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelDreamRuns,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
+  },
+  [CONSOLE_COMMAND_NAMES2.listMemoryAuditVerdicts]: {
+    method: CONSOLE_RPC_METHODS2.memoryPanelAuditVerdicts,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/memory"])
   }
 };
@@ -10107,13 +10179,41 @@ function computeVerdictTiles(inputs) {
       targetTab: "dreams"
     });
   }
-  tiles.push({
-    id: "store-floor",
-    label: "STORE FLOOR",
-    status: "unverifiable",
-    lines: ["needs mobkit/memory/panel/overview (surface 1)"],
-    targetTab: "holdings"
-  });
+  if (inputs.overviewDenied) {
+    tiles.push({
+      id: "store-floor",
+      label: "STORE FLOOR",
+      status: "no-grant",
+      lines: ["store overview not readable by this principal"],
+      targetTab: "holdings"
+    });
+  } else if (!inputs.overview) {
+    tiles.push({
+      id: "store-floor",
+      label: "STORE FLOOR",
+      status: "unverifiable",
+      lines: ["needs mobkit/memory/panel/overview (surface 1)"],
+      targetTab: "holdings"
+    });
+  } else {
+    const floor = storeFloorVerdict(inputs.overview.scopes);
+    const floors = inputs.overview.floors;
+    const floorLine = floors ? `floors ${floors.records ?? "?"} records / ${typeof floors.bytes === "number" ? formatBytes(floors.bytes) : "?"} per scope` : "floors unreported";
+    tiles.push({
+      id: "store-floor",
+      label: "STORE FLOOR",
+      status: floor.status === "ok" ? "holding" : "degraded",
+      lines: floor.status === "ok" ? [
+        `OK \u2014 no scope at floor pressure (${inputs.overview.scopes.length} scopes)`,
+        floorLine
+      ] : [
+        `PRESSURE \u2014 ${floor.pressured.length} scope${floor.pressured.length === 1 ? "" : "s"} at floor`,
+        floor.pressured.map((scope) => overviewScopeLabel(scope)).join(" \xB7 "),
+        floorLine
+      ],
+      targetTab: "holdings"
+    });
+  }
   return tiles;
 }
 function scopeOverviewRows(records) {
@@ -10150,6 +10250,109 @@ function filterForScope(scope) {
     case "realm":
       return { scope: "realm" };
   }
+}
+function overviewScopeKey(scope) {
+  if (scope.scope_kind === "realm") return `realm:${scope.realm}`;
+  return `${scope.scope_kind}:${scope.realm}:${scope.scope_key}`;
+}
+function overviewScopeLabel(scope) {
+  switch (scope.scope_kind) {
+    case "identity":
+      return scope.scope_key;
+    case "mob":
+      return `Mob: ${scope.scope_key}`;
+    case "operator":
+      return `Operator: ${scope.scope_key}`;
+    case "realm":
+      return "Realm";
+    default:
+      return `${scope.scope_kind}:${scope.scope_key}`;
+  }
+}
+function filterForOverviewScope(scope) {
+  if (scope.scope_kind === "realm") return { scope: "realm" };
+  if (scope.scope_kind === "identity" || scope.scope_kind === "mob" || scope.scope_kind === "operator") {
+    return { scope: scope.scope_kind, key: scope.scope_key };
+  }
+  return {};
+}
+function visibleOverviewScopes(scopes, denied) {
+  return scopes.filter((scope) => {
+    if (scope.scope_kind === "operator" && denied.operatorScopeDenied) return false;
+    if (scope.scope_kind === "mob" && denied.mobScopeDenied) return false;
+    return true;
+  });
+}
+function sortOverviewScopes(scopes) {
+  const rank = (kind) => {
+    switch (kind) {
+      case "identity":
+        return 0;
+      case "mob":
+        return 1;
+      case "operator":
+        return 2;
+      case "realm":
+        return 3;
+      default:
+        return 4;
+    }
+  };
+  return [...scopes].sort((a, b) => {
+    const delta = rank(a.scope_kind) - rank(b.scope_kind);
+    if (delta !== 0) return delta;
+    return overviewScopeLabel(a).localeCompare(overviewScopeLabel(b));
+  });
+}
+function storeFloorVerdict(scopes) {
+  const pressured = scopes.filter((scope) => scope.floor_pressure === true);
+  return { status: pressured.length > 0 ? "pressure" : "ok", pressured };
+}
+function annotateInjectionDups(entries) {
+  const flags = new Array(entries.length).fill(false);
+  const previousByIdentity = /* @__PURE__ */ new Map();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    flags[index] = previousByIdentity.get(entry.identity) === entry.record_id;
+    previousByIdentity.set(entry.identity, entry.record_id);
+  }
+  return entries.map((entry, index) => ({ entry, dup: flags[index] }));
+}
+function dreamRunsNewestFirst(runs) {
+  return [...runs].sort(
+    (a, b) => (b.completed_at_ms ?? b.started_at_ms ?? 0) - (a.completed_at_ms ?? a.started_at_ms ?? 0)
+  );
+}
+function formatDurationMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "\u2014";
+  if (ms < 1e3) return `${Math.round(ms)}ms`;
+  if (ms < 60 * 1e3) return `${(ms / 1e3).toFixed(1)}s`;
+  const minutes = Math.floor(ms / (60 * 1e3));
+  const seconds = Math.round(ms % (60 * 1e3) / 1e3);
+  return `${minutes}m ${seconds}s`;
+}
+function dreamRunDuration(run) {
+  if (!run.started_at_ms || !run.completed_at_ms) return "\u2014";
+  return formatDurationMs(run.completed_at_ms - run.started_at_ms);
+}
+function normalizeDreamRunDetail(detail) {
+  if (detail === void 0 || detail === null) {
+    return { phases: [], verdicts: [], skips: [], raw: null };
+  }
+  if (typeof detail === "string") {
+    return { phases: [], verdicts: [], skips: [], raw: detail };
+  }
+  const phases = [];
+  for (const phase of detail.phases || []) {
+    if (Array.isArray(phase) && phase.length >= 1) {
+      phases.push([String(phase[0]), String(phase[1] ?? "")]);
+    }
+  }
+  const verdicts = Object.entries(detail.verdicts || {}).filter(
+    (candidate) => typeof candidate[1] === "number" && candidate[1] > 0
+  );
+  const skips = (detail.skips || []).map((skip) => String(skip));
+  return { phases, verdicts, skips, raw: null };
 }
 function lineageLane(chain, currentId) {
   return [...chain].reverse().map((record) => ({
@@ -10526,6 +10729,18 @@ function MemoryPanel({
   dreamsDenied = false,
   operatorScopeDenied = false,
   mobScopeDenied = false,
+  overview = null,
+  overviewDenied = false,
+  proposals = [],
+  proposalsDenied = false,
+  injections = [],
+  injectionsDenied = false,
+  harvests = [],
+  harvestsDenied = false,
+  dreamRuns = [],
+  dreamRunsDenied = false,
+  auditVerdicts = [],
+  auditVerdictsDenied = false,
   liveFrames = [],
   onRefresh,
   onSelectRecord,
@@ -10582,6 +10797,15 @@ function MemoryPanel({
     };
   }, [tab, records, recordsDenied, realms, nextCursor]);
   const overviewRows = import_react20.default.useMemo(() => scopeOverviewRows(records), [records]);
+  const overviewScopes = import_react20.default.useMemo(
+    () => overview ? sortOverviewScopes(
+      visibleOverviewScopes(overview.scopes || [], {
+        operatorScopeDenied,
+        mobScopeDenied
+      })
+    ) : null,
+    [overview, operatorScopeDenied, mobScopeDenied]
+  );
   const tiles = import_react20.default.useMemo(
     () => computeVerdictTiles({
       records,
@@ -10589,10 +10813,28 @@ function MemoryPanel({
       dreams,
       dreamsDenied,
       lattice,
-      latticeRunning
+      latticeRunning,
+      overview: overviewScopes && overview ? { scopes: overviewScopes, floors: overview.floors } : null,
+      overviewDenied
     }),
-    [records, recordsDenied, dreams, dreamsDenied, lattice, latticeRunning]
+    [
+      records,
+      recordsDenied,
+      dreams,
+      dreamsDenied,
+      lattice,
+      latticeRunning,
+      overview,
+      overviewScopes,
+      overviewDenied
+    ]
   );
+  const annotatedInjections = import_react20.default.useMemo(
+    () => annotateInjectionDups(injections),
+    [injections]
+  );
+  const dreamSheets = import_react20.default.useMemo(() => dreamRunsNewestFirst(dreamRuns), [dreamRuns]);
+  const [expandedRuns, setExpandedRuns] = import_react20.default.useState({});
   const identities = import_react20.default.useMemo(() => identityOptions(records), [records]);
   const selectedIdentity = knowledgeIdentity || identities[0] || "";
   const memoryFrames = import_react20.default.useMemo(
@@ -10680,12 +10922,31 @@ function MemoryPanel({
           }
         ),
         recordsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-holdings-denied", children: "Records are not readable by this principal (access denied)." }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group__label", children: [
-            "Scopes \u2014 counts over the ",
-            records.length,
-            " loaded records (full totals need panel/overview)"
-          ] }),
-          overviewRows.length === 0 && !operatorScopeDenied && !mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: overviewScopes ? `Scopes \u2014 store totals (panel/overview)${overview?.floors ? ` \xB7 floors ${overview.floors.records ?? "?"} records / ${typeof overview.floors.bytes === "number" ? formatBytes(overview.floors.bytes) : "?"} per scope` : ""}` : `Scopes \u2014 counts over the ${records.length} loaded records (full totals need panel/overview)` }),
+          overviewScopes ? overviewScopes.length === 0 && !operatorScopeDenied && !mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewScopes.map((scope) => {
+            const key = overviewScopeKey(scope);
+            return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "button",
+              {
+                type: "button",
+                className: "memory-row memory-scope-row",
+                "data-testid": `memory-holdings-scope:${key}`,
+                onClick: () => openRecordsFiltered(filterForOverviewScope(scope)),
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: overviewScopeLabel(scope) }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${scope.active ?? 0} active`, tone: "positive" }),
+                    (scope.quarantined ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${scope.quarantined} quarantined`, tone: "warning" }) : null,
+                    (scope.superseded ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${scope.superseded} superseded`, tone: "muted" }) : null,
+                    (scope.tombstoned ?? 0) > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${scope.tombstoned} tombstoned`, tone: "muted" }) : null,
+                    scope.floor_pressure ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { "data-testid": `memory-holdings-floor:${key}`, children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "FLOOR PRESSURE", tone: "warning" }) }) : null,
+                    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: formatBytes(scope.body_bytes ?? 0) })
+                  ] })
+                ]
+              },
+              key
+            );
+          }) : overviewRows.length === 0 && !operatorScopeDenied && !mobScopeDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "No memory records yet." }) : overviewRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
             "button",
             {
               type: "button",
@@ -10739,8 +11000,33 @@ function MemoryPanel({
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "In transit" }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: dreams.length > 0 ? `Last dream ${dreamTimeRange(dreams[0])} \xB7 ${dreams[0].ops ?? "\u2014"} ops` : dreamsDenied ? "Dream audit: no grant" : "No dream runs recorded yet" }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: canReviewQuarantine ? `Quarantine queue ${quarantineRecords.length} \xB7 pending gate ${pendingPromotions.length}` : "Quarantine queue: requires memory.quarantine.review" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Proposals: needs mobkit/memory/panel/proposals (surface 4)" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: proposalsDenied ? "Proposals: no grant" : `Proposals: ${proposals.length} pending${proposals.filter((proposal) => proposal.tainted).length > 0 ? ` \xB7 ${proposals.filter((proposal) => proposal.tainted).length} held (taint)` : ""}` }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Health (taint \xB7 budgets \xB7 cursors): needs mobkit/memory/panel/health (surface 8)" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": "memory-harvests", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Harvest queue \u2014 retired identities awaiting the exit-interview dream" }),
+          harvestsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Harvest queue: no grant." }) : harvests.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "No pending harvests." }) : harvests.map((harvest, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static",
+              "data-testid": `memory-harvest:${harvest.identity}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: harvest.identity }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  harvest.cause ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: harvest.cause, tone: "muted" }) : null,
+                  harvest.session_key ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__reason", children: [
+                    "session ",
+                    harvest.session_key
+                  ] }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__age", children: [
+                    "retired ",
+                    relativeAge(harvest.retired_at_ms)
+                  ] })
+                ] })
+              ]
+            },
+            `${harvest.realm}:${harvest.identity}:${index}`
+          ))
         ] })
       ] }) : null,
       tab === "records" ? detail ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
@@ -10938,18 +11224,85 @@ function MemoryPanel({
           ] })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-knowledge-as-injected", children: "AS-INJECTED is unverifiable in phase 1 \u2014 the composed injection block requires mobkit/memory/panel/context (surface 10)." }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-knowledge-history", children: "INJECTION HISTORY (DUP badges, consecutive-build overlap) requires mobkit/memory/panel/injections (surface 6). Session budget gauge requires panel/health (surface 8)." })
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": "memory-knowledge-history", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Injection history (durable ledger, newest first)" }),
+          injectionsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Injection history: no grant." }) : annotatedInjections.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "No injection-ledger rows yet." }) : annotatedInjections.map(({ entry, dup }, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static",
+              "data-testid": `memory-injection:${index}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                  "button",
+                  {
+                    type: "button",
+                    className: "memory-dream__record",
+                    "data-testid": `memory-injection-record:${index}`,
+                    onClick: () => onSelectRecord(entry.realm, entry.record_id),
+                    children: entry.record_id
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: entry.surface, tone: "muted" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__reason", children: [
+                    entry.identity,
+                    entry.session_key ? ` \xB7 session ${entry.session_key}` : ""
+                  ] }),
+                  dup ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { "data-testid": `memory-injection-dup:${index}`, children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "DUP", tone: "warning" }) }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(entry.at_ms) })
+                ] })
+              ]
+            },
+            `inj-${index}`
+          )),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-knowledge-budget", children: "Session budget gauge requires panel/health (deferred to the distinct-affordance design)." })
+        ] })
       ] }) : null,
       tab === "pipeline" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-quarantine", "data-testid": "memory-pipeline", children: [
         /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line memory-pipeline__stages", "data-testid": "memory-pipeline-stages", children: [
-          "PROPOSED (needs surface 4) \u2500\u25B6 PENDING GATE (",
+          "PROPOSED (",
+          proposalsDenied ? "no grant" : proposals.length,
+          ") \u2500\u25B6 PENDING GATE (",
           pendingPromotions.length,
           ") \u2500\u25B6 COMMITTED \xB7 QUAR (",
           canReviewQuarantine ? quarantineRecords.length : "no grant",
           ")"
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-note", "data-testid": "memory-quarantine-note", children: "Read-only. Verdicts are decided by the memory steward's dream and the gating flow \u2014 this queue cannot be actioned here." }),
-        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-pipeline-proposals", children: "Proposals (with propose-time taint) are invisible until mobkit/memory/panel/proposals (surface 4) lands." }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": "memory-pipeline-proposals", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Proposed \u2014 awaiting a dream verdict (taint captured at propose time)" }),
+          proposalsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Proposals: no grant." }) : proposals.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "No pending proposals." }) : proposals.map((proposal) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static",
+              "data-testid": `memory-proposal:${proposal.proposal_id}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__title", children: proposal.title || proposal.proposal_id }),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  proposal.kind ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: proposal.kind }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                    Chip,
+                    {
+                      label: `\u2192 ${proposal.scope_kind}${proposal.scope_key ? `:${proposal.scope_key}` : ""}`,
+                      tone: "muted"
+                    }
+                  ),
+                  proposal.tainted ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { "data-testid": `memory-proposal-taint:${proposal.proposal_id}`, children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: "tainted", tone: "warning" }) }) : null,
+                  proposal.status ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                    Chip,
+                    {
+                      label: proposal.status,
+                      tone: proposal.status === "held" ? "warning" : "muted"
+                    }
+                  ) : null,
+                  proposal.author ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: proposal.author }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(proposal.created_at_ms) })
+                ] })
+              ]
+            },
+            `${proposal.realm}:${proposal.proposal_id}`
+          ))
+        ] }),
         canReviewQuarantine ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
           quarantineRecords.length === 0 && pendingPromotions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: "Quarantine queue is empty." }) : null,
           pendingPromotions.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", children: [
@@ -11012,6 +11365,36 @@ function MemoryPanel({
             })
           ] }) : null
         ] }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(SectionNote, { testid: "memory-pipeline-no-grant", children: "Quarantine queue: no grant \u2014 rows require memory.quarantine.review." }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": "memory-review-queue", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Review queue \u2014 memories you might want to correct" }),
+          auditVerdictsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Review queue: no grant." }) : auditVerdicts.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Review queue is empty." }) : auditVerdicts.map((verdict) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+            "div",
+            {
+              className: "memory-row memory-row--static",
+              "data-testid": `memory-review:${verdict.run_id}:${verdict.record_id}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                  "button",
+                  {
+                    type: "button",
+                    className: "memory-dream__record",
+                    "data-testid": `memory-review-record:${verdict.run_id}:${verdict.record_id}`,
+                    onClick: () => onSelectRecord(verdict.realm, verdict.record_id),
+                    children: verdict.record_id
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                  verdict.verdict ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: verdict.verdict, tone: "warning" }) : null,
+                  verdict.rationale ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: verdict.rationale }) : null,
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__reason", children: verdict.run_id }),
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(verdict.created_at_ms) })
+                ] })
+              ]
+            },
+            `${verdict.realm}:${verdict.run_id}:${verdict.record_id}`
+          )),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-note", children: "Read-only \u2014 the correction affordance ships with the write-path design." })
+        ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
           MemoryLiveStrip,
           {
@@ -11020,35 +11403,116 @@ function MemoryPanel({
           }
         )
       ] }) : null,
-      tab === "dreams" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dreams", children: dreams.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: dreamsDenied ? "Dream audit: no grant." : "No dream runs recorded yet." }) : dreams.map((run) => {
-        const summary = dreamOpKindsSummary(run.op_kinds);
-        return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy memory-dream", "data-testid": `memory-dream:${run.run_id}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy__head", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "gpolicy__action", children: run.run_id }),
-            run.quarantined_ops && run.quarantined_ops > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${run.quarantined_ops} quarantined`, tone: "warning" }) : null
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gpolicy__meta", children: dreamTimeRange(run) }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy__meta", children: [
-            typeof run.ops === "number" ? `${run.ops} ops` : "\u2014",
-            summary ? ` \xB7 ${summary}` : ""
-          ] }),
-          (run.memory_ids || []).length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-dream__touched", children: [
-            "touched:",
-            (run.memory_ids || []).map((memoryId) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
-              "button",
+      tab === "dreams" ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-dreams", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-group", "data-testid": "memory-dream-runs", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Durable verdict sheets (dream_runs \u2014 survive restarts)" }),
+          dreamRunsDenied ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "Verdict sheets: no grant." }) : dreamSheets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "No persisted dream runs yet \u2014 runs before the dream_runs table land only in the audit reconstruction below." }) : dreamSheets.map((run) => {
+            const expanded = expandedRuns[run.run_id] === true;
+            const detail2 = normalizeDreamRunDetail(run.detail);
+            return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+              "div",
               {
-                type: "button",
-                className: "memory-dream__record",
-                "data-testid": `memory-dream-record:${run.run_id}:${memoryId}`,
-                onClick: () => onSelectRecord(run.realm, memoryId),
-                children: memoryId
+                className: "gpolicy memory-dream-run",
+                "data-testid": `memory-dream-run:${run.run_id}`,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+                    "button",
+                    {
+                      type: "button",
+                      className: "memory-row memory-dream-run__head",
+                      "data-testid": `memory-dream-run-toggle:${run.run_id}`,
+                      onClick: () => setExpandedRuns((current) => ({
+                        ...current,
+                        [run.run_id]: !expanded
+                      })),
+                      children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__title", children: [
+                          expanded ? "\u25BE" : "\u25B8",
+                          " ",
+                          run.run_id
+                        ] }),
+                        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__meta", children: [
+                          run.partition ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: run.partition, tone: "muted" }) : null,
+                          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "memory-row__reason", children: [
+                            dreamRunDuration(run),
+                            " \xB7",
+                            " ",
+                            typeof run.ops_committed === "number" ? `${run.ops_committed} ops` : "\u2014 ops"
+                          ] }),
+                          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "memory-row__age", children: relativeAge(run.completed_at_ms || run.started_at_ms) })
+                        ] })
+                      ]
+                    }
+                  ),
+                  expanded ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                    "div",
+                    {
+                      className: "memory-dream-run__detail",
+                      "data-testid": `memory-dream-run-detail:${run.run_id}`,
+                      children: detail2.raw !== null ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
+                        "unparsed detail: ",
+                        detail2.raw
+                      ] }) : /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+                        detail2.phases.length > 0 ? detail2.phases.map(([name, note], index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
+                          name,
+                          note ? ` \u2014 ${note}` : ""
+                        ] }, `ph-${index}`)) : /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-detail__line", children: "no phases recorded" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-detail__line", children: [
+                          "verdicts:",
+                          " ",
+                          detail2.verdicts.length > 0 ? detail2.verdicts.map(([name, count]) => `${count} ${name}`).join(" \xB7 ") : "all counters zero"
+                        ] }),
+                        detail2.skips.map((skip, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+                          "div",
+                          {
+                            className: "memory-detail__line memory-dream__rationale",
+                            children: [
+                              "skip: ",
+                              skip
+                            ]
+                          },
+                          `sk-${index}`
+                        ))
+                      ] })
+                    }
+                  ) : null
+                ]
               },
-              memoryId
-            ))
-          ] }) : null,
-          (run.rationales || []).map((rationale, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dream__rationale", children: rationale }, `r-${index}`))
-        ] }, run.run_id);
-      }) }) : null
+              run.run_id
+            );
+          })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-group__label", children: "Reconstructed from audit rows" }),
+        dreams.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gating__empty", children: dreamsDenied ? "Dream audit: no grant." : "No dream runs recorded yet." }) : dreams.map((run) => {
+          const summary = dreamOpKindsSummary(run.op_kinds);
+          return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy memory-dream", "data-testid": `memory-dream:${run.run_id}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy__head", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "gpolicy__action", children: run.run_id }),
+              run.quarantined_ops && run.quarantined_ops > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(Chip, { label: `${run.quarantined_ops} quarantined`, tone: "warning" }) : null
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "gpolicy__meta", children: dreamTimeRange(run) }),
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "gpolicy__meta", children: [
+              typeof run.ops === "number" ? `${run.ops} ops` : "\u2014",
+              summary ? ` \xB7 ${summary}` : ""
+            ] }),
+            (run.memory_ids || []).length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "memory-dream__touched", children: [
+              "touched:",
+              (run.memory_ids || []).map((memoryId) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "memory-dream__record",
+                  "data-testid": `memory-dream-record:${run.run_id}:${memoryId}`,
+                  onClick: () => onSelectRecord(run.realm, memoryId),
+                  children: memoryId
+                },
+                memoryId
+              ))
+            ] }) : null,
+            (run.rationales || []).map((rationale, index) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "memory-dream__rationale", children: rationale }, `r-${index}`))
+          ] }, run.run_id);
+        })
+      ] }) : null
     ] })
   ] });
 }
@@ -15565,7 +16029,19 @@ function ConsoleApp({ baseUrl }) {
     recordsDenied: false,
     dreamsDenied: false,
     operatorScopeDenied: false,
-    mobScopeDenied: false
+    mobScopeDenied: false,
+    overview: null,
+    overviewDenied: false,
+    proposals: [],
+    proposalsDenied: false,
+    injections: [],
+    injectionsDenied: false,
+    harvests: [],
+    harvestsDenied: false,
+    dreamRuns: [],
+    dreamRunsDenied: false,
+    auditVerdicts: [],
+    auditVerdictsDenied: false
   });
   const [activeActivityPresetId, setActiveActivityPresetId] = import_react30.default.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react30.default.useState("");
@@ -16683,6 +17159,47 @@ function ConsoleApp({ baseUrl }) {
         if (memorySectionOutcome(err) !== "denied") throw err;
         dreamsDenied = true;
       }
+      const section = async (command, empty, pick) => {
+        try {
+          const result = await executeHeadlessCommand(command, memoryTarget);
+          return { value: pick(result), denied: false };
+        } catch (err) {
+          if (memorySectionOutcome(err) !== "denied") throw err;
+          return { value: empty, denied: true };
+        }
+      };
+      const [overview, proposals, injections, harvests, dreamRuns, auditVerdicts] = await Promise.all([
+        section(
+          CONSOLE_COMMAND_NAMES2.getMemoryOverview,
+          null,
+          (result) => result ?? null
+        ),
+        section(
+          CONSOLE_COMMAND_NAMES2.listMemoryProposals,
+          [],
+          (result) => result?.proposals || []
+        ),
+        section(
+          CONSOLE_COMMAND_NAMES2.listMemoryInjections,
+          [],
+          (result) => result?.injections || []
+        ),
+        section(
+          CONSOLE_COMMAND_NAMES2.listMemoryHarvests,
+          [],
+          (result) => result?.harvests || []
+        ),
+        section(
+          CONSOLE_COMMAND_NAMES2.listMemoryDreamRuns,
+          [],
+          (result) => result?.runs || []
+        ),
+        section(
+          CONSOLE_COMMAND_NAMES2.listMemoryAuditVerdicts,
+          [],
+          (result) => result?.verdicts || []
+        )
+      ]);
       setMemoryData((current) => ({
         ...current,
         records,
@@ -16695,6 +17212,18 @@ function ConsoleApp({ baseUrl }) {
         dreamsDenied,
         operatorScopeDenied,
         mobScopeDenied,
+        overview: overview.value,
+        overviewDenied: overview.denied,
+        proposals: proposals.value,
+        proposalsDenied: proposals.denied,
+        injections: injections.value,
+        injectionsDenied: injections.denied,
+        harvests: harvests.value,
+        harvestsDenied: harvests.denied,
+        dreamRuns: dreamRuns.value,
+        dreamRunsDenied: dreamRuns.denied,
+        auditVerdicts: auditVerdicts.value,
+        auditVerdictsDenied: auditVerdicts.denied,
         unavailable: false,
         error: null
       }));
@@ -17835,6 +18364,18 @@ function ConsoleApp({ baseUrl }) {
           dreamsDenied: memoryData.dreamsDenied,
           operatorScopeDenied: memoryData.operatorScopeDenied,
           mobScopeDenied: memoryData.mobScopeDenied,
+          overview: memoryData.overview,
+          overviewDenied: memoryData.overviewDenied,
+          proposals: memoryData.proposals,
+          proposalsDenied: memoryData.proposalsDenied,
+          injections: memoryData.injections,
+          injectionsDenied: memoryData.injectionsDenied,
+          harvests: memoryData.harvests,
+          harvestsDenied: memoryData.harvestsDenied,
+          dreamRuns: memoryData.dreamRuns,
+          dreamRunsDenied: memoryData.dreamRunsDenied,
+          auditVerdicts: memoryData.auditVerdicts,
+          auditVerdictsDenied: memoryData.auditVerdictsDenied,
           liveFrames: activityRef.current,
           onRefresh: () => void refreshMemoryData(),
           onSelectRecord: (realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId),

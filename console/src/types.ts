@@ -361,7 +361,7 @@ export interface ConsoleAccessConfig {
 }
 
 // ── Memory panel (read-only) ──────────────────────────────────────────────
-// Shapes mirror the server contract for the four `mobkit/memory/panel/*`
+// Shapes mirror the server contract for the `mobkit/memory/panel/*`
 // JSON-RPC methods. All fields are best-effort/optional on the client so the
 // panel degrades gracefully across runtime versions.
 
@@ -500,6 +500,121 @@ export interface MemoryPanelQuarantineResult {
 
 export interface MemoryPanelDreamsResult {
   runs: MemoryDreamRun[];
+  realms: string[];
+}
+
+// ── Memory panel Phase-2 read surfaces ────────────────────────────────────
+
+/// One scope row from panel/overview: full store totals per scope, plus the
+/// server-computed floor-pressure flag (active records or body bytes at the
+/// per-scope floor). `scope_key` is "" for realm scope.
+export interface MemoryScopeOverview {
+  realm: string;
+  scope_kind: "identity" | "mob" | "operator" | "realm" | string;
+  scope_key: string;
+  active?: number;
+  quarantined?: number;
+  superseded?: number;
+  tombstoned?: number;
+  body_bytes?: number;
+  floor_pressure?: boolean;
+}
+
+export interface MemoryPanelOverviewResult {
+  scopes: MemoryScopeOverview[];
+  realms: string[];
+  floors?: { records?: number; bytes?: number };
+}
+
+/// A pending proposal awaiting a dream verdict (titles only — bodies stay
+/// behind panel/record once committed). `tainted` is the durable
+/// propose-time taint capture.
+export interface MemoryProposalEntry {
+  realm: string;
+  proposal_id: string;
+  scope_kind: string;
+  scope_key: string;
+  title?: string;
+  kind?: string;
+  author?: string;
+  status?: string;
+  created_at_ms?: number;
+  tainted?: boolean;
+}
+
+export interface MemoryPanelProposalsResult {
+  proposals: MemoryProposalEntry[];
+  realms: string[];
+}
+
+/// Realm-wide injection-ledger row. `session_key` is null for build-surface
+/// assembly rows (the build composes before a session key exists).
+export interface MemoryLedgerEntry {
+  realm: string;
+  record_id: string;
+  identity: string;
+  session_key?: string | null;
+  surface: "build" | "turn" | string;
+  at_ms: number;
+}
+
+export interface MemoryPanelInjectionsResult {
+  injections: MemoryLedgerEntry[];
+  realms: string[];
+}
+
+/// A retired identity awaiting its exit-interview harvest dream.
+export interface MemoryHarvestEntry {
+  realm: string;
+  identity: string;
+  session_key?: string | null;
+  cause?: string;
+  retired_at_ms?: number;
+}
+
+export interface MemoryPanelHarvestsResult {
+  harvests: MemoryHarvestEntry[];
+  realms: string[];
+}
+
+/// Persisted DreamRun detail (steward verdict sheet): executed phases in
+/// order with an outcome note each, the verdict counters, and loud skips.
+export interface MemoryDreamRunDetail {
+  phases?: Array<[string, string]>;
+  verdicts?: Record<string, number>;
+  skips?: string[];
+}
+
+/// One durable dream_runs row from panel/dream_runs. `detail` degrades to
+/// the raw string when the stored JSON does not parse.
+export interface MemoryDreamRunSheet {
+  realm: string;
+  run_id: string;
+  partition?: string;
+  started_at_ms?: number;
+  completed_at_ms?: number;
+  ops_committed?: number;
+  detail?: MemoryDreamRunDetail | string;
+}
+
+export interface MemoryPanelDreamRunsResult {
+  runs: MemoryDreamRunSheet[];
+  realms: string[];
+}
+
+/// An open usage-audit verdict: a dead-weight/correction call awaiting
+/// operator review ("memories you might want to correct").
+export interface MemoryAuditVerdictEntry {
+  realm: string;
+  run_id: string;
+  record_id: string;
+  verdict?: string;
+  rationale?: string;
+  created_at_ms?: number;
+}
+
+export interface MemoryPanelAuditVerdictsResult {
+  verdicts: MemoryAuditVerdictEntry[];
   realms: string[];
 }
 

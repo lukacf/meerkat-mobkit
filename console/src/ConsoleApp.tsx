@@ -68,14 +68,25 @@ import type {
   ConsoleReplayUnavailablePayload,
   ConsoleTimelinePage,
   ConsoleTopologyNode,
+  MemoryAuditVerdictEntry,
   MemoryDreamRun,
+  MemoryDreamRunSheet,
   MemoryEvidenceRef,
+  MemoryHarvestEntry,
+  MemoryLedgerEntry,
+  MemoryPanelAuditVerdictsResult,
+  MemoryPanelDreamRunsResult,
   MemoryPanelDreamsResult,
+  MemoryPanelHarvestsResult,
+  MemoryPanelInjectionsResult,
+  MemoryPanelOverviewResult,
+  MemoryPanelProposalsResult,
   MemoryPanelQuarantineResult,
   MemoryPanelRecord,
   MemoryPanelRecordResult,
   MemoryPanelRecordsResult,
   MemoryPendingPromotion,
+  MemoryProposalEntry,
 } from "./types";
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
@@ -140,6 +151,19 @@ type MemoryPanelData = {
   /// principal lacks (the unfiltered listing row-filters them silently).
   operatorScopeDenied: boolean;
   mobScopeDenied: boolean;
+  /// Phase-2 read surfaces, each with its own -32030 outcome.
+  overview: MemoryPanelOverviewResult | null;
+  overviewDenied: boolean;
+  proposals: MemoryProposalEntry[];
+  proposalsDenied: boolean;
+  injections: MemoryLedgerEntry[];
+  injectionsDenied: boolean;
+  harvests: MemoryHarvestEntry[];
+  harvestsDenied: boolean;
+  dreamRuns: MemoryDreamRunSheet[];
+  dreamRunsDenied: boolean;
+  auditVerdicts: MemoryAuditVerdictEntry[];
+  auditVerdictsDenied: boolean;
 };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
@@ -587,6 +611,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     dreamsDenied: false,
     operatorScopeDenied: false,
     mobScopeDenied: false,
+    overview: null,
+    overviewDenied: false,
+    proposals: [],
+    proposalsDenied: false,
+    injections: [],
+    injectionsDenied: false,
+    harvests: [],
+    harvestsDenied: false,
+    dreamRuns: [],
+    dreamRunsDenied: false,
+    auditVerdicts: [],
+    auditVerdictsDenied: false,
   });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
@@ -2128,6 +2164,56 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         dreamsDenied = true;
       }
 
+      // Phase-2 read surfaces, fetched in parallel with the same per-section
+      // -32030 tolerance: a denied surface renders "no grant", never an
+      // indistinguishable empty section, and never aborts the panel load.
+      const section = async <T,>(
+        command: (typeof CONSOLE_COMMAND_NAMES)[keyof typeof CONSOLE_COMMAND_NAMES],
+        empty: T,
+        pick: (result: unknown) => T,
+      ): Promise<{ value: T; denied: boolean }> => {
+        try {
+          const result = await executeHeadlessCommand(command, memoryTarget);
+          return { value: pick(result), denied: false };
+        } catch (err) {
+          if (memorySectionOutcome(err) !== "denied") throw err;
+          return { value: empty, denied: true };
+        }
+      };
+      const [overview, proposals, injections, harvests, dreamRuns, auditVerdicts] =
+        await Promise.all([
+          section<MemoryPanelOverviewResult | null>(
+            CONSOLE_COMMAND_NAMES.getMemoryOverview,
+            null,
+            (result) => (result as MemoryPanelOverviewResult | null) ?? null,
+          ),
+          section<MemoryProposalEntry[]>(
+            CONSOLE_COMMAND_NAMES.listMemoryProposals,
+            [],
+            (result) => (result as MemoryPanelProposalsResult | null)?.proposals || [],
+          ),
+          section<MemoryLedgerEntry[]>(
+            CONSOLE_COMMAND_NAMES.listMemoryInjections,
+            [],
+            (result) => (result as MemoryPanelInjectionsResult | null)?.injections || [],
+          ),
+          section<MemoryHarvestEntry[]>(
+            CONSOLE_COMMAND_NAMES.listMemoryHarvests,
+            [],
+            (result) => (result as MemoryPanelHarvestsResult | null)?.harvests || [],
+          ),
+          section<MemoryDreamRunSheet[]>(
+            CONSOLE_COMMAND_NAMES.listMemoryDreamRuns,
+            [],
+            (result) => (result as MemoryPanelDreamRunsResult | null)?.runs || [],
+          ),
+          section<MemoryAuditVerdictEntry[]>(
+            CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts,
+            [],
+            (result) => (result as MemoryPanelAuditVerdictsResult | null)?.verdicts || [],
+          ),
+        ]);
+
       setMemoryData((current) => ({
         ...current,
         records,
@@ -2140,6 +2226,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         dreamsDenied,
         operatorScopeDenied,
         mobScopeDenied,
+        overview: overview.value,
+        overviewDenied: overview.denied,
+        proposals: proposals.value,
+        proposalsDenied: proposals.denied,
+        injections: injections.value,
+        injectionsDenied: injections.denied,
+        harvests: harvests.value,
+        harvestsDenied: harvests.denied,
+        dreamRuns: dreamRuns.value,
+        dreamRunsDenied: dreamRuns.denied,
+        auditVerdicts: auditVerdicts.value,
+        auditVerdictsDenied: auditVerdicts.denied,
         unavailable: false,
         error: null,
       }));
@@ -3676,6 +3774,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           dreamsDenied={memoryData.dreamsDenied}
           operatorScopeDenied={memoryData.operatorScopeDenied}
           mobScopeDenied={memoryData.mobScopeDenied}
+          overview={memoryData.overview}
+          overviewDenied={memoryData.overviewDenied}
+          proposals={memoryData.proposals}
+          proposalsDenied={memoryData.proposalsDenied}
+          injections={memoryData.injections}
+          injectionsDenied={memoryData.injectionsDenied}
+          harvests={memoryData.harvests}
+          harvestsDenied={memoryData.harvestsDenied}
+          dreamRuns={memoryData.dreamRuns}
+          dreamRunsDenied={memoryData.dreamRunsDenied}
+          auditVerdicts={memoryData.auditVerdicts}
+          auditVerdictsDenied={memoryData.auditVerdictsDenied}
           liveFrames={activityRef.current}
           onRefresh={() => void refreshMemoryData()}
           onSelectRecord={(realm, memoryId) => void loadMemoryRecordDetail(realm, memoryId)}

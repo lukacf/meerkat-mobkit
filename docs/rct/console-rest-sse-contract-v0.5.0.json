@@ -945,6 +945,144 @@
               ]
             }
           ]
+        },
+        "mobkit/memory/panel/overview": {
+          "request": {
+            "optional_fields": [
+              "realm"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "scopes",
+              "realms",
+              "floors"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/proposals": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "proposals",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/injections": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "injections",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/harvests": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "harvests",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/dream_runs": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "runs",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/memory/panel/audit_verdicts": {
+          "request": {
+            "optional_fields": [
+              "realm",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "verdicts",
+              "realms"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32000,
+                -32601
+              ]
+            }
+          ]
         }
       }
     },

@@ -524,7 +524,9 @@ const openAccessFlows = [
         lattice: "holding",
         recall: "holding",
         dreams: "holding",
-        "store-floor": "unverifiable",
+        // Phase 2: panel/overview is live, the seeded store sits far below
+        // the 4,000-record/32MB floors → the tile lands the OK verdict.
+        "store-floor": "holding",
       };
       // No-flicker contract (gate fix): lattice re-checks retain the prior
       // verdict instead of resetting to "unverifiable", so once the walk
