@@ -20,6 +20,7 @@ pub mod http_flow_editor;
 pub mod http_sse;
 pub mod member_comms_id;
 pub mod memory;
+pub mod memory_wiring;
 pub mod mob_handle_runtime;
 pub mod mobpack;
 pub mod mocks;

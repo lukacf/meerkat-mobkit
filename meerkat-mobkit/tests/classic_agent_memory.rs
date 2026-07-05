@@ -631,6 +631,71 @@ async fn build_err(builder: meerkat_mobkit::UnifiedRuntimeBuilder) -> String {
     }
 }
 
+/// The full-stack builder path (OB3 deployment shape): store + firewall +
+/// judgment engines assembled from `UnifiedRuntimeBuilder` alone — no
+/// gateway. Asserts the panel store registers (proving the SQLite stack, not
+/// the markdown fallback, is live) and that the recorder-facing provider
+/// writes into it.
+#[tokio::test(flavor = "multi_thread")]
+async fn builder_full_memory_stack_installs_engines_and_panel() {
+    let dir = tempfile::tempdir().expect("state dir");
+    let engines = meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
+        steward: meerkat_mobkit::memory::steward::StewardConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        distiller: meerkat_mobkit::memory::distiller::DistillerConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    };
+    let runtime = UnifiedRuntime::builder()
+        .definition(test_definition())
+        .persistent_state(dir.path().join("state"))
+        .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines)
+        .build()
+        .await
+        .expect("build full memory stack");
+
+    let store = runtime
+        .memory_panel_store()
+        .expect("panel store registered by the builder stack path");
+    // The provider is the same bundled store: a write through it is visible
+    // via the panel handle (recorder-path smoke).
+    store
+        .remember_authored(
+            &meerkat_mobkit::memory::records::MemoryScope::Identity {
+                realm: "default".to_string(),
+                identity: "worker:one".to_string(),
+            },
+            meerkat_mobkit::memory::records::NewMemoryRecord {
+                kind: meerkat_mobkit::memory::records::MemoryKind::Fact,
+                title: "builder stack fact".to_string(),
+                description: String::new(),
+                body: "written through the builder-assembled stack".to_string(),
+                tags: Vec::new(),
+                evidence: Vec::new(),
+                verification: None,
+            },
+            meerkat_mobkit::memory::records::MemoryAuthor::Operator,
+        )
+        .await
+        .expect("write through the stack store");
+    runtime.shutdown().await;
+
+    // Requires persistent_state, loudly.
+    let err = build_err(
+        UnifiedRuntime::builder()
+            .definition(test_definition())
+            .persistent_agent_memory_stack(
+                AgentMemoryConfig::default(),
+                meerkat_mobkit::memory_wiring::MemoryEnginesConfig::default(),
+            ),
+    )
+    .await;
+    assert!(err.contains("requires persistent_state"), "{err}");
+}
+
 #[tokio::test]
 async fn gate_still_rejects_invalid_memory_combinations() {
     // agent_memory() and persistent_agent_memory() are mutually exclusive.

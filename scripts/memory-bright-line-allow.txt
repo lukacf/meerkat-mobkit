@@ -25,3 +25,4 @@ meerkat-memory  # §8.4 read-only host-side harvest of meerkat's OWN session sem
 src:meerkat-mobkit/src/memory/distiller.rs:hnsw  # §8.4 HnswDiscardSource: read-only compaction-discard harvest over meerkat's own store
 src:meerkat-mobkit/src/memory/distiller.rs:meerkat-memory  # §8.4 harvest import site (meerkat_memory::HnswMemoryStore::open, one query, read-only)
 src:meerkat-mobkit/src/memory/mod.rs:hnsw  # re-export of the §8.4 HnswDiscardSource only
+src:meerkat-mobkit/src/memory_wiring.rs:hnsw  # §8.4 wiring only: constructs the read-only HnswDiscardSource for the Distiller (same pinned exception as distiller.rs)
