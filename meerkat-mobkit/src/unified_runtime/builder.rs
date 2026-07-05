@@ -1007,10 +1007,12 @@ impl UnifiedRuntimeBuilder {
                 store,
                 &config,
                 engines,
-                persistent_state.as_deref(),
-                transcript_store,
-                runtime.memory_event_sink(),
-                None,
+                crate::memory_wiring::MemoryStackSeams {
+                    persistent_state,
+                    transcript_store,
+                    event_sink: Some(runtime.memory_event_sink()),
+                    ..Default::default()
+                },
             )
             .map_err(UnifiedRuntimeBuilderError::Io)?;
             runtime.set_memory_panel_store(stack.store.clone());

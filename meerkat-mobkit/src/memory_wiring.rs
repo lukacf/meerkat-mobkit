@@ -28,8 +28,8 @@ use crate::memory::distiller::{
 use crate::memory::events::MemoryEventSink;
 use crate::memory::sqlite_store::SqliteAgentMemoryStore;
 use crate::memory::steward::{
-    FactoryStewardHandle, MobPurposeSource, SessionStoreEvidenceResolver, StewardConfig,
-    StewardEngine, StewardProfile, StewardTriggers,
+    FactoryStewardHandle, MemoryConflictBridge, MemoryGatingBridge, MobPurposeSource,
+    SessionStoreEvidenceResolver, StewardConfig, StewardEngine, StewardProfile, StewardTriggers,
 };
 use crate::memory::taint::{SessionTaintTracker, TaintLlmWriteGate};
 
@@ -40,6 +40,20 @@ use crate::memory::taint::{SessionTaintTracker, TaintLlmWriteGate};
 pub struct MemoryEnginesConfig {
     pub distiller: DistillerConfig,
     pub steward: StewardConfig,
+}
+
+/// Host-supplied seams for the stack: where the engines read transcripts,
+/// where events project, and the steward's late-binding bridges. Everything
+/// optional degrades gracefully (engines that need a missing seam fail the
+/// build with a named error; bridges just don't bind).
+#[derive(Default)]
+pub struct MemoryStackSeams {
+    pub persistent_state: Option<std::path::PathBuf>,
+    pub transcript_store: Option<Arc<dyn meerkat::SessionStore>>,
+    pub event_sink: Option<Arc<dyn MemoryEventSink>>,
+    pub mob_purpose: Option<Arc<dyn MobPurposeSource>>,
+    pub steward_gating: Option<Arc<dyn MemoryGatingBridge>>,
+    pub steward_conflicts: Option<Arc<dyn MemoryConflictBridge>>,
 }
 
 /// The assembled stack. The caller finishes the wiring that needs the live
@@ -66,38 +80,34 @@ pub fn build_sqlite_memory_stack(
     memory_dir: &Path,
     config: &AgentMemoryConfig,
     engines: &MemoryEnginesConfig,
-    persistent_state: Option<&Path>,
-    transcript_store: Option<Arc<dyn meerkat::SessionStore>>,
-    event_sink: Arc<dyn MemoryEventSink>,
-    mob_purpose: Option<Arc<dyn MobPurposeSource>>,
+    seams: MemoryStackSeams,
 ) -> Result<AgentMemoryStack, String> {
     let store = SqliteAgentMemoryStore::open(memory_dir)
         .map_err(|e| format!("failed to open agent memory store: {e}"))?;
-    attach_memory_engines(
-        store,
-        config,
-        engines,
-        persistent_state,
-        transcript_store,
-        event_sink,
-        mob_purpose,
-    )
+    attach_memory_engines(store, config, engines, seams)
 }
 
 /// Stage-2 assembly over an already-open store: wire the §10.1 firewall
 /// (tracker + write gate + event sinks) and the enabled engines. Used by the
 /// builder path, where the store doubles as the provider handed to the
 /// customizer before the runtime exists.
-#[allow(clippy::too_many_arguments)]
 pub fn attach_memory_engines(
     store: SqliteAgentMemoryStore,
     config: &AgentMemoryConfig,
     engines: &MemoryEnginesConfig,
-    persistent_state: Option<&Path>,
-    transcript_store: Option<Arc<dyn meerkat::SessionStore>>,
-    event_sink: Arc<dyn MemoryEventSink>,
-    mob_purpose: Option<Arc<dyn MobPurposeSource>>,
+    seams: MemoryStackSeams,
 ) -> Result<AgentMemoryStack, String> {
+    let MemoryStackSeams {
+        persistent_state,
+        transcript_store,
+        event_sink,
+        mob_purpose,
+        steward_gating,
+        steward_conflicts,
+    } = seams;
+    let persistent_state = persistent_state.as_deref();
+    let event_sink =
+        event_sink.ok_or_else(|| "agent memory stack requires an event sink".to_string())?;
     // §10.1 taint firewall: the Recorder must not ship without it. This
     // deliberately REPLACES any trackerless posture gate installed earlier.
     let taint = SessionTaintTracker::new(config.content_trust.clone());
@@ -189,6 +199,12 @@ pub fn attach_memory_engines(
         );
         if let Some(purpose) = mob_purpose {
             engine = engine.with_mob_context(purpose);
+        }
+        if let Some(gating) = steward_gating {
+            engine = engine.with_gating(gating);
+        }
+        if let Some(conflicts) = steward_conflicts {
+            engine = engine.with_conflicts(conflicts);
         }
         let engine = Arc::new(engine);
         sinks.push(Arc::new(StewardTriggers::new(engine.clone())));
