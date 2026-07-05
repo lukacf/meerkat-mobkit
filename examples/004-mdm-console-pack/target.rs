@@ -343,7 +343,7 @@ async fn build_target_runtime_surface(
     jsonl_store.init().await?;
     let persistence = PersistenceBundle::new(
         Arc::clone(&jsonl_store) as Arc<dyn SessionStore>,
-        None,
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
         Arc::new(MemoryBlobStore::new()),
     );
     let runtime_adapter = persistence.runtime_adapter();

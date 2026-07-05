@@ -2616,7 +2616,7 @@ impl MobBootstrapSpec {
                 builder,
                 max_sessions,
                 session_store,
-                Some(runtime_store),
+                runtime_store,
                 blob_store,
             ));
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
@@ -2716,7 +2716,7 @@ impl MobBootstrapSpec {
                     builder,
                     max_sessions,
                     custom_session_store,
-                    Some(runtime_store.clone()),
+                    runtime_store.clone(),
                     blob_store,
                 ))
             } else {

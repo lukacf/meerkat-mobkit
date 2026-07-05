@@ -3712,7 +3712,7 @@ external_addressable = true
             callback_builder,
             gateway_options.max_sessions,
             session_store,
-            Some(Arc::clone(&runtime_store)),
+            Arc::clone(&runtime_store),
             blob_store,
         ));
         let schedule_host_inputs = schedule_tools.map(|tools| {
@@ -3815,7 +3815,7 @@ external_addressable = true
                     callback_builder,
                     gateway_options.max_sessions,
                     session_store,
-                    Some(Arc::clone(&runtime_store)),
+                    Arc::clone(&runtime_store),
                     blob_store.clone(),
                 ));
                 transcript_edit_service = Some(Arc::clone(&concrete) as _);

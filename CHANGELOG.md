@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the meerkat family 0.7.15 → 0.7.17. Carries (from the batch-2
+  upstream asks): typed `ToolProvenance` on tool definitions (ask 9's
+  attribution half) and the compaction-archive fix that stranded compacted
+  singletons on retire (`MonotonicityViolation`, ask 12 / OB3's report).
+  Remaining asks (dispatch-time taint surfacing, fork authorization,
+  incremental session persistence, forwarder backoff, member health,
+  transcript interaction-id persistence) land in later meerkat releases.
+  One API break absorbed: `PersistentSessionService::new` now requires the
+  runtime store (previously `Option`).
+
 ### Added
 
 - The full agent-memory stack is now reachable from the Rust builder
