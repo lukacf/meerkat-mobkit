@@ -162,6 +162,9 @@ impl UnifiedRuntime {
         if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
             task.abort();
         }
+        if let Some(task) = self.identity_continuity_repair_task.lock().await.take() {
+            task.abort();
+        }
 
         // Phase 1: Drain in-flight events
         let drain_start = std::time::Instant::now();

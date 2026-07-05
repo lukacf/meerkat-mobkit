@@ -359,6 +359,87 @@ impl IdentityFirstRuntimeContext {
             .await
         }
     }
+
+    /// Background repair for Broken identities. A rejected resume degrades the
+    /// identity to Broken while preserving the durable session; the documented
+    /// contract is "the next reconcile retries the resume" — but without this
+    /// task, nothing runs that reconcile: delivery refuses Broken identities
+    /// (REQ-13 fails loudly), `materialize` refuses the Broken state, and the
+    /// only retries were a manual `mobkit/reconcile_identity` RPC or a process
+    /// restart. HomeCore 0.7.23 sat with 14 preserved-but-parked identities
+    /// because of exactly that gap.
+    ///
+    /// The loop sleeps, and only when at least one identity is Broken re-runs
+    /// [`Self::refresh_desired_topology`] — the same idempotent flow the
+    /// reconcile RPC runs (eager: `restore_flow` retries the resume; lazy:
+    /// `lazy_register_flow` re-registers a store-Ready identity as Dormant so
+    /// on-demand materialization retries). Backoff doubles while identities
+    /// stay Broken — persistent causes (e.g. an upstream store regression)
+    /// produce bounded log noise, and transient causes (disk full, lock
+    /// contention) heal without a restart.
+    pub fn spawn_broken_identity_repair_task(
+        self: Arc<Self>,
+        policy: ContinuityRepairPolicy,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut backoff = policy.initial_backoff;
+            loop {
+                tokio::time::sleep(backoff).await;
+                let broken = self.runtime.broken_identities().await;
+                if broken.is_empty() {
+                    backoff = policy.initial_backoff;
+                    continue;
+                }
+                tracing::info!(
+                    broken = broken.len(),
+                    "continuity repair: retrying restore for Broken identities"
+                );
+                if let Err(err) = self.refresh_desired_topology().await {
+                    tracing::warn!(
+                        error = %err,
+                        "continuity repair reconcile failed; backing off"
+                    );
+                    backoff = (backoff * 2).min(policy.max_backoff);
+                    continue;
+                }
+                let still_broken = self.runtime.broken_identities().await;
+                let healed = broken
+                    .iter()
+                    .filter(|id| !still_broken.contains(id))
+                    .count();
+                if healed > 0 {
+                    tracing::info!(
+                        healed,
+                        still_broken = still_broken.len(),
+                        "continuity repair healed identities"
+                    );
+                }
+                backoff = if still_broken.is_empty() {
+                    policy.initial_backoff
+                } else {
+                    (backoff * 2).min(policy.max_backoff)
+                };
+            }
+        })
+    }
+}
+
+/// Retry cadence for [`IdentityFirstRuntimeContext::spawn_broken_identity_repair_task`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuityRepairPolicy {
+    /// Delay before the first check and after every fully-healed pass.
+    pub initial_backoff: Duration,
+    /// Ceiling for the doubling backoff while identities stay Broken.
+    pub max_backoff: Duration,
+}
+
+impl Default for ContinuityRepairPolicy {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_mins(10),
+        }
+    }
 }
 
 /// The identity-first runtime tracks active identities and enforces delivery,
@@ -4052,6 +4133,17 @@ impl IdentityRuntime {
             .await
             .get(identity)
             .is_some_and(|e| e.state == IdentityLifecycleState::Active)
+    }
+
+    /// Identities currently in the Broken lifecycle state.
+    pub async fn broken_identities(&self) -> Vec<AgentIdentity> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|(_, entry)| entry.state == IdentityLifecycleState::Broken)
+            .map(|(identity, _)| identity.clone())
+            .collect()
     }
 
     /// Get the continuity store reference.

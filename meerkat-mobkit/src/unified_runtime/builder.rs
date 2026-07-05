@@ -939,6 +939,11 @@ impl UnifiedRuntimeBuilder {
         let identity_lease_renewal_task = identity_first_context
             .as_ref()
             .map(|context| context.runtime.clone().spawn_lease_renewal_task());
+        let identity_continuity_repair_task = identity_first_context.as_ref().map(|context| {
+            context
+                .clone()
+                .spawn_broken_identity_repair_task(Default::default())
+        });
 
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
@@ -953,6 +958,9 @@ impl UnifiedRuntimeBuilder {
             session_bridge,
             identity_first_context,
             identity_lease_renewal_task: tokio::sync::Mutex::new(identity_lease_renewal_task),
+            identity_continuity_repair_task: tokio::sync::Mutex::new(
+                identity_continuity_repair_task,
+            ),
             console_log_store,
             ..runtime
         };
