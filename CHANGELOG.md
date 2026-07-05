@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The single-embodiment guard fails loudly: restoring or materializing an
+  identity whose durable lease another live runtime instance holds now
+  returns the typed `AlreadyEmbodied { identity, holder }` error naming the
+  holding instance, instead of collapsing into a generic missing-lease
+  error. This is a policy point, not a structural assumption — future
+  multi-bind/forked-session semantics relax exactly this arm.
 - Delivery repair no longer rotates a wedged member onto a fresh, empty
   session. The identity bridge's deliver-time repair used to blind-respawn
   (`MobHandle::respawn` = retire + fresh spawn), abandoning the durable
