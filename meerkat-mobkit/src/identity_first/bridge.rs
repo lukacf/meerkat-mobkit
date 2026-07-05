@@ -35,6 +35,14 @@ fn is_missing_bridge_session_snapshot_error(error: &str) -> bool {
     error.contains("missing bridge session snapshot")
 }
 
+/// meerkat's spawn-with-resume answer for "the durable session snapshot does
+/// not exist" (`actor.rs` resume path). Distinct from
+/// [`is_missing_bridge_session_snapshot_error`], which is the *delivery*-time
+/// revival wording: this one is the resume-spawn rejection.
+fn is_missing_durable_session_snapshot_error(error: &str) -> bool {
+    error.contains("missing durable session snapshot")
+}
+
 fn is_repairable_bridge_delivery_error(error: &str) -> bool {
     is_missing_event_injector_error(error)
         || is_missing_bridge_session_snapshot_error(error)
@@ -54,6 +62,18 @@ enum MemberRepairRespawnFailure {
     DegradedTopologyRestore { failed_peer_ids: Vec<String> },
     RecoverableCleanup,
     Fatal(String),
+}
+
+/// Outcome of a resume-first delivery repair attempt.
+#[derive(Debug)]
+enum RepairResumeFailure {
+    /// meerkat reports the durable session snapshot no longer exists — there
+    /// is no transcript to preserve, so a fresh respawn is a legitimate
+    /// fallback (recovery from actual loss, not abandonment).
+    DurableSnapshotMissing { detail: String },
+    /// Any other resume failure: the durable session exists but could not be
+    /// resumed. Never fall back to a fresh spawn; fail the delivery loudly.
+    Rejected(BridgeError),
 }
 
 fn classify_member_repair_respawn_failure(
@@ -603,6 +623,41 @@ impl MobSessionBridge {
         member_id: &MobAgentIdentity,
         member_entry_before_delivery: Option<(meerkat_mob::ProfileName, BTreeMap<String, String>)>,
     ) -> Result<(), BridgeError> {
+        // Resume-repair first: the recorded durable session IS the
+        // conversation. `MobHandle::respawn` retires and spawns FRESH — it
+        // rotates the bridge session and abandons the transcript (the OB3
+        // `identity_alias_respawn_rotation` data-loss class). When we know
+        // the durable session and the member's role, rebuild the member ONTO
+        // that session instead; fall back to the legacy fresh respawn only
+        // when meerkat confirms the durable snapshot itself is gone (nothing
+        // left to preserve) or when we lack the material for a resume spec.
+        // Fidelity note: like the legacy path, the rebuilt spec carries
+        // role + labels only — deliver-time repair cannot re-run the host
+        // customizer (that rebuild belongs to the runtime's materialize
+        // seam).
+        if let (Some(session_id), Some((role, labels))) = (
+            self.runtime_session_id(runtime_id).await,
+            member_entry_before_delivery.clone(),
+        ) {
+            match self
+                .resume_repair_member(runtime_id, member_id, role, labels, &session_id)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(RepairResumeFailure::DurableSnapshotMissing { detail }) => {
+                    tracing::warn!(
+                        runtime_id = %runtime_id,
+                        member_id = %member_id,
+                        session_id = %session_id,
+                        detail = %detail,
+                        "durable session snapshot is gone; repairing with a fresh respawn \
+                         (no transcript left to preserve)"
+                    );
+                    // Fall through to the legacy respawn path below.
+                }
+                Err(RepairResumeFailure::Rejected(err)) => return Err(err),
+            }
+        }
         match self.handle.respawn(member_id.clone(), None).await {
             Ok(_) => Ok(()),
             Err(respawn_err) => match classify_member_repair_respawn_failure(&respawn_err) {
@@ -642,6 +697,80 @@ impl MobSessionBridge {
                 }
                 MemberRepairRespawnFailure::Fatal(message) => Err(BridgeError::Mob(message)),
             },
+        }
+    }
+
+    /// Rebuild a wedged member ONTO its recorded durable session
+    /// (`MemberLaunchMode::Resume`): retire the stale roster entry if present
+    /// (tolerating recoverable cleanup and member-absent), then spawn with the
+    /// resume launch mode so the transcript survives the repair. The repaired
+    /// member keeps the SAME bridge session id, so no continuity rebind is
+    /// needed and the durable alias never rotates.
+    async fn resume_repair_member(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MobAgentIdentity,
+        role: meerkat_mob::ProfileName,
+        labels: BTreeMap<String, String>,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), RepairResumeFailure> {
+        match self.handle.retire(member_id.clone()).await {
+            Ok(()) => {}
+            Err(meerkat_mob::MobError::MemberNotFound(_)) => {}
+            Err(err) if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
+            Err(err) => {
+                return Err(RepairResumeFailure::Rejected(BridgeError::Mob(format!(
+                    "repair retire before resume: {err}"
+                ))));
+            }
+        }
+        self.forget_runtime_member(runtime_id).await;
+
+        let mut spec = SpawnMemberSpec::new(role, member_id.clone());
+        if !labels.is_empty() {
+            spec = spec.with_labels(labels);
+        }
+        spec.launch_mode = MemberLaunchMode::Resume {
+            bridge_session_id: session_id.clone(),
+        };
+
+        match self.spawn_member_spec(spec).await {
+            Ok(()) => {
+                self.remember_runtime_member(runtime_id, member_id).await;
+                self.remember_runtime_session(runtime_id, session_id).await;
+                tracing::info!(
+                    runtime_id = %runtime_id,
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    "delivery repair resumed the member onto its durable session \
+                     (transcript preserved, no session rotation)"
+                );
+                Ok(())
+            }
+            // meerkat's answer for "the durable session snapshot does not
+            // exist": there is no transcript to preserve, so the caller may
+            // fall back to a fresh respawn.
+            Err(err) if is_missing_durable_session_snapshot_error(&err.to_string()) => {
+                Err(RepairResumeFailure::DurableSnapshotMissing {
+                    detail: err.to_string(),
+                })
+            }
+            Err(err) => {
+                let kind = classify_resume_error(&err);
+                tracing::error!(
+                    runtime_id = %runtime_id,
+                    member_id = %member_id,
+                    session_id = %session_id,
+                    kind = ?kind,
+                    error = %err,
+                    "delivery repair resume rejected; durable session preserved, \
+                     delivery fails loudly (refusing fresh-spawn fallback)"
+                );
+                Err(RepairResumeFailure::Rejected(BridgeError::ResumeRejected {
+                    kind,
+                    detail: format!("delivery repair resume: {err}"),
+                }))
+            }
         }
     }
 
@@ -1749,6 +1878,30 @@ mod tests {
             }
             other => panic!("expected Resume launch mode, got {other:?}"),
         }
+    }
+
+    /// The delivery-repair fallback ladder hinges on telling "the durable
+    /// snapshot is gone" (fresh respawn is legitimate recovery) apart from
+    /// every other resume failure (fresh respawn would abandon a live
+    /// transcript — the OB3 `identity_alias_respawn_rotation` class).
+    #[test]
+    fn repair_fallback_only_on_missing_durable_snapshot() {
+        assert!(is_missing_durable_session_snapshot_error(
+            "missing durable session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'"
+        ));
+        // The delivery-time revival wording is a DIFFERENT condition (it
+        // triggers repair, not the fallback) and must not match.
+        assert!(!is_missing_durable_session_snapshot_error(
+            "missing bridge session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'"
+        ));
+        // Continuity violations and ordinary failures must never authorize a
+        // fresh respawn.
+        assert!(!is_missing_durable_session_snapshot_error(
+            "session save rejected: incoming transcript is not a continuation of persisted revision"
+        ));
+        assert!(!is_missing_durable_session_snapshot_error(
+            "model provider returned rate limit"
+        ));
     }
 
     #[test]

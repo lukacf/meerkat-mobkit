@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   whole-realm dream is used unchanged (the flag was previously parsed but
   inert).
 
+### Fixed
+
+- Delivery repair no longer rotates a wedged member onto a fresh, empty
+  session. The identity bridge's deliver-time repair used to blind-respawn
+  (`MobHandle::respawn` = retire + fresh spawn), abandoning the durable
+  transcript and rotating the bridge session out from under the durable alias
+  (the OB3 `identity_alias_respawn_rotation` report). Repair now rebuilds the
+  member ONTO its recorded durable session (`MemberLaunchMode::Resume`) —
+  transcript preserved, no session rotation; the fresh respawn survives only
+  as the fallback for meerkat's explicit "durable session snapshot is gone"
+  answer, and every other resume failure fails the delivery loudly instead of
+  destroying state.
+
 ## [0.7.22] - 2026-07-04
 
 ### Changed
