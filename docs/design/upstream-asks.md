@@ -458,3 +458,217 @@ that cannot page can return one page.
 **MobKit interim behavior.** The generous-limit search approximation, with
 the limit sized to compaction discard batches. On landing, the harvest reads
 the exact range and the approximation caveat comes out of `distiller.rs`.
+
+---
+
+# Batch 2 — handed to the meerkat coding agents by Luka (2026-07-04)
+
+> Seven further asks, derived from (a) the two §10.1 security gaps the shipped
+> taint firewall documents as upstream-gated, (b) the fork-Distiller seam that
+> ask 6's landing did not fully unlock, and (c) production evidence from
+> **ob3_validator** — the most general MobKit deployment (one mob; hundreds of
+> years-lived durable identities in the personal-agents + domain-agents +
+> task-agents pattern; multi-GB sessions; BigQuery-backed custom stores; heavy
+> agent-spawned worker churn). OB3's own filed docs (in
+> `ob3_validator/docs/`, commit `c36c105`) are the authoritative specs for
+> asks 11–13 — work from them directly. None of these block MobKit; every ask
+> states the interim behavior.
+>
+> **Suggested sequencing by impact:**
+> 1. **Ask 11** (incremental session persistence) — the standing scale wall;
+>    two production fleet wedges already attributed to it.
+> 2. **Ask 12 + Ask 13** — production incident classes at fleet scale
+>    (stranded singletons; hot-loops and failure cascades).
+> 3. **Ask 9** — closes the last two documented holes in the memory taint
+>    firewall.
+> 4. **Ask 10** — unlocks the deferred fork-Distiller (prompt-cache economics
+>    over multi-GB transcripts).
+> 5. **Ask 14 + Ask 15** — quality-of-life; no urgency.
+>
+> Evidence citations verified against meerkat 0.7.15 and mobkit `main`
+> (post-#218/#219); OB3 citations against `ob3_validator` HEAD 2026-07-04.
+
+## Ask 9 — Dispatch-time content-taint visibility + `ToolDef` provenance
+
+**Title:** Give hosts a synchronous taint signal at tool dispatch, and typed
+tool provenance (completes Ask 5)
+
+**Problem statement.** MobKit's content-taint tracker derives taint from the
+asynchronous observe stream, which leaves two documented, deliberate gaps:
+(1) the **first-ingestion race** — a memory write in the same turn as the
+session's *first* untrusted ingestion can reach the store before the taint
+observer processes the tool event; (2) **name-based MCP classification** —
+tool events carry only the tool NAME, so MCP tools can only be attributed to
+a server when their names are server-qualified (`mcp__<server>__<tool>`);
+anything else needs manual `untrusted_tools` config.
+
+**Evidence.** Both gaps are documented as upstream-gated in
+`meerkat-mobkit/src/memory/taint.rs` module docs ("Honest gaps that remain
+(upstream asks, §13)"): the race, and "no `ToolDef.provenance`". Verified
+still absent in meerkat-core 0.7.15 (`types.rs` has no tool provenance
+field; no dispatch-time host taint seam).
+
+**Proposed shape.** (a) A synchronous seam at tool dispatch — either a
+pre-result host hook or a dispatch-time event with a completion barrier —
+such that the host can classify "untrusted content is entering this session"
+*before* the tool result lands in context. (b) `ToolDef.provenance` (typed:
+builtin / MCP server id / bundle / host) surfaced on dispatch events, so
+classification stops guessing from name shapes.
+
+**MobKit interim behavior.** Session-sticky async taint (conservative), plus
+the `agent_memory.llm_writes = "quarantined"` posture knob for deployments
+that cannot accept the race. On landing: dispatch-time classification closes
+the race; name-shape probing and the `untrusted_tools` escape hatch shrink to
+compat.
+
+## Ask 10 — Fork tool authorization + fork-from-persisted (completes Ask 6)
+
+**Title:** Call-level `tool_access_policy` on session fork, and forking a
+persisted (non-live) session
+
+**Problem statement.** Ask 6 landed fork-launched members, but the
+fork-Distiller remains blocked on two specifics: `SessionForkAtRequest`
+carries no `tool_access_policy` (fork authorization is build-time only), and
+`fork_session_at` requires a LIVE parent session — while MobKit's
+reset/resume-fallback/compaction distillations run AFTER teardown, reading
+from the session store.
+
+**Evidence.** meerkat-core 0.7.15 `service/mod.rs:1632-1636`
+(`SessionForkAtRequest { message_index, running_behavior }` — no policy
+field); the fork-harness seam documented in
+`meerkat-mobkit/src/memory/distiller.rs` module docs ("TODO(§8.4 fork
+harness)").
+
+**Proposed shape.** Add `tool_access_policy: Option<ToolAccessPolicy>` to
+the fork request family (fork-at / fork-replace), and a
+fork-from-persisted path (parent loaded from the session store when not in
+the live map) preserving the prompt-cache prefix.
+
+**MobKit interim behavior.** The Distiller runs detached bounded extraction
+over a bare LLM client (zero tools — so no containment gap, only foregone
+prompt-cache economics). On landing, extraction moves to a fork sharing the
+parent's cached prefix — material at OB3-scale multi-GB transcripts.
+
+## Ask 11 — Incremental session persistence (`IncrementalSessionStore`)
+
+**Title:** Adopt OB3's incremental session persistence spec — O(delta) saves,
+compaction that shrinks the persisted head
+
+**Problem statement.** `SessionStore::save()` persists the whole session
+blob every turn: O(session) write amplification on every turn of every
+member. Measured in production: a 9.2 MB session that was 95% retained
+compaction revisions and 5% live messages; BigQuery's 10 MB DML cap turned
+this into HTTP 413 → **two fleet-wide wedges (2026-06-12)**. Compaction
+currently *grows* the persisted blob (revisions are retained), so the
+mechanism meant to bound context growth unbounds storage growth.
+
+**Evidence + spec.** `ob3_validator/docs/MEERKAT_SPEC_incremental_session_persistence.md`
+(authoritative; includes the trait sketch:
+`append_messages` / `commit_rewrite` / `save_head` / `load_head` /
+`load_messages`). OB3's chunked-persistence mitigation:
+`ob3_validator/src/meerkat/session.rs:39-73`.
+
+**Proposed shape.** As the OB3 spec: an additive `IncrementalSessionStore`
+trait with append/rewrite-commit semantics; whole-blob `SessionStore` remains
+the compat surface. Compaction commits a *rewrite* (shrinking the head), not
+a superset blob.
+
+**MobKit interim behavior.** None needed in mobkit itself; OB3 carries
+chunked plain-text persistence as a workaround. This ask also sets the
+persistence contract MobKit's memory providers will follow (memory writes
+must stay O(delta) — architecture §12 discipline).
+
+## Ask 12 — Compaction-archive must not strand singletons
+
+**Title:** Fix retire-after-compaction stranding (`MonotonicityViolation` on
+ArchiveSession shrink-save, no fallback, ghost roster entry)
+
+**Problem statement.** When a member is retired after compaction, the
+ArchiveSession shrink-save can hit `MonotonicityViolation`; there is no
+bridge fallback, and the roster keeps a ghost entry. Respawn/reset cannot
+recover the identity — only a full process restart. For fleets of years-lived
+singletons this is a standing incident class, and compaction boundaries are
+exactly where MobKit's Distiller harvest hooks live.
+
+**Evidence + spec.** `ob3_validator/docs/MEERKAT_BUG_compaction_archive_singleton.md`
+(authoritative repro + trace).
+
+**Proposed shape.** Per the OB3 doc: make the archive save tolerate (or
+sequence around) the shrink, and give the failure path a typed, recoverable
+outcome instead of a ghost entry.
+
+**MobKit interim behavior.** None possible mobkit-side (the seam is inside
+meerkat's session archive path); hosts carry watchdogs + process restarts.
+
+## Ask 13 — Event-forwarder backoff + per-member commit-failure quarantine
+
+**Title:** Stop dead-stream hot-loops and fleet-wide commit cascades
+
+**Problem statement.** (a) The agent-event forwarder retries dead streams at
+~4 Hz per identity, forever — measured 208,693 warnings in 50 minutes on one
+fleet; (b) a runtime-loop commit failure cascades fleet-wide instead of
+quarantining the single failing member. At hundreds of members these are
+outages, not nuisances.
+
+**Evidence + spec.** `ob3_validator/docs/MOBKIT_EVIDENCE_forwarder_hotloop_and_commit_cascade.md`
+(authoritative; includes measurements and call sites).
+
+**Proposed shape.** Exponential backoff with a ceiling (and eventual typed
+terminal state) on dead event streams; per-member isolation on commit
+failure — one member degrades, the fleet continues.
+
+**MobKit interim behavior.** None mobkit-side; OB3 wraps every mob call in
+app-level timeouts and runs its own wedge sentinel.
+
+## Ask 14 — Typed member health/progress surface
+
+**Title:** A per-member liveness/progress signal, so hosts stop
+reverse-engineering health from event streams
+
+**Problem statement.** Nothing in meerkat-mob answers "is this member alive
+and making progress?". Production hosts hand-build it: OB3 runs a
+WedgeSentinel (accepted-work vs event-flow gap > 300 s → pod restart) and a
+silence watchdog (compaction-failed-then-silent detection → auto-respawn with
+cooldown + breaker). The console "working" indicator bug is the same gap
+surfacing in UI (indicator driven by event recency, not run-open state).
+
+**Evidence.** `ob3_validator/src/wedge.rs`, `ob3_validator/src/watchdog.rs`;
+`ob3_validator/docs/MOBKIT_BUG_console_working_indicator_clears_mid_run.md`.
+
+**Proposed shape.** A typed per-member health projection (last-event-at,
+run-open/idle state, in-flight work count, wedge classification) queryable
+from `MobHandle` and/or emitted as a low-rate status event. Design ask —
+shape open.
+
+**MobKit interim behavior.** Hosts keep their watchdogs; MobKit's console
+approximates from event recency.
+
+## Ask 15 — Persist `interaction_id` in the transcript
+
+**Title:** Give live and historical copies of the same assistant reply a
+shared identity
+
+**Problem statement.** The console must deduplicate a live-streamed reply
+against its own persisted twin, but the two share no id — forcing lossy
+content-heuristic dedup (the mobkit console over-cull class). The
+`TranscriptMessageIdentity` machinery (meerkat #808) is the natural home;
+it currently carries identity for other purposes but the interaction id is
+not persisted through the transcript.
+
+**Evidence.** MobKit console dedup investigation (2026-07-01): an
+interaction-id-based mobkit fix was a no-op and was reverted because the
+persisted transcript lacks the id; heuristic collapse remains.
+
+**Proposed shape.** Persist `interaction_id` (and `run_id`, already modeled)
+in `TranscriptMessageIdentity` for assistant messages, serde-defaulted so old
+sessions deserialize unchanged.
+
+**MobKit interim behavior.** Content-heuristic dedup with its documented
+over-cull edge cases; removed when the id lands.
+
+---
+
+**Explicitly not asked (batch 2):** multi-embodiment / multi-bind primitives.
+The two production deployments (OB3, HomeCore) both run strictly one live
+session per identity; MobKit ships a fail-closed single-embodiment guard and
+will file the ask when a real use case materializes.
