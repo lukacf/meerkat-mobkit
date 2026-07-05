@@ -21,9 +21,9 @@ pub mod steward;
 pub mod taint;
 
 pub use coordinator::{
-    MobScopeResolver, OperatorResolver, RecallCoordinator, ScopeBudget, compose_identity_scope_set,
-    compose_identity_scope_set_with_bindings, compose_identity_scope_set_with_operator,
-    compose_scope_budgets,
+    ConsolePrincipalOperatorResolver, MobScopeResolver, OperatorResolver, RecallCoordinator,
+    ScopeBudget, compose_identity_scope_set, compose_identity_scope_set_with_bindings,
+    compose_identity_scope_set_with_operator, compose_scope_budgets,
 };
 pub use distiller::{
     CompactionDiscardSource, CompactionFollowUp, DistillCause, DistillOutcome,

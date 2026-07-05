@@ -229,7 +229,30 @@ pub async fn restore_flow(
             Some(LeaseAcquireResult::Acquired(grant)) => {
                 grants.insert(identity.clone(), grant.clone());
             }
-            Some(LeaseAcquireResult::AlreadyHeld { .. }) | None => {
+            Some(LeaseAcquireResult::AlreadyHeld { holder, .. }) => {
+                // Fail-closed single-embodiment guard: name the holder loudly
+                // instead of collapsing into a generic missing-lease error.
+                tracing::error!(
+                    %identity,
+                    holder = %holder,
+                    "single-embodiment guard: restore refused — identity is already \
+                     embodied by another live runtime instance"
+                );
+                let holder = holder.clone();
+                let acquired = grants.values().cloned().collect::<Vec<_>>();
+                if !acquired.is_empty() {
+                    runtime
+                        .lease_provider()
+                        .release_leases(&acquired)
+                        .await
+                        .map_err(IdentityRuntimeError::Lease)?;
+                }
+                return Err(IdentityRuntimeError::AlreadyEmbodied {
+                    identity: identity.clone(),
+                    holder,
+                });
+            }
+            None => {
                 let acquired = grants.values().cloned().collect::<Vec<_>>();
                 if !acquired.is_empty() {
                     runtime

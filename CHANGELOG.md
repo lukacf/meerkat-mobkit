@@ -18,9 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the new `memory_wiring` module. v1 boundaries documented there: the
   Hygienist stays gateway-only, and engines are driven by the observe
   stream (the gateway's extra injector-side rotation hooks are follow-up).
-
-### Added
-
+- Operator-scope memory recall is live in stock deployments (provisional
+  OperatorId keying: the console auth principal). With
+  `agent_memory.operator_scope = "provisional"`, the gateway now installs a
+  console-principal resolver: when an authenticated principal sends to an
+  identity from the console, that principal becomes the identity's active
+  operator and operator-scope records compose into recall — the durable
+  replacement for live-behavior-correction broadcast hacks. Unauthenticated
+  consoles keep the scope inert (activation requires config AND resolver AND
+  a real principal). Keying stays swappable behind the OperatorResolver seam.
 - Durable dream verdict sheets: every steward dream run persists to a new
   `dream_runs` table (partition label, timings, ops, and the full
   phases/verdicts/skips detail), and dead-weight usage-audit verdicts land in
@@ -28,9 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   "memories you might want to correct" list, resolvable per record. Two new
   read-only console RPCs serve them: `mobkit/memory/panel/dream_runs` and
   `mobkit/memory/panel/audit_verdicts` (same read grant as `panel/dreams`).
-
-### Added
-
 - Per-mob steward dreams (§8.5): with `agent_memory.steward.per_mob = true` on
   a multi-mob host, each dream attempt runs one partition per mob — that mob's
   scope plus its members' identity scopes, consolidated against that mob's own
@@ -42,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The single-embodiment guard fails loudly: restoring or materializing an
+  identity whose durable lease another live runtime instance holds now
+  returns the typed `AlreadyEmbodied { identity, holder }` error naming the
+  holding instance, instead of collapsing into a generic missing-lease
+  error. This is a policy point, not a structural assumption — future
+  multi-bind/forked-session semantics relax exactly this arm.
 - Delivery repair no longer rotates a wedged member onto a fresh, empty
   session. The identity bridge's deliver-time repair used to blind-respawn
   (`MobHandle::respawn` = retire + fresh spawn), abandoning the durable

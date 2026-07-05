@@ -99,6 +99,12 @@ pub struct ConsoleJsonState {
     /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (markdown
     /// store, no memory configured) leaves those methods unadvertised.
     pub(crate) memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    /// §16 Q1 provisional operator keying: the console send path notes
+    /// "authenticated principal P addressed identity I" through this
+    /// resolver; the memory coordinator reads it for operator-scope recall.
+    /// `None` when the operator scope is off (or memory is unconfigured).
+    pub(crate) operator_resolver:
+        Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -242,6 +248,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
         access: None,
         memory_panel: None,
+        operator_resolver: None,
     })
 }
 
@@ -273,6 +280,7 @@ pub fn console_json_router_with_aggregator_and_access(
         snapshot_read_model: ConsoleSnapshotReadModel::default(),
         access,
         memory_panel: None,
+        operator_resolver: None,
     })
 }
 
@@ -326,6 +334,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
         None,
         None,
+        None,
     )
 }
 
@@ -345,6 +354,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     access: Option<AccessController>,
     memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -389,6 +399,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         snapshot_read_model,
         access,
         memory_panel,
+        operator_resolver,
     })
 }
 
@@ -745,6 +756,18 @@ async fn console_send_handler(
             "access_denied",
             "you are not allowed to send to this agent",
         );
+    }
+    // §16 Q1 provisional operator keying: an authenticated principal
+    // addressing this identity IS the active operator for its turns.
+    // Unauthenticated consoles (no subject) note nothing — operator-scope
+    // recall stays inert without a real principal.
+    if let Some(resolver) = state.operator_resolver.as_ref()
+        && let Some(subject) = auth_context
+            .access_view
+            .as_ref()
+            .and_then(|view| view.subject())
+    {
+        resolver.note_interaction(request.identity.as_str(), subject);
     }
     let Some(aggregator) = &state.console_aggregator else {
         return console_json_error(

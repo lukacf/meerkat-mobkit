@@ -165,6 +165,50 @@ pub trait OperatorResolver: Send + Sync {
     fn active_operator(&self, realm: &str, identity: &str) -> Option<String>;
 }
 
+/// The provisional §16 Q1 keying, decided 2026-07-04: **OperatorId = console
+/// auth principal.** The console send path notes "principal P is speaking to
+/// identity I" whenever an authenticated principal sends; recall composition
+/// then attributes identity turns to the last such principal (sticky until a
+/// different principal speaks). Identity-keyed, not realm-keyed: the console
+/// does not know memory realms, and the coordinator only ever consults its
+/// own realm's scopes, so single-realm gateways (every shipped deployment)
+/// get exact semantics; multi-realm hosts share the binding across realms —
+/// acceptable for the provisional keying, revisit with explicit operator
+/// registration.
+///
+/// Unauthenticated consoles never note anything, so activation remains
+/// config AND resolver AND a real principal — never config alone.
+#[derive(Default)]
+pub struct ConsolePrincipalOperatorResolver {
+    active: std::sync::RwLock<std::collections::HashMap<String, String>>,
+}
+
+impl ConsolePrincipalOperatorResolver {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that authenticated console `principal` addressed `identity`.
+    pub fn note_interaction(&self, identity: &str, principal: &str) {
+        if principal.is_empty() {
+            return;
+        }
+        if let Ok(mut active) = self.active.write() {
+            active.insert(identity.to_string(), principal.to_string());
+        }
+    }
+}
+
+impl OperatorResolver for ConsolePrincipalOperatorResolver {
+    fn active_operator(&self, _realm: &str, identity: &str) -> Option<String> {
+        self.active
+            .read()
+            .ok()
+            .and_then(|active| active.get(identity).cloned())
+    }
+}
+
 /// §7.2 identity→mob binding seam, mirroring [`OperatorResolver`]. The
 /// hosting runtime knows which mob(s) an identity serves (the same source
 /// that pins `MemoryRecorder::mob` for `propose_to_mob`); this trait keeps
@@ -1749,6 +1793,34 @@ mod tests {
             BUILD_INDEX_BUDGET_BYTES
         );
         Ok(())
+    }
+
+    /// The provisional console-principal resolver: sticky last-principal
+    /// per identity; empty principals and unknown identities resolve None.
+    #[test]
+    fn console_principal_resolver_tracks_last_authenticated_principal() {
+        let resolver = ConsolePrincipalOperatorResolver::new();
+        assert_eq!(resolver.active_operator("realm-a", "personal:alice"), None);
+
+        resolver.note_interaction("personal:alice", "luka@king.com");
+        assert_eq!(
+            resolver.active_operator("realm-a", "personal:alice"),
+            Some("luka@king.com".to_string())
+        );
+        // Identity-keyed provisional semantics: realm does not partition.
+        assert_eq!(
+            resolver.active_operator("realm-b", "personal:alice"),
+            Some("luka@king.com".to_string())
+        );
+        // Sticky until a DIFFERENT principal speaks.
+        resolver.note_interaction("personal:alice", "ops@king.com");
+        assert_eq!(
+            resolver.active_operator("realm-a", "personal:alice"),
+            Some("ops@king.com".to_string())
+        );
+        // Empty principals never bind (unauthenticated consoles).
+        resolver.note_interaction("personal:bob", "");
+        assert_eq!(resolver.active_operator("realm-a", "personal:bob"), None);
     }
 
     struct FixedOperator(&'static str);

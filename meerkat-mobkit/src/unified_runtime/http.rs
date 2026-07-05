@@ -58,6 +58,7 @@ impl UnifiedRuntime {
             visibility_policy,
             self.access_controller().cloned(),
             self.memory_panel_store(),
+            self.console_operator_resolver(),
         )
     }
 
