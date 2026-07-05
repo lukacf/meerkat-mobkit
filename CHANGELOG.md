@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Durable dream verdict sheets: every steward dream run persists to a new
+  `dream_runs` table (partition label, timings, ops, and the full
+  phases/verdicts/skips detail), and dead-weight usage-audit verdicts land in
+  a durable review queue (`dream_audit_verdicts`) — the operator-facing
+  "memories you might want to correct" list, resolvable per record. Two new
+  read-only console RPCs serve them: `mobkit/memory/panel/dream_runs` and
+  `mobkit/memory/panel/audit_verdicts` (same read grant as `panel/dreams`).
+
+### Added
+
 - Per-mob steward dreams (§8.5): with `agent_memory.steward.per_mob = true` on
   a multi-mob host, each dream attempt runs one partition per mob — that mob's
   scope plus its members' identity scopes, consolidated against that mob's own

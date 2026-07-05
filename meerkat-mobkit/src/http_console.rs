@@ -1614,6 +1614,10 @@ fn console_rpc_access_requirements(
         // requires the unscoped read grant (a rule with no resource
         // selector), same as realm-scope record reads.
         "mobkit/memory/panel/dreams" => one(ACTION_AGENT_MEMORY_READ, None),
+        // Durable dream verdict sheets + the usage-audit review queue: same
+        // realm-level read posture as dream history.
+        "mobkit/memory/panel/dream_runs" => one(ACTION_AGENT_MEMORY_READ, None),
+        "mobkit/memory/panel/audit_verdicts" => one(ACTION_AGENT_MEMORY_READ, None),
         "mobkit/memory/panel/quarantine" => one(ACTION_MEMORY_QUARANTINE_REVIEW, None),
         // `mob.memory.propose` gates future propose surfaces and
         // `mob.memory.commit` is reserved for a future direct-commit RPC —
@@ -2215,6 +2219,100 @@ async fn handle_memory_panel_dreams(
     response_value(
         response_id,
         Some(json!({ "runs": rows, "realms": realms })),
+        None,
+    )
+}
+
+/// Durable dream verdict sheets (`dream_runs` table): phases, verdict
+/// counters, skips, and partition label per run — survives restarts, unlike
+/// the audit-trail reconstruction served by `panel/dreams`.
+async fn handle_memory_panel_dream_runs(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut runs = Vec::new();
+    for realm in &realms {
+        match store.dream_runs(realm, limit).await {
+            Ok(rows) => runs.extend(rows.into_iter().map(|run| (realm.clone(), run))),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    runs.sort_by_key(|(_, run)| std::cmp::Reverse(run.completed_at_ms));
+    runs.truncate(limit);
+    let rows: Vec<Value> = runs
+        .iter()
+        .map(|(realm, run)| {
+            let detail: Value =
+                serde_json::from_str(&run.detail).unwrap_or_else(|_| json!(run.detail));
+            json!({
+                "realm": realm,
+                "run_id": run.run_id,
+                "partition": run.partition_label,
+                "started_at_ms": run.started_at_ms,
+                "completed_at_ms": run.completed_at_ms,
+                "ops_committed": run.ops_committed,
+                "detail": detail,
+            })
+        })
+        .collect();
+    response_value(
+        response_id,
+        Some(json!({ "runs": rows, "realms": realms })),
+        None,
+    )
+}
+
+/// The open usage-audit review queue: dead-weight verdicts awaiting operator
+/// action ("memories you might want to correct").
+async fn handle_memory_panel_audit_verdicts(
+    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    params: &Value,
+    response_id: Value,
+) -> Value {
+    let Some(store) = store else {
+        return memory_panel_unavailable(response_id);
+    };
+    let limit =
+        memory_panel_limit_param(params, MEMORY_PANEL_DREAMS_DEFAULT, MEMORY_PANEL_DREAMS_MAX);
+    let realms = match memory_panel_realms(store, params).await {
+        Ok(realms) => realms,
+        Err(err) => return memory_panel_store_error(response_id, err),
+    };
+    let mut verdicts = Vec::new();
+    for realm in &realms {
+        match store.open_dream_audit_verdicts(realm, limit).await {
+            Ok(rows) => verdicts.extend(rows.into_iter().map(|row| (realm.clone(), row))),
+            Err(err) => return memory_panel_store_error(response_id, err),
+        }
+    }
+    verdicts.sort_by_key(|(_, row)| std::cmp::Reverse(row.created_at_ms));
+    verdicts.truncate(limit);
+    let rows: Vec<Value> = verdicts
+        .iter()
+        .map(|(realm, row)| {
+            json!({
+                "realm": realm,
+                "run_id": row.run_id,
+                "record_id": row.record_id,
+                "verdict": row.verdict,
+                "rationale": row.rationale,
+                "created_at_ms": row.created_at_ms,
+            })
+        })
+        .collect();
+    response_value(
+        response_id,
+        Some(json!({ "verdicts": rows, "realms": realms })),
         None,
     )
 }
@@ -4795,6 +4893,8 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/memory/panel/records",
                     "mobkit/memory/panel/record",
                     "mobkit/memory/panel/dreams",
+                    "mobkit/memory/panel/dream_runs",
+                    "mobkit/memory/panel/audit_verdicts",
                     "mobkit/memory/panel/quarantine",
                 ]);
             }
@@ -5057,6 +5157,12 @@ async fn handle_console_runtime_rpc_with_visibility(
         }
         "mobkit/memory/panel/dreams" => {
             handle_memory_panel_dreams(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/dream_runs" => {
+            handle_memory_panel_dream_runs(memory_panel, &request.params, response_id).await
+        }
+        "mobkit/memory/panel/audit_verdicts" => {
+            handle_memory_panel_audit_verdicts(memory_panel, &request.params, response_id).await
         }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
