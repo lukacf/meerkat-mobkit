@@ -156,6 +156,30 @@ CREATE TABLE IF NOT EXISTS pending_promotions (
     created_at_ms  INTEGER NOT NULL,
     resolved_at_ms INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS dream_runs (
+    run_id          TEXT PRIMARY KEY,
+    partition_label TEXT NOT NULL DEFAULT 'realm',
+    started_at_ms   INTEGER NOT NULL,
+    completed_at_ms INTEGER NOT NULL,
+    ops_committed   INTEGER NOT NULL,
+    detail          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dream_runs_completed
+    ON dream_runs(completed_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS dream_audit_verdicts (
+    run_id         TEXT NOT NULL,
+    record_id      TEXT NOT NULL,
+    verdict        TEXT NOT NULL,
+    rationale      TEXT NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    resolved_at_ms INTEGER,
+    resolution     TEXT,
+    PRIMARY KEY (run_id, record_id)
+);
+CREATE INDEX IF NOT EXISTS dream_audit_verdicts_open
+    ON dream_audit_verdicts(record_id, resolved_at_ms);
 ";
 
 const RECORD_COLUMNS: &str = "memory_id, scope_kind, scope_key, kind, title, description, body, \
@@ -1407,6 +1431,34 @@ pub struct PendingPromotion {
     pub created_at_ms: u64,
 }
 
+/// One persisted dream run (§8.5): the durable verdict sheet — phases,
+/// verdict counters, and skips as `DreamRun::detail()` JSON — written by the
+/// steward at the end of every pipeline run (one row per partition run).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedDreamRun {
+    pub run_id: String,
+    pub partition_label: String,
+    pub started_at_ms: u64,
+    pub completed_at_ms: u64,
+    pub ops_committed: u64,
+    /// `DreamRun::detail()` JSON text (phases, verdicts, skips).
+    pub detail: String,
+}
+
+/// One usage-audit verdict awaiting (or holding) operator review — the
+/// "memories you might want to correct" queue (§16 Q6). `resolved_at_ms`
+/// NULL = open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamAuditVerdict {
+    pub run_id: String,
+    pub record_id: String,
+    pub verdict: String,
+    pub rationale: String,
+    pub created_at_ms: u64,
+    pub resolved_at_ms: Option<u64>,
+    pub resolution: Option<String>,
+}
+
 impl SqliteAgentMemoryStore {
     /// The per-scope retention floors this store warns against (§7.3);
     /// rendered into the dream's orient overview as floor pressure.
@@ -2211,6 +2263,166 @@ impl SqliteAgentMemoryStore {
     /// run first. Bounded scan ([`DREAM_HISTORY_SCAN_ROWS`]); runs older
     /// than the scan window fall off the panel, which is acceptable for a
     /// history summary surface.
+    /// Persist one completed dream run (idempotent on run_id).
+    pub async fn save_dream_run(
+        &self,
+        realm: &str,
+        run: PersistedDreamRun,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO dream_runs                      (run_id, partition_label, started_at_ms, completed_at_ms, ops_committed, detail)                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        run.run_id,
+                        run.partition_label,
+                        run.started_at_ms,
+                        run.completed_at_ms,
+                        run.ops_committed,
+                        run.detail,
+                    ],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Persisted dream runs, newest first.
+    pub async fn dream_runs(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<PersistedDreamRun>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let limit = limit.max(1);
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT run_id, partition_label, started_at_ms, completed_at_ms,                          ops_committed, detail FROM dream_runs                          ORDER BY completed_at_ms DESC, run_id DESC LIMIT ?1",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map([limit as i64], |row| {
+                        Ok(PersistedDreamRun {
+                            run_id: row.get(0)?,
+                            partition_label: row.get(1)?,
+                            started_at_ms: row.get(2)?,
+                            completed_at_ms: row.get(3)?,
+                            ops_committed: row.get(4)?,
+                            detail: row.get(5)?,
+                        })
+                    })
+                    .map_err(sql_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(sql_err)?;
+                Ok(rows)
+            })
+        })
+        .await
+    }
+
+    /// Record the usage-audit verdicts of one dream run. Only non-clean
+    /// verdicts belong here (the review queue); load-bearing records are
+    /// counted in the run detail, not queued.
+    pub async fn save_dream_audit_verdicts(
+        &self,
+        realm: &str,
+        run_id: &str,
+        verdicts: Vec<(String, String, String)>,
+    ) -> Result<(), AgentMemoryError> {
+        if verdicts.is_empty() {
+            return Ok(());
+        }
+        let store = self.clone();
+        let realm = realm.to_string();
+        let run_id = run_id.to_string();
+        let now = now_ms();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                for (record_id, verdict, rationale) in &verdicts {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO dream_audit_verdicts                          (run_id, record_id, verdict, rationale, created_at_ms)                          VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![run_id, record_id, verdict, rationale, now],
+                    )
+                    .map_err(sql_err)?;
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Open (unresolved) audit verdicts, newest first — the operator review
+    /// queue. One row per (run, record); the console dedups by record.
+    pub async fn open_dream_audit_verdicts(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<DreamAuditVerdict>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let limit = limit.max(1);
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT run_id, record_id, verdict, rationale, created_at_ms,                          resolved_at_ms, resolution FROM dream_audit_verdicts                          WHERE resolved_at_ms IS NULL                          ORDER BY created_at_ms DESC, record_id ASC LIMIT ?1",
+                    )
+                    .map_err(sql_err)?;
+                let rows = stmt
+                    .query_map([limit as i64], |row| {
+                        Ok(DreamAuditVerdict {
+                            run_id: row.get(0)?,
+                            record_id: row.get(1)?,
+                            verdict: row.get(2)?,
+                            rationale: row.get(3)?,
+                            created_at_ms: row.get(4)?,
+                            resolved_at_ms: row.get(5)?,
+                            resolution: row.get(6)?,
+                        })
+                    })
+                    .map_err(sql_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(sql_err)?;
+                Ok(rows)
+            })
+        })
+        .await
+    }
+
+    /// Resolve every open audit verdict for `record_id` (the operator acted:
+    /// superseded/retired/dismissed via the review queue).
+    pub async fn resolve_dream_audit_verdicts(
+        &self,
+        realm: &str,
+        record_id: &str,
+        resolution: &str,
+    ) -> Result<usize, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let record_id = record_id.to_string();
+        let resolution = resolution.to_string();
+        let now = now_ms();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let changed = conn
+                    .execute(
+                        "UPDATE dream_audit_verdicts                          SET resolved_at_ms = ?1, resolution = ?2                          WHERE record_id = ?3 AND resolved_at_ms IS NULL",
+                        rusqlite::params![now, resolution, record_id],
+                    )
+                    .map_err(sql_err)?;
+                Ok(changed)
+            })
+        })
+        .await
+    }
+
     pub async fn dream_history(
         &self,
         realm: &str,

@@ -1339,6 +1339,7 @@ impl StewardEngine {
         partition: &DreamPartition,
     ) -> Result<DreamRun, StewardError> {
         let run_id = format!("{}{}", self.mint_run_id(), partition.run_id_suffix());
+        let started_at_ms = now_ms();
         self.emit(MemoryTimelineEvent::DreamStarted {
             realm: self.realm.clone(),
             run_id: run_id.clone(),
@@ -1380,6 +1381,22 @@ impl StewardEngine {
         // Usage audit (§9.2).
         let usage = self.usage_audit(&signals, &mut run).await?;
         let usage_text = render_usage_verdicts(&usage);
+        // §16 Q6: dead-weight verdicts become the durable operator review
+        // queue ("memories you might want to correct"). Best-effort — a
+        // persistence failure must not fail the dream.
+        let review_queue: Vec<(String, String, String)> = usage
+            .iter()
+            .filter(|(_, verdict, _)| verdict == "dead_weight")
+            .cloned()
+            .collect();
+        if let Err(err) = self
+            .store
+            .save_dream_audit_verdicts(&self.realm, &run_id, review_queue)
+            .await
+        {
+            run.skips
+                .push(format!("audit-verdict persistence failed: {err}"));
+        }
 
         // Consolidate.
         let mob_context_text = self.render_mob_context_for(partition);
@@ -1552,6 +1569,27 @@ impl StewardEngine {
             )
             .await;
         run.ops_committed += ranked;
+
+        // Persist the durable verdict sheet (one row per partition run).
+        // Best-effort: the dream's work is already committed.
+        if let Err(err) = self
+            .store
+            .save_dream_run(
+                &self.realm,
+                crate::memory::sqlite_store::PersistedDreamRun {
+                    run_id: run.run_id.clone(),
+                    partition_label: partition.label(),
+                    started_at_ms,
+                    completed_at_ms: now_ms(),
+                    ops_committed: run.ops_committed as u64,
+                    detail: run.detail().to_string(),
+                },
+            )
+            .await
+        {
+            run.skips
+                .push(format!("dream-run persistence failed: {err}"));
+        }
 
         Ok(run)
     }
@@ -4631,12 +4669,15 @@ mod tests {
         );
         assert_eq!(run.verdicts.harvests_completed, 1);
 
-        // Contradiction bridged.
-        let conflicts = fixture.conflicts.conflicts.lock().unwrap();
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].0, "mob:home");
-        assert_eq!(conflicts[0].1, "deploy window");
-        assert!(conflicts[0].2.contains("mem-a"));
+        // Contradiction bridged. (Block scope: the guard must not be live
+        // across the persisted-run read below — clippy::await_holding_lock.)
+        {
+            let conflicts = fixture.conflicts.conflicts.lock().unwrap();
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].0, "mob:home");
+            assert_eq!(conflicts[0].1, "deploy window");
+            assert!(conflicts[0].2.contains("mem-a"));
+        }
         assert_eq!(run.verdicts.contradictions_emitted, 1);
 
         // Timeline events include the dream lifecycle and verdicts.
@@ -4652,6 +4693,90 @@ mod tests {
         // the surface there.)
 
         assert!(run.ops_committed >= 3 + 1 + 1 + 3 + 2);
+
+        // The durable verdict sheet persisted (dream_runs table): the run is
+        // queryable after restart with its partition label and detail JSON.
+        let persisted = fixture
+            .store
+            .dream_runs(REALM, 5)
+            .await
+            .expect("read persisted dream runs");
+        assert_eq!(persisted.len(), 1, "one partition run persisted");
+        assert_eq!(persisted[0].run_id, run.run_id);
+        assert_eq!(persisted[0].partition_label, "realm");
+        assert_eq!(persisted[0].ops_committed, run.ops_committed as u64);
+        assert!(persisted[0].completed_at_ms >= persisted[0].started_at_ms);
+        let detail: serde_json::Value =
+            serde_json::from_str(&persisted[0].detail).expect("detail is JSON");
+        assert!(detail.get("phases").is_some());
+        assert!(detail.get("verdicts").is_some());
+    }
+
+    /// Audit-verdict review queue roundtrip: dead-weight verdicts land open,
+    /// resolution closes every open row for the record, and the open list
+    /// excludes them afterwards.
+    #[tokio::test]
+    async fn audit_verdict_review_queue_roundtrip() {
+        let fixture = build_fixture(Vec::new(), Vec::new());
+        fixture
+            .store
+            .save_dream_audit_verdicts(
+                REALM,
+                "dream-1",
+                vec![
+                    (
+                        "mem-dead".to_string(),
+                        "dead_weight".to_string(),
+                        "never recalled".to_string(),
+                    ),
+                    (
+                        "mem-stale".to_string(),
+                        "dead_weight".to_string(),
+                        "superseded in practice".to_string(),
+                    ),
+                ],
+            )
+            .await
+            .expect("save verdicts");
+        // A later run re-flags one record: idempotent per (run, record),
+        // additive across runs.
+        fixture
+            .store
+            .save_dream_audit_verdicts(
+                REALM,
+                "dream-2",
+                vec![(
+                    "mem-dead".to_string(),
+                    "dead_weight".to_string(),
+                    "still never recalled".to_string(),
+                )],
+            )
+            .await
+            .expect("save verdicts (run 2)");
+
+        let open = fixture
+            .store
+            .open_dream_audit_verdicts(REALM, 10)
+            .await
+            .expect("open list");
+        assert_eq!(open.len(), 3);
+        assert!(open.iter().all(|row| row.resolved_at_ms.is_none()));
+
+        // Operator acts on mem-dead: every open row for it resolves.
+        let resolved = fixture
+            .store
+            .resolve_dream_audit_verdicts(REALM, "mem-dead", "retired")
+            .await
+            .expect("resolve");
+        assert_eq!(resolved, 2, "both runs' rows for the record resolve");
+
+        let open = fixture
+            .store
+            .open_dream_audit_verdicts(REALM, 10)
+            .await
+            .expect("open list after resolve");
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].record_id, "mem-stale");
     }
 
     #[tokio::test]
