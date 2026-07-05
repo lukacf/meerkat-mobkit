@@ -101,6 +101,47 @@ fn make_runtime(store: Arc<dyn ContinuityStore>, lease: Arc<dyn LeaseProvider>) 
     })
 }
 
+fn make_runtime_named(
+    store: Arc<dyn ContinuityStore>,
+    lease: Arc<dyn LeaseProvider>,
+    instance: &str,
+) -> IdentityRuntime {
+    IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: store,
+        lease_provider: lease,
+        runtime_instance_id: instance.to_string(),
+        has_runtime_store: false,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: None,
+        default_timeout: None,
+    })
+}
+
+/// Fail-closed single-embodiment guard: a second runtime instance restoring
+/// an identity whose durable lease another live instance holds must be
+/// refused with the typed AlreadyEmbodied error NAMING the holder — not a
+/// generic missing-lease error. (Policy point: multi-bind relaxes this arm.)
+#[tokio::test]
+async fn identity_first_runtime_second_embodiment_is_refused_loudly() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime_a = make_runtime_named(store.clone(), lease.clone(), "instance-a");
+    let runtime_b = make_runtime_named(store.clone(), lease.clone(), "instance-b");
+
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime_a, &roster, None, None)
+        .await
+        .expect("instance A embodies the identity");
+
+    match restore_flow(&runtime_b, &roster, None, None).await {
+        Err(IdentityRuntimeError::AlreadyEmbodied { identity, holder }) => {
+            assert_eq!(identity.as_str(), "triage:main");
+            assert_eq!(holder, "instance-a", "the guard must name the holder");
+        }
+        other => panic!("expected AlreadyEmbodied, got {other:?}"),
+    }
+}
+
 fn make_runtime_with_store(
     store: Arc<dyn ContinuityStore>,
     lease: Arc<dyn LeaseProvider>,
@@ -4417,8 +4458,8 @@ async fn identity_first_runtime_restore_flow_rejects_lease_conflicts_before_brid
         .await
         .expect_err("restore flow must reject lease conflict");
     assert!(
-        err.to_string().contains("no active lease"),
-        "unexpected error: {err}"
+        err.to_string().contains("already embodied"),
+        "the single-embodiment guard must name the conflict: {err}"
     );
     assert_eq!(
         bridge.create_calls.load(Ordering::SeqCst),
@@ -4451,8 +4492,8 @@ async fn identity_first_runtime_restore_flow_releases_partial_leases_on_conflict
     .await
     .expect_err("restore flow must reject mixed lease acquisition");
     assert!(
-        err.to_string().contains("no active lease"),
-        "unexpected error: {err}"
+        err.to_string().contains("already embodied"),
+        "the single-embodiment guard must name the conflict: {err}"
     );
     assert_eq!(
         bridge.create_calls.load(Ordering::SeqCst),

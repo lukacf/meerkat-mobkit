@@ -57,6 +57,15 @@ pub enum IdentityRuntimeError {
     NotAddressable(NotAddressable),
     /// Operation rejected: no active lease for this identity.
     NoActiveLease(AgentIdentity),
+    /// Fail-closed single-embodiment guard: the identity's durable lease is
+    /// held by another live runtime instance — a second live embodiment is
+    /// refused, loudly and with the holder named. This is a POLICY point,
+    /// not a structural assumption: multi-bind / forked-session semantics
+    /// (future work) relax exactly this arm.
+    AlreadyEmbodied {
+        identity: AgentIdentity,
+        holder: String,
+    },
     /// Operation rejected: lease was lost.
     LeaseLost(AgentIdentity),
     /// Operation rejected: identity is not in a state that permits this operation.
@@ -93,6 +102,11 @@ impl std::fmt::Display for IdentityRuntimeError {
             Self::UnknownIdentity(id) => write!(f, "unknown identity: {id}"),
             Self::NotAddressable(err) => write!(f, "{err}"),
             Self::NoActiveLease(id) => write!(f, "no active lease for {id}"),
+            Self::AlreadyEmbodied { identity, holder } => write!(
+                f,
+                "identity {identity} is already embodied by runtime instance '{holder}' \
+                 (single-embodiment guard: refusing a second live bind)"
+            ),
             Self::LeaseLost(id) => write!(f, "lease lost for {id}"),
             Self::InvalidState {
                 identity,
@@ -1223,7 +1237,19 @@ impl IdentityRuntime {
             .map_err(IdentityRuntimeError::Lease)?;
         let grant = match lease_results.get(identity) {
             Some(super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
-            _ => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
+            Some(super::types::LeaseAcquireResult::AlreadyHeld { holder, .. }) => {
+                tracing::error!(
+                    %identity,
+                    holder = %holder,
+                    "single-embodiment guard: refusing to materialize an identity whose \
+                     durable lease is held by another live runtime instance"
+                );
+                return Err(IdentityRuntimeError::AlreadyEmbodied {
+                    identity: identity.clone(),
+                    holder: holder.clone(),
+                });
+            }
+            None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
         };
         if let Some(record) = continuity.as_ref()
             && let Err(err) = self

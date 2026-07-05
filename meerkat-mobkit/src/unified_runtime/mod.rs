@@ -164,6 +164,12 @@ pub struct UnifiedRuntime {
     // the runtime is shared (`Arc`), wherever the store is constructed.
     memory_panel_store:
         std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+    /// §16 Q1 provisional operator keying: the console-principal resolver,
+    /// shared between the memory coordinator (reads) and the console send
+    /// path (notes interactions). `&self`-settable like the panel store.
+    console_operator_resolver: std::sync::RwLock<
+        Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
+    >,
 
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
@@ -242,6 +248,7 @@ impl UnifiedRuntime {
             identity_first_context: None,
             access_controller: None,
             memory_panel_store: std::sync::RwLock::new(None),
+            console_operator_resolver: std::sync::RwLock::new(None),
             metadata_table,
             persistent_metadata,
         }
@@ -579,6 +586,28 @@ impl UnifiedRuntime {
         &self,
     ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
         self.memory_panel_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Wire the §16 Q1 console-principal operator resolver (set by the
+    /// gateway's memory wiring when `operator_scope = "provisional"`); the
+    /// console send path notes authenticated interactions through it.
+    pub fn set_console_operator_resolver(
+        &self,
+        resolver: Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>,
+    ) {
+        *self
+            .console_operator_resolver
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
+    }
+
+    pub fn console_operator_resolver(
+        &self,
+    ) -> Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>> {
+        self.console_operator_resolver
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
