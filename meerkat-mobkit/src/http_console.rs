@@ -2418,7 +2418,7 @@ async fn handle_memory_panel_proposals(
             Ok(rows) => proposals.extend(rows.into_iter().map(|row| {
                 json!({
                     "realm": realm,
-                    "proposal_id": row.proposal_id.to_string(),
+                    "proposal_id": row.proposal_id,
                     "scope_kind": row.scope.kind_str(),
                     "scope_key": row.scope.key(),
                     "title": row.record.title,
@@ -2462,7 +2462,7 @@ async fn handle_memory_panel_injections(
             Ok(rows) => injections.extend(rows.into_iter().map(|row| {
                 json!({
                     "realm": realm,
-                    "record_id": row.record_id.to_string(),
+                    "record_id": row.record_id,
                     "identity": row.identity,
                     "session_key": row.session_key,
                     "surface": row.surface.as_str(),
