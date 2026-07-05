@@ -117,15 +117,15 @@ pub use identity_first::{
     MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use memory::{
-    CompactionResetSink, ContentTrustConfig, DistillCause, DistillerConfig, DistillerEngine,
-    DreamOutcome, DreamRun, HygieneCause, HygieneOutcome, HygienistConfig, HygienistEngine,
-    ManifestTier, MemberAgentEventSink, MemoryConflictBridge, MemoryEventSink, MemoryGatingBridge,
-    MemoryKind, MemoryRecord, MemoryScope, MemorySpawnCustomizer, MemoryTimelineEvent,
-    MobPurposeSource, NewMemoryRecord, OperatorResolver, PromotionGateResolver, RecordMeta,
-    SessionStoreEvidenceResolver, SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore,
-    StagedMutationBatch, StagedOp, StewardConfig, StewardEngine, StewardTriggers,
-    TaintLlmWriteGate, TaintObserverGuard, TrustTier, spawn_member_event_observer,
-    spawn_taint_observer,
+    CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DistillCause,
+    DistillerConfig, DistillerEngine, DreamOutcome, DreamRun, HygieneCause, HygieneOutcome,
+    HygienistConfig, HygienistEngine, ManifestTier, MemberAgentEventSink, MemoryConflictBridge,
+    MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryRecord, MemoryScope,
+    MemorySpawnCustomizer, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
+    OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
+    SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
+    StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,
+    TrustTier, spawn_member_event_observer, spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,

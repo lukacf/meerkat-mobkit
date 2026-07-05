@@ -4498,9 +4498,26 @@ external_addressable = true
         // installed, `operator_scope = "provisional"` composes nothing
         // (inert by design) while steward routing (proposal-keyed) is
         // already active.
+        // §16 Q1 provisional keying (decided 2026-07-04): OperatorId = the
+        // console auth principal. When the scope is provisional, install the
+        // console-principal resolver and share it with the runtime so the
+        // console send path can note authenticated interactions; recall
+        // composition activates for identities an authenticated principal
+        // has addressed (config AND resolver AND a real principal).
         let agent_memory_operator_resolver: Option<
             Arc<dyn meerkat_mobkit::memory::coordinator::OperatorResolver>,
-        > = None;
+        > = if gateway_options.agent_memory.as_ref().is_some_and(|memory| {
+            memory.config.operator_scope == meerkat_mobkit::AgentMemoryOperatorScope::Provisional
+        }) {
+            let resolver = Arc::new(meerkat_mobkit::ConsolePrincipalOperatorResolver::new());
+            runtime.set_console_operator_resolver(resolver.clone());
+            tracing::info!(
+                "agent memory operator scope active (provisional keying: console auth principal)"
+            );
+            Some(resolver)
+        } else {
+            None
+        };
         // Degrade LOUD, not silent: recall composition of the Operator scope
         // needs BOTH the knob and a resolver (coordinator.rs scope_set), so a
         // resolver-less provisional deployment gets steward proposal-routing
@@ -4513,9 +4530,7 @@ external_addressable = true
                 "agent_memory.operator_scope=\"provisional\" is configured but this gateway \
                  installs no operator resolver: operator-scope recall composition is INERT \
                  (records routed to the operator scope will not be recalled or injected); \
-                 steward routing of operator-scope proposals remains active; the provisional \
-                 console-auth-principal keying requires session-to-principal plumbing that \
-                 has not landed"
+                 steward routing of operator-scope proposals remains active"
             );
         }
         // §7.2 mob-scope binding: every identity this gateway hosts runs

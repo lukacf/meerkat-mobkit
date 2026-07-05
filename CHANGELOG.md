@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Operator-scope memory recall is live in stock deployments (provisional
+  OperatorId keying: the console auth principal). With
+  `agent_memory.operator_scope = "provisional"`, the gateway now installs a
+  console-principal resolver: when an authenticated principal sends to an
+  identity from the console, that principal becomes the identity's active
+  operator and operator-scope records compose into recall — the durable
+  replacement for live-behavior-correction broadcast hacks. Unauthenticated
+  consoles keep the scope inert (activation requires config AND resolver AND
+  a real principal). Keying stays swappable behind the OperatorResolver seam.
 - Durable dream verdict sheets: every steward dream run persists to a new
   `dream_runs` table (partition label, timings, ops, and the full
   phases/verdicts/skips detail), and dead-weight usage-audit verdicts land in
@@ -16,9 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   "memories you might want to correct" list, resolvable per record. Two new
   read-only console RPCs serve them: `mobkit/memory/panel/dream_runs` and
   `mobkit/memory/panel/audit_verdicts` (same read grant as `panel/dreams`).
-
-### Added
-
 - Per-mob steward dreams (§8.5): with `agent_memory.steward.per_mob = true` on
   a multi-mob host, each dream attempt runs one partition per mob — that mob's
   scope plus its members' identity scopes, consolidated against that mob's own
