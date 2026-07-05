@@ -128,3 +128,24 @@ opt-level = 1
 # gateway's runtime hot path.
 [profile.release.package.meerkat-machine-schema]
 opt-level = 0
+
+# Same memory workaround, same reasoning, for the other meerkat mega-crates:
+# each is one enormous rustc/LLVM invocation (meerkat-runtime ~107 modules in
+# one compile) that at opt-level 1 drives LLVM past hosted-runner RAM. The
+# v0.7.22 GHA binary matrix lost 4/5 legs to rustc SIGKILL / "rustc-LLVM
+# ERROR: out of memory" on these crates even with CARGO_BUILD_JOBS=2. They are
+# cold-path, I/O-bound orchestration crates (the bazel-era release proved
+# opt-0 has no measurable runtime effect and turns 40-100 min LLVM runs into
+# seconds). The gateways' own crate (meerkat-mobkit) stays at the workspace
+# opt-level.
+[profile.release.package.meerkat-core]
+opt-level = 0
+
+[profile.release.package.meerkat-runtime]
+opt-level = 0
+
+[profile.release.package.meerkat-mob]
+opt-level = 0
+
+[profile.release.package.meerkat-live]
+opt-level = 0
