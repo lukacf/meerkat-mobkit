@@ -4893,6 +4893,171 @@ async fn identity_first_runtime_restore_flow_rejected_resume_marks_broken_then_r
     assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
 }
 
+/// Roster provider serving a fixed roster, counting calls — the repair task
+/// must not touch it while nothing is Broken.
+struct StaticRosterProvider {
+    roster: Vec<DurableAgentSpec>,
+    calls: AtomicUsize,
+}
+
+impl StaticRosterProvider {
+    fn new(roster: Vec<DurableAgentSpec>) -> Self {
+        Self {
+            roster,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl RosterProvider for StaticRosterProvider {
+    async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.roster.clone())
+    }
+}
+
+/// Regression for the HomeCore 0.7.23 parked-mob outcome: identities degraded
+/// to Broken by a rejected resume stayed broken indefinitely because nothing
+/// in a live process re-ran the reconcile ("degraded pending reconcile retry"
+/// promised a retry that only a manual RPC or a restart delivered). The
+/// background repair task must retry the resume and heal the identity to
+/// Active — onto the SAME durable session, never a fresh spawn — once the
+/// rejection cause clears.
+#[tokio::test]
+async fn identity_first_runtime_broken_identity_repair_task_heals_without_restart() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    // Boot restore rejects, and so does the first background retry: healing
+    // must survive retries that keep failing before the cause clears.
+    bridge.reject_resume_times(2);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    store
+        .save_session_snapshot(
+            &id,
+            &record.session_id,
+            record.generation,
+            CheckpointVersion::new(1),
+            FencingToken::new(0),
+            &SessionSnapshot {
+                data: b"snapshot data".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert!(matches!(
+        result.outcomes.get(&id).unwrap(),
+        RestoreOutcome::Broken(_)
+    ));
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
+
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(roster.clone())),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+
+    // The task retries on its own: first retry still rejected, second heals.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if runtime.status(&id).await.unwrap().state == IdentityLifecycleState::Active {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "repair task did not heal the Broken identity in time"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    repair.abort();
+
+    // Healed onto the same durable session, honestly, and never fresh-spawned.
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(
+        status.session_id,
+        Some(original_session_id),
+        "the healed identity must still be bound to the original durable session"
+    );
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        0,
+        "healing must resume, never fresh-spawn"
+    );
+    assert!(bridge.resume_calls.load(Ordering::SeqCst) >= 3);
+}
+
+/// The repair task is a repair task, not a polling reconciler: while nothing
+/// is Broken it must not touch the roster provider (no lease churn, no
+/// restore_flow reruns on healthy deployments).
+#[tokio::test]
+async fn identity_first_runtime_broken_identity_repair_task_is_quiet_when_healthy() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert_eq!(
+        runtime
+            .status(&make_identity("triage:main"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+
+    let provider = Arc::new(StaticRosterProvider::new(roster.clone()));
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            provider.clone(),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(5),
+            max_backoff: Duration::from_millis(20),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    repair.abort();
+
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "repair task must stay idle while no identity is Broken"
+    );
+}
+
 /// Regression for the reconcile-outcome lie: a bridge resume that fell back to
 /// a fresh spawn (typed `FreshSpawned`) must be reported as `created`, never
 /// `resumed` — reporting keyed on snapshot presence hid the HomeCore loss.

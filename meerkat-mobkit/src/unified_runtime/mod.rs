@@ -140,6 +140,7 @@ pub struct UnifiedRuntime {
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     identity_lease_renewal_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    identity_continuity_repair_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -241,6 +242,7 @@ impl UnifiedRuntime {
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
+            identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,
@@ -524,6 +526,20 @@ impl UnifiedRuntime {
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
     ) {
+        // Broken identities must self-heal: a rejected resume parks the
+        // identity "pending reconcile retry", and this task is what runs
+        // that retry in a live process (delivery and materialize both
+        // refuse the Broken state by design).
+        let repair_task = context
+            .clone()
+            .spawn_broken_identity_repair_task(Default::default());
+        if let Some(previous) = self
+            .identity_continuity_repair_task
+            .get_mut()
+            .replace(repair_task)
+        {
+            previous.abort();
+        }
         self.identity_first_context = Some(context);
     }
 

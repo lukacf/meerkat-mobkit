@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Broken identities now self-heal: a background continuity-repair task
+  (spawned by both the gateway and `UnifiedRuntimeBuilder` deployments)
+  re-runs the reconcile flow with doubling backoff while any identity sits in
+  the Broken state, so a resume that starts succeeding again — a transient
+  cause cleared, or an upstream fix deployed — restores the identity to
+  functional without a process restart. Previously "degraded pending
+  reconcile retry" promised a retry that only a manual
+  `mobkit/reconcile_identity` RPC or a restart delivered: delivery refuses
+  Broken identities by design, and so does on-demand materialization, which
+  is how HomeCore's 14 preserved-but-parked identities stayed parked. The
+  task is quiet while nothing is Broken (no lease churn on healthy
+  deployments) and the backoff bounds retry log noise.
+
 - Console Memory panel Phase 2/3: Holdings reads real store totals with
   per-scope FLOOR PRESSURE markers and a data-driven STORE FLOOR verdict
   tile plus the pending-harvest queue; Knowledge shows the durable injection
