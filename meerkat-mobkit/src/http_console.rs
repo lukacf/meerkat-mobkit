@@ -3552,13 +3552,19 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
         error = %message,
         "console JSON-RPC internal error"
     );
+    // The real failure reason goes on the wire. It used to be logged here
+    // and replaced with a bare "internal_error", which made every -32000
+    // undiagnosable from the client side (meerkat-studio ask K2: their K1
+    // retire/respawn failures cost a day because this said nothing).
+    // `error` stays "internal_error" as the stable kind discriminator for
+    // existing clients; `detail` carries the human-readable chain.
     response_value(
         id,
         None,
         Some(JsonRpcError {
             code: -32000,
-            message: "internal error".to_string(),
-            data: Some(json!({ "error": "internal_error" })),
+            message: message.clone(),
+            data: Some(json!({ "error": "internal_error", "detail": message })),
         }),
     )
 }
@@ -9443,14 +9449,29 @@ comms = true
         );
     }
 
+    /// DECISION (2026-07-06, meerkat-studio ask K2): console JSON-RPC internal
+    /// errors DO disclose the failure reason. Every caller that reaches these
+    /// handlers is an operator by construction — an auth-gated console 401s
+    /// unauthenticated callers before dispatch, and an open console is a
+    /// trusted-local deployment choice — while the previous redaction made
+    /// every -32000 undiagnosable from the client (the K1 retire/respawn
+    /// failures cost the reporter a day). The `error` field stays a stable
+    /// kind discriminator; `console_send_public_message` keeps ITS redaction
+    /// because that surface can reflect into agent-visible space.
     #[test]
-    fn internal_error_does_not_disclose_backend_details() {
-        let response = super::internal_error(json!(7), "secret backend DSN");
+    fn internal_error_carries_detail_and_stable_kind() {
+        let response = super::internal_error(json!(7), "retire failed: backend says no");
 
         assert_eq!(response["error"]["code"], json!(-32000));
-        assert_eq!(response["error"]["message"], json!("internal error"));
+        assert_eq!(
+            response["error"]["message"],
+            json!("retire failed: backend says no")
+        );
         assert_eq!(response["error"]["data"]["error"], json!("internal_error"));
-        assert!(!response.to_string().contains("secret backend DSN"));
+        assert_eq!(
+            response["error"]["data"]["detail"],
+            json!("retire failed: backend says no")
+        );
     }
 
     #[test]

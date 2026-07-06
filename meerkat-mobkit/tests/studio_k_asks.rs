@@ -1,0 +1,342 @@
+// meerkat-studio K-asks regression suite (K1 repro + K2 transparency).
+//
+// K1: mobkit/retire_member + mobkit/respawn_member on members of a
+// multi-member crew created via mobkit/ensure_member. Works on the ephemeral
+// session service; on the persistent chain (studio's construction:
+// FactoryAgentBuilder -> PersistentSessionService -> MobBootstrapSpec ->
+// UnifiedRuntime) BOTH fail for never-ran members: disposal completes but the
+// ArchiveSession step's authority lookup NotFounds (no runtime snapshot was
+// ever committed for an idle member), meerkat-mob escalates to a fatal
+// error, and the member is stranded in state=retiring (respawn aborts after
+// the failed retire, leaving a cancelled-kickoff zombie). Upstream ask 20;
+// the persistent test below is #[ignore]d until the meerkat fix lands.
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::{Body, to_bytes};
+use axum::http::Request;
+use meerkat::{
+    AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService, build_ephemeral_service,
+};
+use meerkat_client::TestClient;
+use meerkat_mob::{MobDefinition, MobStorage};
+use meerkat_mobkit::{
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+async fn rpc(app: &axum::Router, method: &str, params: Value) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    serde_json::from_slice(&body).expect("json")
+}
+
+fn studio_decision_state() -> meerkat_mobkit::RuntimeDecisionState {
+    build_runtime_decision_state(RuntimeDecisionInputs {
+        bigquery: BigQueryNaming {
+            dataset: "studio_dataset".to_string(),
+            table: "studio_table".to_string(),
+        },
+        trusted_mobkit_toml: r#"
+[[modules]]
+id = "router"
+command = "router-bin"
+args = []
+restart_policy = "always"
+"#
+        .to_string(),
+        auth: AuthPolicy {
+            default_provider: meerkat_mobkit::AuthProvider::GoogleOAuth,
+            email_allowlist: vec!["alice@example.com".to_string()],
+        },
+        trusted_oidc: TrustedOidcRuntimeConfig {
+            discovery_json:
+                r#"{"issuer":"https://trusted.mobkit.local","jwks_uri":"https://trusted.mobkit.local/.well-known/jwks.json"}"#
+                    .to_string(),
+            jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"}]}"#
+                .to_string(),
+            audience: "meerkat-console".to_string(),
+        },
+        console: ConsolePolicy {
+            require_app_auth: false,
+            ..ConsolePolicy::default()
+        },
+        ops: RuntimeOpsPolicy::default(),
+        release_metadata_json: include_str!("../assets/release-targets.json").to_string(),
+    })
+    .expect("decision state")
+}
+
+#[tokio::test]
+async fn studio_k1_retire_respawn_succeed_on_ephemeral_ensure_member_crew() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "studio-crew"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "studio".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+    let decisions = studio_decision_state();
+    let app = runtime.build_reference_app_router(decisions);
+
+    for member in ["lead", "builder", "reviewer"] {
+        let response = rpc(
+            &app,
+            "mobkit/ensure_member",
+            json!({"role": "general", "agent_identity": member}),
+        )
+        .await;
+        assert!(
+            response.get("error").is_none(),
+            "ensure {member}: {response}"
+        );
+    }
+
+    let retire = rpc(
+        &app,
+        "mobkit/retire_member",
+        json!({"member_id": "builder"}),
+    )
+    .await;
+    assert!(
+        retire.get("error").is_none(),
+        "retire_member on an ephemeral ensure_member crew must succeed: {retire}"
+    );
+
+    let respawn = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "reviewer"}),
+    )
+    .await;
+    assert!(
+        respawn.get("error").is_none(),
+        "respawn_member on an ephemeral ensure_member crew must succeed: {respawn}"
+    );
+}
+
+/// Studio's actual construction chain: FactoryAgentBuilder →
+/// PersistentSessionService → MobBootstrapSpec → UnifiedRuntime, then a
+/// 3-member crew via mobkit/ensure_member and per-member retire/respawn.
+#[tokio::test]
+#[ignore = "blocked on meerkat ask 20 (target 0.7.19): ArchiveSession NotFound for never-ran members strands them in retiring; see docs/design/upstream-asks.md"]
+async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let state = temp_dir.path().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+        meerkat_store::SqliteSessionStore::open(state.join("sessions.db")).expect("session store"),
+    );
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+            .expect("runtime store"),
+    );
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let factory = AgentFactory::new(&state).comms(true);
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+        session_store.clone(),
+    )));
+    builder.default_blob_store = Some(blob_store.clone());
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store,
+        runtime_store,
+        blob_store,
+    ));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "studio-crew-persistent"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+        .with_session_runtime_adapter(adapter.clone())
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "studio-persistent".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+    let app = runtime.build_reference_app_router(studio_decision_state());
+
+    for member in ["lead", "builder", "reviewer"] {
+        let response = rpc(
+            &app,
+            "mobkit/ensure_member",
+            json!({"role": "general", "agent_identity": member}),
+        )
+        .await;
+        assert!(
+            response.get("error").is_none(),
+            "ensure {member}: {response}"
+        );
+    }
+
+    let respawn = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "reviewer"}),
+    )
+    .await;
+    let retire = rpc(
+        &app,
+        "mobkit/retire_member",
+        json!({"member_id": "builder"}),
+    )
+    .await;
+    assert!(
+        retire.get("error").is_none(),
+        "retire_member on a persistent ensure_member crew must succeed \
+         (meerkat-studio K1); error: {retire}"
+    );
+
+    assert!(
+        respawn.get("error").is_none(),
+        "respawn_member on a persistent ensure_member crew must succeed \
+         (meerkat-studio K1); error: {respawn}"
+    );
+}
+
+/// meerkat-studio ask K2: a console JSON-RPC internal error must carry the
+/// real failure reason on the wire — `message` and `data.detail` — never a
+/// bare `{"error":"internal_error"}`. Uses an operation that fails
+/// deterministically regardless of upstream fixes: respawning a member that
+/// does not exist.
+#[tokio::test]
+async fn studio_k2_internal_errors_carry_detail_on_the_wire() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "studio-k2"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "studio-k2".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+    let app = runtime.build_reference_app_router(studio_decision_state());
+
+    let response = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "no-such-member"}),
+    )
+    .await;
+    let error = response
+        .get("error")
+        .expect("respawn of unknown member errors");
+    let message = error["message"].as_str().unwrap_or_default();
+    assert_ne!(
+        message, "internal error",
+        "the wire message must carry the real reason, not the old opaque \
+         placeholder: {response}"
+    );
+    assert!(
+        !message.is_empty(),
+        "error message must not be empty: {response}"
+    );
+    let detail = error["data"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        !detail.is_empty(),
+        "data.detail must carry the failure chain: {response}"
+    );
+}

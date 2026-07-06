@@ -2259,6 +2259,15 @@ pub struct MobBootstrapSpec {
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
     /// Forwarded to `MobBuilder::with_spawn_member_customizer`.
     pub(crate) spawn_member_customizer: Option<Arc<dyn meerkat_mob::SpawnMemberCustomizer>>,
+    /// Mob-wide external-tools provider, forwarded to
+    /// `MobBuilder::with_default_external_tools_provider`. Called at EVERY
+    /// member spawn — including revival — so tools attached here survive
+    /// `materialize_revived_member_session`, unlike the per-spawn
+    /// `SpawnMemberSpec.external_tools` overlay, which revival drops
+    /// (meerkat-studio ask K4/M2). NOTE: a profile's `tools.mcp` allowlist
+    /// gates what this provider exposes to that member, and an EMPTY allowlist
+    /// means the full surface, not none.
+    pub(crate) default_external_tools_provider: Option<meerkat_mob::ExternalToolsProvider>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -2292,12 +2301,27 @@ impl MobBootstrapSpec {
             },
             runtime_adapter: None,
             spawn_member_customizer: None,
+            default_external_tools_provider: None,
             _ephemeral_dir: None,
         }
     }
 
     pub fn with_options(mut self, options: MobBootstrapOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Install a mob-wide external-tools provider (e.g. MCP-backed callback
+    /// tools). Unlike the per-spawn `SpawnMemberSpec.external_tools` overlay —
+    /// which member revival silently drops — this provider is consulted on
+    /// every spawn AND every revival, so the tools are durable for the
+    /// member's whole lifecycle. The profile's `tools.mcp` allowlist gates
+    /// what each member sees; an empty allowlist means the full surface.
+    pub fn with_default_external_tools_provider(
+        mut self,
+        provider: meerkat_mob::ExternalToolsProvider,
+    ) -> Self {
+        self.default_external_tools_provider = Some(provider);
         self
     }
 
@@ -2923,6 +2947,10 @@ impl MobRuntime {
 
         if let Some(customizer) = spec.spawn_member_customizer.clone() {
             builder = builder.with_spawn_member_customizer(customizer);
+        }
+
+        if let Some(provider) = spec.default_external_tools_provider.clone() {
+            builder = builder.with_default_external_tools_provider(Some(provider));
         }
 
         if let Some(client) = default_llm_client {
