@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Upgraded the meerkat family 0.7.18 → 0.7.19 (exact pins). Carries the full
+  batch-3/4 ask set: schedule firing per-row fault tolerance + tick-health
+  incidents + Deleted-tombstone healing + SQL-bounded claim (asks 16-19 —
+  carry-verified: a poisoned occurrence row no longer starves healthy
+  claims), bounded force_cancel (M1), declarative MCP for library embedders
+  surviving revival (M2), versioning policy (M3), run-status reconciliation
+  query (M4), and the ask-20 host-owned disposal fix. Also regenerates the
+  bundled adaptive layer-decision schema against the 0.7.19 canonical.
+
+### Fixed
+
+- MobKit's session-service wrappers now forward meerkat 0.7.19's
+  `session_known_to_archive_authority` disposal-routing seam (the trait
+  default is fail-closed `true`; an unforwarded wrapper would have swallowed
+  the inner persistent service's real store read — the compose-don't-assume
+  wrapper class). The forwarding-probe test pins it.
+
+### Known issues
+
+- Ask 21 (docs/design/upstream-asks.md): mob-CREATED never-ran members are
+  archive-authority-OWNED yet snapshotless, so the owned-path archive still
+  strands them — 0.7.19's ask-20 fix reroutes only host-adopted sessions.
+  Identity-first gateways (default-on) sidestep this for crews; the window
+  on the worker plane is narrow (workers receive kickoff at spawn).
+
+### Changed
+
 - **`mobkit_gateway` is identity-first by default** (doctrine phase 2):
   every init now builds the durable-identity substrate — continuity store
   with fencing-floor seeding, lease provider, identity console RPC surface,

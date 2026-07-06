@@ -1593,6 +1593,17 @@ macro_rules! delegate_mob_session_service {
             fn supports_persistent_sessions(&self) -> bool {
                 self.inner.supports_persistent_sessions()
             }
+            // meerkat 0.7.19: disposal routes on this fact. The trait default
+            // is fail-closed (`true`); NOT forwarding it would swallow the
+            // inner persistent service's real store read and resurrect the
+            // ask-20 stranding for host-owned sessions (the external_tools
+            // clobber class: wrappers MUST forward, not default).
+            async fn session_known_to_archive_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<bool, SessionError> {
+                self.inner.session_known_to_archive_authority(session_id).await
+            }
             fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
                 self.runtime_adapter_override
                     .clone()
@@ -2059,6 +2070,17 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 impl MobSessionService for AfterCreateMobSessionService {
     fn supports_persistent_sessions(&self) -> bool {
         self.inner.supports_persistent_sessions()
+    }
+
+    // meerkat 0.7.19 disposal-routing seam — forwarded for the same reason
+    // as in `delegate_mob_session_service!` above.
+    async fn session_known_to_archive_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, SessionError> {
+        self.inner
+            .session_known_to_archive_authority(session_id)
+            .await
     }
     fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
         self.inner.runtime_adapter()
@@ -4757,6 +4779,14 @@ realm_profile = "worker-v2"
             Ok(())
         }
 
+        async fn session_known_to_archive_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<bool, SessionError> {
+            self.record("session_known_to_archive_authority");
+            Ok(true)
+        }
+
         async fn stage_runtime_system_context_for_active_turn(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -4843,6 +4873,14 @@ realm_profile = "worker-v2"
             )
             .await
             .expect("active-turn rollback should forward");
+        // meerkat 0.7.19 disposal-routing seam: the trait default is
+        // fail-closed `true`, so a wrapper that fails to forward this
+        // silently resurrects the ask-20 stranding for host-owned sessions.
+        let known = wrapped
+            .session_known_to_archive_authority(&session_id)
+            .await
+            .expect("archive-authority probe should forward");
+        assert!(known, "probe answers true");
         assert_eq!(
             probe.calls(),
             vec![
@@ -4851,6 +4889,7 @@ realm_profile = "worker-v2"
                 "active_turn_system_context_boundary_available",
                 "stage_runtime_system_context_for_active_turn",
                 "discard_runtime_system_context_for_active_turn",
+                "session_known_to_archive_authority",
             ]
         );
     }
