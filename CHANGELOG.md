@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `mobkit_gateway` now installs a tracing subscriber (stderr, `RUST_LOG`
+  honored, default `warn`) and logs a version-stamped startup line.
+  Previously the binary dropped every tracing event in the process —
+  runtime failures, console internal-error logs, and the schedule claim
+  watchdog's stall diagnosis were all invisible; meerkat-studio root-caused
+  their opaque K1/K2 failures to exactly this gap on the child gateways
+  their app spawns. `rpc_gateway` already had the subscriber.
+
 ### Added
 
 - Mob-wide, revival-surviving external-tools seam (meerkat-studio ask K4):

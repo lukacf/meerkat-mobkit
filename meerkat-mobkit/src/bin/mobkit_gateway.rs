@@ -579,6 +579,25 @@ fn main() {
         );
         return;
     }
+    // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
+    // every tracing event in the process is silently dropped: runtime
+    // failures, console internal-error logs, and the schedule claim
+    // watchdog's stall diagnosis all vanish — meerkat-studio root-caused
+    // their opaque K1/K2 failures to exactly this missing init on the child
+    // gateways their app spawns. Stderr, never stdout: stdout carries the
+    // init JSON handshake.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "mobkit_gateway starting (console/HTTP gateway)"
+    );
     // Meerkat 0.7's generated machine-authority apply path needs deep worker
     // stacks (mirrors meerkat-rpc's explicit 16 MiB tokio worker sizing).
     let runtime = match tokio::runtime::Builder::new_multi_thread()

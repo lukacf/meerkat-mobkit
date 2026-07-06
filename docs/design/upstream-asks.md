@@ -798,16 +798,25 @@ bridge already classifies this exact string as recoverable for SESSION-OWNED
 retire (mobkit `is_recoverable_session_owned_retire_cleanup_error`) — the mob-
 member path needs the equivalent judgment at the source.
 
-**Proposed shape.** In meerkat-mob: when disposal COMPLETED and the archive
-miss is `NotFound for registered runtime session` (never-committed snapshot,
-not a lost record — distinguishable by asking the runtime store whether the
-logical runtime id ever existed), treat archive as a no-op success and let
-the retirement commit finish; respawn then proceeds naturally. Alternatively
-commit an initial runtime snapshot at member session registration so the
-lookup never misses. Regression: retire + respawn of a freshly spawned,
-never-prompted member on a persistent service must succeed; a
-`roster.get(...)`-after-failed-retire assertion to pin the no-strand
-invariant.
+**Proposed shape.** In meerkat-mob (the escalation site is the archive
+helper at `src/runtime/provisioner.rs:894`): when disposal COMPLETED and the
+archive miss is `NotFound for registered runtime session`, treat the
+session-owned member as already-archived — per the helper's own doc comment
+— and let the retirement commit finish; respawn then proceeds naturally.
+(Alternative: register/commit an initial runtime snapshot at member session
+creation so the authority never misses; either side of the seam works, the
+judgment belongs upstream.) Do NOT fix this with downstream tolerance:
+retrying fails identically and `list_members` is unchanged afterwards — the
+member is neither respawned nor removed — so a console-layer
+"tolerate and report accepted" patch misreports reality (verified
+empirically by both mobkit and the reporter, independently). mobkit's
+identity-first bridge already carries the exact tolerance string
+(`is_recoverable_session_owned_retire_cleanup_error`) but it never applies
+on the console `handle.retire()`/`respawn()` path, and lifting it there
+would hit the misreporting trap above. Regression: retire + respawn of a
+freshly spawned, never-prompted member on a persistent service must
+succeed; a `roster.get(...)`-after-failed-retire assertion to pin the
+no-strand invariant.
 
 ## M1 — force_cancel_member stack-overflows (SIGABRT) mid-turn — P0
 
