@@ -672,3 +672,92 @@ over-cull edge cases; removed when the id lands.
 The two production deployments (OB3, HomeCore) both run strictly one live
 session per identity; MobKit ships a fail-closed single-embodiment guard and
 will file the ask when a real use case materializes.
+
+---
+
+# Batch 3 — schedule firing pipeline (2026-07-06, HomeCore 0.7.24 field report)
+
+Field context: rpc_gateway persistent mode, on-disk SQLite schedule store
+carried across upgrades since ~0.7.13-era binaries. Authoring and planning
+work; NOTHING fires. Every occurrence in the store sat at `phase=pending`
+with `lease_expires_at_ms=NULL` — including a fresh one-shot authored on a
+just-cleaned store — with zero log output at any level. Root-caused in the
+published 0.7.18 sources (all four asks are visible there); mobkit ships a
+read-only watchdog (`spawn_schedule_claim_watchdog`) that names the stall
+and the poisoned row, but only meerkat can make the driver survive one.
+
+## Ask 16 — `spawn_schedule_host` discards every driver tick error
+
+**Problem statement.** `meerkat/src/surface/schedule_host.rs` runs the firing
+loop as `let _ = driver.tick_once().await;` every 250 ms. When ticks fail
+persistently (see asks 17–19 for why they do), schedules silently stop firing
+forever: no ERROR, no WARN, nothing for `RUST_LOG=debug` to show — the error
+value is dropped before tracing can see it. The HomeCore operator offered a
+debug trace; there was literally nothing to capture.
+
+**Proposed shape.** Log `tick_once` errors — on first occurrence and on
+change at ERROR, with a rate-limited heartbeat while the same error persists;
+count consecutive failures in the report struct. A driver that cannot claim
+is an incident, not a no-op.
+
+## Ask 17 — one poisoned row starves every schedule (all-or-nothing scans)
+
+**Problem statement.** `ScheduleDriver::tick_once` begins with
+`service.list()` — which fails wholesale on the FIRST schedule row whose
+recovered machine state is rejected — and `claim_due_occurrences` (sqlite
+store) deserializes and `classify_due_action`s EVERY occurrence row in the
+store inside one transaction before leasing anything. Any single stale or
+invariant-rejected row (old schema_version, `misfire deadline projection
+does not match machine_state`, corrupted JSON) aborts the entire tick. One
+bad row → zero claims, for every schedule, forever — combined with ask 16,
+silently.
+
+**Evidence.** HomeCore: 31/31 occurrences pending, no lease ever taken, on a
+store whose rows span ~5 binary generations. A fresh, valid one-shot on the
+same store never fired — starved by a neighbor row.
+
+**Proposed shape.** Per-row tolerance in both scans: a row that fails
+deserialization or due-classification is skipped and logged (schedule_id /
+occurrence_id + reason), optionally quarantined to a dead-row table or a
+`phase=quarantined` marker so operators can inspect and purge. The tick
+claims everything healthy.
+
+## Ask 18 — Deleted schedule tombstones fail recovery and kill `list()`
+
+**Problem statement.** Deleting a schedule persists a tombstone row whose
+recovered `ScheduleLifecycleMachine` state is then REJECTED on read:
+`RecoveredStateInvariantRejected { phase: Deleted, invariant:
+"deleted_has_no_planning_cursor" }`. Every subsequent `list schedules` (and
+therefore every driver tick and every mobkit boot repair) fails until the
+operator hand-deletes rows in sqlite. The writer and the recovery invariant
+disagree about what a legal Deleted state looks like — one of them is wrong.
+
+**Evidence.** HomeCore boot logs (every boot until manual cleanup of 16
+tombstones): `list schedules: serialization error: generated
+ScheduleLifecycleMachine rejected recovered machine_state: ...`.
+
+**Proposed shape.** Either (a) the delete flow clears the planning cursor
+before persisting the tombstone AND a one-time migration repairs existing
+tombstones, or (b) recovery accepts Deleted-with-cursor and normalizes it.
+Plus an upgrade-carry test: delete a schedule under version N, open under
+N+1, `list()` must succeed.
+
+## Ask 19 — claim scan reads the whole store per tick
+
+**Problem statement.** `claim_due_occurrences_impl` SELECTs and deserializes
+every occurrence (joined with its schedule) with no SQL predicate on phase or
+due time, four times per second. Beyond the poison surface (ask 17), this is
+O(store) per tick: OB3-scale stores (multi-GB, years of terminal receipts and
+occurrences) pay full-table deserialization at 4 Hz.
+
+**Proposed shape.** Push the filter into SQL — `WHERE phase-in-pending-set
+AND due_at_ms <= :now + horizon` (due_at_ms is already a column and already
+indexed by the ORDER BY) — and let per-row tolerance (ask 17) handle the
+stragglers. Terminal rows never enter the scan.
+
+**MobKit interim behavior (ships in 0.7.25).** Read-only
+`spawn_schedule_claim_watchdog` in both gateways: probes `list()`, the
+occurrence scan, and overdue-pending-unclaimed state every 60 s, and logs a
+row-level diagnosis (poisoned row ids via direct sqlite triage) when the
+pipeline is stalled. It makes the failure loud and attributable but cannot
+make the driver claim past a poisoned row.

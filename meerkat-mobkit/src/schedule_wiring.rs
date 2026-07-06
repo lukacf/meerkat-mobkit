@@ -34,10 +34,10 @@ use meerkat::surface::{
 use meerkat::{
     Config, CreateScheduleRequest, FactoryAgentBuilder, HostRunnable, HostRunnableError,
     HostRunnableInvocation, HostRunnableName, HostRunnableOutcome, HostRunnableRegistry,
-    HostRunnableTargetBinding, IntervalTriggerSpec, MobTargetBinding, PersistentSessionService,
-    ScheduleRunnableHost, ScheduleService, ScheduleToolDispatcher, ScheduledMobAction,
-    ScheduledSessionAction, SessionAgentBuilder, SessionTargetBinding, SqliteScheduleStore,
-    TargetBinding, TriggerSpec, UpdateScheduleRequest,
+    HostRunnableTargetBinding, IntervalTriggerSpec, MobTargetBinding, Occurrence, OccurrenceFilter,
+    OccurrencePhase, PersistentSessionService, Schedule, ScheduleRunnableHost, ScheduleService,
+    ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction, SessionAgentBuilder,
+    SessionTargetBinding, SqliteScheduleStore, TargetBinding, TriggerSpec, UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
@@ -596,6 +596,248 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     )
 }
 
+/// Cadence and sensitivity for [`spawn_schedule_claim_watchdog`].
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleClaimWatchdogConfig {
+    /// Delay between probes.
+    pub poll_interval: Duration,
+    /// A pending occurrence due longer ago than this counts as stalled.
+    pub overdue_threshold: Duration,
+    /// While unhealthy with an unchanged report, re-log every Nth poll.
+    pub heartbeat_polls: u32,
+}
+
+impl Default for ScheduleClaimWatchdogConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_mins(1),
+            overdue_threshold: Duration::from_mins(2),
+            heartbeat_polls: 10,
+        }
+    }
+}
+
+/// Verdict from one firing-pipeline probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleFiringProbe {
+    Healthy,
+    /// The pipeline is not delivering and here is why, as precisely as this
+    /// side of the wire can name it.
+    Stalled {
+        report: String,
+    },
+}
+
+fn triage_poisoned_rows(
+    store_path: &Path,
+    table: &str,
+    id_column: &str,
+    json_column: &str,
+    parse: impl Fn(&[u8]) -> Result<(), String>,
+) -> Vec<String> {
+    let conn = match rusqlite::Connection::open_with_flags(
+        store_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => conn,
+        Err(err) => return vec![format!("(row triage unavailable: {err})")],
+    };
+    let sql = format!("SELECT {id_column}, {json_column} FROM {table}");
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(stmt) => stmt,
+        Err(err) => return vec![format!("(row triage query failed: {err})")],
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+    });
+    let mut poisoned = Vec::new();
+    if let Ok(rows) = rows {
+        for row in rows.flatten() {
+            let (id, bytes) = row;
+            if let Err(err) = parse(&bytes) {
+                poisoned.push(format!("{table}.{id_column}={id}: {err}"));
+                if poisoned.len() >= 5 {
+                    poisoned.push(format!("(further poisoned {table} rows elided)"));
+                    break;
+                }
+            }
+        }
+    }
+    poisoned
+}
+
+/// Probe whether the schedule firing pipeline can actually deliver, and if
+/// not, name the reason — down to the poisoned row where possible.
+///
+/// Exists because meerkat's schedule host discards every driver tick error
+/// (`let _ = driver.tick_once()`), and a tick aborts wholesale on the FIRST
+/// poisoned row anywhere in the store: `service.list()` fails on any
+/// unrecoverable schedule row (e.g. a Deleted tombstone rejected by
+/// `deleted_has_no_planning_cursor`), and the claim scan deserializes and
+/// classifies EVERY occurrence row before leasing anything. One stale row →
+/// zero claims, forever, with nothing in any log — HomeCore 0.7.24 sat with
+/// 31 pending occurrences and `lease_expires_at_ms=NULL` across the board.
+pub async fn probe_schedule_firing_pipeline(
+    schedule_service: &ScheduleService,
+    store_path: &Path,
+    overdue_threshold: Duration,
+) -> ScheduleFiringProbe {
+    // 1. The tick preflight: one poisoned schedule row fails the whole list.
+    if let Err(err) = schedule_service.list().await {
+        let mut report = format!(
+            "schedule list is failing, so every firing-driver tick aborts before claiming (nothing will fire): {err}"
+        );
+        let poisoned = triage_poisoned_rows(
+            store_path,
+            "schedule_schedules",
+            "schedule_id",
+            "schedule_json",
+            |bytes| {
+                serde_json::from_slice::<Schedule>(bytes)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+        );
+        if !poisoned.is_empty() {
+            report.push_str(&format!("; poisoned rows: {}", poisoned.join("; ")));
+        }
+        return ScheduleFiringProbe::Stalled { report };
+    }
+
+    // 2. The claim scan's poison surface: it deserializes every occurrence.
+    let store = schedule_service.store();
+    let now = match store.get_store_time_utc().await {
+        Ok(now) => now,
+        Err(err) => {
+            return ScheduleFiringProbe::Stalled {
+                report: format!("schedule store clock read failed: {err}"),
+            };
+        }
+    };
+    let overdue_before = now
+        - chrono::Duration::from_std(overdue_threshold)
+            .unwrap_or_else(|_| chrono::Duration::seconds(120));
+    let pending_overdue = match store
+        .list_occurrences(OccurrenceFilter {
+            phase: Some(OccurrencePhase::Pending),
+            include_terminal: false,
+            due_before_utc: Some(overdue_before),
+            ..OccurrenceFilter::default()
+        })
+        .await
+    {
+        Ok(occurrences) => occurrences,
+        Err(err) => {
+            let mut report = format!(
+                "occurrence scan is failing, so the firing driver cannot claim anything (nothing will fire): {err}"
+            );
+            let poisoned = triage_poisoned_rows(
+                store_path,
+                "schedule_occurrences",
+                "occurrence_id",
+                "occurrence_json",
+                |bytes| {
+                    serde_json::from_slice::<Occurrence>(bytes)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                },
+            );
+            if !poisoned.is_empty() {
+                report.push_str(&format!("; poisoned rows: {}", poisoned.join("; ")));
+            }
+            return ScheduleFiringProbe::Stalled { report };
+        }
+    };
+
+    if pending_overdue.is_empty() {
+        return ScheduleFiringProbe::Healthy;
+    }
+
+    // 3. Reads are healthy but due work is not being claimed. Classify each
+    // overdue occurrence the way the claim scan would — a classify error on
+    // ANY row (even one belonging to another schedule) aborts the whole
+    // claim transaction upstream.
+    let mut classify_errors = Vec::new();
+    for occurrence in &pending_overdue {
+        if let Err(err) = occurrence.classify_due_action(now) {
+            classify_errors.push(format!(
+                "occurrence {} (due {}): {err}",
+                occurrence.occurrence_id, occurrence.due_at_utc
+            ));
+            if classify_errors.len() >= 5 {
+                break;
+            }
+        }
+    }
+    let mut report = format!(
+        "{} pending occurrence(s) overdue by more than {}s and never claimed (oldest due {}); the firing driver's claim loop is failing silently",
+        pending_overdue.len(),
+        overdue_threshold.as_secs(),
+        pending_overdue
+            .first()
+            .map(|o| o.due_at_utc.to_rfc3339())
+            .unwrap_or_default(),
+    );
+    if classify_errors.is_empty() {
+        report.push_str(
+            "; every overdue occurrence classifies cleanly, so the abort is in the claim/lease transaction or a row outside the overdue set",
+        );
+    } else {
+        report.push_str(&format!(
+            "; rows failing due-classification: {}",
+            classify_errors.join("; ")
+        ));
+    }
+    ScheduleFiringProbe::Stalled { report }
+}
+
+/// Watchdog for the silent-stall failure mode above: probes the firing
+/// pipeline and logs LOUDLY when due work is not being claimed, naming the
+/// poisoned row when one is identifiable. Purely read-only — it never claims
+/// or transitions occurrences, so it cannot race the real driver.
+///
+/// Logs an ERROR when the stall report first appears or changes, a WARN
+/// heartbeat every `heartbeat_polls` while it persists, and an INFO when the
+/// pipeline recovers.
+pub fn spawn_schedule_claim_watchdog(
+    schedule_service: ScheduleService,
+    store_path: std::path::PathBuf,
+    config: ScheduleClaimWatchdogConfig,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_report: Option<String> = None;
+        let mut unhealthy_polls: u32 = 0;
+        loop {
+            tokio::time::sleep(config.poll_interval).await;
+            match probe_schedule_firing_pipeline(
+                &schedule_service,
+                &store_path,
+                config.overdue_threshold,
+            )
+            .await
+            {
+                ScheduleFiringProbe::Healthy => {
+                    if last_report.take().is_some() {
+                        tracing::info!("schedule firing pipeline recovered");
+                    }
+                    unhealthy_polls = 0;
+                }
+                ScheduleFiringProbe::Stalled { report } => {
+                    unhealthy_polls += 1;
+                    if last_report.as_deref() != Some(report.as_str()) {
+                        tracing::error!(%report, "schedule firing pipeline is stalled");
+                    } else if config.heartbeat_polls > 0
+                        && unhealthy_polls.is_multiple_of(config.heartbeat_polls)
+                    {
+                        tracing::warn!(%report, "schedule firing pipeline is still stalled");
+                    }
+                    last_report = Some(report);
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -930,6 +1172,178 @@ mod tests {
             TriggerSpec::Interval(spec) => spec.every_seconds,
             other => panic!("expected interval trigger, got {other:?}"),
         }
+    }
+
+    /// Author an interval schedule (host-runnable target: no session machinery
+    /// needed) against a REAL sqlite store and plan its horizon, mirroring what
+    /// the firing driver's tick preflight sees.
+    async fn seed_sqlite_schedule(
+        dir: &std::path::Path,
+        start_at_utc: chrono::DateTime<chrono::Utc>,
+    ) -> (ScheduleService, std::path::PathBuf) {
+        let store_path = dir.join(SCHEDULE_STORE_FILE);
+        let store = SqliteScheduleStore::open(&store_path).expect("open sqlite schedule store");
+        let service = ScheduleService::new(Arc::new(store));
+        let created = service
+            .create(CreateScheduleRequest {
+                name: Some("watchdog-fixture".to_string()),
+                description: None,
+                trigger: TriggerSpec::Interval(IntervalTriggerSpec {
+                    start_at_utc,
+                    every_seconds: 3600,
+                    end_at_utc: None,
+                }),
+                target: TargetBinding::host_runnable(HostRunnableTargetBinding {
+                    runnable: HostRunnableName::parse("watchdog.fixture").expect("runnable name"),
+                    params: None,
+                }),
+                misfire_policy: meerkat::MisfirePolicy::default(),
+                overlap_policy: meerkat::OverlapPolicy::default(),
+                missing_target_policy: meerkat::MissingTargetPolicy::default(),
+                labels: std::collections::BTreeMap::new(),
+                planning_horizon_days: None,
+                planning_horizon_occurrences: None,
+            })
+            .await
+            .expect("create schedule");
+        service
+            .refill_horizon(&created.schedule_id)
+            .await
+            .expect("plan occurrences");
+        (service, store_path)
+    }
+
+    fn corrupt_first_row(store_path: &std::path::Path, table: &str, json_column: &str) {
+        let conn = rusqlite::Connection::open(store_path).expect("open store for corruption");
+        let changed = conn
+            .execute(
+                &format!(
+                    "UPDATE {table} SET {json_column} = X'7B22706F69736F6E22' \
+                     WHERE rowid = (SELECT MIN(rowid) FROM {table})"
+                ),
+                [],
+            )
+            .expect("corrupt row");
+        assert_eq!(changed, 1, "one {table} row corrupted");
+    }
+
+    /// Healthy pipeline: future work only, nothing overdue → the watchdog has
+    /// nothing to say.
+    #[tokio::test]
+    async fn schedule_claim_watchdog_probe_is_healthy_on_future_work() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let start = chrono::Utc::now() + chrono::Duration::hours(1);
+        let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
+
+        let probe =
+            probe_schedule_firing_pipeline(&service, &store_path, Duration::from_secs(0)).await;
+        assert_eq!(probe, ScheduleFiringProbe::Healthy);
+    }
+
+    /// HomeCore Observation A: due occurrences sit pending with no lease and
+    /// the driver says nothing. The probe must call that out loudly.
+    #[tokio::test]
+    async fn schedule_claim_watchdog_probe_flags_overdue_unclaimed_occurrences() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let start = chrono::Utc::now() + chrono::Duration::hours(1);
+        let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
+
+        // Age the first planned occurrence 10 minutes into the past — both the
+        // projection's due_at_utc and the machine state's due_at_utc_ms (they
+        // are recovery-checked against each other), plus the ordering column.
+        let overdue = chrono::Utc::now() - chrono::Duration::minutes(10);
+        {
+            let conn = rusqlite::Connection::open(&store_path).expect("open store");
+            let (rowid, bytes): (i64, Vec<u8>) = conn
+                .query_row(
+                    "SELECT rowid, occurrence_json FROM schedule_occurrences \
+                     ORDER BY rowid LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read first occurrence");
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("occurrence json");
+            let old_due_ms = json["machine_state"]["due_at_utc_ms"]
+                .as_i64()
+                .expect("machine due ms");
+            let shift = old_due_ms - overdue.timestamp_millis();
+            json["due_at_utc"] = serde_json::Value::String(overdue.to_rfc3339());
+            json["machine_state"]["due_at_utc_ms"] =
+                serde_json::Value::from(overdue.timestamp_millis());
+            if let Some(deadline) = json["machine_state"]["misfire_deadline_utc_ms"].as_i64() {
+                json["machine_state"]["misfire_deadline_utc_ms"] =
+                    serde_json::Value::from(deadline - shift);
+            }
+            let updated = serde_json::to_vec(&json).expect("serialize occurrence");
+            conn.execute(
+                "UPDATE schedule_occurrences SET occurrence_json = ?1, due_at_ms = ?2 \
+                 WHERE rowid = ?3",
+                rusqlite::params![updated, overdue.timestamp_millis(), rowid],
+            )
+            .expect("age occurrence");
+        }
+
+        let probe =
+            probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
+        let ScheduleFiringProbe::Stalled { report } = probe else {
+            panic!("an overdue unclaimed occurrence must probe as Stalled");
+        };
+        assert!(
+            report.contains("never claimed"),
+            "report must state the claim stall: {report}"
+        );
+    }
+
+    /// HomeCore Observation B: one poisoned schedule row (e.g. a Deleted
+    /// tombstone the recovery invariant rejects) fails the whole list, which
+    /// aborts every driver tick before claiming. The probe must surface the
+    /// list failure and name the poisoned row.
+    #[tokio::test]
+    async fn schedule_claim_watchdog_probe_names_poisoned_schedule_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let start = chrono::Utc::now() + chrono::Duration::hours(1);
+        let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
+        corrupt_first_row(&store_path, "schedule_schedules", "schedule_json");
+
+        let probe =
+            probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
+        let ScheduleFiringProbe::Stalled { report } = probe else {
+            panic!("a poisoned schedule row must probe as Stalled");
+        };
+        assert!(
+            report.contains("schedule list is failing"),
+            "report must name the failing surface: {report}"
+        );
+        assert!(
+            report.contains("schedule_schedules.schedule_id="),
+            "report must name the poisoned row: {report}"
+        );
+    }
+
+    /// The claim scan deserializes EVERY occurrence row before leasing
+    /// anything, so one poisoned occurrence silently starves all schedules.
+    /// The probe must surface the scan failure and name the row.
+    #[tokio::test]
+    async fn schedule_claim_watchdog_probe_names_poisoned_occurrence_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let start = chrono::Utc::now() + chrono::Duration::hours(1);
+        let (service, store_path) = seed_sqlite_schedule(dir.path(), start).await;
+        corrupt_first_row(&store_path, "schedule_occurrences", "occurrence_json");
+
+        let probe =
+            probe_schedule_firing_pipeline(&service, &store_path, Duration::from_mins(1)).await;
+        let ScheduleFiringProbe::Stalled { report } = probe else {
+            panic!("a poisoned occurrence row must probe as Stalled");
+        };
+        assert!(
+            report.contains("occurrence scan is failing"),
+            "report must name the failing surface: {report}"
+        );
+        assert!(
+            report.contains("schedule_occurrences.occurrence_id="),
+            "report must name the poisoned row: {report}"
+        );
     }
 
     #[tokio::test]

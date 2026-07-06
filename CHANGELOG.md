@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Schedule claim watchdog (both gateways): meerkat's firing driver discards
+  its own tick errors, and one poisoned row anywhere in the schedule store
+  (a Deleted tombstone the recovery invariant rejects, a stale-schema
+  occurrence) aborts every tick before anything is claimed — due occurrences
+  then sit `pending` forever with nothing in any log (the HomeCore 0.7.24
+  report: 31/31 pending, no lease ever taken). The new read-only
+  `spawn_schedule_claim_watchdog` probes the pipeline every 60s and, when
+  due work is not being claimed, logs a row-level diagnosis naming the
+  poisoned row. It cannot make the driver claim past a poisoned row — the
+  driver fixes are upstream asks 16-19 (docs/design/upstream-asks.md).
+
 ## [0.7.24] - 2026-07-06
 
 ### Changed
