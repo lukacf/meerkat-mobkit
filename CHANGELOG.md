@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Identity-first doctrine recorded (docs/design/identity-first-doctrine.md):
+  MobKit is dual-plane by decision — durable members on the identity plane
+  (continuity, leases, reconcile), ephemeral workers on the mob plane
+  (spawn/idle-retire); neither plane is deprecated, but building durable
+  populations on the mob plane is. Published docs updated to match
+  (roster.mdx frames the member API as the worker plane; the Python SDK's
+  member-per-user "first contact" pattern now stands users up on the
+  identity plane), and the mobkit-platform skill teaches the doctrine.
+
+### Added
+
 - Identity-first gateway mode (meerkat-studio ask K0): `identity_first: true`
   on `mobkit_gateway` init boots the durable-identity substrate — continuity
   records + lease-fenced embodiment (default providers constructed from the
