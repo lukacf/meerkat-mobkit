@@ -239,3 +239,65 @@ fn mobkit_gateway_rejects_post_init_stdin_rpc_loudly() {
         "post-init stdin RPC must fail loudly and point at rpc_gateway, got: {reconcile_resp}"
     );
 }
+
+/// meerkat-studio K2 root cause on this binary: `mobkit_gateway` had no
+/// tracing subscriber, so every WARN/ERROR in the process — runtime
+/// failures, console internal-error logs, the schedule claim watchdog's
+/// stall diagnosis — was silently dropped. Pin that the binary emits
+/// tracing on stderr: with RUST_LOG=info the bootstrap path logs at least
+/// one INFO line.
+#[test]
+fn mobkit_gateway_emits_tracing_on_stderr() {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/init",
+        "params": {
+            "workspace_root": workspace.path().to_string_lossy(),
+            "store_path": store.path().join("store").to_string_lossy(),
+        },
+    });
+
+    let mut child = Command::new(bin)
+        .current_dir(workspace.path())
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mobkit_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush");
+
+    // Wait for the init response so bootstrap tracing has happened.
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let _init_response = rx
+        .recv_timeout(Duration::from_mins(1))
+        .expect("gateway responded to init");
+
+    let _ = stdin;
+    let _ = child.kill();
+    let output = child.wait_with_output().expect("gateway output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("INFO") || stderr.contains("WARN"),
+        "mobkit_gateway must emit tracing on stderr (RUST_LOG=info); \
+         got stderr: {stderr:?}"
+    );
+}
