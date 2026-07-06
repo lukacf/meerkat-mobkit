@@ -354,6 +354,7 @@ fn mobkit_gateway_bootstraps_identity_first_runtime() {
         .recv_timeout(Duration::from_secs(90))
         .expect("gateway responded to identity-first init");
     let _ = child.kill();
+    let _ = child.wait();
     let response: Value = serde_json::from_str(line.trim()).expect("init response json");
     assert!(
         response.get("error").is_none(),
