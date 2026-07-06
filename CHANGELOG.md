@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.24] - 2026-07-06
+
 ### Changed
 
 - Upgraded the meerkat family 0.7.17 → 0.7.18. Carries the fix for the
