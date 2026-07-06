@@ -3550,7 +3550,9 @@ external_addressable = true
     // ("stale fencing token: presented 1, current N"), aborting boot on every
     // restart with existing history. Capture the local store's high-water here
     // and seed the lease provider with it below.
-    let mut local_fencing_floor: u64 = 0;
+    let mut local_default_lease_provider: Option<
+        Arc<dyn meerkat_mobkit::identity_first::contracts::LeaseProvider>,
+    > = None;
     let identity_continuity_store: Option<
         Arc<dyn meerkat_mobkit::identity_first::ContinuityStore>,
     > = if has_roster_provider {
@@ -3564,24 +3566,10 @@ external_addressable = true
             } else {
                 std::env::temp_dir().join(format!("mobkit-continuity-{}.db", std::process::id()))
             };
-            let store = meerkat_mobkit::identity_first::LocalContinuityStore::open(&db_path)
-                .unwrap_or_else(|e| {
-                    fail_init(
-                        &request_id,
-                        -32603,
-                        format!("failed to open continuity store: {e}"),
-                    );
-                });
-            // Fail loudly rather than silently degrading to floor 0 — a 0 floor
-            // would re-arm the very restart-abort this seeding prevents.
-            local_fencing_floor = store.max_fencing_token().unwrap_or_else(|e| {
-                fail_init(
-                    &request_id,
-                    -32603,
-                    format!("failed to read continuity fencing high-water: {e}"),
-                )
-            });
-            Arc::new(store)
+            let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&db_path)
+                .unwrap_or_else(|e| fail_init(&request_id, -32603, e));
+            local_default_lease_provider = Some(substrate.lease_provider);
+            substrate.continuity_store
         })
     } else {
         None
@@ -3592,14 +3580,13 @@ external_addressable = true
         Some(if has_lease_provider {
             Arc::new(meerkat_mobkit::identity_first::GatewayLeaseProvider::new(
                 bridge.clone(),
-            ))
+            )) as Arc<dyn meerkat_mobkit::identity_first::contracts::LeaseProvider>
         } else {
-            // Resume the fencing counter above the persisted high-water so a
-            // restart with existing continuity history never presents a stale
-            // token (see `local_fencing_floor` above).
-            Arc::new(
-                meerkat_mobkit::identity_first::LocalLeaseProvider::with_floor(local_fencing_floor),
-            )
+            // From the shared substrate: fencing counter resumes above the
+            // persisted high-water (see gateway_wiring::open_identity_substrate).
+            local_default_lease_provider
+                .clone()
+                .expect("local substrate initialized with the continuity store")
         })
     } else {
         None

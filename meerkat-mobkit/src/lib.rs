@@ -13,6 +13,7 @@ pub mod console_contracts;
 pub(crate) mod console_spawn;
 pub mod contact_directory;
 pub mod decisions;
+pub mod gateway_wiring;
 pub mod governance;
 pub mod http_auth;
 pub mod http_console;

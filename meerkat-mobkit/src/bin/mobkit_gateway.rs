@@ -665,7 +665,10 @@ async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|| runtime_root.join("state"));
     let store_path = store_path.canonicalize().unwrap_or(store_path);
     let persistent_sessions = params.persistent_sessions.unwrap_or(false);
-    let identity_first = params.identity_first.unwrap_or(false);
+    // Doctrine default: the identity substrate is ON. `identity_first: false`
+    // remains as a one-release opt-out for deployments that need the pure
+    // mob-plane console back (changelog-flagged).
+    let identity_first = params.identity_first.unwrap_or(true);
     let identity_roster_seed = params.identity_roster.clone().unwrap_or_default();
     let realm = params.realm.as_deref();
     let isolated = params.isolated.unwrap_or(false);
@@ -938,23 +941,15 @@ async fn run() -> anyhow::Result<()> {
     > = if identity_first {
         use meerkat_mobkit::identity_first::{
             AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
-            IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, MobSessionBridge,
-            MutableRosterProvider, restore_flow,
+            IdentityRuntimeConfig, MobSessionBridge, MutableRosterProvider, restore_flow,
         };
 
         let (store_dir, _) = resolve_store_dir(&store_path);
         fs::create_dir_all(&store_dir)
             .with_context(|| format!("failed to create {}", store_dir.display()))?;
         let continuity_db = store_dir.join("continuity.db");
-        let continuity_store = LocalContinuityStore::open(&continuity_db)
-            .with_context(|| format!("failed to open {}", continuity_db.display()))?;
-        // Resume the fencing counter above the persisted high-water so a
-        // restart with existing continuity history never presents a stale
-        // token (mirrors rpc_gateway).
-        let fencing_floor = continuity_store
-            .max_fencing_token()
-            .context("failed to read continuity fencing high-water")?;
-        let lease_provider = LocalLeaseProvider::with_floor(fencing_floor);
+        let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
+            .map_err(|e| anyhow!("{e}"))?;
 
         let mob_handle = runtime.mob_handle();
         let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
@@ -968,8 +963,8 @@ async fn run() -> anyhow::Result<()> {
             };
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: Arc::new(continuity_store),
-            lease_provider: Arc::new(lease_provider),
+            continuity_store: substrate.continuity_store,
+            lease_provider: substrate.lease_provider,
             runtime_instance_id: format!("mobkit-gateway-{}", std::process::id()),
             has_runtime_store: persistent_sessions,
             durability_policy: DurabilityPolicy::SyncWriteThrough,
