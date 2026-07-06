@@ -1227,6 +1227,80 @@ mod tests {
         assert_eq!(changed, 1, "one {table} row corrupted");
     }
 
+    /// meerkat 0.7.19 carry guard (asks 16-19): a poisoned occurrence row no
+    /// longer starves the whole claim — the sqlite claim scan skips it as a
+    /// typed row fault and claims healthy due neighbors. This is the exact
+    /// HomeCore shape: one stale row, everything else due.
+    #[tokio::test]
+    async fn schedule_claim_tolerates_poisoned_neighbor_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Schedule A: healthy, due in the past via the aged-occurrence
+        // rewrite used by the watchdog tests. Schedule B: poisoned row.
+        let (service, store_path) =
+            seed_sqlite_schedule(dir.path(), chrono::Utc::now() + chrono::Duration::hours(1)).await;
+        // Age schedule A's first occurrence JUST past due (inside any misfire
+        // window, so it classifies as claimable rather than misfired).
+        let overdue = chrono::Utc::now() - chrono::Duration::seconds(5);
+        {
+            let conn = rusqlite::Connection::open(&store_path).expect("open store");
+            let (rowid, bytes): (i64, Vec<u8>) = conn
+                .query_row(
+                    "SELECT rowid, occurrence_json FROM schedule_occurrences \
+                     ORDER BY rowid LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read first occurrence");
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("occurrence json");
+            let old_due_ms = json["machine_state"]["due_at_utc_ms"]
+                .as_i64()
+                .expect("machine due ms");
+            let shift = old_due_ms - overdue.timestamp_millis();
+            json["due_at_utc"] = serde_json::Value::String(overdue.to_rfc3339());
+            json["machine_state"]["due_at_utc_ms"] =
+                serde_json::Value::from(overdue.timestamp_millis());
+            if let Some(deadline) = json["machine_state"]["misfire_deadline_utc_ms"].as_i64() {
+                json["machine_state"]["misfire_deadline_utc_ms"] =
+                    serde_json::Value::from(deadline - shift);
+            }
+            let updated = serde_json::to_vec(&json).expect("serialize occurrence");
+            conn.execute(
+                "UPDATE schedule_occurrences SET occurrence_json = ?1, due_at_ms = ?2 \
+                 WHERE rowid = ?3",
+                rusqlite::params![updated, overdue.timestamp_millis(), rowid],
+            )
+            .expect("age occurrence");
+            // Poison a NEIGHBOR row: insert a corrupt occurrence for the same
+            // schedule so the claim scan meets it.
+            conn.execute(
+                "INSERT INTO schedule_occurrences \
+                 (occurrence_id, schedule_id, schedule_revision, occurrence_ordinal, \
+                  phase, due_at_ms, occurrence_json) \
+                 SELECT 'poisoned-row', schedule_id, schedule_revision, \
+                        occurrence_ordinal + 999, phase, ?1, X'7B22706F69736F6E22' \
+                 FROM schedule_occurrences WHERE rowid = ?2",
+                rusqlite::params![overdue.timestamp_millis() - 1000, rowid],
+            )
+            .expect("insert poisoned row");
+        }
+
+        let claimed = service
+            .store()
+            .claim_due_occurrences(meerkat::ClaimDueRequest {
+                owner_id: "carry-test".to_string(),
+                limit: 8,
+                lease_duration: chrono::Duration::seconds(60),
+            })
+            .await
+            .expect("claim must tolerate the poisoned neighbor (meerkat >= 0.7.19)");
+        assert_eq!(
+            claimed.claimed.len(),
+            1,
+            "the healthy due occurrence must be claimed despite the poisoned neighbor"
+        );
+    }
+
     /// Healthy pipeline: future work only, nothing overdue → the watchdog has
     /// nothing to say.
     #[tokio::test]

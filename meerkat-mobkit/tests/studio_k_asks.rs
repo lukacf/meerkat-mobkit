@@ -174,7 +174,7 @@ comms = true
 /// PersistentSessionService → MobBootstrapSpec → UnifiedRuntime, then a
 /// 3-member crew via mobkit/ensure_member and per-member retire/respawn.
 #[tokio::test]
-#[ignore = "blocked on meerkat ask 20 (target 0.7.19): ArchiveSession NotFound for never-ran members strands them in retiring; see docs/design/upstream-asks.md"]
+#[ignore = "blocked on meerkat ask 21: mob-CREATED never-ran sessions are archive-authority-OWNED (durable record exists) yet snapshotless, so the owned-path archive still NotFounds; 0.7.19's ask-20 fix reroutes only host-adopted (known=false) sessions. Identity-first gateways (default-on) sidestep this for crews."]
 async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let state = temp_dir.path().join("state");
@@ -730,10 +730,10 @@ comms = true
         json!({"member_id": "scratch-worker"}),
     )
     .await;
-    // The never-ran worker hits the mob plane's ask-20 disposal defect until
-    // meerkat 0.7.19 lands (deliberately fail-closed downstream) — so assert
-    // only the ROUTING here: the worker must NOT take the identity arm.
-    // Tighten to a success assertion on the 0.7.19 upgrade.
+    // Never-ran mob-CREATED members remain archive-blocked (upstream ask 21:
+    // owned-but-snapshotless sessions; 0.7.19's ask-20 fix covers only
+    // host-adopted sessions). Assert the ROUTING here; tighten to strict
+    // success when ask 21 lands.
     assert!(
         respawn["result"].get("identity_first").is_none(),
         "worker respawn must NOT route through the identity authority: {respawn}"
@@ -742,8 +742,7 @@ comms = true
         let detail = error["data"]["detail"].as_str().unwrap_or_default();
         assert!(
             detail.contains("ArchiveSession"),
-            "the only acceptable worker-respawn failure is the upstream ask-20 \
-             class: {respawn}"
+            "the only acceptable worker-respawn failure is the ask-21 class: {respawn}"
         );
     }
 }

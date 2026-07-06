@@ -861,3 +861,41 @@ Run framing is broadcast-only; after a host restart there is no "did
 interaction X reach a terminal state, and which?" query. Reporter hand-rolled
 runs.jsonl + a lookup RPC. A first-class terminal-status-by-interaction/run-id
 query in meerkat-session/runtime deletes that code for every embedder.
+
+## Ask 21 — owned-but-snapshotless sessions still strand on archive (ask-20 residue) — P1
+
+**Problem statement.** 0.7.19's ask-20 fix routes disposal on
+`session_known_to_archive_authority`, but that gate only reroutes sessions
+the authority does NOT own (`known=false`, host-adopted). A mob-CREATED
+member that has never run a turn is `known=true` — its durable session
+record exists (create persisted it) — while its RUNTIME SNAPSHOT does not
+(the machine commits at run boundaries). The owned-path archive then fails
+exactly as before: `archive_with_mob_lifecycle_authority` → control-read
+(`load_persisted_session_for_control`) NotFounds on the missing snapshot →
+"disposal completed but ArchiveSession failed: … NotFound for registered
+runtime session" → member stranded `state=retiring`. The authority-read
+(`load_authoritative_session`, store-projection-eligible) and the
+control-read disagree about the same session.
+
+**Evidence.** Deterministic mobkit repro on meerkat =0.7.19
+(`meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d persistent test):
+3-member `ensure_member` crew on FactoryAgentBuilder→PersistentSessionService;
+probe confirms `session_known_to_archive_authority = Ok(true)` for all three
+idle members; retire still fails with the exact field string. The wrapper-
+forwarding gap on mobkit's side is FIXED (mobkit forwards the seam through
+`PreBuildMobSessionService`/`AfterCreateMobSessionService`); the remaining
+failure is upstream.
+
+**Proposed shape.** Make the owned-path archive tolerate the
+never-committed-snapshot case: when the durable record exists, the runtime is
+registered, and NO snapshot was ever committed, archive the durable record
+and retire/release the runtime binding (the control-read should accept the
+same store-projection eligibility the authority-read already accepts).
+Regression: retire + respawn of a freshly created, never-prompted member on a
+persistent service with a runtime store must succeed.
+
+**MobKit interim behavior.** Identity-first gateways (default-on since
+0.7.25) route crew members through the identity authority, which disposes
+tolerantly — the strand is only reachable for mob-plane (worker) members
+that never ran, a narrow window in practice since workers receive kickoff
+messages at spawn.
