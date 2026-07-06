@@ -302,9 +302,10 @@ fn mobkit_gateway_emits_tracing_on_stderr() {
     );
 }
 
-/// meerkat-studio ask K0: `identity_first: true` on init boots the gateway
-/// with the durable-identity substrate (continuity store + leases + identity
-/// console surface) constructed from the existing store paths.
+/// Doctrine default-on: a plain init (no identity_first param) boots the
+/// gateway with the durable-identity substrate (continuity store + leases +
+/// identity console surface) constructed from the existing store paths.
+/// `identity_first: false` remains as a one-release opt-out (tested below).
 #[test]
 fn mobkit_gateway_bootstraps_identity_first_runtime() {
     let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
@@ -319,7 +320,6 @@ fn mobkit_gateway_bootstraps_identity_first_runtime() {
             "workspace_root": workspace.path().to_string_lossy(),
             "store_path": store.path().join("store").to_string_lossy(),
             "persistent_sessions": true,
-            "identity_first": true,
             "identity_roster": [{
                 "identity": "personal:alice",
                 "profile": "alpha",
@@ -369,6 +369,66 @@ fn mobkit_gateway_bootstraps_identity_first_runtime() {
     assert!(
         continuity.exists(),
         "identity-first boot must create {}",
+        continuity.display()
+    );
+}
+
+/// The one-release opt-out: `identity_first: false` boots the pure mob-plane
+/// gateway — no continuity store is created.
+#[test]
+fn mobkit_gateway_identity_first_opt_out_skips_the_substrate() {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/init",
+        "params": {
+            "workspace_root": workspace.path().to_string_lossy(),
+            "store_path": store.path().join("store").to_string_lossy(),
+            "identity_first": false,
+        },
+    });
+
+    let mut child = Command::new(bin)
+        .current_dir(workspace.path())
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mobkit_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(Duration::from_mins(1))
+        .expect("gateway responded to opt-out init");
+    let _ = child.kill();
+    let _ = child.wait();
+    let response: Value = serde_json::from_str(line.trim()).expect("init response json");
+    assert!(
+        response.get("error").is_none(),
+        "opt-out init must succeed: {response}"
+    );
+    let continuity = store.path().join("store").join("continuity.db");
+    assert!(
+        !continuity.exists(),
+        "identity_first: false must not create {}",
         continuity.display()
     );
 }

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`mobkit_gateway` is identity-first by default** (doctrine phase 2):
+  every init now builds the durable-identity substrate — continuity store
+  with fencing-floor seeding, lease provider, identity console RPC surface,
+  Broken-identity repair task — via the new shared
+  `gateway_wiring::open_identity_substrate` (the same code path
+  `rpc_gateway` uses, ending the two-half-wired-gateways drift that caused
+  the K1/K2 field failures). `identity_first: false` on init is a
+  one-release opt-out restoring the pure mob-plane gateway. On an
+  identity-first gateway `ensure_member` stands up durable identities;
+  pass `plane: "worker"` to pin a spawn to the ephemeral mob plane
+  (idle-retire reaping, no continuity record).
+- `mobkit/capabilities` on both dispatchers now carries a top-level
+  `identity_first` flag — the zero-flag-day migration signal consumers gate
+  on (meerkat-studio contract point 5).
+
 ### Fixed
 
 - Member-scoped RPCs can no longer mutate identity-owned members behind the

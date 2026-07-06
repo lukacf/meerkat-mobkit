@@ -1443,6 +1443,10 @@ async fn handle_unified_rpc_json_inner(
                     "contract_version": MOBKIT_CONTRACT_VERSION,
                     "runtime_type": "unified",
                     "methods": methods,
+                    // Doctrine flag: when true the identity RPC set is live
+                    // and member RPCs route durable targets through the
+                    // identity authority.
+                    "identity_first": identity_ctx.is_some(),
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
                         "can_spawn_members": true,

@@ -5170,6 +5170,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
                     "methods": methods,
+                    // Doctrine: consumers gate their migration on this flag —
+                    // when true, the member RPCs re-dispatch durable targets
+                    // through the identity authority and ensure_member stands
+                    // up durable identities (pass plane:"worker" to opt a
+                    // spawn onto the ephemeral mob plane).
+                    "identity_first": identity_runtime.is_some(),
                     "read_only": read_only,
                     // The console routes to MobRuntime directly and has no
                     // access to the module runtime, so loaded_modules is always [].
@@ -6846,9 +6852,17 @@ async fn handle_console_runtime_rpc_with_visibility(
             // desired-identity roster and reconciles — the durable-identity
             // equivalent of the mob-member spawn, with the tolerant identity
             // lifecycle underneath (the ask-20 retire/respawn class does not
-            // exist on this surface).
-            if let (Some(identity_runtime_ref), Some(roster)) =
-                (identity_runtime.as_ref(), identity_roster.as_ref())
+            // exist on this surface). Doctrine escape hatch: plane:"worker"
+            // pins the spawn to the ephemeral mob plane (idle-retire reaping,
+            // no continuity record) for helper churn that must not become a
+            // durable identity.
+            let worker_plane = matches!(
+                request.params.get("plane").and_then(Value::as_str),
+                Some("worker")
+            );
+            if !worker_plane
+                && let (Some(identity_runtime_ref), Some(roster)) =
+                    (identity_runtime.as_ref(), identity_roster.as_ref())
             {
                 let identity = match crate::identity_first::AgentIdentity::parse(agent_identity) {
                     Ok(identity) => identity,

@@ -161,6 +161,13 @@ comms = true
         respawn.get("error").is_none(),
         "respawn_member on an ephemeral ensure_member crew must succeed: {respawn}"
     );
+
+    let caps = rpc(&app, "mobkit/capabilities", json!({})).await;
+    assert_eq!(
+        caps["result"]["identity_first"],
+        json!(false),
+        "a mob-plane-only console must advertise identity_first=false: {caps}"
+    );
 }
 
 /// Studio's actual construction chain: FactoryAgentBuilder →
@@ -519,6 +526,31 @@ comms = true
     assert!(
         re_ensure.get("error").is_none(),
         "re-ensure after retire must succeed: {re_ensure}"
+    );
+
+    // Capabilities advertise the doctrine flag — consumers gate their
+    // migration on it (studio contract point 5).
+    let caps = rpc(&app, "mobkit/capabilities", json!({})).await;
+    assert_eq!(
+        caps["result"]["identity_first"],
+        json!(true),
+        "identity-first gateway must advertise identity_first: {caps}"
+    );
+
+    // plane:"worker" pins a spawn to the ephemeral mob plane even here.
+    let worker = rpc(
+        &app,
+        "mobkit/ensure_member",
+        json!({"role": "general", "agent_identity": "scratch-helper", "plane": "worker"}),
+    )
+    .await;
+    assert!(
+        worker.get("error").is_none(),
+        "worker-plane ensure on an identity gateway must succeed: {worker}"
+    );
+    assert!(
+        worker["result"].get("identity_first").is_none(),
+        "plane:worker must NOT create a durable identity: {worker}"
     );
 }
 
