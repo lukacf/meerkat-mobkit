@@ -521,3 +521,197 @@ comms = true
         "re-ensure after retire must succeed: {re_ensure}"
     );
 }
+
+/// Doctrine reachability fix: on a runtime that carries an IdentityRuntime
+/// but NO console roster slot (builder-constructed identity-first runtimes),
+/// the member-scoped RPCs must still route identity-owned members through
+/// the identity authority — a classic handle.retire()/respawn() would mutate
+/// the member behind the IdentityRuntime's back (stale continuity binding,
+/// generation drift). Worker-plane members (not identity-registered) keep
+/// the classic path.
+#[tokio::test]
+async fn doctrine_member_rpcs_route_identity_owned_members_through_identity_authority() {
+    use meerkat_mobkit::identity_first::{
+        AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
+        IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, MobSessionBridge,
+        MutableRosterProvider, restore_flow,
+    };
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let state = temp_dir.path().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+        meerkat_store::SqliteSessionStore::open(state.join("sessions.db")).expect("session store"),
+    );
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+            .expect("runtime store"),
+    );
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let factory = AgentFactory::new(&state).comms(true);
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+        session_store.clone(),
+    )));
+    builder.default_blob_store = Some(blob_store.clone());
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store,
+        runtime_store,
+        blob_store,
+    ));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "doctrine-routing"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+        .with_session_runtime_adapter(adapter.clone())
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "doctrine-routing".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+
+    // Identity substrate with ONE durable identity in the roster — but NO
+    // console roster slot (the builder-constructed shape).
+    let continuity_store =
+        LocalContinuityStore::open(state.join("continuity.db")).expect("continuity store");
+    let mob_handle = runtime.mob_handle();
+    let session_service = runtime
+        .mob_runtime()
+        .session_service()
+        .cloned()
+        .expect("session service");
+    let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
+        MobSessionBridge::with_session_service(mob_handle.clone(), session_service),
+    );
+    let irt = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(continuity_store),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "doctrine-routing-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone())),
+    );
+    let roster = Arc::new(MutableRosterProvider::new(vec![
+        meerkat_mobkit::identity_first::DurableAgentSpec {
+            identity: meerkat_mobkit::identity_first::AgentIdentity::parse("personal:alice")
+                .expect("identity"),
+            profile: meerkat_mob::ProfileName::from("general"),
+            addressability: meerkat_mobkit::identity_first::AgentAddressability::Addressable,
+            display_name: None,
+            labels: std::collections::BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        },
+    ]));
+    restore_flow(&irt, &roster.snapshot(), None, None)
+        .await
+        .expect("restore alice");
+    let mob_definition = mob_handle.definition().clone();
+    // NOTE: deliberately NOT calling set_console_identity_roster — this is
+    // the no-roster-slot console shape.
+    runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+        irt.clone(),
+        roster,
+        None,
+        None,
+        Some(mob_definition),
+    )));
+    let app = runtime.build_reference_app_router(studio_decision_state());
+
+    // A worker on the mob plane, for contrast.
+    let ensure = rpc(
+        &app,
+        "mobkit/ensure_member",
+        json!({"role": "general", "agent_identity": "scratch-worker"}),
+    )
+    .await;
+    assert!(
+        ensure.get("error").is_none(),
+        "worker-plane ensure must stay classic and succeed: {ensure}"
+    );
+    assert!(
+        ensure["result"].get("identity_first").is_none(),
+        "no roster slot: ensure_member must NOT take the identity arm: {ensure}"
+    );
+
+    // retire_member addressed at the DURABLE identity routes to the identity
+    // authority (identity_first marker), never the classic mob plane.
+    let retire = rpc(
+        &app,
+        "mobkit/retire_member",
+        json!({"member_id": "personal:alice"}),
+    )
+    .await;
+    assert!(
+        retire.get("error").is_none(),
+        "identity-owned retire must succeed: {retire}"
+    );
+    assert_eq!(
+        retire["result"]["identity_first"],
+        json!(true),
+        "identity-owned member must route through the identity authority: {retire}"
+    );
+
+    // Same for respawn: identity reset (fresh session, same identity).
+    // Re-materialize alice first (retire above released her).
+    restore_flow(&irt, &[], None, None).await.ok();
+    let respawn = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "scratch-worker"}),
+    )
+    .await;
+    // The never-ran worker hits the mob plane's ask-20 disposal defect until
+    // meerkat 0.7.19 lands (deliberately fail-closed downstream) — so assert
+    // only the ROUTING here: the worker must NOT take the identity arm.
+    // Tighten to a success assertion on the 0.7.19 upgrade.
+    assert!(
+        respawn["result"].get("identity_first").is_none(),
+        "worker respawn must NOT route through the identity authority: {respawn}"
+    );
+    if let Some(error) = respawn.get("error") {
+        let detail = error["data"]["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("ArchiveSession"),
+            "the only acceptable worker-respawn failure is the upstream ask-20 \
+             class: {respawn}"
+        );
+    }
+}

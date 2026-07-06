@@ -1028,6 +1028,36 @@ pub(super) async fn handle_respawn_member(
             {
                 return response;
             }
+            // Doctrine: identity-owned members respawn through the identity
+            // authority — reset rebuilds a fresh session under the SAME
+            // durable identity (new generation, continuity preserved).
+            if let Some(identity_runtime) = identity_runtime
+                && let Some(durable) = identity_runtime.owned_identity_for_member_alias(mid).await
+            {
+                return match identity_runtime.reset(&durable).await {
+                    Ok(record) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "accepted": true,
+                            "identity_first": true,
+                            "session_id": record.session_id.to_string(),
+                            "generation": record.generation.get(),
+                        })),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32000,
+                            message: format!("respawn_member (identity) failed: {err}"),
+                            data: None,
+                        }),
+                    },
+                };
+            }
             let handle = runtime.mob_handle();
             let identity = crate::member_comms_id::mob_member_id(mid);
             // Best-effort repair material: a faulted lookup degrades to None

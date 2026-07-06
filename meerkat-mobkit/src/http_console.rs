@@ -7021,6 +7021,28 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
+            // Doctrine: identity-owned members retire through the identity
+            // authority even when this console has no roster slot (builder-
+            // constructed identity runtimes serve these arms too).
+            if let Some(identity_runtime_ref) = identity_runtime.as_ref()
+                && let Some(durable) = identity_runtime_ref
+                    .owned_identity_for_member_alias(member_id)
+                    .await
+            {
+                return match identity_runtime_ref.retire(&durable).await {
+                    Ok(_token) => response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "accepted": true,
+                            "identity_first": true,
+                        })),
+                        None,
+                    ),
+                    Err(err) => {
+                        internal_error(response_id, format!("retire_member (identity): {err}"))
+                    }
+                };
+            }
             if let Some(aggregator) = &console_aggregator {
                 return match Box::pin(aggregator.retire_identity(member_id)).await {
                     Ok(true) => response_value(
@@ -7040,10 +7062,13 @@ async fn handle_console_runtime_rpc_with_visibility(
                     Err(err) => internal_error(response_id, format!("retire_member failed: {err}")),
                 };
             }
-            match runtime
-                .handle()
-                .retire(crate::member_comms_id::mob_member_id(member_id))
-                .await
+            // Parity with the SDK dispatcher and the identity-named console
+            // paths: a completed-disposal cleanup miss reads as retired.
+            match retire_console_member(
+                &runtime.handle(),
+                &crate::member_comms_id::mob_member_id(member_id),
+            )
+            .await
             {
                 Ok(()) => response_value(
                     response_id,
@@ -7105,36 +7130,43 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
-            match runtime
-                .handle()
-                .respawn(crate::member_comms_id::mob_member_id(member_id), None)
-                .await
+            if let Some(identity_runtime_ref) = identity_runtime.as_ref()
+                && let Some(durable) = identity_runtime_ref
+                    .owned_identity_for_member_alias(member_id)
+                    .await
             {
-                Ok(_receipt) => response_value(
-                    response_id,
-                    Some(serde_json::json!({ "accepted": true })),
-                    None,
-                ),
-                Err(err) => {
-                    if let Some(failed_peer_ids) = topology_restore_failed_peer_ids(&err) {
-                        tracing::warn!(
-                            member_id = %member_id,
-                            failed_peer_count = failed_peer_ids.len(),
-                            failed_peer_ids = ?failed_peer_ids,
-                            "console member respawn restored member with isolated peer edges; accepting degraded respawn"
-                        );
-                        response_value(
-                            response_id,
-                            Some(serde_json::json!({
-                                "accepted": true,
-                                "topology_restore_warning": topology_restore_warning_json(&failed_peer_ids),
-                            })),
-                            None,
-                        )
-                    } else {
-                        internal_error(response_id, format!("respawn_member failed: {err}"))
+                return match identity_runtime_ref.reset(&durable).await {
+                    Ok(record) => response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "accepted": true,
+                            "identity_first": true,
+                            "session_id": record.session_id.to_string(),
+                            "generation": record.generation.get(),
+                        })),
+                        None,
+                    ),
+                    Err(err) => {
+                        internal_error(response_id, format!("respawn_member (identity): {err}"))
                     }
+                };
+            }
+            // Parity with respawn_console_member's tolerance set: topology
+            // warnings degrade, completed-disposal cleanup misses repair.
+            match Box::pin(respawn_console_member(
+                &runtime.handle(),
+                &crate::member_comms_id::mob_member_id(member_id),
+            ))
+            .await
+            {
+                Ok(topology_restore_warning) => {
+                    let mut body = serde_json::json!({ "accepted": true });
+                    if let Some(warning) = topology_restore_warning {
+                        body["topology_restore_warning"] = warning;
+                    }
+                    response_value(response_id, Some(body), None)
                 }
+                Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
             }
         }
         "mobkit/reconcile_edges" => response_value(
