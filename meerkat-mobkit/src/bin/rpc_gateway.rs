@@ -3721,6 +3721,7 @@ external_addressable = true
                 tools.mob_target_registry,
                 Arc::clone(&concrete_service),
                 adapter.clone(),
+                state_path.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
             )
         });
         // §8.6 Hygienist apply seam: the CONCRETE service implements
@@ -4532,8 +4533,13 @@ external_addressable = true
     // Run the schedule driver after identity-first restore, so legacy
     // resumable-session repair can see live member bridge-session bindings and
     // due occurrences do not race identity materialization.
-    let _schedule_host = if let Some((schedule_service, mob_target_registry, service, adapter)) =
-        schedule_host_inputs
+    let (_schedule_host, _schedule_watchdog) = if let Some((
+        schedule_service,
+        mob_target_registry,
+        service,
+        adapter,
+        schedule_store_path,
+    )) = schedule_host_inputs
     {
         let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
         mob_target_registry.set_mob_state(mob_state.clone());
@@ -4578,16 +4584,27 @@ external_addressable = true
                 "failed to ensure steward dream schedule; the steward will not dream on this gateway",
             );
         }
-        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
-            service,
-            adapter,
-            schedule_service,
-            mob_state,
-            runnable_host,
-            schedule_owner_id.clone(),
+        // The firing driver discards its own tick errors upstream; the
+        // watchdog is what turns "everything stays pending forever" into a
+        // loud, row-level diagnosis in the gateway log.
+        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
+            schedule_service.clone(),
+            schedule_store_path,
+            Default::default(),
+        );
+        (
+            meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+                service,
+                adapter,
+                schedule_service,
+                mob_state,
+                runnable_host,
+                schedule_owner_id.clone(),
+            ),
+            Some(watchdog),
         )
     } else {
-        None
+        (None, None)
     };
 
     let runtime = Arc::new(runtime);

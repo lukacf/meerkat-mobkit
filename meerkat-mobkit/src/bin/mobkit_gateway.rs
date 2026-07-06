@@ -33,6 +33,7 @@ type ScheduleHostInputs = (
     meerkat::ScheduleService,
     meerkat_mobkit::schedule_wiring::ScheduleMobTargetRegistry,
     Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    PathBuf,
 );
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
@@ -457,11 +458,16 @@ fn build_persistent_session_service(
         Arc::clone(&runtime_store),
         blob_store,
     ));
+    let schedule_store_dir = runtime_db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
     let schedule_host_inputs = schedule_tools.map(|tools| {
         (
             tools.service,
             tools.mob_target_registry,
             Arc::clone(&service),
+            schedule_store_dir.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
         )
     });
     Ok((service, adapter, binary_blob_store, schedule_host_inputs))
@@ -704,7 +710,7 @@ async fn run() -> anyhow::Result<()> {
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
         let schedule_host_inputs = schedule_host_inputs
-            .map(|(sched, registry, svc)| (sched, registry, svc, adapter.clone()));
+            .map(|(sched, registry, svc, path)| (sched, registry, svc, path, adapter.clone()));
         // The explicit runtime adapter must share the session service's runtime
         // persistence authority or meerkat 0.7 fails the bootstrap closed.
         // `with_session_runtime_adapter` wires the SAME adapter into the session
@@ -787,8 +793,13 @@ async fn run() -> anyhow::Result<()> {
     // turn (session targets via the runtime-backed host, mob targets via the
     // mob runtime). Held for the gateway's lifetime — dropping the handle shuts
     // the host down. Persistent sessions only.
-    let _schedule_host = if let Some((schedule_service, mob_target_registry, service, adapter)) =
-        schedule_host_inputs
+    let (_schedule_host, _schedule_watchdog) = if let Some((
+        schedule_service,
+        mob_target_registry,
+        service,
+        schedule_store_path,
+        adapter,
+    )) = schedule_host_inputs
     {
         let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
         mob_target_registry.set_mob_state(mob_state.clone());
@@ -812,16 +823,26 @@ async fn run() -> anyhow::Result<()> {
                 );
             }
         }
-        meerkat_mobkit::schedule_wiring::spawn_schedule_host(
-            service,
-            adapter,
-            schedule_service,
-            mob_state,
-            None,
-            runtime_id.clone(),
+        // Same silent-stall guard as rpc_gateway: the upstream driver
+        // discards tick errors, so stalls only become visible here.
+        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
+            schedule_service.clone(),
+            schedule_store_path,
+            Default::default(),
+        );
+        (
+            meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+                service,
+                adapter,
+                schedule_service,
+                mob_state,
+                None,
+                runtime_id.clone(),
+            ),
+            Some(watchdog),
         )
     } else {
-        None
+        (None, None)
     };
 
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
