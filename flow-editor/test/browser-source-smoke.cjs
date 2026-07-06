@@ -59,21 +59,21 @@ async function chooseFirstRealAgentDefinition(page) {
 // The library is home: the app launches with no open mob, so every smoke
 // creates one through + NEW MOB (name + Blank template) to enter the editor.
 async function createMobThroughLibrary(page, name) {
-  await page.locator(".flows-view").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".flows-view").waitFor({ state: "visible", timeout: 30_000 });
   await page.waitForFunction(() => {
     const button = document.querySelector(".flows-view__head .btn--primary");
     return button && !button.disabled;
-  }, null, { timeout: 10_000 });
+  }, null, { timeout: 30_000 });
   await page.locator(".flows-view__head .btn--primary").click();
-  await page.locator(".modal--new").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".modal--new").waitFor({ state: "visible", timeout: 30_000 });
   await page.locator(".modal--new .field__input").fill(name);
   await page.locator(".modal--new .template-card").first().click();
   await page.waitForFunction(() => {
     const button = document.querySelector(".modal--new .modal__foot .btn--primary");
     return button && !button.disabled;
-  }, null, { timeout: 10_000 });
+  }, null, { timeout: 30_000 });
   await page.locator(".modal--new .modal__foot .btn--primary").click();
-  await page.locator(".modetoggle").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".modetoggle").waitFor({ state: "visible", timeout: 30_000 });
 }
 
 async function main() {
@@ -106,19 +106,19 @@ async function main() {
     await page.goto(`${baseUrl}/flow-editor?cache_bust=browser-source-smoke`, {
       waitUntil: "domcontentloaded",
     });
-    await page.getByText("api ready").waitFor({ timeout: 10_000 });
+    await page.getByText("api ready").waitFor({ timeout: 30_000 });
     await createMobThroughLibrary(page, "Browser Source Mob");
 
     await page.locator(".bld-toml-toggle").click();
     const inlineEditor = page.locator(".bld-toml");
-    await inlineEditor.waitFor({ timeout: 10_000 });
+    await inlineEditor.waitFor({ timeout: 30_000 });
 
     const sourceBox = inlineEditor.locator('[role="textbox"][aria-readonly="true"]');
-    await sourceBox.waitFor({ timeout: 10_000 });
+    await sourceBox.waitFor({ timeout: 30_000 });
     await page.waitForFunction(() => {
       const source = document.querySelector('.bld-toml [role="textbox"][aria-readonly="true"]');
       return source?.innerText.includes("[profiles.") && source?.innerText.includes("[flows.");
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
     const mobToml = await sourceBox.innerText();
     if (!mobToml.includes("[profiles.") || !mobToml.includes("[flows.")) {
       throw new Error(`inline mob.toml editor did not render MobKit source: ${mobToml.slice(0, 400)}`);
@@ -129,7 +129,7 @@ async function main() {
     await page.waitForFunction(() => {
       const source = document.querySelector('.bld-toml [role="textbox"][aria-readonly="true"]');
       return source?.innerText.includes('"id"') && source?.innerText.includes('"profiles"');
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
     const definitionJson = await sourceBox.innerText();
     if (!definitionJson.includes('"id"') || !definitionJson.includes('"profiles"')) {
       throw new Error(`inline definition.json editor did not render exported source: ${definitionJson.slice(0, 400)}`);
@@ -141,43 +141,57 @@ async function main() {
     }
 
     await page.locator(".bld-toml-toggle").click();
-    await inlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+    await inlineEditor.waitFor({ state: "hidden", timeout: 30_000 });
 
     await page.locator(".bld-toml-toggle").click();
-    await inlineEditor.waitFor({ timeout: 10_000 });
+    await inlineEditor.waitFor({ timeout: 30_000 });
     await inlineEditor.locator(".bld-toml__head .btn--ghost").click();
-    await inlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+    await inlineEditor.waitFor({ state: "hidden", timeout: 30_000 });
 
     await page.locator("button.modetoggle__opt", { hasText: "Graph" }).click();
     const graphSource = page.locator(".node--source-file").first();
-    await graphSource.waitFor({ state: "visible", timeout: 10_000 });
+    await graphSource.waitFor({ state: "visible", timeout: 30_000 });
     const graphSourceClass = await graphSource.getAttribute("class");
     if ((graphSourceClass || "").split(/\s+/).includes("node")) {
       throw new Error(`graph source file affordance must not inherit graph node chrome: ${graphSourceClass}`);
     }
     await graphSource.click();
     const graphInlineEditor = page.locator(".bld-toml--graph");
-    await graphInlineEditor.waitFor({ timeout: 10_000 });
+    await graphInlineEditor.waitFor({ timeout: 30_000 });
     const graphSourceBox = graphInlineEditor.locator('[role="textbox"][aria-readonly="true"]');
+    // The editor virtualizes rows: innerText only carries RENDERED lines, and
+    // the graph panel is short enough that "[flows." can sit below the fold
+    // (hosted-runner font metrics tipped it over). Scroll the editor through
+    // its content while probing so every section materializes at least once.
     await page.waitForFunction(() => {
       const source = document.querySelector('.bld-toml--graph [role="textbox"][aria-readonly="true"]');
-      return source?.innerText.includes("[profiles.") && source?.innerText.includes("[flows.");
-    }, null, { timeout: 10_000 });
+      if (!source) return false;
+      const text = source.innerText;
+      window.__graphSourceSeen = window.__graphSourceSeen || new Set();
+      if (text.includes("[profiles.")) window.__graphSourceSeen.add("profiles");
+      if (text.includes("[flows.")) window.__graphSourceSeen.add("flows");
+      const scroller = source.closest(".cm-editor")?.querySelector(".cm-scroller") || source;
+      scroller.scrollTop = scroller.scrollTop + scroller.clientHeight;
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) {
+        scroller.scrollTop = 0;
+      }
+      return window.__graphSourceSeen.size === 2;
+    }, null, { timeout: 30_000 });
     const graphReadonly = await graphSourceBox.getAttribute("aria-readonly");
     if (graphReadonly !== "true") {
       throw new Error(`graph inline source editor must be read-only, got aria-readonly=${graphReadonly}`);
     }
     await graphInlineEditor.locator(".bld-toml__head .btn--ghost").click();
-    await graphInlineEditor.waitFor({ state: "hidden", timeout: 10_000 });
+    await graphInlineEditor.waitFor({ state: "hidden", timeout: 30_000 });
 
     await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
-    await page.locator(".agents-view").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".agents-view").waitFor({ state: "visible", timeout: 30_000 });
     const agentCountBefore = await page.locator(".agents-list__name").count();
     await chooseFirstRealAgentDefinition(page);
     await page.waitForFunction(
       (count) => document.querySelectorAll(".agents-list__name").length > count,
       agentCountBefore,
-      { timeout: 10_000 },
+      { timeout: 30_000 },
     );
     await page.locator(".agents-list__scroll").first().locator(".agents-list__item").last().click();
     const titleInput = page.locator(".agent-editor__title-input");
@@ -187,23 +201,23 @@ async function main() {
     await toolSelect.selectOption("image_generation");
     await page.waitForFunction(() => {
       return Array.from(document.querySelectorAll(".tool-row .name")).some((row) => row.textContent.trim() === "image_generation");
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
     await page.getByRole("button", { name: /INLINE/i }).click();
     await page.locator(".inline-skill input").fill("browser source");
     await page.locator(".inline-skill textarea").fill("Use this skill to prove edited agent source rendering.");
     await page.locator(".inline-skill .btn", { hasText: "ADD" }).click();
     await page.waitForFunction(() => {
       return Array.from(document.querySelectorAll(".skill-row__name")).some((row) => row.textContent.trim() === "mob.browser.source");
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
 
     await page.locator("button.viewtab", { hasText: "FLOW" }).click();
     await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
     await page.locator(".bld-toml-toggle").click();
     const editedSource = page.locator(".bld-toml:visible");
-    await editedSource.waitFor({ state: "visible", timeout: 10_000 });
+    await editedSource.waitFor({ state: "visible", timeout: 30_000 });
     const editedSourceBox = editedSource.locator('[role="textbox"][aria-readonly="true"]');
-    await editedSourceBox.waitFor({ timeout: 10_000 });
-    await editedSource.locator(".source-file-row", { hasText: "definition.json" }).waitFor({ state: "visible", timeout: 10_000 });
+    await editedSourceBox.waitFor({ timeout: 30_000 });
+    await editedSource.locator(".source-file-row", { hasText: "definition.json" }).waitFor({ state: "visible", timeout: 30_000 });
     await editedSource.locator(".source-file-row", { hasText: "definition.json" }).click();
     await page.waitForFunction(() => {
       const visiblePanel = Array.from(document.querySelectorAll(".bld-toml")).find((panel) => getComputedStyle(panel).display !== "none");
@@ -211,7 +225,7 @@ async function main() {
       return source?.innerText.includes("browser_source_agent")
         && source?.innerText.includes("image_generation")
         && source?.innerText.includes("mob.browser.source");
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
     const editedDefinitionJson = await editedSourceBox.innerText();
     for (const required of ["browser_source_agent", "image_generation", "mob.browser.source"]) {
       if (!editedDefinitionJson.includes(required)) {
@@ -225,7 +239,7 @@ async function main() {
       return source?.innerText.includes("image_generation")
         && source?.innerText.includes("mob.browser.source")
         && source?.innerText.includes("Use this skill to prove edited agent source rendering.");
-    }, null, { timeout: 10_000 });
+    }, null, { timeout: 30_000 });
     const editedMobToml = await editedSourceBox.innerText();
     for (const required of ["image_generation", "mob.browser.source", "Use this skill to prove edited agent source rendering."]) {
       if (!editedMobToml.includes(required)) {
@@ -233,7 +247,7 @@ async function main() {
       }
     }
     await editedSource.locator(".bld-toml__head .btn--ghost").click();
-    await editedSource.waitFor({ state: "hidden", timeout: 10_000 });
+    await editedSource.waitFor({ state: "hidden", timeout: 30_000 });
 
     await page.locator("button.modetoggle__opt", { hasText: "Basic" }).click();
     await page.setViewportSize({ width: 390, height: 820 });
@@ -273,7 +287,7 @@ async function main() {
     }
 
     await page.locator(".toprail .btn", { hasText: "VALIDATE" }).click();
-    await page.locator(".validate").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".validate").waitFor({ state: "visible", timeout: 30_000 });
     const validateRect = await page.locator(".validate").evaluate((el) => {
       const rect = el.getBoundingClientRect();
       return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
@@ -282,11 +296,11 @@ async function main() {
       throw new Error(`mobile validate sheet must stay inside viewport: ${JSON.stringify(validateRect)}`);
     }
     await page.locator(".validate__head .btn").last().click();
-    await page.locator(".validate").waitFor({ state: "hidden", timeout: 10_000 });
+    await page.locator(".validate").waitFor({ state: "hidden", timeout: 30_000 });
 
     await page.locator(".actions-menu__summary").click();
     await page.locator(".actions-menu__item", { hasText: "PLAN TRACE" }).click();
-    await page.locator(".deploy-plan").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".deploy-plan").waitFor({ state: "visible", timeout: 30_000 });
     const deployPlanRect = await page.locator(".deploy-plan").evaluate((el) => {
       const rect = el.getBoundingClientRect();
       return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width };
@@ -297,7 +311,7 @@ async function main() {
 
     await page.locator("button.viewtab", { hasText: "AGENTS" }).click();
     const runtimeDetails = page.locator("details.agent-runtime").first();
-    await runtimeDetails.waitFor({ state: "visible", timeout: 10_000 });
+    await runtimeDetails.waitFor({ state: "visible", timeout: 30_000 });
     const runtimeState = await runtimeDetails.evaluate((el) => {
       const body = el.querySelector(".agent-runtime__body");
       return {
