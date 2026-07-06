@@ -4135,6 +4135,30 @@ impl IdentityRuntime {
             .is_some_and(|e| e.state == IdentityLifecycleState::Active)
     }
 
+    /// Resolve a member alias to the durable identity that OWNS it, if any.
+    ///
+    /// Accepts both a generated runtime alias (`rt:<identity>:<generation>`)
+    /// and a plain identity string; returns the identity only when it is
+    /// actually registered in this runtime. Member-scoped RPCs use this to
+    /// route lifecycle mutations of identity-owned members through the
+    /// identity authority — a classic `handle.retire()`/`respawn()` on such
+    /// a member would mutate it behind the IdentityRuntime's back (stale
+    /// continuity binding, generation drift), which is the doctrine's
+    /// "mob plane must not mangle durables" rule.
+    pub async fn owned_identity_for_member_alias(&self, alias: &str) -> Option<AgentIdentity> {
+        let identity = alias
+            .strip_prefix("rt:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .filter(|(identity, generation)| {
+                !identity.is_empty()
+                    && !generation.is_empty()
+                    && generation.chars().all(|ch| ch.is_ascii_digit())
+            })
+            .and_then(|(identity, _)| AgentIdentity::parse(identity).ok())
+            .or_else(|| AgentIdentity::parse(alias).ok())?;
+        self.contains(&identity).await.then_some(identity)
+    }
+
     /// Identities currently in the Broken lifecycle state.
     pub async fn broken_identities(&self) -> Vec<AgentIdentity> {
         self.entries

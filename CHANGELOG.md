@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Member-scoped RPCs can no longer mutate identity-owned members behind the
+  IdentityRuntime's back: on any runtime carrying the identity substrate,
+  `retire_member`/`respawn_member` addressed at a durable identity (plain
+  name or `rt:` runtime alias) now route through the identity authority —
+  tolerant retire, and reset-respawn (fresh session, same identity, new
+  generation) — on BOTH dispatchers (SDK stdin `rpc.rs` and the console).
+  Worker-plane members (not identity-registered) keep the classic path per
+  the doctrine. Also parity: the console's classic `retire_member`/
+  `respawn_member` arms now carry the same completed-disposal cleanup
+  tolerance and respawn repair as the SDK dispatcher and the identity-named
+  console paths (previously the console arms surfaced raw errors the other
+  two surfaces tolerated).
+
 ### Added
 
 - Identity-first doctrine recorded (docs/design/identity-first-doctrine.md):

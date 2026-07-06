@@ -8205,3 +8205,65 @@ async fn identity_first_runtime_reset_distillate_quarantines_with_bridge() {
 async fn identity_first_runtime_reset_distillate_quarantines_without_bridge() {
     reset_distillation_quarantine_case(false).await;
 }
+
+/// Doctrine routing helper: member aliases resolve to their owning durable
+/// identity ONLY when that identity is actually registered — plain worker
+/// names that happen to parse as identities stay on the mob plane.
+#[tokio::test]
+async fn identity_first_runtime_owned_identity_for_member_alias_discriminates_planes() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = make_runtime(store, lease);
+    runtime
+        .register(
+            make_spec("personal:alice"),
+            IdentityLifecycleState::Dormant,
+            None,
+            None,
+        )
+        .await;
+
+    // Registered identity: plain name and rt-alias both resolve.
+    assert_eq!(
+        runtime
+            .owned_identity_for_member_alias("personal:alice")
+            .await
+            .map(|i| i.as_str().to_string()),
+        Some("personal:alice".to_string())
+    );
+    assert_eq!(
+        runtime
+            .owned_identity_for_member_alias("rt:personal:alice:3")
+            .await
+            .map(|i| i.as_str().to_string()),
+        Some("personal:alice".to_string())
+    );
+
+    // Unregistered names — even identity-shaped ones — stay worker-plane.
+    assert!(
+        runtime
+            .owned_identity_for_member_alias("scratch-worker")
+            .await
+            .is_none()
+    );
+    assert!(
+        runtime
+            .owned_identity_for_member_alias("personal:bob")
+            .await
+            .is_none()
+    );
+    assert!(
+        runtime
+            .owned_identity_for_member_alias("rt:personal:bob:1")
+            .await
+            .is_none()
+    );
+    // Malformed rt-aliases don't resolve through the rt parse (and the whole
+    // alias string is not a valid identity either).
+    assert!(
+        runtime
+            .owned_identity_for_member_alias("rt:personal:alice:notanumber")
+            .await
+            .is_none()
+    );
+}
