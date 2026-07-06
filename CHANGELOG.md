@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Identity-first gateway mode (meerkat-studio ask K0): `identity_first: true`
+  on `mobkit_gateway` init boots the durable-identity substrate — continuity
+  records + lease-fenced embodiment (default providers constructed from the
+  existing store paths), resume-first restore with the Broken-identity
+  repair task, and the identity console RPC surface. An optional
+  `identity_roster` init param seeds the desired identities;
+  `mobkit/ensure_member` upserts the roster and reconciles at runtime, and
+  `retire_member`/`respawn_member` route through the tolerant identity
+  lifecycle — the ask-20 retire/respawn failure class does not exist on this
+  surface (proved by test: retire + respawn of never-ran members succeed).
+  Rust embedders get the same via the new
+  `identity_first::MutableRosterProvider` + `UnifiedRuntime::set_console_identity_roster`
+  + `attach_identity_first_context` (or `UnifiedRuntimeBuilder`'s existing
+  roster/continuity/lease inputs on the definition path).
+
 ### Fixed
 
 - `mobkit_gateway` now installs a tracing subscriber (stderr, `RUST_LOG`

@@ -55,6 +55,15 @@ struct InitParams {
     surface: Option<String>,
     runtime_profile: Option<String>,
     console_read_only: Option<bool>,
+    /// Run this gateway identity-first (meerkat-studio ask K0): durable
+    /// identities with continuity records, lease-fenced embodiment, and the
+    /// tolerant identity lifecycle paths — instead of the session-owned
+    /// mob-member surface (where the ask-20 retire/respawn class lives).
+    identity_first: Option<bool>,
+    /// Desired identity roster for `identity_first: true` — restored at boot
+    /// and reconciled thereafter. `mobkit/ensure_member` adds to it at
+    /// runtime.
+    identity_roster: Option<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -656,6 +665,8 @@ async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|| runtime_root.join("state"));
     let store_path = store_path.canonicalize().unwrap_or(store_path);
     let persistent_sessions = params.persistent_sessions.unwrap_or(false);
+    let identity_first = params.identity_first.unwrap_or(false);
+    let identity_roster_seed = params.identity_roster.clone().unwrap_or_default();
     let realm = params.realm.as_deref();
     let isolated = params.isolated.unwrap_or(false);
     let _surface = params.surface.unwrap_or_else(|| "tux".to_string());
@@ -915,6 +926,84 @@ async fn run() -> anyhow::Result<()> {
             .await
             .map_err(|error| anyhow!("failed to spawn fallback alpha meerkat: {error}"))?;
     }
+
+    // Identity-first mode (meerkat-studio ask K0): give this gateway the
+    // durable-identity substrate — continuity records, lease-fenced
+    // embodiment, resume-first restore with the Broken-identity repair task,
+    // and the tolerant identity lifecycle paths. Default providers are
+    // constructed from the existing store paths; the roster is seeded from
+    // init params and extended at runtime by `mobkit/ensure_member`.
+    let _identity_roster_provider: Option<
+        Arc<meerkat_mobkit::identity_first::MutableRosterProvider>,
+    > = if identity_first {
+        use meerkat_mobkit::identity_first::{
+            AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
+            IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, MobSessionBridge,
+            MutableRosterProvider, restore_flow,
+        };
+
+        let (store_dir, _) = resolve_store_dir(&store_path);
+        fs::create_dir_all(&store_dir)
+            .with_context(|| format!("failed to create {}", store_dir.display()))?;
+        let continuity_db = store_dir.join("continuity.db");
+        let continuity_store = LocalContinuityStore::open(&continuity_db)
+            .with_context(|| format!("failed to open {}", continuity_db.display()))?;
+        // Resume the fencing counter above the persisted high-water so a
+        // restart with existing continuity history never presents a stale
+        // token (mirrors rpc_gateway).
+        let fencing_floor = continuity_store
+            .max_fencing_token()
+            .context("failed to read continuity fencing high-water")?;
+        let lease_provider = LocalLeaseProvider::with_floor(fencing_floor);
+
+        let mob_handle = runtime.mob_handle();
+        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
+            if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+                Arc::new(MobSessionBridge::with_session_service(
+                    mob_handle.clone(),
+                    session_service,
+                ))
+            } else {
+                Arc::new(MobSessionBridge::new(mob_handle.clone()))
+            };
+
+        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(continuity_store),
+            lease_provider: Arc::new(lease_provider),
+            runtime_instance_id: format!("mobkit-gateway-{}", std::process::id()),
+            has_runtime_store: persistent_sessions,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone()));
+
+        let roster = Arc::new(MutableRosterProvider::new(identity_roster_seed));
+        let mob_definition = mob_handle.definition().clone();
+        let irt = Arc::new(irt);
+        restore_flow(&irt, &roster.snapshot(), None, None)
+            .await
+            .context("identity-first restore_flow failed")?;
+        // Attaching the context wires the console's identity RPC surface and
+        // spawns the Broken-identity repair task; the roster slot lets
+        // `mobkit/ensure_member` extend the desired roster at runtime.
+        runtime.set_console_identity_roster(roster.clone());
+        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+            irt,
+            roster.clone(),
+            None,
+            None,
+            Some(mob_definition),
+        )));
+        tracing::info!(
+            roster = roster.snapshot().len(),
+            continuity_db = %continuity_db.display(),
+            "identity-first gateway mode active"
+        );
+        Some(roster)
+    } else {
+        None
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

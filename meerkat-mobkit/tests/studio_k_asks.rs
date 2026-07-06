@@ -340,3 +340,184 @@ comms = true
         "data.detail must carry the failure chain: {response}"
     );
 }
+
+/// meerkat-studio ask K0: the identity-first gateway surface. Same persistent
+/// construction chain and the same three RPCs that fail on the session-owned
+/// surface (the `#[ignore]`d test above) — but with the identity-first
+/// substrate attached, retire and respawn of NEVER-RAN members succeed:
+/// the ask-20 failure class is unreachable by construction.
+#[tokio::test]
+async fn studio_k0_identity_first_gateway_retire_respawn_succeed_on_idle_members() {
+    use meerkat_mobkit::identity_first::{
+        AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
+        IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, MobSessionBridge,
+        MutableRosterProvider, restore_flow,
+    };
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let state = temp_dir.path().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+        meerkat_store::SqliteSessionStore::open(state.join("sessions.db")).expect("session store"),
+    );
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+            .expect("runtime store"),
+    );
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let factory = AgentFactory::new(&state).comms(true);
+    let mut builder = FactoryAgentBuilder::new(factory, Config::default());
+    builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+        session_store.clone(),
+    )));
+    builder.default_blob_store = Some(blob_store.clone());
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        16,
+        session_store,
+        runtime_store,
+        blob_store,
+    ));
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "studio-crew-identity"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+"#,
+    )
+    .expect("definition");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+        .with_session_runtime_adapter(adapter.clone())
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "studio-identity".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap");
+
+    // Mirror mobkit_gateway's `identity_first: true` bootstrap.
+    let continuity_store =
+        LocalContinuityStore::open(state.join("continuity.db")).expect("continuity store");
+    let fencing_floor = continuity_store
+        .max_fencing_token()
+        .expect("fencing high-water");
+    let mob_handle = runtime.mob_handle();
+    let session_service = runtime
+        .mob_runtime()
+        .session_service()
+        .cloned()
+        .expect("session service");
+    let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
+        MobSessionBridge::with_session_service(mob_handle.clone(), session_service),
+    );
+    let irt = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(continuity_store),
+            lease_provider: Arc::new(LocalLeaseProvider::with_floor(fencing_floor)),
+            runtime_instance_id: "studio-k0-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(mob_handle.clone())),
+    );
+    let roster = Arc::new(MutableRosterProvider::new(Vec::new()));
+    restore_flow(&irt, &roster.snapshot(), None, None)
+        .await
+        .expect("restore_flow (empty roster)");
+    let mob_definition = mob_handle.definition().clone();
+    runtime.set_console_identity_roster(roster.clone());
+    runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+        irt,
+        roster,
+        None,
+        None,
+        Some(mob_definition),
+    )));
+    let app = runtime.build_reference_app_router(studio_decision_state());
+
+    for member in ["lead", "builder", "reviewer"] {
+        let response = rpc(
+            &app,
+            "mobkit/ensure_member",
+            json!({"role": "general", "agent_identity": member}),
+        )
+        .await;
+        assert!(
+            response.get("error").is_none(),
+            "identity ensure {member}: {response}"
+        );
+        assert_eq!(
+            response["result"]["identity_first"],
+            json!(true),
+            "ensure_member must take the identity arm: {response}"
+        );
+        assert_eq!(
+            response["result"]["state"],
+            json!("active"),
+            "ensured identity must be active: {response}"
+        );
+    }
+
+    // The K1-class calls: retire + respawn of NEVER-RAN members. On the
+    // session-owned surface these strand the member; here they succeed.
+    let retire = rpc(
+        &app,
+        "mobkit/retire_member",
+        json!({"member_id": "builder"}),
+    )
+    .await;
+    assert!(
+        retire.get("error").is_none(),
+        "identity retire_member of an idle member must succeed: {retire}"
+    );
+    let respawn = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "reviewer"}),
+    )
+    .await;
+    assert!(
+        respawn.get("error").is_none(),
+        "identity respawn_member of an idle member must succeed: {respawn}"
+    );
+    assert!(
+        respawn["result"]["session_id"].is_string(),
+        "respawn must report the fresh session: {respawn}"
+    );
+
+    // retire_member also removed builder from the desired roster: another
+    // ensure re-creates it cleanly.
+    let re_ensure = rpc(
+        &app,
+        "mobkit/ensure_member",
+        json!({"role": "general", "agent_identity": "builder"}),
+    )
+    .await;
+    assert!(
+        re_ensure.get("error").is_none(),
+        "re-ensure after retire must succeed: {re_ensure}"
+    );
+}

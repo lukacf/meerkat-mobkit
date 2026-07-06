@@ -301,3 +301,74 @@ fn mobkit_gateway_emits_tracing_on_stderr() {
          got stderr: {stderr:?}"
     );
 }
+
+/// meerkat-studio ask K0: `identity_first: true` on init boots the gateway
+/// with the durable-identity substrate (continuity store + leases + identity
+/// console surface) constructed from the existing store paths.
+#[test]
+fn mobkit_gateway_bootstraps_identity_first_runtime() {
+    let bin = env!("CARGO_BIN_EXE_mobkit_gateway");
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let store = TempDir::new().expect("store tempdir");
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "mobkit/init",
+        "params": {
+            "workspace_root": workspace.path().to_string_lossy(),
+            "store_path": store.path().join("store").to_string_lossy(),
+            "persistent_sessions": true,
+            "identity_first": true,
+            "identity_roster": [{
+                "identity": "personal:alice",
+                "profile": "alpha",
+            }],
+        },
+    });
+
+    let mut child = Command::new(bin)
+        .current_dir(workspace.path())
+        .env("ANTHROPIC_API_KEY", "sk-ant-regression-test")
+        .env("OPENAI_API_KEY", "sk-regression-test")
+        .env("XDG_STATE_HOME", workspace.path().join("xdg-state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mobkit_gateway");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
+    stdin.flush().expect("flush");
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(Duration::from_secs(90))
+        .expect("gateway responded to identity-first init");
+    let _ = child.kill();
+    let _ = child.wait();
+    let response: Value = serde_json::from_str(line.trim()).expect("init response json");
+    assert!(
+        response.get("error").is_none(),
+        "identity-first init must succeed: {response}"
+    );
+    assert!(
+        response["result"]["http_base_url"].is_string(),
+        "init response carries the http base url: {response}"
+    );
+    // The identity substrate is durable: continuity.db exists in the store.
+    let continuity = store.path().join("store").join("continuity.db");
+    assert!(
+        continuity.exists(),
+        "identity-first boot must create {}",
+        continuity.display()
+    );
+}

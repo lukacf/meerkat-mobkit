@@ -165,6 +165,11 @@ pub struct UnifiedRuntime {
     // the runtime is shared (`Arc`), wherever the store is constructed.
     memory_panel_store:
         std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+    /// Identity-first console gateways: the mutable desired-identity roster
+    /// that `mobkit/ensure_member` extends at runtime (ask K0). Set by the
+    /// host beside `attach_identity_first_context`.
+    console_identity_roster:
+        std::sync::RwLock<Option<Arc<crate::identity_first::MutableRosterProvider>>>,
     /// §16 Q1 provisional operator keying: the console-principal resolver,
     /// shared between the memory coordinator (reads) and the console send
     /// path (notes interactions). `&self`-settable like the panel store.
@@ -250,6 +255,7 @@ impl UnifiedRuntime {
             identity_first_context: None,
             access_controller: None,
             memory_panel_store: std::sync::RwLock::new(None),
+            console_identity_roster: std::sync::RwLock::new(None),
             console_operator_resolver: std::sync::RwLock::new(None),
             metadata_table,
             persistent_metadata,
@@ -588,6 +594,25 @@ impl UnifiedRuntime {
     /// (§9.3). `&self` deliberately: gateways construct the store next to
     /// the memory subsystem wiring, which may run after the runtime is
     /// `Arc`-shared. Routers built *after* this call serve the panel RPCs.
+    pub fn set_console_identity_roster(
+        &self,
+        roster: Arc<crate::identity_first::MutableRosterProvider>,
+    ) {
+        *self
+            .console_identity_roster
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(roster);
+    }
+
+    pub fn console_identity_roster(
+        &self,
+    ) -> Option<Arc<crate::identity_first::MutableRosterProvider>> {
+        self.console_identity_roster
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn set_memory_panel_store(
         &self,
         store: crate::memory::sqlite_store::SqliteAgentMemoryStore,
