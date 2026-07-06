@@ -761,3 +761,94 @@ occurrence scan, and overdue-pending-unclaimed state every 60 s, and logs a
 row-level diagnosis (poisoned row ids via direct sqlite triage) when the
 pipeline is stalled. It makes the failure loud and attributable but cannot
 make the driver claim past a poisoned row.
+
+---
+
+# Batch 4 — meerkat-studio field report (2026-07-06)
+
+Reporter context: desktop app pinning meerkat =0.7.17 / mobkit =0.7.23; thread
+mobs through an embedded gateway (FactoryAgentBuilder →
+PersistentSessionService → MobBootstrapSpec → UnifiedRuntime), helper crews
+through per-thread mobkit_gateway HTTP children. Asks M1–M4 below are the
+reporter's, relayed verbatim-in-substance; ask 20 is mobkit's root-cause of
+the reporter's K1, which turned out to be upstream.
+
+## Ask 20 — retire/respawn of a never-ran member fails ArchiveSession and strands it in `retiring` (reported as mobkit K1) — P0
+
+**Problem statement.** A session-bound mob member that has never run a turn
+has no runtime-store session snapshot (the machine commits at run
+boundaries). Retiring it runs the disposal pipeline to completion, but the
+ArchiveSession step's authority lookup returns NotFound
+(`load_runtime_authority_session_for_control` → no runtime snapshot →
+`Ok(None)` → "mob archive authority returned NotFound for registered runtime
+session …"), which `destroy_disposal_failure` escalates to a fatal error
+("disposal completed but ArchiveSession failed"). The member is left in the
+roster at `state=retiring`, `is_final=false` — permanently. `respawn` runs
+retire first, checks `roster_still_contains_member` — still true — and
+aborts, leaving a cancelled-kickoff zombie. Net: the only per-member control
+primitives on a non-crashing path (see M1) fail for exactly the members an
+operator most wants to manage.
+
+**Evidence.** Deterministic mobkit repro
+(`meerkat-mobkit/tests/studio_k_asks.rs`, the `#[ignore]`d persistent test):
+3-member crew via `ensure_member` on
+FactoryAgentBuilder→PersistentSessionService; both RPCs fail with the exact
+field string; members verified stranded in `retiring`. The identity-first
+bridge already classifies this exact string as recoverable for SESSION-OWNED
+retire (mobkit `is_recoverable_session_owned_retire_cleanup_error`) — the mob-
+member path needs the equivalent judgment at the source.
+
+**Proposed shape.** In meerkat-mob: when disposal COMPLETED and the archive
+miss is `NotFound for registered runtime session` (never-committed snapshot,
+not a lost record — distinguishable by asking the runtime store whether the
+logical runtime id ever existed), treat archive as a no-op success and let
+the retirement commit finish; respawn then proceeds naturally. Alternatively
+commit an initial runtime snapshot at member session registration so the
+lookup never misses. Regression: retire + respawn of a freshly spawned,
+never-prompted member on a persistent service must succeed; a
+`roster.get(...)`-after-failed-retire assertion to pin the no-strand
+invariant.
+
+## M1 — force_cancel_member stack-overflows (SIGABRT) mid-turn — P0
+
+`MobHandle::force_cancel_member` → `MobActor::handle_force_cancel` →
+provisioner `interrupt_member` → `LocalMobRuntimeBridge::interrupt_member` →
+`MeerkatMachine::cancel_after_boundary` recurses inside
+`execute_meerkat_machine_command` until the tokio worker aborts the process.
+Reporter byte-diffed the chain: unchanged 0.7.4 → 0.7.17. No downstream
+consumer can stop a running member; the model turn burns tokens to the next
+boundary. Acceptance: cancel during an in-flight (not idle) turn interrupts
+and returns without crashing; regression test for exactly that.
+
+## M2 — no MCP path for library/factory embedders; per-spawn overlay lossy — P1
+
+`AgentBuildConfig` has `external_tools`/`wait_for_mcp` but no MCP-server
+config; `.rkat/mcp.toml` is CLI-only. The working embedder pattern
+(`McpRouter::new_with_surface_handle(RuntimeExternalToolSurfaceHandle::ephemeral())`
+→ stage_add → apply_staged → wait_until_ready → inject via
+`SpawnMemberSpec.external_tools`) exists only in meerkat test code
+(`service_factory.rs:1827`); `McpRouter::new()` fail-closes stage_add. With
+`builtins = true`, `CompositeDispatcher` does not forward
+`bind_external_tool_surface_handle`/`bind_mcp_server_lifecycle_handle` (only
+`bind_ops_lifecycle`), so session-time late binding never reaches the
+adapter. And `materialize_revived_member_session` composes
+`external_tools_for_profile(&profile, None)` — revived members silently lose
+per-spawn tools. Acceptance: a supported way to attach an MCP stdio server to
+factory-built agents that composes with builtins, survives revival, and needs
+no test-code incantation. (Mobkit shipped its half: a mob-wide
+revival-surviving provider seam, `MobBootstrapSpec::with_default_external_tools_provider`.)
+
+## M3 — semver discipline within 0.7.x — P1
+
+0.7.16 changed `PersistentSessionService::new` (Option → required Arc);
+0.7.12 added a required `content_taint` field to `CommsCommand::PeerMessage`.
+Both broke 0.7-pinned downstreams. Ask: treat public-signature changes as
+breaking (minor bump) or publish a meerkat↔mobkit compatibility matrix.
+(Mobkit now exact-pins its meerkat family and records the pin per release.)
+
+## M4 — durable run/interaction lifecycle query — P2
+
+Run framing is broadcast-only; after a host restart there is no "did
+interaction X reach a terminal state, and which?" query. Reporter hand-rolled
+runs.jsonl + a lookup RPC. A first-class terminal-status-by-interaction/run-id
+query in meerkat-session/runtime deletes that code for every embedder.

@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Mob-wide, revival-surviving external-tools seam (meerkat-studio ask K4):
+  `MobBootstrapSpec::with_default_external_tools_provider` forwards to
+  meerkat-mob's per-spawn provider, so tools attached there survive member
+  respawn/revival — unlike the per-spawn `SpawnMemberSpec.external_tools`
+  overlay, which revival drops. Note: a profile's `tools.mcp` allowlist gates
+  what the provider exposes, and an EMPTY allowlist means the full surface.
+
+### Changed
+
+- Console JSON-RPC internal errors now carry the real failure reason on the
+  wire (meerkat-studio ask K2): `message` and `data.detail` hold the error
+  chain instead of an opaque `{"error":"internal_error"}` (the kind marker is
+  kept for existing clients). This deliberately reverses the earlier
+  redaction posture for THIS surface: every caller that reaches these
+  handlers is an operator by construction (auth-gated consoles 401 first;
+  open consoles are a trusted-local deployment choice), and the redaction
+  made every -32000 undiagnosable. `console_send`'s public-message redaction
+  is unchanged (that surface can reflect into agent-visible space). Also
+  covers the intermittent mob-spawn 500s reported as K3 wherever they
+  originate on mobkit's surface.
+- The meerkat family is now exact-pinned (`=0.7.18`) in Cargo.toml
+  (meerkat-studio ask K5): the compatible meerkat version is declared, not
+  archaeologized from Cargo.lock at release tags.
+
+### Known issues
+
+- `mobkit/retire_member` / `mobkit/respawn_member` fail for never-ran
+  members on persistent session services and strand them in `retiring`
+  (meerkat-studio K1) — root-caused upstream (ask 20,
+  docs/design/upstream-asks.md): the ArchiveSession disposal step NotFounds
+  on a member that never committed a runtime snapshot. Repro ships as an
+  `#[ignore]`d test in `tests/studio_k_asks.rs`; the fix lands with the next
+  meerkat release.
+
 - Schedule claim watchdog (both gateways): meerkat's firing driver discards
   its own tick errors, and one poisoned row anywhere in the schedule store
   (a Deleted tombstone the recovery invariant rejects, a stale-schema

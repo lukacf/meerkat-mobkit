@@ -480,3 +480,72 @@ async fn respawn_member_replaces_member() {
 
     runtime.shutdown().await;
 }
+
+/// meerkat-studio ask K4: a mob-wide external-tools provider installed via
+/// `MobBootstrapSpec::with_default_external_tools_provider` must be consulted
+/// at EVERY member materialization — the initial spawn AND the respawn
+/// replacement — unlike the per-spawn `SpawnMemberSpec.external_tools`
+/// overlay, which revival drops.
+#[tokio::test]
+async fn default_external_tools_provider_survives_respawn() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoTools;
+    #[async_trait::async_trait]
+    impl meerkat_core::AgentToolDispatcher for NoTools {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+            Vec::<Arc<meerkat_core::types::ToolDef>>::new().into()
+        }
+        async fn dispatch(
+            &self,
+            call: meerkat_core::types::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+            Ok(meerkat_core::ToolDispatchOutcome::sync_result(
+                meerkat_core::types::ToolResult::new(call.id.to_string(), "{}".to_string(), false),
+            ))
+        }
+        fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+            meerkat_core::agent::DispatcherCapabilities::default()
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider_calls = calls.clone();
+    let provider: meerkat_mob::ExternalToolsProvider = Arc::new(move || {
+        provider_calls.fetch_add(1, Ordering::SeqCst);
+        Some(Arc::new(NoTools) as Arc<dyn meerkat_core::AgentToolDispatcher>)
+    });
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(build_mob_spec(&temp_dir).with_default_external_tools_provider(provider))
+            .module_config(empty_module_config())
+            .timeout(Duration::from_secs(2))
+            .build(),
+    )
+    .await
+    .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("worker", "tooled-member"))
+        .await
+        .expect("spawn tooled-member");
+    let after_spawn = calls.load(Ordering::SeqCst);
+    assert!(
+        after_spawn >= 1,
+        "provider must be consulted at initial spawn"
+    );
+
+    runtime
+        .mob_handle()
+        .respawn(meerkat_mob::ids::AgentIdentity::from("tooled-member"), None)
+        .await
+        .expect("respawn should succeed");
+    assert!(
+        calls.load(Ordering::SeqCst) > after_spawn,
+        "provider must be consulted again at respawn (revival-surviving tools)"
+    );
+
+    runtime.shutdown().await;
+}
