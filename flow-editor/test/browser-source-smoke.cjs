@@ -159,9 +159,23 @@ async function main() {
     const graphInlineEditor = page.locator(".bld-toml--graph");
     await graphInlineEditor.waitFor({ timeout: 30_000 });
     const graphSourceBox = graphInlineEditor.locator('[role="textbox"][aria-readonly="true"]');
+    // The editor virtualizes rows: innerText only carries RENDERED lines, and
+    // the graph panel is short enough that "[flows." can sit below the fold
+    // (hosted-runner font metrics tipped it over). Scroll the editor through
+    // its content while probing so every section materializes at least once.
     await page.waitForFunction(() => {
       const source = document.querySelector('.bld-toml--graph [role="textbox"][aria-readonly="true"]');
-      return source?.innerText.includes("[profiles.") && source?.innerText.includes("[flows.");
+      if (!source) return false;
+      const text = source.innerText;
+      window.__graphSourceSeen = window.__graphSourceSeen || new Set();
+      if (text.includes("[profiles.")) window.__graphSourceSeen.add("profiles");
+      if (text.includes("[flows.")) window.__graphSourceSeen.add("flows");
+      const scroller = source.closest(".cm-editor")?.querySelector(".cm-scroller") || source;
+      scroller.scrollTop = scroller.scrollTop + scroller.clientHeight;
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1) {
+        scroller.scrollTop = 0;
+      }
+      return window.__graphSourceSeen.size === 2;
     }, null, { timeout: 30_000 });
     const graphReadonly = await graphSourceBox.getAttribute("aria-readonly");
     if (graphReadonly !== "true") {
