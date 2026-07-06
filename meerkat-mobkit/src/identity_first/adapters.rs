@@ -27,6 +27,68 @@ use crate::unified_runtime::edge_types::{Discovery, EdgeDiscovery};
 
 /// Adapts a legacy `Discovery` trait impl into a `RosterProvider`.
 ///
+/// In-process mutable roster: the desired-identity list for hosts where the
+/// roster is operator-driven rather than app-provided (the identity-first
+/// console gateway: seeded from init params, extended by
+/// `mobkit/ensure_member`, shrunk by identity deletion). `roster()` returns a
+/// snapshot; mutations take effect on the next reconcile
+/// (`restore_flow` / `mobkit/reconcile_identity` / the Broken-identity
+/// repair task).
+#[derive(Default)]
+pub struct MutableRosterProvider {
+    roster: std::sync::RwLock<Vec<DurableAgentSpec>>,
+}
+
+impl MutableRosterProvider {
+    pub fn new(initial: Vec<DurableAgentSpec>) -> Self {
+        Self {
+            roster: std::sync::RwLock::new(initial),
+        }
+    }
+
+    /// Insert or replace (by identity) a desired spec.
+    pub fn upsert(&self, spec: DurableAgentSpec) {
+        let mut roster = self
+            .roster
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match roster
+            .iter_mut()
+            .find(|entry| entry.identity == spec.identity)
+        {
+            Some(entry) => *entry = spec,
+            None => roster.push(spec),
+        }
+    }
+
+    /// Remove an identity from the desired roster. Returns whether it was
+    /// present. Removal does NOT retire the live identity — reconcile owns
+    /// convergence.
+    pub fn remove(&self, identity: &AgentIdentity) -> bool {
+        let mut roster = self
+            .roster
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = roster.len();
+        roster.retain(|entry| &entry.identity != identity);
+        roster.len() != before
+    }
+
+    pub fn snapshot(&self) -> Vec<DurableAgentSpec> {
+        self.roster
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl RosterProvider for MutableRosterProvider {
+    async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        Ok(self.snapshot())
+    }
+}
+
 /// Maps `AgentDiscoverySpec` to `DurableAgentSpec` per REQ-27:
 /// - `meerkat_id` → `identity` (parsed as `AgentIdentity`)
 /// - `profile` → `profile`

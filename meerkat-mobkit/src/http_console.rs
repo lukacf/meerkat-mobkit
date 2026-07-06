@@ -105,6 +105,10 @@ pub struct ConsoleJsonState {
     /// `None` when the operator scope is off (or memory is unconfigured).
     pub(crate) operator_resolver:
         Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
+    /// Identity-first gateways: the mutable desired-identity roster that
+    /// `mobkit/ensure_member` extends (ask K0). `None` on session-owned
+    /// deployments.
+    pub(crate) identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +253,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         access: None,
         memory_panel: None,
         operator_resolver: None,
+        identity_roster: None,
     })
 }
 
@@ -281,6 +286,7 @@ pub fn console_json_router_with_aggregator_and_access(
         access,
         memory_panel: None,
         operator_resolver: None,
+        identity_roster: None,
     })
 }
 
@@ -335,6 +341,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -355,6 +362,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     access: Option<AccessController>,
     memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
     operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
+    identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -400,6 +408,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         access,
         memory_panel,
         operator_resolver,
+        identity_roster,
     })
 }
 
@@ -609,6 +618,7 @@ pub async fn console_rpc_handler(
         state.access.as_ref(),
         auth_context.access_view.as_ref(),
         state.memory_panel.as_ref(),
+        state.identity_roster.clone(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -3077,6 +3087,7 @@ pub async fn console_rpc_multipart_handler(
                 state.access.as_ref(),
                 auth_context.access_view.as_ref(),
                 state.memory_panel.as_ref(),
+                state.identity_roster.clone(),
             ))
             .await
         };
@@ -4945,6 +4956,7 @@ async fn handle_console_runtime_rpc(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -4968,6 +4980,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     access: Option<&AccessController>,
     access_view: Option<&AccessView>,
     memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
@@ -6829,6 +6842,95 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(value) => value,
                 Err(message) => return invalid_params(response_id, message),
             };
+            // Identity-first gateways (ask K0): ensure_member upserts the
+            // desired-identity roster and reconciles — the durable-identity
+            // equivalent of the mob-member spawn, with the tolerant identity
+            // lifecycle underneath (the ask-20 retire/respawn class does not
+            // exist on this surface).
+            if let (Some(identity_runtime_ref), Some(roster)) =
+                (identity_runtime.as_ref(), identity_roster.as_ref())
+            {
+                let identity = match crate::identity_first::AgentIdentity::parse(agent_identity) {
+                    Ok(identity) => identity,
+                    Err(err) => {
+                        return invalid_params(
+                            response_id,
+                            format!("invalid agent_identity: {err}"),
+                        );
+                    }
+                };
+                if resume_session_id.is_some() {
+                    return invalid_params(
+                        response_id,
+                        "resume_session_id is not supported on an identity-first \
+                         gateway: continuity records own session resumption",
+                    );
+                }
+                if binding.is_some() {
+                    return invalid_params(
+                        response_id,
+                        "external runtime bindings are not supported on an \
+                         identity-first gateway yet",
+                    );
+                }
+                let spec = crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from(role),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels,
+                    context,
+                    additional_instructions: additional_instructions.unwrap_or_default(),
+                    initial_message: None,
+                    runtime_mode_override: runtime_mode,
+                    backend,
+                    binding: None,
+                };
+                roster.upsert(spec);
+                return match crate::identity_first::restore_flow(
+                    identity_runtime_ref,
+                    &roster.snapshot(),
+                    None,
+                    None,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        let outcome = match result.outcomes.get(&identity) {
+                            Some(crate::identity_first::RestoreOutcome::Created { .. }) => {
+                                "created"
+                            }
+                            Some(crate::identity_first::RestoreOutcome::Resumed { .. }) => {
+                                "resumed"
+                            }
+                            Some(crate::identity_first::RestoreOutcome::Dormant { .. }) => {
+                                "dormant"
+                            }
+                            Some(crate::identity_first::RestoreOutcome::Broken(_)) => "broken",
+                            None => "unchanged",
+                        };
+                        let state = identity_runtime_ref
+                            .status(&identity)
+                            .await
+                            .map(|status| status.state.wire_str().to_string())
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        response_value(
+                            response_id,
+                            Some(serde_json::json!({
+                                "agent_identity": identity.as_str(),
+                                "role": role,
+                                "identity_first": true,
+                                "outcome": outcome,
+                                "state": state,
+                            })),
+                            None,
+                        )
+                    }
+                    Err(err) => {
+                        internal_error(response_id, format!("ensure_member (identity): {err}"))
+                    }
+                };
+            }
             let mut spec = SpawnMemberSpec::new(
                 ProfileName::from(role),
                 crate::member_comms_id::mob_member_id(agent_identity),
@@ -6880,6 +6982,45 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(error));
             }
+            if let (Some(identity_runtime_ref), Some(roster)) =
+                (identity_runtime.as_ref(), identity_roster.as_ref())
+            {
+                let identity = match crate::identity_first::AgentIdentity::parse(member_id) {
+                    Ok(identity) => identity,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid member_id: {err}"));
+                    }
+                };
+                return match identity_runtime_ref.retire(&identity).await {
+                    Ok(_token) => {
+                        // Off the desired roster too, or the next reconcile
+                        // (or the repair task) re-creates it.
+                        roster.remove(&identity);
+                        response_value(
+                            response_id,
+                            Some(serde_json::json!({
+                                "accepted": true,
+                                "identity_first": true,
+                            })),
+                            None,
+                        )
+                    }
+                    Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                        response_value(
+                            response_id,
+                            None,
+                            Some(JsonRpcError {
+                                code: -32001,
+                                message: format!("unknown identity: {member_id}"),
+                                data: None,
+                            }),
+                        )
+                    }
+                    Err(err) => {
+                        internal_error(response_id, format!("retire_member (identity): {err}"))
+                    }
+                };
+            }
             if let Some(aggregator) = &console_aggregator {
                 return match Box::pin(aggregator.retire_identity(member_id)).await {
                     Ok(true) => response_value(
@@ -6924,6 +7065,45 @@ async fn handle_console_runtime_rpc_with_visibility(
             .await
             {
                 return response_value(response_id, None, Some(error));
+            }
+            if identity_roster.is_some()
+                && let Some(identity_runtime_ref) = identity_runtime.as_ref()
+            {
+                let identity = match crate::identity_first::AgentIdentity::parse(member_id) {
+                    Ok(identity) => identity,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid member_id: {err}"));
+                    }
+                };
+                // Identity-first respawn = reset: retire the live session and
+                // rebuild from the current roster spec under the same durable
+                // identity (fresh session, new generation).
+                return match identity_runtime_ref.reset(&identity).await {
+                    Ok(record) => response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "accepted": true,
+                            "identity_first": true,
+                            "session_id": record.session_id.to_string(),
+                            "generation": record.generation.get(),
+                        })),
+                        None,
+                    ),
+                    Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                        response_value(
+                            response_id,
+                            None,
+                            Some(JsonRpcError {
+                                code: -32001,
+                                message: format!("unknown identity: {member_id}"),
+                                data: None,
+                            }),
+                        )
+                    }
+                    Err(err) => {
+                        internal_error(response_id, format!("respawn_member (identity): {err}"))
+                    }
+                };
             }
             match runtime
                 .handle()
@@ -10163,6 +10343,7 @@ comms = true
                 None,
                 None,
                 None,
+                None,
             ))
             .await;
             assert_ne!(
@@ -10272,6 +10453,7 @@ comms = true
                     None,
                     None,
                     None,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -10342,6 +10524,7 @@ comms = true
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -10612,6 +10795,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -10707,6 +10891,7 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -10826,6 +11011,7 @@ comms = true
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -11187,6 +11373,7 @@ comms = true
             Some(&access_controller),
             Some(&denied_view),
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11240,6 +11427,7 @@ comms = true
             Some(&send_only_controller),
             Some(&send_only_view),
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11276,6 +11464,7 @@ comms = true
             None,
             Some(&send_only_controller),
             Some(&send_only_view),
+            None,
             None,
         ))
         .await;
@@ -11349,6 +11538,7 @@ comms = true
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11385,6 +11575,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
         ))
         .await;
@@ -11424,6 +11615,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
         ))
         .await;
