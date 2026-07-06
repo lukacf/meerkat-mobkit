@@ -214,7 +214,11 @@ Image forwarding gotcha: the old failure was `image_ref_unavailable: current_tur
 
 ## Identity-First Continuity
 
-Identity-first makes stable `AgentIdentity` strings the control-plane key and treats runtime member IDs as generated bindings. Prefer identity-scoped APIs for durable agents and member-scoped APIs only when working at the mob layer.
+**Doctrine (DECIDED 2026-07-06, `docs/design/identity-first-doctrine.md`): MobKit is dual-plane.** Durable members live on the identity plane (`IdentityRuntime`: continuity records, lease-fenced embodiment, tolerant disposal, reconcile from a roster). Ephemeral workers live on the mob plane (`MobHandle`: `spawn`/`mob_spawn_member`/`delegate`, idle-retire reaping). The mob plane is NOT legacy — it is the worker plane and the substrate the identity bridge is built on. What is wrong is building DURABLE populations on the mob plane (member-per-user, long-lived coordinators via `ensure_member`): use an identity roster instead. Never route worker churn through identities (per-worker continuity records are pure overhead — OB3-scale deployments pay for every dead identity at reconcile).
+
+Identity-first makes stable `AgentIdentity` strings the control-plane key and treats runtime member IDs as generated bindings. Prefer identity-scoped APIs for durable agents and member-scoped APIs for ephemeral workers at the mob layer.
+
+Gateway note: on an identity-first gateway (`mobkit_gateway` init `identity_first: true`, or any runtime with the `console_identity_roster` slot set) the console member RPCs re-dispatch to identity semantics — `ensure_member` upserts the `MutableRosterProvider` and reconciles via `restore_flow`, `retire_member` is a tolerant identity retire, `respawn_member` is an identity reset. The mob-plane disposal defect (retire/respawn of never-ran members strands them in `retiring` — upstream ask 20) is unreachable on that surface.
 
 Key files:
 

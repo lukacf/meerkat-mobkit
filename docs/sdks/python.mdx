@@ -176,8 +176,10 @@ keyed by loop id, `loop_iteration_ledger`, `flow_state`,
 status = await handle.status()
 print(status.running, status.loaded_modules)
 
-# Ensure a member exists (spawn if missing)
-snapshot = await handle.ensure_member("user-123", role="personal")
+# Ensure an EPHEMERAL worker exists (spawn if missing). Durable members
+# (per-user agents, coordinators) belong on the identity plane instead —
+# see "new user first contact" below.
+snapshot = await handle.ensure_member("scratch-worker-7", role="worker")
 print(snapshot.meerkat_id, snapshot.state)
 
 # Find members by label
@@ -225,13 +227,25 @@ importable from the top-level package.
 
 ### Common pattern: new user first contact
 
+Per-user agents are **durable** members, so stand them up on the identity
+plane — declare them through your roster provider and reconcile — rather
+than `ensure_member`-ing them into the mob roster. Identity-plane members
+get continuity records and resume across restarts; mob-plane members do not.
+
 ```python
-# Slack DM from a new user — ensure agent exists, then deliver
-snapshot = await handle.ensure_member(user_id, role="personal", labels={"owner": user_id})
-result = await handle.send(user_id, slack_message)
-async for event in handle.subscribe_agent(user_id):
+# Slack DM from a new user — add the identity to your roster source,
+# reconcile, then deliver by identity.
+my_roster.add_identity(f"personal:{user_id}", profile="personal",
+                       labels={"owner": user_id})
+await runtime.reconcile()
+result = await runtime.send(f"personal:{user_id}", slack_message)
+async for event in runtime.subscribe_agent(f"personal:{user_id}"):
     forward_to_slack(event)
 ```
+
+Reserve `ensure_member` for **ephemeral workers** (helpers a parent spawns
+and an idle-retire label reaps) — the worker plane. See the
+[identity-first doctrine](https://github.com/lukacf/meerkat-mobkit/blob/main/docs/design/identity-first-doctrine.md).
 
 ## Builder pattern
 

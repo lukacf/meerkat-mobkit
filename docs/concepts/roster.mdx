@@ -6,6 +6,18 @@ icon: "users"
 
 The roster is the authoritative record of every member in a mob. It tracks active and retiring members, their profiles, peer wiring, and labels. All roster mutations flow through the gateway's JSON-RPC interface, and every query returns a consistent `MobMemberSnapshot`.
 
+<Warning>
+The member API on this page is the **worker plane**: it is the right surface
+for ephemeral, disposable members — helpers a parent agent spawns and an
+idle-retire policy reaps. **Durable members (per-user agents, long-lived
+coordinators, anything that must survive a restart) belong on the identity
+plane**: declare them in an identity roster and reconcile, instead of
+`ensure_member`-ing them into the mob roster. Identity-plane members get
+continuity records, lease-fenced embodiment, and resume across restarts —
+mob-plane members get none of that. On an identity-first gateway the member
+methods below re-dispatch to identity semantics automatically.
+</Warning>
+
 ## Member states
 
 Each member is in exactly one lifecycle state at any time.
@@ -80,6 +92,8 @@ The `reconcile()` call uses the roster to determine which members to spawn, reta
 See the [unified runtime guide](/guides/unified-runtime) for the full reconciliation flow.
 
 ## See also
+
+- [Identity-first doctrine](https://github.com/lukacf/meerkat-mobkit/blob/main/docs/design/identity-first-doctrine.md) -- when to use the identity plane vs this worker plane
 
 - [Python SDK](/sdks/python) -- full SDK reference including roster helpers
 - [RPC API](/api/rpc) -- JSON-RPC protocol and method signatures
