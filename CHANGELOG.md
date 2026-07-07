@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- meerkat family pinned to `=0.7.22` (from `=0.7.20`; 0.7.21 was skipped —
+  its ask-21b archive arm routed never-run-member disposal into a
+  pre-existing runtime-loop self-deadlock on the session mutation gate and
+  wedged the whole mob, upstream ask 21c). 0.7.22 fixes the deadlock class
+  structurally (stop realization is guard-free by construction) and with it
+  the whole ask 20/21/21b/21c never-run-member family on the classic
+  persistent chain: retire/respawn of never-run `ensure_member` crews now
+  converges, and the K1 persistent regression test runs un-ignored.
+  Residue: mob-plane workers under the identity-first gateway construction
+  still archive-NotFound on respawn (upstream ask 21d, P1, fast-fail — no
+  wedge, no new strand class).
+
 ### Fixed
 
 - Schedule delivery to a mob member is now INTERNAL addressing: the schedule
