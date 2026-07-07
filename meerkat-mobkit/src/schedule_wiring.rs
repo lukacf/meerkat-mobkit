@@ -28,7 +28,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use meerkat::surface::{
-    NoopScheduleMobHost, ScheduleHostHandle, SurfaceScheduleMobHost,
+    NoopScheduleMobHost, ScheduleHostHandle, SurfaceScheduleMobHost, immediate_completed_dispatch,
+    immediate_delivery_failure, parse_mob_member_schedule_identity,
     spawn_runtime_backed_schedule_host_with_mobs,
 };
 use meerkat::{
@@ -40,6 +41,7 @@ use meerkat::{
     SessionTargetBinding, SqliteScheduleStore, TargetBinding, TriggerSpec, UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
+use meerkat_mob::runtime::MobHandle;
 use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
 use meerkat_runtime::MeerkatMachine;
 use serde_json::{Map, Value};
@@ -566,21 +568,167 @@ pub fn attach_schedule_tools_with_identity_targets(
 /// console gateway with `FactoryAgentBuilder`, and the SDK gateway with its
 /// `StdioCallbackAgentBuilder` (so scheduled sessions are materialized through
 /// the SDK build callback and keep their identity-scoped tools).
+/// Mob host wrapper: mob-member schedule deliveries are INTERNAL addressing.
+///
+/// A schedule targeting a member of this mob was authored inside the mob (the
+/// agent tool rewrite or delivery-time identity recovery produced it), so its
+/// delivery is mob coordination — `WorkOrigin::Internal` — not external
+/// ingress. The stock meerkat-mob-mcp host routes `member_send` through the
+/// EXTERNAL work door, which rejects members whose profile is
+/// `external_addressable = false` ("mob member is not externally
+/// addressable") — HomeCore's domain agents are internal-only by design, and
+/// flipping them externally addressable to receive their own schedules would
+/// be the wrong fix. This wrapper delivers member-addressed prompts through
+/// the same internal work lane the identity bridge uses
+/// (`submit_work_with_mode` + `WorkOrigin::Internal`); everything else
+/// (flows, helpers, probes) delegates to the wrapped host.
+struct InternalDeliveryScheduleMobHost {
+    inner: Arc<dyn SurfaceScheduleMobHost>,
+    handle: MobHandle,
+}
+
+impl InternalDeliveryScheduleMobHost {
+    async fn deliver_internal_member_prompt(
+        &self,
+        occurrence: &meerkat::Occurrence,
+        mob_id: &str,
+        member_id: &str,
+        content: &meerkat_core::ContentInput,
+    ) -> Option<meerkat::DeliveryDispatch> {
+        if self.handle.definition().id.as_str() != mob_id {
+            return None;
+        }
+        let member = crate::member_comms_id::mob_member_id(member_id);
+        let entry = match self.handle.get_member(&member).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return None,
+            Err(error) => {
+                return Some(immediate_delivery_failure(
+                    occurrence,
+                    format!("member lookup failed: {error}"),
+                    meerkat::DeliveryFailureReason::RuntimeRejected,
+                    None,
+                    None,
+                ));
+            }
+        };
+        let spec = meerkat_mob::WorkSpec::new(content.clone(), meerkat_mob::WorkOrigin::Internal);
+        match self
+            .handle
+            .submit_work_with_mode(
+                entry.agent_runtime_id.clone(),
+                entry.fence_token,
+                meerkat_mob::WorkRef::new(),
+                spec,
+                meerkat_core::types::HandlingMode::Queue,
+            )
+            .await
+        {
+            Ok(_receipt) => Some(immediate_completed_dispatch(
+                occurrence,
+                Some(member_id.to_string()),
+            )),
+            Err(error) => Some(immediate_delivery_failure(
+                occurrence,
+                format!("internal schedule delivery failed: {error}"),
+                meerkat::DeliveryFailureReason::RuntimeRejected,
+                Some(member_id.to_string()),
+                None,
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
+    async fn probe_mob_target(
+        &self,
+        binding: &MobTargetBinding,
+    ) -> Result<meerkat::TargetProbeOutcome, meerkat::ScheduleDomainError> {
+        self.inner.probe_mob_target(binding).await
+    }
+
+    async fn deliver_mob_target(
+        &self,
+        occurrence: &meerkat::Occurrence,
+        binding: &MobTargetBinding,
+    ) -> Result<meerkat::DeliveryDispatch, meerkat::ScheduleDomainError> {
+        if let MobTargetBinding::Member {
+            mob_id,
+            member_id,
+            action: ScheduledMobAction::Send { content, .. },
+        } = binding
+            && let Some(dispatch) = self
+                .deliver_internal_member_prompt(occurrence, mob_id, member_id, content)
+                .await
+        {
+            return Ok(dispatch);
+        }
+        self.inner.deliver_mob_target(occurrence, binding).await
+    }
+
+    async fn probe_identity_target(
+        &self,
+        binding: &meerkat::IdentityTargetBinding,
+    ) -> Result<Option<meerkat::TargetProbeOutcome>, meerkat::ScheduleDomainError> {
+        self.inner.probe_identity_target(binding).await
+    }
+
+    async fn deliver_identity_target(
+        &self,
+        occurrence: &meerkat::Occurrence,
+        binding: &meerkat::IdentityTargetBinding,
+    ) -> Result<Option<meerkat::DeliveryDispatch>, meerkat::ScheduleDomainError> {
+        if let Some(identity) = parse_mob_member_schedule_identity(binding.identity())
+            && let meerkat::ScheduledSessionAction::Prompt {
+                prompt,
+                system_prompt: None,
+                skill_refs,
+                additional_instructions,
+                ..
+            } = binding.action()
+            && skill_refs.is_empty()
+            && additional_instructions.is_empty()
+            && let Some(dispatch) = self
+                .deliver_internal_member_prompt(
+                    occurrence,
+                    &identity.mob_id,
+                    &identity.member,
+                    prompt,
+                )
+                .await
+        {
+            return Ok(Some(dispatch));
+        }
+        self.inner
+            .deliver_identity_target(occurrence, binding)
+            .await
+    }
+}
+
 #[must_use]
 pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     service: Arc<PersistentSessionService<B>>,
     adapter: Arc<MeerkatMachine>,
     schedule_service: ScheduleService,
     mob_state: Option<Arc<MobMcpState>>,
+    mob_handle: MobHandle,
     runnable_host: Option<Arc<dyn meerkat::ScheduleRunnableHost>>,
     owner_id: impl Into<String>,
 ) -> Option<ScheduleHostHandle> {
-    let mob_host: Arc<dyn SurfaceScheduleMobHost> = match mob_state {
+    let inner_mob_host: Arc<dyn SurfaceScheduleMobHost> = match mob_state {
         Some(state) => Arc::new(MobMcpScheduleHost::new(state)),
         None => Arc::new(NoopScheduleMobHost::new(
             "scheduled mob targets are not supported: no mob runtime",
         )),
     };
+    // Member-addressed deliveries take the INTERNAL work lane (schedule
+    // delivery to a mob member is mob coordination, not external ingress) —
+    // internal-only members receive their own schedules.
+    let mob_host: Arc<dyn SurfaceScheduleMobHost> = Arc::new(InternalDeliveryScheduleMobHost {
+        inner: inner_mob_host,
+        handle: mob_handle,
+    });
     // meerkat 0.7.13 (upstream ask 10): thread a host-runnable registry so
     // host-registered runnables (e.g. the memory steward's dream) can be
     // driven as schedule occurrences. `None` keeps mob/session targets only.
@@ -1308,6 +1456,13 @@ mod tests {
     /// the mob-target registry can resolve the authoring session at create
     /// time (the field failure fired on the unresolved path).
     async fn one_shot_delivery_e2e(register_mob_state: bool) -> (String, String) {
+        one_shot_delivery_e2e_with_addressability(register_mob_state, true).await
+    }
+
+    async fn one_shot_delivery_e2e_with_addressability(
+        register_mob_state: bool,
+        external_addressable: bool,
+    ) -> (String, String) {
         use meerkat_core::AgentToolDispatcher;
         use serde_json::value::RawValue;
 
@@ -1344,20 +1499,20 @@ mod tests {
             runtime_store,
             blob_store,
         ));
-        let definition = meerkat_mob::MobDefinition::from_toml(
+        let definition = meerkat_mob::MobDefinition::from_toml(&format!(
             r#"
 [mob]
 id = "delivery-e2e"
 
 [profiles.general]
 model = "gpt-5.5"
-external_addressable = true
+external_addressable = {external_addressable}
 
 [profiles.general.tools]
 comms = true
 schedule = true
-"#,
-        )
+"#
+        ))
         .expect("definition");
         let agent_mob_tools_slot = Arc::clone(&inner_builder_mob_tools_slot);
         let mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
@@ -1478,6 +1633,7 @@ schedule = true
             adapter,
             attached.service.clone(),
             mob_state,
+            handle.clone(),
             None,
             "delivery-e2e",
         )
@@ -1539,6 +1695,19 @@ schedule = true
         assert_eq!(
             stage, "completed",
             "one-shot must deliver to the member: {detail}"
+        );
+    }
+
+    /// HomeCore field case: domain agents are internal_only by design (only
+    /// person identities are externally addressable). A schedule firing back
+    /// into ITS OWN AUTHOR's session is internal addressing — the external
+    /// addressability posture must not block self-delivery.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_authored_one_shot_delivers_to_internal_only_author() {
+        let (stage, detail) = one_shot_delivery_e2e_with_addressability(true, false).await;
+        assert_eq!(
+            stage, "completed",
+            "self-delivery to an internal_only author must succeed: {detail}"
         );
     }
 

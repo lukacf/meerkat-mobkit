@@ -4590,6 +4590,7 @@ external_addressable = true
                 adapter,
                 schedule_service,
                 mob_state,
+                runtime.mob_handle(),
                 runnable_host,
                 schedule_owner_id.clone(),
             ),

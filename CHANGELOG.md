@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Schedule delivery to a mob member is now INTERNAL addressing: the schedule
+  host wraps the mob delivery host so member-addressed prompts go through
+  the internal work lane (`WorkOrigin::Internal` — the same door the
+  identity bridge uses), not the external ingress door. Previously delivery
+  routed through `member_send`'s external path, which rejected members whose
+  profile is `external_addressable = false` ("mob member is not externally
+  addressable") — HomeCore's domain agents are internal-only by design, and
+  a schedule firing back into its own author's session was blocked by the
+  external posture. Flows/helpers/probes keep the stock host behavior. E2e
+  pins self-delivery to an internal_only author at `stage=completed`.
+
 ## [0.7.27] - 2026-07-07
 
 ### Fixed
