@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent-authored schedules now DELIVER on both gateways (the HomeCore 0.7.26
+  "last link": authoring ✓ planning ✓ claim ✓ no runaway ✓ delivery ✗ with
+  "scheduled identity targets are not supported by this session host").
+  Root cause was mobkit-side: specs built via `MobBootstrapSpec::new` (both
+  gateway binaries roll their own session services) never installed the
+  agent mob tool surface, so `agent_mob_mcp_state()` was None — members
+  still got mob tools through meerkat-mob's INTERNAL state, but mobkit's
+  schedule host had no mob authority: the authoring-time rewrite to
+  mob-member targets could not resolve sessions, and `spawn_schedule_host`
+  fell back to the Noop mob host, leaving identity/mob targets undeliverable.
+  New public seam `MobBootstrapSpec::with_agent_mob_tools` performs the
+  install for externally-constructed specs; both gateways wire it. End-to-end
+  tests pin the full chain (agent tool dispatch → planning → claim →
+  delivery `completed`) for both the rewrite path and the delivery-time
+  identity-recovery path.
+
 ## [0.7.26] - 2026-07-07
 
 ### Changed

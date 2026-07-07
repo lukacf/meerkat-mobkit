@@ -3686,6 +3686,7 @@ external_addressable = true
                 &inner_builder,
                 state_path,
             );
+        let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
@@ -3720,6 +3721,10 @@ external_addressable = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_runtime_adapter(adapter.clone())
+            // Agent mob tools + the schedule host's mob authority (HomeCore
+            // 0.7.26 last-link fix): without this, agent-authored schedules
+            // can't rewrite to mob-member targets or deliver them.
+            .with_agent_mob_tools(agent_mob_tools_slot)
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,

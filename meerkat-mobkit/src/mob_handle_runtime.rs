@@ -2333,6 +2333,46 @@ impl MobBootstrapSpec {
         self
     }
 
+    /// Install the agent-facing mob tool surface (spawn/delegate + the
+    /// schedule mob-target authority) for externally-constructed specs.
+    ///
+    /// The stock `persistent()`/ephemeral constructors do this internally;
+    /// specs built via `MobBootstrapSpec::new` (both gateway binaries roll
+    /// their own session services) previously skipped it, which left
+    /// `agent_mob_mcp_state()` None — members still got mob tools through
+    /// meerkat-mob's INTERNAL default state, but mobkit's schedule host had
+    /// no mob authority: `spawn_schedule_host` fell back to the Noop mob
+    /// host, so agent-authored schedules could neither rewrite to mob-member
+    /// targets at authoring nor deliver identity/mob targets at fire time
+    /// ("scheduled identity targets are not supported by this session host",
+    /// the HomeCore 0.7.26 last-link failure).
+    ///
+    /// Call AFTER any session-service wrapping (`with_session_runtime_adapter`)
+    /// so the installed tools hold the final wrapped service. `mob_tools_slot`
+    /// is the agent factory builder's `default_mob_tools` slot.
+    pub fn with_agent_mob_tools(
+        mut self,
+        mob_tools_slot: Arc<
+            std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>,
+        >,
+    ) -> Self {
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+            console_spawn_sink_slot,
+        ) = install_agent_mob_tools(
+            &self.definition,
+            mob_tools_slot,
+            Arc::clone(&self.session_service),
+        );
+        self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
+        self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
+        self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        self
+    }
+
     /// Install a mob-wide external-tools provider (e.g. MCP-backed callback
     /// tools). Unlike the per-spawn `SpawnMemberSpec.external_tools` overlay —
     /// which member revival silently drops — this provider is consulted on
