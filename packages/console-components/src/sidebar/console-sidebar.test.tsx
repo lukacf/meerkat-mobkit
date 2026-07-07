@@ -97,4 +97,51 @@ describe("ConsoleSidebar", () => {
 
     expect(screen.getByText("archive:thread-1")).toBeInTheDocument();
   });
+
+  test("emits optional item drag and drop callbacks", () => {
+    const onItemDragStart = vi.fn();
+    const onItemDrop = vi.fn();
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: "",
+      dropEffect: "",
+      setData: vi.fn((key: string, value: string) => data.set(key, value)),
+      getData: vi.fn((key: string) => data.get(key) || ""),
+    };
+
+    render(
+      <ConsoleSidebar
+        isItemDraggable={(_block, _section, item) => item.id === "thread-a"}
+        isItemDropTarget={(_block, _section, item) => item.id === "thread-b"}
+        onItemDragStart={onItemDragStart}
+        onItemDrop={onItemDrop}
+        viewState={{
+          blocks: [{
+            id: "threads",
+            kind: "list",
+            sections: [{
+              id: "workspace",
+              title: "workspace",
+              items: [
+                { id: "thread-a", title: "Thread A" },
+                { id: "thread-b", title: "Thread B" },
+              ],
+            }],
+          }],
+        }}
+      />,
+    );
+
+    const source = screen.getByRole("button", { name: "Thread A" });
+    const target = screen.getByRole("button", { name: "Thread B" });
+
+    expect(source).toHaveAttribute("draggable", "true");
+    fireEvent.dragStart(source, { dataTransfer });
+    expect(data.get("application/x-console-sidebar-item-id")).toBe("thread-a");
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+
+    expect(onItemDragStart).toHaveBeenCalled();
+    expect(onItemDrop).toHaveBeenCalled();
+  });
 });

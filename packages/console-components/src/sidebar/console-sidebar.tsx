@@ -2,6 +2,7 @@ import clsx from "clsx";
 import {
   Fragment,
   type ButtonHTMLAttributes,
+  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -84,6 +85,31 @@ export type ConsoleSidebarProps = {
     section: ConsoleSidebarSection,
     item: ConsoleSidebarItem,
     event: MouseEvent<HTMLDivElement>,
+  ) => void;
+  isItemDraggable?: (block: ConsoleSidebarBlock, section: ConsoleSidebarSection, item: ConsoleSidebarItem) => boolean;
+  isItemDropTarget?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event?: DragEvent<HTMLDivElement>,
+  ) => boolean;
+  onItemDragStart?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDragEnd?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDrop?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
   ) => void;
 };
 
@@ -306,6 +332,11 @@ function SidebarRow({
   onSelectItem,
   onItemAction,
   onItemContextMenu,
+  isItemDraggable,
+  isItemDropTarget,
+  onItemDragStart,
+  onItemDragEnd,
+  onItemDrop,
 }: {
   block: ConsoleSidebarBlock;
   section: ConsoleSidebarSection;
@@ -326,7 +357,34 @@ function SidebarRow({
     item: ConsoleSidebarItem,
     event: MouseEvent<HTMLDivElement>,
   ) => void;
+  isItemDraggable?: (block: ConsoleSidebarBlock, section: ConsoleSidebarSection, item: ConsoleSidebarItem) => boolean;
+  isItemDropTarget?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event?: DragEvent<HTMLDivElement>,
+  ) => boolean;
+  onItemDragStart?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDragEnd?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDrop?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
 }) {
+  const draggable = Boolean(!item.disabled && isItemDraggable?.(block, section, item));
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -340,6 +398,7 @@ function SidebarRow({
     <div
       className={clsx(
         "cc-sidebar-row",
+        "thread-row",
         item.selected && "is-selected",
         item.unread && "is-unread",
         item.disabled && "is-disabled",
@@ -348,6 +407,7 @@ function SidebarRow({
       data-selected={item.selected ? "true" : "false"}
       data-unread={item.unread ? "true" : "false"}
       data-disabled={item.disabled ? "true" : "false"}
+      draggable={draggable}
       role="button"
       tabIndex={item.disabled ? -1 : 0}
       onClick={() => {
@@ -356,6 +416,33 @@ function SidebarRow({
         }
       }}
       onContextMenu={(event) => onItemContextMenu?.(block, section, item, event)}
+      onDragEnd={(event) => {
+        if (draggable) {
+          onItemDragEnd?.(block, section, item, event);
+        }
+      }}
+      onDragOver={(event) => {
+        if (isItemDropTarget?.(block, section, item, event)) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "link";
+        }
+      }}
+      onDragStart={(event) => {
+        if (!draggable) {
+          event.preventDefault();
+          return;
+        }
+        event.dataTransfer.effectAllowed = "linkMove";
+        event.dataTransfer.setData("text/plain", item.id);
+        event.dataTransfer.setData("application/x-console-sidebar-item-id", item.id);
+        onItemDragStart?.(block, section, item, event);
+      }}
+      onDrop={(event) => {
+        if (isItemDropTarget?.(block, section, item, event)) {
+          event.preventDefault();
+          onItemDrop?.(block, section, item, event);
+        }
+      }}
       onKeyDown={handleKeyDown}
     >
       <span className="cc-sidebar-row__main">
@@ -421,6 +508,11 @@ function ListBlock({
   onSelectItem,
   onItemAction,
   onItemContextMenu,
+  isItemDraggable,
+  isItemDropTarget,
+  onItemDragStart,
+  onItemDragEnd,
+  onItemDrop,
 }: {
   block: ConsoleSidebarBlock;
   Icon?: IconRenderer | null;
@@ -443,6 +535,31 @@ function ListBlock({
     section: ConsoleSidebarSection,
     item: ConsoleSidebarItem,
     event: MouseEvent<HTMLDivElement>,
+  ) => void;
+  isItemDraggable?: (block: ConsoleSidebarBlock, section: ConsoleSidebarSection, item: ConsoleSidebarItem) => boolean;
+  isItemDropTarget?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event?: DragEvent<HTMLDivElement>,
+  ) => boolean;
+  onItemDragStart?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDragEnd?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
+  ) => void;
+  onItemDrop?: (
+    block: ConsoleSidebarBlock,
+    section: ConsoleSidebarSection,
+    item: ConsoleSidebarItem,
+    event: DragEvent<HTMLDivElement>,
   ) => void;
 }) {
   return (
@@ -478,9 +595,14 @@ function ListBlock({
                     block={block}
                     getActionButtonProps={getActionButtonProps}
                     item={item}
+                    isItemDraggable={isItemDraggable}
+                    isItemDropTarget={isItemDropTarget}
                     key={item.id}
                     onItemAction={onItemAction}
                     onItemContextMenu={onItemContextMenu}
+                    onItemDragEnd={onItemDragEnd}
+                    onItemDragStart={onItemDragStart}
+                    onItemDrop={onItemDrop}
                     onSelectItem={onSelectItem}
                     section={section}
                     trailingContent={renderItemTrailing?.({ block, section, item })}
@@ -517,6 +639,11 @@ export function ConsoleSidebar({
   onSelectItem,
   onItemAction,
   onItemContextMenu,
+  isItemDraggable,
+  isItemDropTarget,
+  onItemDragStart,
+  onItemDragEnd,
+  onItemDrop,
 }: ConsoleSidebarProps) {
   const normalizedViewState = normalizeConsoleSidebarViewState(viewState);
 
@@ -536,10 +663,15 @@ export function ConsoleSidebar({
             Icon={Icon}
             block={block}
             getActionButtonProps={getActionButtonProps}
+            isItemDraggable={isItemDraggable}
+            isItemDropTarget={isItemDropTarget}
             key={block.id}
             onBlockAction={onBlockAction}
             onItemAction={onItemAction}
             onItemContextMenu={onItemContextMenu}
+            onItemDragEnd={onItemDragEnd}
+            onItemDragStart={onItemDragStart}
+            onItemDrop={onItemDrop}
             onSelectItem={onSelectItem}
             onSectionAction={onSectionAction}
             onSelectSection={onSelectSection}

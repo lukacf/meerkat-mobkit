@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 
 import {
   SECTION_COLLAPSE_STORAGE_PREFIX,
@@ -14,6 +13,15 @@ import {
   writeSidebarStringList,
   writeSidebarStringSet,
 } from "./sidebar-preferences";
+
+// Dual-runner: mobkit's console gates bundle this file with esbuild and run it
+// under `node --test`; the meerkat-studio desktop app picks it up with vitest
+// (globals enabled). Resolve the registrar for whichever runner is active.
+type TestFn = (name: string, fn: () => void | Promise<void>) => void;
+const nodeTestModule = "node:test";
+const test: TestFn = process.env.VITEST
+  ? ((globalThis as Record<string, unknown>).test as TestFn)
+  : ((await import(/* @vite-ignore */ nodeTestModule)).default as unknown as TestFn);
 
 test("sidebar preference storage normalizes string sets and lists", () => {
   const storage = new MemoryStorage();

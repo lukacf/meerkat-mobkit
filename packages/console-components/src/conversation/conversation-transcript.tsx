@@ -16,6 +16,8 @@ export type ConversationTranscriptProps = {
   onToggleDiffFile?: ((filePath: string) => void) | null;
   Icon?: IconRenderer | null;
   className?: string;
+  onFlowRunMessageMember?: ((memberKey: string) => void) | null;
+  onFlowRunRestore?: (() => void) | null;
 };
 
 export function ConversationTranscript({
@@ -27,6 +29,8 @@ export function ConversationTranscript({
   onToggleDiffFile = null,
   Icon,
   className,
+  onFlowRunMessageMember = null,
+  onFlowRunRestore = null,
 }: ConversationTranscriptProps) {
   const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
   const renderableTurnDiff = canRenderTurnDiff ? viewState.turnDiff : null;
@@ -52,7 +56,14 @@ export function ConversationTranscript({
             key={turn.id}
           >
             {turn.groups.map((group) => (
-              <ConversationMessageGroup compact={compact} group={group} Icon={Icon} key={group.id} />
+              <ConversationMessageGroup
+                compact={compact}
+                group={group}
+                Icon={Icon}
+                key={group.id}
+                onFlowRunMessageMember={onFlowRunMessageMember}
+                onFlowRunRestore={onFlowRunRestore}
+              />
             ))}
             {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (
               <TurnDiffCard

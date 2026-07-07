@@ -126,12 +126,15 @@ describe("ConsoleDock", () => {
       />,
     );
 
-    expect(screen.queryByRole("tablist", { name: "Dock tabs" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /Focus/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Dock tabs" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Focus/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New tab" })).toBeInTheDocument();
     expect(container.querySelector(".cc-dock-panel.is-solitary")).toBeTruthy();
     expect(container.querySelector(".cc-dock-panel__header")).toBeNull();
-    expect(container.querySelector(".cc-dock-panel__floating-actions")).toBeTruthy();
+    // A solitary panel renders no floating split arrows — they used to hover
+    // over the first right-aligned user message. Layout changes go through the
+    // tab-bar layout control instead.
+    expect(container.querySelector(".cc-dock-panel__floating-actions")).toBeNull();
   });
 
   test("cleans global resize state when a drag is interrupted by unmount", () => {

@@ -1292,7 +1292,7 @@ function renderTerminalEntry(
       return null;
     }
 
-    const blocks = parseConversationRichBlocks(text);
+    const blocks = parseConversationRichBlocks(text, { displayNormalization: false });
     return {
       kind: "message",
       id: entryId,
@@ -1706,7 +1706,7 @@ function extractPromptText(prompt: unknown): string {
 
 function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
   if (typeof content === "string") {
-    return parseConversationRichBlocks(content);
+    return parseConversationRichBlocks(content, { displayNormalization: false });
   }
   if (!Array.isArray(content)) {
     return [];
@@ -1714,7 +1714,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   const blocks: ConversationRichBlock[] = [];
   for (const block of content) {
     if (typeof block === "string") {
-      blocks.push(...parseConversationRichBlocks(block));
+      blocks.push(...parseConversationRichBlocks(block, { displayNormalization: false }));
       continue;
     }
     if (!block || typeof block !== "object") continue;
@@ -1726,7 +1726,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
         : typeof record.content === "string"
           ? record.content
           : "";
-      blocks.push(...parseConversationRichBlocks(text));
+      blocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
       continue;
     }
     if (type === "image" || type === "image_ref") {
@@ -2118,7 +2118,7 @@ function blockAssistantRichBlocks(
         : typeof item.text === "string"
           ? item.text
           : "";
-      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text));
+      if (text.trim()) actionAndTextBlocks.push(...parseConversationRichBlocks(text, { displayNormalization: false }));
     }
   }
   return hasNonTextBlock ? [...reasoningBlocks, ...actionAndTextBlocks] : [];
@@ -3046,7 +3046,7 @@ function renderSessionHistoryTextCompleteEntry(
     if (!text && filteredParsedBlocks.length === 0) return null;
     const blocks = filteredParsedBlocks.length > 0
       ? filteredParsedBlocks
-      : parseConversationRichBlocks(text);
+      : parseConversationRichBlocks(text, { displayNormalization: false });
     return {
       kind: "message",
       id: entryId,
@@ -3069,7 +3069,7 @@ function renderSessionHistoryTextCompleteEntry(
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0
     ? filteredParsedBlocks
-    : parseConversationRichBlocks(text);
+    : parseConversationRichBlocks(text, { displayNormalization: false });
   return {
     kind: "message",
     id: entryId,
@@ -3126,7 +3126,7 @@ function renderSystemNoticeEntry(
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0
     ? filteredParsedBlocks
-    : parseConversationRichBlocks(text);
+    : parseConversationRichBlocks(text, { displayNormalization: false });
   return {
     kind: "message",
     id: entryId,
@@ -3268,8 +3268,8 @@ export function mapFramesToTimelineEntries(
   function flushPendingText(final = true) {
     if (!pendingText) return;
     const blocks = final
-      ? parseConversationRichBlocks(pendingText)
-      : parseStreamingConversationRichBlocks(pendingText);
+      ? parseConversationRichBlocks(pendingText, { displayNormalization: false })
+      : parseStreamingConversationRichBlocks(pendingText, { displayNormalization: false });
     entries.push({
       kind: "message",
       id: pendingId,
@@ -3685,7 +3685,7 @@ export function createUserEntry(
 ): ConversationTimelineEntry {
   if (images.length > 0) {
     const blocks: ConversationRichBlock[] = [
-      ...parseConversationRichBlocks(message),
+      ...parseConversationRichBlocks(message, { displayNormalization: false }),
       ...images.map((image) => ({
         type: "image" as const,
         src: image.src,

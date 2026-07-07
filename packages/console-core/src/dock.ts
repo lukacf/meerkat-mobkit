@@ -1180,7 +1180,7 @@ export function buildConsoleDockViewState<TTarget extends ConsoleDockTarget>(
           }) || {};
           return [{
             id: panel.id,
-            title: resolved.title || panel.target?.title || "Open something",
+            title: resolved.title || panel.target?.title || "Choose a target",
             subtitle: resolved.subtitle ?? panel.target?.subtitle ?? "Use the launcher or activity rail to open a target.",
             iconName: resolved.iconName ?? panel.target?.iconName ?? "i-compose",
             target: panel.target,

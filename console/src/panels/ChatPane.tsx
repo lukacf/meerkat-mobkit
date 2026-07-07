@@ -958,7 +958,7 @@ export function ChatPane({
                     <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
                   )}
                   {m.blocks && m.blocks.length > 0 ? (
-                    <ConversationRichContent blocks={m.blocks} />
+                    <ConversationRichContent blocks={m.blocks} displayNormalization={false} />
                   ) : (
                     m.text && <span className="msg__text">{m.text}</span>
                   )}

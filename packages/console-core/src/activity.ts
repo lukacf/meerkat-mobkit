@@ -44,6 +44,19 @@ export interface ConsoleActivityRosterPanel {
   actions?: ConsoleActivityAction[];
   groups: ConsoleActivityRosterGroup[];
   emptyText?: string | null;
+  /**
+   * When false, items do not emit the `data-workspace-member-key` attribute.
+   * Use for panels whose items *reference* a member (via focusId) rather than
+   * *represent* one — e.g. a jobs list — so member-key selectors stay unique.
+   * Defaults to true.
+   */
+  itemsRepresentMembers?: boolean;
+  /**
+   * When false, the panel does not render a Hide/remove action (for synthetic
+   * panels that are not part of the user's watch-panel preferences and cannot
+   * actually be removed). Defaults to true.
+   */
+  removable?: boolean;
 }
 
 export interface ConsoleActivityPulseItem extends ConsoleActivityItem {
