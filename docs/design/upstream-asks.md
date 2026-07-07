@@ -949,3 +949,28 @@ the sqlite `due_at_ms` columns; (2) a machine-owned convergence invariant
 so even a future representation bug converges instead of running away;
 (3) regressions: the failing one-shot misfire repro, completed-one-shot
 no-refire, interval terminal-tail stability over N ticks.
+
+### Ask 21 addendum (21b) — 0.7.20 verification: read fixed, archive still NotFounds afterwards
+
+Verified against meerkat =0.7.20 with the mobkit repro: the archive-scoped
+read (`load_persisted_session_for_archive`) works — traces show the durable
+document COMMITTING (`discarding stale live session … reason=StoredArchived`)
+— yet `archive_with_mob_lifecycle_authority` still returns
+`SessionError::NotFound` for the never-run registered session, so the
+provisioner escalation ("mob archive authority returned NotFound for
+registered runtime session") and the `retiring` strand persist unchanged.
+The failure now sits AFTER the snapshot resolution — candidates: the
+runtime-retire realization for a registered-but-snapshotless machine session
+(the register-before-retire fallback may still NotFound on the second
+retire), or the post-commit archived-typed-NotFound contract folding into
+the error path mid-protocol.
+
+Empirically ruled out on the mobkit side: the two-adapter split (a separate
+`with_session_runtime_adapter` machine vs the service's cached adapter) —
+the repro fails identically when the mob shares the concrete service's own
+cached machine as the sole authority. Wrapper forwarding of
+`session_known_to_archive_authority` verified live (probe: `Ok(true)`).
+
+Repro unchanged: `meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d
+persistent test; the trace capture recipe is a `tracing_subscriber` init
+with `meerkat_mob=debug,meerkat_session=debug` in the test body.

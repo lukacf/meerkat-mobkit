@@ -1313,9 +1313,10 @@ mod tests {
     /// Reproduces with PURE meerkat service APIs (refill_horizon +
     /// claim_due_occurrences) — no mobkit code in the loop; the claim
     /// watchdog is read-only and ticks at 60s, exonerated twice over.
-    /// UN-IGNORE on the meerkat 0.7.20 upgrade.
+    /// Fixed in meerkat 0.7.20: trigger yields/compares ms-truncated dues,
+    /// and the ScheduleLifecycleMachine owns a planning-monotonicity
+    /// invariant so future representation bugs converge as refill faults.
     #[tokio::test]
-    #[ignore = "blocked on meerkat ask 22 (target 0.7.20): planning-cursor ms/ns precision loss regenerates one-shot occurrences unboundedly"]
     async fn one_shot_misfire_must_not_regenerate() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store_path = dir.path().join(SCHEDULE_STORE_FILE);
