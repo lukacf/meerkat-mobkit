@@ -869,6 +869,7 @@ async fn run() -> anyhow::Result<()> {
                 adapter,
                 schedule_service,
                 mob_state,
+                runtime.mob_handle(),
                 None,
                 runtime_id.clone(),
             ),
