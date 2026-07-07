@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-07-07
+
 ### Fixed
 
 - Agent-authored schedules now DELIVER on both gateways (the HomeCore 0.7.26
