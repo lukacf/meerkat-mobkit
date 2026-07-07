@@ -974,3 +974,103 @@ cached machine as the sole authority. Wrapper forwarding of
 Repro unchanged: `meerkat-mobkit/tests/studio_k_asks.rs`, `#[ignore]`d
 persistent test; the trace capture recipe is a `tracing_subscriber` init
 with `meerkat_mob=debug,meerkat_session=debug` in the test body.
+
+## Ask 21c — 0.7.21's retire-completing archive arm deadlocks the whole mob (runtime-loop self-deadlock on the session mutation gate) — P0, blocks 0.7.21 adoption
+
+Verified against meerkat =0.7.21 with the mobkit K1 persistent repro
+(`meerkat-mobkit/tests/studio_k_asks.rs`,
+`studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew`):
+respawn of a never-run member now HANGS FOREVER at 0% CPU (deterministic,
+4/4 runs) instead of 0.7.20's fast-fail NotFound. The wedged task is the
+single-threaded MobActor, so the ENTIRE MOB is dead — every subsequent mob
+command queues forever. Severity inverted: 0.7.20 stranded one member in
+`retiring`; 0.7.21 bricks the mob. mobkit is HOLDING its pins at =0.7.20
+and will not ship 0.7.21 to consumers until this is fixed.
+
+**Root cause — a single-task self-deadlock in the runtime loop's
+terminal-failure exit, PRE-EXISTING on 0.7.20 and newly load-bearing:**
+
+1. During disposal, the boundary cancel makes the member's in-flight run
+   fail; the runtime-loop task takes the terminal-failure arm and acquires
+   the per-session mutation gate (`runtime_loop.rs:1547-1549`
+   `lock_current_driver_authority` → `mod.rs:1292` →
+   `lock_current_session_mutation_gate` → the entry's `mutation_gate`).
+2. Recording the terminal fails — `driver.rs:1634` "generated RunFailed
+   authority absent for run …" (the cancel already moved the generated
+   lifecycle off the run) — and, STILL HOLDING THE GATE, the arm calls
+   `stop_runtime_loop_executor_from_dsl_effect` (`runtime_loop.rs:1597-1603`;
+   the guard drops only at scope exit, `:1613`).
+3. That awaits inline `control_plane.rs:79
+   executor.cleanup_after_runtime_stop_terminalized()` → the mob executor
+   (`provisioner.rs:1841-1856`, the "mob runtime executor received stop"
+   log) → `runtime_adapter.unregister_session` →
+   `unregister_session_inner` (`session_management.rs:1357`) whose first
+   await is `lock_current_session_mutation_gate` (`:1359`) — the SAME
+   non-reentrant tokio mutex its own frame holds. The task parks forever
+   (trace shows "unregister_session_inner start" but never "locked
+   mutation gate"). Cycle of length 1: B waits on B.
+4. First victim: the MobActor's disposal chain (`handle_respawn` →
+   `dispose_member` → `SessionBackend::archive_with_authority_then_unregister`
+   → `archive_with_mob_lifecycle_authority` →
+   `PersistentSessionService::archive_with_machine_protocol`). The NEW #845
+   arm (`session_document.rs:2744-2752`: Ready + Archived +
+   `runtime_session_registered==true` → retire-only action vector,
+   `write_document:false, retire_runtime:true`) proceeds where 0.7.20
+   returned NotFound before any gate work, and calls
+   `retire_runtime_control_plane` (`traits.rs:634`) → `gate.lock().await`
+   (`traits.rs:645-647`) on the gate the parked loop task holds. Note
+   `runtime_session_registered` is true precisely BECAUSE the unregister is
+   the deadlocked continuation — the arm's own trigger condition is the
+   deadlock's output.
+5. Second victim (diagnostic red herring): mobkit's detached console
+   event forwarder's 250ms reconcile sends
+   `MobCommand::ApplyMachineInputEffects` (`handle.rs:6058`) to the wedged
+   actor and parks on the reply. Not load-bearing.
+
+**Why this is ALSO the true root of asks 20/21/21b:** the loop-task
+self-deadlock exists on 0.7.20 with identical structure
+(v0.7.20 `runtime_loop.rs:1545-1560`) — every never-run-member disposal
+leaks a forever-parked runtime-loop task holding the gate AND leaves the
+runtime session registered forever (unregister never runs). That
+permanently-registered session is exactly the state 21/21b kept hitting.
+0.7.21 fixed the SYMPTOM arm (archive of Archived+registered) while the
+producer of that state still deadlocks upstream of it.
+
+**Fix directions (in preference order):**
+1. Drop the terminal-arm authority guard BEFORE
+   `stop_runtime_loop_executor_from_dsl_effect` — the ChannelClosed arm
+   already does exactly this (`runtime_loop.rs:1163` explicit
+   `drop(effect_authority_guard)` with a comment); the terminal-failure arm
+   builds the inverse of session_management.rs:1391-1397's own warning
+   ("awaiting the loop under the gate would deadlock" — here the loop
+   awaits unregister under the gate).
+2. Audit the sibling stop-under-gate sites with the same latent shape:
+   select! direct-effect arm (`runtime_loop.rs:768-777`), process_queue
+   effect-drain (`:1140-1146`), queue-processing failure stops
+   (`:1362`, `:1402`, `:1653`), Ok-arm commit/checkpoint-failure stops
+   (`:1486`, `:1520` — guard from `:1439`).
+3. Defense in depth: `retire_runtime_control_plane` should not block a mob
+   actor indefinitely on the gate (bounded acquisition + typed busy error),
+   so a future regression of this class fast-fails instead of wedging mobs.
+
+**Acceptance (both mobkit repros, both must pass):**
+- `studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew`
+  (classic persistent chain) — currently DEADLOCKS on 0.7.21. Run it with
+  a nextest per-test timeout; a hang is a fail, not a slow test.
+- `doctrine_member_rpcs_route_identity_owned_members_through_identity_authority`
+  (identity-first gateway construction, mob-plane worker respawn) —
+  currently still fails on 0.7.21 with the ORIGINAL 21b error, fast:
+  "respawn_member failed: … disposal completed but ArchiveSession failed:
+  … mob archive authority returned NotFound for registered runtime session
+  <id>". I.e. 0.7.21's #845 arms do not fire at all on this construction
+  (first-archive of a never-run session: document not yet Archived, so the
+  Ready+Archived+registered arm cannot match — ask 21's original
+  owned-but-snapshotless strand). 21b is NOT converged on 0.7.21; fixing
+  the loop-exit deadlock (which un-sticks unregister) likely changes this
+  path too — re-derive the arms against a world where unregister actually
+  completes.
+
+Trace capture recipe unchanged (tracing_subscriber in the test body;
+`meerkat_mob=debug,meerkat_runtime=debug` shows the full timeline:
+RunFailed authority-absent ERROR → "unregister_session_inner start" with
+no "locked mutation gate" → "retire_runtime_control_plane start" → silence).
