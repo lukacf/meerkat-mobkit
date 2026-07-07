@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Schedule self-delivery now reaches identity-first members: the internal
+  delivery lane canonicalizes the binding's member id (decode-then-encode)
+  before the roster lookup. Binding member ids arrive in ROSTER space —
+  identity-first bridge members' roster ids are the comms-encoded runtime id
+  (`mk--…`) — and the previous lookup re-encoded them (the codec re-encodes
+  marker-prefixed input by design), missed the roster, and silently fell
+  through to the external door, reproducing the addressability rejection the
+  internal lane exists to bypass ("mob member is not externally addressable:
+  mk--rt_cdomain_chome_c0" on HomeCore 0.7.28). Plain member names are
+  unaffected (canonicalization is the identity on them). E2e pins the
+  roster-space binding shape end to end; the codec contract test pins
+  decode-then-encode as the only correct roster-key derivation.
+
 ## [0.7.28] - 2026-07-07
 
 ### Changed

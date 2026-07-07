@@ -373,6 +373,31 @@ mod tests {
         }
     }
 
+    /// Canonicalization contract used by the schedule internal-delivery lane:
+    /// decode-then-encode maps BOTH the alias space and the roster-id space to
+    /// the same roster key, and is the identity on plain member names. Encode
+    /// alone is NOT idempotent on roster ids (the reserved-marker rule
+    /// re-encodes them) — the 0.7.28 HomeCore schedule self-delivery failure.
+    #[test]
+    fn decode_then_encode_canonicalizes_both_id_spaces() {
+        for (input, canonical) in [
+            ("rt:domain:home:0", "mk--rt_cdomain_chome_c0"),
+            ("mk--rt_cdomain_chome_c0", "mk--rt_cdomain_chome_c0"),
+            ("domain:home", "mk--domain_chome"),
+            ("mk--domain_chome", "mk--domain_chome"),
+            ("digest-owner", "digest-owner"),
+        ] {
+            let key = mob_member_id_str(runtime_alias_str(input).as_ref()).into_owned();
+            assert_eq!(key, canonical, "canonical roster key for {input:?}");
+        }
+        // The failure mode this contract exists to prevent:
+        assert_ne!(
+            mob_member_id_str("mk--rt_cdomain_chome_c0"),
+            "mk--rt_cdomain_chome_c0",
+            "encode alone re-encodes roster ids — never use it on binding member ids"
+        );
+    }
+
     /// Decode only applies inside the reserved marker namespace; a raw id that
     /// merely *looks* like an escape body must pass through untouched.
     #[test]
