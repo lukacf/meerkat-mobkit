@@ -174,7 +174,7 @@ comms = true
 /// PersistentSessionService → MobBootstrapSpec → UnifiedRuntime, then a
 /// 3-member crew via mobkit/ensure_member and per-member retire/respawn.
 #[tokio::test]
-#[ignore = "blocked on meerkat ask 21: mob-CREATED never-ran sessions are archive-authority-OWNED (durable record exists) yet snapshotless, so the owned-path archive still NotFounds; 0.7.19's ask-20 fix reroutes only host-adopted (known=false) sessions. Identity-first gateways (default-on) sidestep this for crews."]
+#[ignore = "blocked on meerkat ask 21b: the 0.7.20 archive-scoped read fix lands (document commits durably) but the archive still returns NotFound for never-run registered sessions afterwards — see docs/design/upstream-asks.md ask 21 addendum. Two-adapter split ruled out empirically (fails with the service's own cached machine as the sole authority)."]
 async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let state = temp_dir.path().join("state");
@@ -194,10 +194,6 @@ async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
         session_store.clone(),
     )));
     builder.default_blob_store = Some(blob_store.clone());
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        Arc::clone(&runtime_store),
-        Arc::clone(&blob_store),
-    ));
     let service = Arc::new(PersistentSessionService::new(
         builder,
         16,
@@ -219,8 +215,11 @@ comms = true
 "#,
     )
     .expect("definition");
+    // NOTE: deliberately NOT passing a separate with_session_runtime_adapter
+    // — the mob must share the concrete service's own cached machine so the
+    // archive protocol and the session lifecycle run on ONE authority
+    // (two-adapter discriminator for the ask-21 residue).
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
-        .with_session_runtime_adapter(adapter.clone())
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
@@ -730,10 +729,9 @@ comms = true
         json!({"member_id": "scratch-worker"}),
     )
     .await;
-    // Never-ran mob-CREATED members remain archive-blocked (upstream ask 21:
-    // owned-but-snapshotless sessions; 0.7.19's ask-20 fix covers only
-    // host-adopted sessions). Assert the ROUTING here; tighten to strict
-    // success when ask 21 lands.
+    // Never-ran member respawn remains archive-blocked (ask 21b residue —
+    // the 0.7.20 read fix commits the document but the archive still
+    // NotFounds afterwards). Assert the ROUTING; tighten when 21b lands.
     assert!(
         respawn["result"].get("identity_first").is_none(),
         "worker respawn must NOT route through the identity authority: {respawn}"
@@ -742,7 +740,7 @@ comms = true
         let detail = error["data"]["detail"].as_str().unwrap_or_default();
         assert!(
             detail.contains("ArchiveSession"),
-            "the only acceptable worker-respawn failure is the ask-21 class: {respawn}"
+            "the only acceptable worker-respawn failure is the ask-21b class: {respawn}"
         );
     }
 }

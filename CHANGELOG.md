@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the meerkat family 0.7.19 → 0.7.20 (exact pins). Carries the
+  ask-22 fix for the P0 one-shot runaway (trigger yields/compares
+  ms-truncated dues + a machine-owned planning-monotonicity invariant so
+  future representation bugs converge as refill faults instead of
+  generating occurrences unboundedly) — carry-verified by the previously
+  failing `one_shot_misfire_must_not_regenerate` guard, now green. Also
+  carries the ask-21 archive-scoped read fix.
+
+### Known issues
+
+- Ask 21b (docs/design/upstream-asks.md, ask 21 addendum): the 0.7.20
+  archive-scoped read fix commits the durable document, but archiving a
+  never-run registered session still returns NotFound afterwards — the
+  `retiring` strand persists for mob-plane members that never ran.
+  Two-adapter split ruled out empirically on the mobkit side. Identity-first
+  gateways (default-on) remain unaffected for crews.
+
 ## [0.7.25] - 2026-07-07
 
 ### Changed
