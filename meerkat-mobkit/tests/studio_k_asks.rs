@@ -174,7 +174,7 @@ comms = true
 /// PersistentSessionService → MobBootstrapSpec → UnifiedRuntime, then a
 /// 3-member crew via mobkit/ensure_member and per-member retire/respawn.
 #[tokio::test]
-#[ignore = "blocked on meerkat ask 21b: the 0.7.20 archive-scoped read fix lands (document commits durably) but the archive still returns NotFound for never-run registered sessions afterwards — see docs/design/upstream-asks.md ask 21 addendum. Two-adapter split ruled out empirically (fails with the service's own cached machine as the sole authority)."]
+#[ignore = "blocked on meerkat ask 21c: on 0.7.21 this test DEADLOCKS (hangs forever at 0% CPU) instead of fast-failing — the #845 retire-completing archive arm calls retire_runtime_control_plane from inside the mob actor's disposal chain and wedges against the concurrent runtime-loop-stop unregister; the wedged MobActor takes the whole mob with it. Do NOT un-ignore without a per-test timeout. See docs/design/upstream-asks.md ask 21c. (Prior state, ask 21b: 0.7.20 fast-failed with archive NotFound; that NotFound still reproduces on 0.7.21 in the doctrine worker-respawn construction, so 21b is not fixed either.)"]
 async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let state = temp_dir.path().join("state");
