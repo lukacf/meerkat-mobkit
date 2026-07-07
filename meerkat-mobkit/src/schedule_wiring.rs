@@ -598,7 +598,19 @@ impl InternalDeliveryScheduleMobHost {
         if self.handle.definition().id.as_str() != mob_id {
             return None;
         }
-        let member = crate::member_comms_id::mob_member_id(member_id);
+        // Binding member ids arrive in ROSTER space (the authoring rewrite
+        // stores `entry.agent_identity`, and meerkat's delivery-time identity
+        // recovery stamps the same roster id from the session's mob-member
+        // binding) or occasionally in alias space. Roster ids of
+        // identity-first members are already `mk--`-encoded, and the codec
+        // deliberately RE-encodes marker-prefixed input — encoding the raw
+        // binding id double-encodes those and misses the roster (the 0.7.28
+        // HomeCore field failure: the miss fell through to the external
+        // door). Decode-then-encode canonicalizes both spaces to the roster
+        // key; it is the identity on plain member names.
+        let member = crate::member_comms_id::mob_member_id(
+            crate::member_comms_id::runtime_alias_str(member_id).as_ref(),
+        );
         let entry = match self.handle.get_member(&member).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return None,
@@ -1463,6 +1475,15 @@ mod tests {
         register_mob_state: bool,
         external_addressable: bool,
     ) -> (String, String) {
+        one_shot_delivery_e2e_with_member(register_mob_state, external_addressable, "digest-owner")
+            .await
+    }
+
+    async fn one_shot_delivery_e2e_with_member(
+        register_mob_state: bool,
+        external_addressable: bool,
+        member_identity: &str,
+    ) -> (String, String) {
         use meerkat_core::AgentToolDispatcher;
         use serde_json::value::RawValue;
 
@@ -1546,13 +1567,13 @@ schedule = true
         handle
             .ensure_member(meerkat_mob::SpawnMemberSpec::new(
                 meerkat_mob::ProfileName::from("general"),
-                meerkat_mob::ids::AgentIdentity::from("digest-owner"),
+                meerkat_mob::ids::AgentIdentity::from(member_identity),
             ))
             .await
-            .expect("ensure digest-owner");
+            .expect("ensure schedule author member");
         let owner_session = handle
             .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
-                "digest-owner",
+                member_identity,
             ))
             .await
             .expect("owner session id");
@@ -1708,6 +1729,29 @@ schedule = true
         assert_eq!(
             stage, "completed",
             "self-delivery to an internal_only author must succeed: {detail}"
+        );
+    }
+
+    /// HomeCore 0.7.28 field case: identity-first bridge members' ROSTER ids
+    /// are the comms-ENCODED runtime id (`mk--rt_cdomain_chome_c0` for
+    /// `rt:domain:home:0` — bridge.rs member_id_for_spawn_spec), and the
+    /// authoring rewrite stores that roster id in the binding. The internal
+    /// lane must resolve it WITHOUT re-encoding (the codec re-encodes
+    /// marker-prefixed input by design); before the canonicalization fix the
+    /// lookup missed and delivery fell through to the external door:
+    /// "mob member is not externally addressable: mk--rt_cdomain_chome_c0".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_authored_one_shot_delivers_to_internal_only_identity_bridge_member() {
+        let roster_id = crate::member_comms_id::mob_member_id_str("rt:domain:home:0").into_owned();
+        assert!(
+            roster_id.starts_with("mk--"),
+            "repro precondition: the roster id must be marker-encoded"
+        );
+        let (stage, detail) = one_shot_delivery_e2e_with_member(true, false, &roster_id).await;
+        assert_eq!(
+            stage, "completed",
+            "self-delivery to an internal_only identity-bridge member (roster-space \
+             binding id) must take the internal lane: {detail}"
         );
     }
 
