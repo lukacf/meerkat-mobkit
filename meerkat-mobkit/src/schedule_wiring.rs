@@ -1502,9 +1502,13 @@ schedule = true
                 let receipt: serde_json::Value =
                     serde_json::from_str(&receipt_json).unwrap_or_default();
                 let stage = receipt["stage"].as_str().unwrap_or_default().to_string();
-                // Planner bookkeeping (supersession) is not a delivery
-                // verdict — keep waiting for one.
-                if stage != "superseded" {
+                // Only a TERMINAL delivery verdict counts — planner
+                // bookkeeping (superseded) and in-flight stages
+                // (dispatch_started/accepted) keep the poll waiting.
+                if matches!(
+                    stage.as_str(),
+                    "completed" | "delivery_failed" | "misfired" | "skipped"
+                ) {
                     runtime.shutdown().await;
                     return (stage, receipt_json);
                 }
