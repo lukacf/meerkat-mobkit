@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import sys
+import time
 import urllib.request
 
 
@@ -36,10 +37,18 @@ def main() -> int:
     assert console_inspect["identity"]["identity"] == "incident-commander"
     assert console_inspect["identity"]["visibility"] == "addressable"
 
-    timeline = rpc(base_url, "mobkit/console/query_timeline", {
-        "identity": "incident-commander",
-        "limit": 20,
-    })
+    # Boot-time kickoff turns produce the first canonical frames; on a fresh
+    # server they land a few seconds after /console/experience goes 200, so
+    # poll instead of asserting the very first read.
+    deadline = time.time() + 90
+    while True:
+        timeline = rpc(base_url, "mobkit/console/query_timeline", {
+            "identity": "incident-commander",
+            "limit": 20,
+        })
+        if timeline["frames"] or time.time() >= deadline:
+            break
+        time.sleep(1)
     assert timeline["frames"], "expected canonical console timeline frames"
     assert all(frame["identity"] == "incident-commander" for frame in timeline["frames"])
 

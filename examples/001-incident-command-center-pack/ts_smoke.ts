@@ -11,6 +11,7 @@ type ConsoleFrame = {
   event?: string;
   identity?: string;
   interactionId?: string;
+  kind?: string;
   cursor?: string;
   status?: string;
   data: unknown;
@@ -122,10 +123,9 @@ async function readSseFrames(
 
 async function streamInteraction(identity: string, content: string, origin: string) {
   let acceptedInteractionId = "";
-  const streamPromise = readSseFrames(`${baseUrl}/console/identity/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ identity }),
+  const streamPromise = readSseFrames(
+    `${baseUrl}/console/identity/${encodeURIComponent(identity)}/stream`,
+    {
     minFrames: 1,
     timeoutMs: 90000,
     until: (frame) =>
@@ -133,11 +133,19 @@ async function streamInteraction(identity: string, content: string, origin: stri
       (frame.event === "interaction_complete" || frame.event === "interaction_failed"),
   });
 
-  const sendResult = await callConsoleRpc<{ interaction_id: string; identity: string }>("mobkit/interact", {
-    identity,
-    content,
-    origin,
-  });
+  // mobkit/interact left the stock console surface in the May 2026 console
+  // projection-path migration; mobkit/console/send is the canonical
+  // identity-first send (server-owned acknowledgement + canonical frames).
+  const sendResult = await callConsoleRpc<{ interaction_id: string; identity: string }>(
+    "mobkit/console/send",
+    {
+      identity,
+      content,
+      origin,
+      idempotency_key: `${origin}:${Date.now().toString(36)}`,
+      handling_mode: "queue",
+    },
+  );
   acceptedInteractionId = sendResult.interaction_id;
   const frames = await streamPromise;
   const filtered = frames.filter((frame) => frame.interactionId === sendResult.interaction_id || frame.event === "subscribed");
@@ -189,7 +197,7 @@ async function main() {
     activity_feed?: { filter_presets?: Array<{ id?: string }> };
   }>(`${baseUrl}/console/experience`);
 
-  assert.equal(experience.contract_version, "0.3.0");
+  assert.equal(experience.contract_version, "0.4.0");
   assert.ok(Array.isArray(experience.identity_status?.rows));
   assert.ok(Array.isArray(experience.activity_feed?.filter_presets));
   assert.ok(experience.activity_feed!.filter_presets!.some((preset) => preset.id === "watched-only"));
@@ -226,38 +234,63 @@ async function main() {
     `Console substrate canonical send smoke. Reply with exactly OK. [${Date.now().toString(36)}:canonical]`,
     "ts-smoke:console-send",
   );
-  const timelinePage = await callConsoleRpc<{ frames: ConsoleFrame[]; next_cursor?: string }>(
-    "mobkit/console/query_timeline",
+  // query_timeline replay frames carry `kind` (canonical frame schema,
+  // contract 0.4.0); `event` names are the SSE envelope's. Walk the
+  // paginated replay (next_cursor) — a reasoning-heavy turn emits more
+  // frames than one page — and poll briefly for the durable tail.
+  let replayHasTerminal = false;
+  const replayDeadline = Date.now() + 30000;
+  while (!replayHasTerminal && Date.now() < replayDeadline) {
+    let after: string | undefined = canonicalTurn.accepted.cursor;
+    for (let pages = 0; pages < 40 && after; pages += 1) {
+      const timelinePage: { frames: ConsoleFrame[]; next_cursor?: string } = await callConsoleRpc(
+        "mobkit/console/query_timeline",
+        { identity: "incident-commander", after, limit: 50 },
+      );
+      if (
+        timelinePage.frames.some(
+          (frame) => frame.kind === "interaction_complete" || frame.kind === "turn_completed",
+        )
+      ) {
+        replayHasTerminal = true;
+        break;
+      }
+      if (!timelinePage.frames.length) break;
+      after = timelinePage.next_cursor ?? timelinePage.frames.at(-1)?.cursor;
+    }
+    if (!replayHasTerminal) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  assert.ok(replayHasTerminal, "query_timeline should replay aggregate frames after the accepted cursor");
+
+  // Replay checkpoints are aggregate CURSORS (`console:N`) under the 0.4.0
+  // replay contract — frame ids 409. The all-events SSE surface is the
+  // aggregate `/console/timeline/stream`.
+  const checkpointCursor = canonicalTurn.accepted.cursor;
+  const cursorSeq = (cursor?: string) => Number((cursor ?? "console:0").split(":")[1] ?? "0");
+  const identityReplay = await readSseFrames(
+    `${baseUrl}/console/identity/incident-commander/stream`,
     {
-      identity: "incident-commander",
-      after: canonicalTurn.accepted.cursor,
-      limit: 20,
+      headers: { "Last-Event-ID": checkpointCursor },
+      minFrames: 2,
     },
   );
+  assert.ok(identityReplay.length > 0, "identity replay frames expected");
   assert.ok(
-    timelinePage.frames.some((frame) => frame.event === "frame_updated" || frame.event === "interaction_complete"),
-    "query_timeline should replay aggregate frames after the accepted cursor",
+    identityReplay.every((frame) => !frame.cursor || cursorSeq(frame.cursor) > cursorSeq(checkpointCursor)),
+    "identity replay must resume after checkpoint",
   );
 
-  const checkpointFrame = frames.find((frame) => frame.id && frame.event === "text_delta");
-  assert.ok(checkpointFrame?.id, "checkpoint frame expected");
-  const identityReplay = await readSseFrames(`${baseUrl}/console/identity/stream`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "Last-Event-ID": checkpointFrame.id!,
-    },
-    body: JSON.stringify({ identity: "incident-commander" }),
-    minFrames: 2,
-  });
-  assert.ok(identityReplay.every((frame) => frame.id !== checkpointFrame.id), "identity replay must resume after checkpoint");
-
-  const allEventsFrames = await readSseFrames(`${baseUrl}/console/events/stream`, {
-    headers: { "Last-Event-ID": checkpointFrame.id! },
+  const allEventsFrames = await readSseFrames(`${baseUrl}/console/timeline/stream`, {
+    headers: { "Last-Event-ID": checkpointCursor },
     minFrames: 2,
   });
   assert.ok(allEventsFrames.length > 0, "all-events replay frames expected");
-  assert.ok(allEventsFrames.every((frame) => frame.id !== checkpointFrame.id), "all-events replay must resume after checkpoint");
+  assert.ok(
+    allEventsFrames.every((frame) => !frame.cursor || cursorSeq(frame.cursor) > cursorSeq(checkpointCursor)),
+    "all-events replay must resume after checkpoint",
+  );
 
   const [alphaTurn, bravoTurn] = await Promise.all([
     streamInteraction(
@@ -294,11 +327,13 @@ async function main() {
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: "ts-smoke-reject",
-      method: "mobkit/interact",
+      method: "mobkit/console/send",
       params: {
         identity: "approval-gate",
         content: "should reject",
         origin: "ts-smoke",
+        idempotency_key: `ts-smoke-reject:${Date.now().toString(36)}`,
+        handling_mode: "queue",
       },
     }),
   });
