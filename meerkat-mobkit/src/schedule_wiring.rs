@@ -1301,6 +1301,112 @@ mod tests {
         );
     }
 
+    /// Ask-22 upgrade-carry guard: a just-past ONE-SHOT must converge —
+    /// bounded occurrences over repeated refill+claim rounds.
+    ///
+    /// Root cause (found by Luka, fix targeted at meerkat 0.7.20):
+    /// sub-millisecond precision loss in the planning-cursor round-trip —
+    /// the cursor is machine-owned at ms precision (truncate_ms(due)) while
+    /// `next_due_after(Once, cursor)` compares at ns precision, so
+    /// `due > cursor` stays true forever and the planner re-yields the same
+    /// due each tick (one spawn per tick ≈ the field's ~1/sec, unbounded).
+    /// Reproduces with PURE meerkat service APIs (refill_horizon +
+    /// claim_due_occurrences) — no mobkit code in the loop; the claim
+    /// watchdog is read-only and ticks at 60s, exonerated twice over.
+    /// UN-IGNORE on the meerkat 0.7.20 upgrade.
+    #[tokio::test]
+    #[ignore = "blocked on meerkat ask 22 (target 0.7.20): planning-cursor ms/ns precision loss regenerates one-shot occurrences unboundedly"]
+    async fn one_shot_misfire_must_not_regenerate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store_path = dir.path().join(SCHEDULE_STORE_FILE);
+        let store = SqliteScheduleStore::open(&store_path).expect("open store");
+        let service = ScheduleService::new(Arc::new(store));
+        // One-shot due WELL past (beyond any catch-up window → misfires).
+        let created = service
+            .create(CreateScheduleRequest {
+                name: Some("oneshot-runaway-probe".to_string()),
+                description: None,
+                trigger: TriggerSpec::Once {
+                    due_at_utc: chrono::Utc::now() - chrono::Duration::seconds(30),
+                },
+                target: TargetBinding::host_runnable(HostRunnableTargetBinding {
+                    runnable: HostRunnableName::parse("runaway.probe").expect("name"),
+                    params: None,
+                }),
+                misfire_policy: meerkat::MisfirePolicy::default(),
+                overlap_policy: meerkat::OverlapPolicy::default(),
+                missing_target_policy: meerkat::MissingTargetPolicy::default(),
+                labels: std::collections::BTreeMap::new(),
+                planning_horizon_days: None,
+                planning_horizon_occurrences: None,
+            })
+            .await
+            .expect("create one-shot");
+
+        let count_occurrences = |path: std::path::PathBuf| -> i64 {
+            let conn = rusqlite::Connection::open(path).expect("open");
+            conn.query_row("SELECT COUNT(*) FROM schedule_occurrences", [], |r| {
+                r.get(0)
+            })
+            .expect("count")
+        };
+
+        // DEBUG: dump schedule + occurrence bookkeeping after create.
+        {
+            let conn = rusqlite::Connection::open(&store_path).expect("open");
+            let (rev, cursor): (i64, Option<i64>) = conn
+                .query_row(
+                    "SELECT revision, planning_cursor_at_ms FROM schedule_schedules LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("schedule row");
+            eprintln!("after create: schedule revision={rev} planning_cursor_ms={cursor:?}");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT occurrence_ordinal, schedule_revision, phase FROM schedule_occurrences",
+                )
+                .expect("prep");
+            let rows: Vec<(i64, i64, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .expect("q")
+                .filter_map(Result::ok)
+                .collect();
+            eprintln!("occurrences after create: {rows:?}");
+        }
+        // Simulate driver ticks: refill + claim, several rounds.
+        for round in 0..6 {
+            let _ = service.refill_horizon(&created.schedule_id).await;
+            let _ = service
+                .store()
+                .claim_due_occurrences(meerkat::ClaimDueRequest {
+                    owner_id: "runaway-probe".to_string(),
+                    limit: 8,
+                    lease_duration: chrono::Duration::seconds(60),
+                })
+                .await;
+            {
+                let conn = rusqlite::Connection::open(&store_path).expect("open");
+                let (rev, cursor): (i64, Option<i64>) = conn
+                    .query_row(
+                        "SELECT revision, planning_cursor_at_ms FROM schedule_schedules LIMIT 1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .expect("schedule row");
+                eprintln!(
+                    "round {round}: occurrences = {} schedule_rev={rev} cursor_ms={cursor:?}",
+                    count_occurrences(store_path.clone())
+                );
+            }
+        }
+        let total = count_occurrences(store_path.clone());
+        assert!(
+            total <= 1,
+            "a one-shot must never regenerate after misfire; got {total} occurrences"
+        );
+    }
+
     /// Healthy pipeline: future work only, nothing overdue → the watchdog has
     /// nothing to say.
     #[tokio::test]
