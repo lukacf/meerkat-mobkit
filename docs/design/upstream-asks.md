@@ -899,3 +899,53 @@ persistent service with a runtime store must succeed.
 tolerantly — the strand is only reachable for mob-plane (worker) members
 that never ran, a narrow window in practice since workers receive kickoff
 messages at spawn.
+
+## Ask 22 — past-due one-shot regenerates occurrences unboundedly (planning-cursor precision loss) — P0
+
+**Field report (HomeCore on 0.7.25):** one one-shot with a fire time
+near/just-past now produced 223 misfired occurrences + 223 receipts in ~2
+minutes (~1/sec, unbounded) on a clean store; halting required stopping the
+gateway and truncating the schedule tables.
+
+**Root cause (found by Luka; repro sits as a failing test in
+meerkat-schedule/src/driver.rs):** sub-millisecond precision loss in the
+planning-cursor round-trip. A one-shot's `due_at_utc` is a full-precision
+`DateTime<Utc>` (ns); the machine-owned planning cursor is
+`planning_cursor_utc_ms` (ms) — `RecordPlanningWindow` stores
+`truncate_ms(due)`. The planner's guard `next_due_after(Once, cursor)`
+yields when `due > cursor`, and `truncate_ms(due) < due` by up to 999µs, so
+the trigger re-yields the same due forever. The pending-occurrence dedupe
+only covers PENDING dues — the moment the occurrence goes terminal
+(misfired in the incident), nothing blocks the re-plan: new occurrence,
+same due, next ordinal → immediately misfires → terminal → next tick
+re-plans. Aggravations: the same loop shape fires for COMPLETED one-shots
+(re-plan → re-dispatch = double-fire, not just misfire spam), and interval
+triggers are plausibly exposed on their last-planned slot.
+
+Mobkit cross-confirmation: the loop reproduces with pure meerkat service
+APIs (`refill_horizon` + `claim_due_occurrences`) — no mobkit code in the
+cycle; the #237 claim watchdog is read-only and ticks at 60s (cannot drive
+a 1/s loop). The ms/ns mismatch also explains regeneration WITH a pending
+occurrence present: the stored occurrence due is ms-truncated while the
+trigger re-yields the ns-precision due, so the `existing_due` dedupe set
+never matches. Carry guard: `one_shot_misfire_must_not_regenerate`
+(`#[ignore]`d in schedule_wiring tests, un-ignored on the 0.7.20 upgrade).
+
+**Why the machines didn't catch it (recorded for the RCT discipline):**
+(1) an RCT failure, not transition legality — one semantic fact ("planning
+has covered up to T") stored at ms precision but compared at ns across the
+shell/machine boundary; no RCT existed for the cursor's time-precision
+round-trip. (2) The machines verify per-entity safety, not cross-entity
+convergence — every lap of the loop is legal (the M1 cancel-recursion
+family); "a Once trigger plans at most one occurrence, ever" and "the
+planning cursor is monotone/idempotent under re-planning" were never
+encoded as machine-checkable invariants.
+
+**Fix (dogmatic, for 0.7.20):** (1) normalize ALL schedule time facts to ms
+precision at the domain admission boundary (Once due_at, interval
+start/end, planned dues) — one precision for one fact everywhere, matching
+the sqlite `due_at_ms` columns; (2) a machine-owned convergence invariant
+(`trigger_exhausted`-style fact, or RecordPlanningWindow terminal for Once)
+so even a future representation bug converges instead of running away;
+(3) regressions: the failing one-shot misfire repro, completed-one-shot
+no-refire, interval terminal-tail stability over N ticks.
