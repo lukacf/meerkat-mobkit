@@ -1,5 +1,12 @@
 import clsx from "clsx";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type { ConversationViewState } from "@console-core";
 
@@ -24,6 +31,12 @@ export type ConversationPaneProps = {
   expandedDiffFile?: string | null;
   onApplySuggestion?: (value: string) => void;
   onToggleDiffFile?: ((filePath: string) => void) | null;
+  onFlowRunMessageMember?: ((memberKey: string) => void) | null;
+  onFlowRunRestore?: (() => void) | null;
+  // The jump-to-turn rail on the pane's edge. Default true (the MobKit
+  // console ships it); meerkat-studio opts out until it adopts the rail
+  // deliberately.
+  showTurnRail?: boolean;
 };
 
 function visibleTranscriptGroups(viewState: ConversationViewState, maxGroups: number | null) {
@@ -45,11 +58,44 @@ export function ConversationPane({
   expandedDiffFile = null,
   onApplySuggestion,
   onToggleDiffFile = null,
+  onFlowRunMessageMember = null,
+  onFlowRunRestore = null,
+  showTurnRail: showTurnRailProp = true,
 }: ConversationPaneProps) {
   const scrollRef = useRef<HTMLElement | null>(null);
   const [visibleTurnIndexes, setVisibleTurnIndexes] = useState<number[]>([]);
   const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
   const showEmptyState = Boolean(viewState.emptyState && viewState.entries.length === 0 && !canRenderTurnDiff);
+  const previousConversationRef = useRef<string | null>(null);
+  const previousEntryCountRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) {
+      return;
+    }
+
+    const isNewConversation = previousConversationRef.current !== viewState.conversationId;
+    const entryCount = viewState.entries.length;
+    const appended = entryCount >= previousEntryCountRef.current;
+    const distanceFromBottom = scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop;
+    const shouldStickToBottom = isNewConversation || appended || distanceFromBottom < 96;
+
+    previousConversationRef.current = viewState.conversationId;
+    previousEntryCountRef.current = entryCount;
+
+    if (!shouldStickToBottom) {
+      return;
+    }
+
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  }, [
+    viewState.conversationId,
+    viewState.entries.length,
+    viewState.groups.length,
+    viewState.turnDiff,
+  ]);
+
   const visibleTurns = useMemo(
     () => groupConversationTranscriptTurns(visibleTranscriptGroups(viewState, maxGroups)),
     [maxGroups, viewState],
@@ -59,7 +105,7 @@ export function ConversationPane({
     : canRenderTurnDiff
       ? [{ id: "turn-diff", groups: [] }]
       : [];
-  const showTurnRail = !showEmptyState && railTurns.length > 1;
+  const showTurnRail = showTurnRailProp && !showEmptyState && railTurns.length > 1;
 
   useEffect(() => {
     const scrollNode = scrollRef.current;
@@ -223,6 +269,8 @@ export function ConversationPane({
               compact={compact}
               expandedDiffFile={expandedDiffFile}
               maxGroups={maxGroups}
+              onFlowRunMessageMember={onFlowRunMessageMember}
+              onFlowRunRestore={onFlowRunRestore}
               onToggleDiffFile={onToggleDiffFile}
               showTurnDiff={showTurnDiff}
               viewState={viewState}

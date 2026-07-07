@@ -112,9 +112,46 @@ export type ConversationRichBlock =
   | ConversationRichCommandBlock
   | ConversationRichFileChangeBlock
   | ConversationRichDividerBlock
-  | ConversationRichImageBlock
   | ConversationRichThinkingBlock
+  | ConversationRichImageBlock
   | ConversationRichToolCallBlock;
+
+const HIDDEN_PEER_DISPLAY_INTENTS = new Set([
+  "completed",
+  "complete",
+  "queued",
+  "queue",
+  "steer",
+  "checksum_token",
+  "peer",
+]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MACHINE_PEER_TOKEN_RE = /^peer[-_][a-z0-9][a-z0-9_-]*$/i;
+const MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_][a-z0-9][a-z0-9_-]*$/i;
+const EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_][a-z0-9][a-z0-9_-]*\b/gi;
+const EMBEDDED_PEER_ACK_TOKEN_RE = /\bACK_?FROM_?PEER_?peer[-_][a-z0-9][a-z0-9_-]*\b/gi;
+const EMBEDDED_PEER_RESPONSE_TOKEN_RE = /\bpeer[-_]merge[-_][a-z0-9][a-z0-9_-]*\b/gi;
+const LEGACY_INLINE_CODE_PLACEHOLDER_RE = /@@CODE\d+@@/g;
+
+export function normalizeProjectDisplayLabel(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const lower = text.toLowerCase();
+  if (lower === "hsns" || lower === "hsns_clean") {
+    return "HSNS";
+  }
+  if (lower === "homecore") {
+    return "HomeCore";
+  }
+  return text
+    .split(/[\s_-]+/u)
+    .filter(Boolean)
+    .map((part) => part.replace(/^[a-z]/u, (char) => char.toUpperCase()))
+    .join(" ");
+}
 
 function escapeHtml(value: string): string {
   return String(value || "")
@@ -145,20 +182,39 @@ export function safeConsoleHref(value: string): string | null {
   return null;
 }
 
-export function renderConversationInlineMarkdown(text: string): string {
+export interface RenderConversationInlineMarkdownOptions {
+  // Display normalization rewrites/strips peer-protocol tokens and tidies
+  // punctuation for meerkat-studio's conversational surface. Consumers that
+  // need faithful rendering of raw agent text (e.g. the MobKit console)
+  // disable it — matching the parse-side `displayNormalization` option.
+  displayNormalization?: boolean;
+}
+
+export function renderConversationInlineMarkdown(
+  text: string,
+  options: RenderConversationInlineMarkdownOptions = {},
+): string {
   // Order: code spans first (mask their contents from later passes),
   // then bold (`**x**`), then italic (single `*x*`). Bold must come
   // before italic — otherwise the italic regex would consume one
   // asterisk from each `**` pair.
+  const displayNormalization = options.displayNormalization !== false;
   const codeTokens: string[] = [];
-  const escaped = escapeHtml(text || "")
+  const tokenPrefix = "\uE000CCODE";
+  const tokenSuffix = "\uE001";
+  const source = displayNormalization
+    ? normalizeConversationDisplayText(text || "")
+    : String(text || "");
+  const escaped = escapeHtml(source)
     .replace(/`([^`]+)`/g, (_match, code) => {
       const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
-      return `@@CODE_${index}@@`;
+      return `${tokenPrefix}${index}${tokenSuffix}`;
     })
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>")
-    .replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    // Underscore emphasis is not allowed intra-word (CommonMark), so
+    // identifiers like MEERKAT_TOUR_OK render literally.
+    .replace(/(^|[^\w_])_([^_\n]+)_(?![\w_])/g, "$1<em>$2</em>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
       const safeHref = safeConsoleHref(href);
       return safeHref
@@ -167,7 +223,228 @@ export function renderConversationInlineMarkdown(text: string): string {
     })
     .replace(/\n/g, "<br />");
 
-  return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
+  return escaped
+    .replace(new RegExp(`${tokenPrefix}(\\d+)${tokenSuffix}`, "g"), (_match, index) => codeTokens[Number(index)] || "");
+}
+
+function normalizeLegacyInlineCodePlaceholders(text: string): string {
+  const source = String(text || "");
+  if (!LEGACY_INLINE_CODE_PLACEHOLDER_RE.test(source)) {
+    return source;
+  }
+
+  LEGACY_INLINE_CODE_PLACEHOLDER_RE.lastIndex = 0;
+  return source
+    .split(/\n/u)
+    .map((line) => line
+      .replace(/\s*@@CODE\d+@@\s*(?:[—–-]\s*)?/g, " ")
+      .replace(/\s*,\s*(?=,|and\b|or\b|[.;:!?]|$)/gi, " ")
+      .replace(/\s*\+\s*/g, " ")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/\s{2,}/g, " ")
+      .trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeEmbeddedMachinePeerTokens(text: string): string {
+  const source = String(text || "");
+  if (!EMBEDDED_MACHINE_PEER_TOKEN_RE.test(source) && !EMBEDDED_PEER_ACK_TOKEN_RE.test(source)) {
+    return source;
+  }
+
+  EMBEDDED_MACHINE_PEER_TOKEN_RE.lastIndex = 0;
+  EMBEDDED_PEER_ACK_TOKEN_RE.lastIndex = 0;
+  return source
+    .split(/\n/u)
+    .map((line) => line
+      .replace(EMBEDDED_PEER_ACK_TOKEN_RE, "acknowledgement")
+      .replace(EMBEDDED_PEER_RESPONSE_TOKEN_RE, "response token")
+      .replace(EMBEDDED_MACHINE_PEER_TOKEN_RE, " ")
+      .replace(/\bcontaining\s*([.;])/gi, "$1")
+      .replace(/^MobKit live peer smoke[.:]?\s*/i, "Peer check. ")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/:\s*([.;])/g, "$1")
+      .replace(/([.;:!?]){2,}/g, "$1")
+      .replace(/\s{2,}/g, " ")
+      .trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizePeerSteeringPrompt(text: string): string {
+  const source = String(text || "").trim();
+  if (!source) {
+    return "";
+  }
+
+  if (/^After (?:the peer message|the request) is sent, stop\.?$/i.test(source)) {
+    return "";
+  }
+  if (/^In the request blocks,\s*ask it to send_response\b/i.test(source)) {
+    return "";
+  }
+  const splitSendRequest = source.match(/^Call peers, then send\b.*\bsend_request\b.*?\bto the peered\s+(.+?)\s+thread\b/i);
+  if (splitSendRequest) {
+    const projectLabel = normalizeProjectDisplayLabel(splitSendRequest[1]) || splitSendRequest[1].trim();
+    return `Requested a peer response from ${projectLabel} thread.`;
+  }
+  const splitExactMessage = source.match(/^Send this exact message body to the peered\s+(.+?)\s+thread\b/i);
+  if (splitExactMessage) {
+    const projectLabel = normalizeProjectDisplayLabel(splitExactMessage[1]) || splitExactMessage[1].trim();
+    if (/\bPlease reply with acknowledgement\b/i.test(source)) {
+      return `Requested an acknowledgement from ${projectLabel} thread.`;
+    }
+    return `Sent a peer message to ${projectLabel} thread.`;
+  }
+
+  const standalonePeerInstruction = source.match(/^Use your MobKit peer tools only\b[\s\S]*?\bto the peered\s+(.+?)\s+thread\b/i);
+  if (standalonePeerInstruction) {
+    const projectLabel = normalizeProjectDisplayLabel(standalonePeerInstruction[1]) || standalonePeerInstruction[1].trim();
+    const peerLabel = `${projectLabel} thread`;
+    if (/\bsend_request\b/i.test(source) || /\bsend_response\b/i.test(source)) {
+      return `Requested a peer response from ${peerLabel}.`;
+    }
+    if (/\bPlease reply with acknowledgement\b/i.test(source)) {
+      return `Requested an acknowledgement from ${peerLabel}.`;
+    }
+    return `Sent a peer message to ${peerLabel}.`;
+  }
+  if (/^Use your MobKit peer tools only\b/i.test(source)) {
+    return "";
+  }
+
+  const legacyTrustedPeerInstruction = /\bFind your trusted peer\b[\s\S]*?\bsend_message\b[\s\S]*?\bhandling_mode\b/i.test(source);
+  const connectedMatch = source.match(
+    /^Connected to\s+(.+?)\.\s+(?:Each thread keeps its own transcript and can message the other through MobKit|Each thread keeps its own transcript\. They can now message each other)\./is,
+  );
+  if (connectedMatch && (/\bUse your MobKit peer tools only\b/i.test(source) || legacyTrustedPeerInstruction)) {
+    const peerLabel = normalizeConversationDisplayLabel(connectedMatch[1]) || connectedMatch[1].trim();
+    if (legacyTrustedPeerInstruction) {
+      const action = /\bplease reply\b/i.test(source)
+        ? `Requested a peer reply from ${peerLabel}.`
+        : `Sent a peer message to ${peerLabel}.`;
+      return [`Connected to ${peerLabel}.`, action].join("\n");
+    }
+    if (/\bCall peers, then send\b.*\bsend_request\b/i.test(source) || /\bask it to send_response\b/i.test(source)) {
+      return [`Connected to ${peerLabel}.`, `Requested a peer response from ${peerLabel}.`].join("\n");
+    }
+    if (!/\bSend this exact message body\b/i.test(source)) {
+      return source;
+    }
+    const requestedAcknowledgement = /\bPlease reply with acknowledgement\b/i.test(source);
+    const action = requestedAcknowledgement
+      ? `Requested an acknowledgement from ${peerLabel}.`
+      : `Sent a peer message to ${peerLabel}.`;
+    return [`Connected to ${peerLabel}.`, action].join("\n");
+  }
+  if (legacyTrustedPeerInstruction) {
+    return /\bplease reply\b/i.test(source)
+      ? "Requested a peer reply."
+      : "Sent a peer message.";
+  }
+
+  if (/^Call peers, then send_request\b/i.test(source) && /\bAsk the peer to send_response\b/i.test(source)) {
+    return "Requested a peer response.";
+  }
+
+  return source;
+}
+
+function normalizeDisplayPunctuation(text: string): string {
+  return String(text || "")
+    .split(/\n/u)
+    .map((line) => line
+      .replace(/\b(verified|received):\s*`?(?:response token|acknowledgement)`?\.?$/i, "$1.")
+      .replace(/:\s*\./g, ".")
+      .replace(/:\s*$/g, ".")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/([.;:!?]){2,}/g, "$1")
+      .trim())
+    .filter((line) => line && !/^[\s"'“”‘’`´.,;:!?()[\]{}<>—–-]+$/u.test(line))
+    .join("\n")
+    .trim();
+}
+
+export function normalizeConversationDisplayText(text: string): string {
+  return normalizeDisplayPunctuation(
+    normalizePeerSteeringPrompt(normalizeEmbeddedMachinePeerTokens(normalizeLegacyInlineCodePlaceholders(text))),
+  );
+}
+
+export function conversationRichPeerIntentForDisplay(
+  intent: string | null | undefined,
+  body?: string | null,
+): string | undefined {
+  const text = String(intent || "").trim();
+  if (!text) {
+    return undefined;
+  }
+  if (HIDDEN_PEER_DISPLAY_INTENTS.has(text.toLowerCase()) || UUID_RE.test(text) || MACHINE_PEER_TOKEN_RE.test(text)) {
+    return undefined;
+  }
+  if (body && String(body).trim()) {
+    return undefined;
+  }
+  return text;
+}
+
+export function conversationRichPeerTargetForDisplay(target: string | null | undefined): string {
+  const text = normalizeConversationDisplayLabel(target);
+  if (!text || UUID_RE.test(text)) {
+    return "Peer";
+  }
+  return text;
+}
+
+export function normalizeConversationDisplayLabel(label: string | null | undefined): string {
+  const text = String(label || "").trim().replace(/\s+/g, " ");
+  if (!text || UUID_RE.test(text) || MACHINE_PEER_TOKEN_RE.test(text)) {
+    return "";
+  }
+
+  const withoutToken = text.replace(MACHINE_PEER_TOKEN_SUFFIX_RE, "").trim();
+  if (!withoutToken || UUID_RE.test(withoutToken) || MACHINE_PEER_TOKEN_RE.test(withoutToken)) {
+    return "";
+  }
+
+  const livePeer = withoutToken.match(/^Peer\s+live\s+(.+)$/i);
+  if (livePeer) {
+    return `${normalizeProjectDisplayLabel(livePeer[1])} peer thread`;
+  }
+
+  return withoutToken
+    .replace(/\bpeer\s+(?:source|target)\b/i, "peer thread")
+    .replace(/\brequest\s+source\b/i, "request thread")
+    .replace(/\bresponse\s+target\b/i, "response thread")
+    .replace(/\bmerged\s+request\b/i, "peer request")
+    .replace(/\bmerged\s+response\b/i, "peer response")
+    .trim();
+}
+
+export function conversationRichPeerBodyForDisplay(body: string | null | undefined): string | undefined {
+  const raw = String(body || "").trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (UUID_RE.test(raw) || MACHINE_PEER_TOKEN_RE.test(raw)) {
+    return "Response sent.";
+  }
+  if (/^please\s+send_response\b.*\bresult\.token\b/i.test(raw)) {
+    return "Response requested.";
+  }
+  if (/^please\s+reply\s+with\s+ACK_FROM_PEER_/i.test(raw)) {
+    return "Acknowledgement requested.";
+  }
+  if (/^ACK_?FROM_?PEER_/i.test(raw)) {
+    return "Acknowledgement sent.";
+  }
+  const text = normalizeConversationDisplayText(raw);
+  return text || undefined;
 }
 
 export function conversationRichBlockHasCopyAction(block: ConversationRichBlock): boolean {
@@ -206,11 +483,18 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
     case "tool-call": {
       if (block.peerTarget) {
         const dir = block.peerIncoming ? "← from" : "→ to";
+        const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
         const images = (block.peerImages || [])
           .map((image) => [image.alt || "image", image.blobId || image.src].filter(Boolean).join(" "))
           .filter(Boolean)
           .join(" ");
-        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, images, block.result].filter(Boolean).join(": ").trim();
+        return [
+          `${dir} ${conversationRichPeerTargetForDisplay(block.peerTarget)}`,
+          conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
+          peerBody,
+          images,
+          block.result,
+        ].filter(Boolean).join(": ").trim();
       }
       const parts = [`$ ${block.name}`];
       if (block.arguments) parts.push(`Input: ${block.arguments}`);
@@ -230,108 +514,10 @@ export function conversationRichBlocksToText(blocks: ConversationRichBlock[] | n
     .trim();
 }
 
-export function parseConversationSummary(content: string): ConversationParsedSummary | null {
-  const lines = String(content || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) {
-    return null;
-  }
-
-  const headerMatch = lines[0].match(SUMMARY_HEADER_RE);
-  if (!headerMatch) {
-    return null;
-  }
-
-  const files: ConversationParsedSummaryFile[] = [];
-  for (const line of lines.slice(1)) {
-    const fileMatch = line.match(SUMMARY_FILE_RE);
-    if (!fileMatch) {
-      break;
-    }
-    files.push({
-      name: fileMatch[1].trim(),
-      plus: Number.parseInt(fileMatch[2].replaceAll(",", ""), 10) || 0,
-      minus: Number.parseInt(fileMatch[3].replaceAll(",", ""), 10) || 0,
-    });
-  }
-
-  if (files.length === 0) {
-    return null;
-  }
-
-  return {
-    title: lines[0].replace(/\s+\+[\d,]+\s+-[\d,]+$/u, ""),
-    plus: Number.parseInt((headerMatch[2] || "0").replaceAll(",", ""), 10) || files.reduce((sum, file) => sum + file.plus, 0),
-    minus: Number.parseInt((headerMatch[3] || "0").replaceAll(",", ""), 10) || files.reduce((sum, file) => sum + file.minus, 0),
-    files,
-  };
-}
-
-/// Heuristic JSON detector + parser. Returns the parsed value if the
-/// trimmed string starts with `{`/`[` and ends with the matching brace
-/// AND parses as JSON. Schema-agnostic — we don't care what the JSON
-/// is, only that it shouldn't be re-flowed through the markdown
-/// inline regexes (which would italicise stray `*` / `_` characters
-/// inside string values and produce a wall of mush).
-function tryParseJson(source: string): unknown | null {
-  const trimmed = source.trim();
-  if (trimmed.length < 2) return null;
-  const first = trimmed[0];
-  const last = trimmed[trimmed.length - 1];
-  const looksObj = first === "{" && last === "}";
-  const looksArr = first === "[" && last === "]";
-  if (!looksObj && !looksArr) return null;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-}
-
-export function parseConversationRichBlocks(content: string): ConversationRichBlock[] {
-  const source = String(content || "").trim();
-  if (!source) {
-    return [];
-  }
-
-  // Whole-message JSON: structured-output extraction (e.g. a Fugue
-  // gate-schema reviewer) ships the agent's run result as a JSON
-  // string verbatim. Render as a code block instead of running it
-  // through the prose / markdown pipeline. Mid-message JSON is also
-  // handled per-section in `parseConversationTextBlocks`.
-  const wholeJson = tryParseJson(source);
-  if (wholeJson !== null) {
-    return [{
-      type: "code",
-      language: "json",
-      body: JSON.stringify(wholeJson, null, 2),
-    }];
-  }
-
-  const blocks: ConversationRichBlock[] = [];
-  const fenceRe = /```([^\n`]*)\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = fenceRe.exec(source))) {
-    const before = source.slice(lastIndex, match.index);
-    blocks.push(...parseConversationTextBlocks(before));
-    blocks.push({
-      type: "code",
-      language: (match[1] || "text").trim() || "text",
-      body: match[2].replace(/\n+$/u, ""),
-    });
-    lastIndex = fenceRe.lastIndex;
-  }
-
-  blocks.push(...parseConversationTextBlocks(source.slice(lastIndex)));
-  return compactConversationBlocks(blocks);
-}
-
-export function parseStreamingConversationRichBlocks(content: string): ConversationRichBlock[] {
+export function parseStreamingConversationRichBlocks(
+  content: string,
+  options?: ConversationRichParseOptions,
+): ConversationRichBlock[] {
   const source = String(content || "").trimEnd();
   if (!source.trim()) {
     return [];
@@ -340,11 +526,15 @@ export function parseStreamingConversationRichBlocks(content: string): Conversat
   const stableEnd = streamingStablePrefixLength(source);
   const stable = stableEnd > 0 ? source.slice(0, stableEnd).trim() : "";
   const tail = source.slice(stableEnd).trim();
-  const blocks = stable ? parseConversationRichBlocks(stable) : [];
+  const blocks = stable ? parseConversationRichBlocks(stable, options) : [];
 
   if (tail) {
     const tailText = tail.replace(/\n{3,}/g, "\n\n");
-    const visibleTail = hideIncompleteInlineTail(tailText).trim();
+    // An unclosed fence tail is code-in-flight: keep it verbatim instead of
+    // running the inline-marker hider over its backticks.
+    const visibleTail = (unclosedFenceStartIndex(tailText) !== null
+      ? tailText
+      : hideIncompleteInlineTail(tailText)).trim();
     if (visibleTail) {
       blocks.push({ type: "paragraph", text: visibleTail, streaming: true });
     }
@@ -436,8 +626,127 @@ function unclosedFenceStartIndex(source: string): number | null {
   return openStart;
 }
 
-function parseConversationTextBlocks(fragment: string): ConversationRichBlock[] {
-  const source = String(fragment || "").trim();
+export function parseConversationSummary(content: string): ConversationParsedSummary | null {
+  const lines = String(content || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    return null;
+  }
+
+  const headerMatch = lines[0].match(SUMMARY_HEADER_RE);
+  if (!headerMatch) {
+    return null;
+  }
+
+  const files: ConversationParsedSummaryFile[] = [];
+  for (const line of lines.slice(1)) {
+    const fileMatch = line.match(SUMMARY_FILE_RE);
+    if (!fileMatch) {
+      break;
+    }
+    files.push({
+      name: fileMatch[1].trim(),
+      plus: Number.parseInt(fileMatch[2].replaceAll(",", ""), 10) || 0,
+      minus: Number.parseInt(fileMatch[3].replaceAll(",", ""), 10) || 0,
+    });
+  }
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  return {
+    title: lines[0].replace(/\s+\+[\d,]+\s+-[\d,]+$/u, ""),
+    plus: Number.parseInt((headerMatch[2] || "0").replaceAll(",", ""), 10) || files.reduce((sum, file) => sum + file.plus, 0),
+    minus: Number.parseInt((headerMatch[3] || "0").replaceAll(",", ""), 10) || files.reduce((sum, file) => sum + file.minus, 0),
+    files,
+  };
+}
+
+/// Heuristic JSON detector + parser. Returns the parsed value if the
+/// trimmed string starts with `{`/`[` and ends with the matching brace
+/// AND parses as JSON. Schema-agnostic — we don't care what the JSON
+/// is, only that it shouldn't be re-flowed through the markdown
+/// inline regexes (which would italicise stray `*` / `_` characters
+/// inside string values and produce a wall of mush).
+function tryParseJson(source: string): unknown | null {
+  const trimmed = source.trim();
+  if (trimmed.length < 2) return null;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  const looksObj = first === "{" && last === "}";
+  const looksArr = first === "[" && last === "]";
+  if (!looksObj && !looksArr) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+export interface ConversationRichParseOptions {
+  /**
+   * Apply the display-text normalization layer (legacy placeholder cleanup,
+   * machine peer-token scrubbing, steering-prompt rewrites, punctuation
+   * tidying) before parsing. Defaults to true — the meerkat-studio desktop
+   * transcript relies on it. Consumers that do their own envelope handling
+   * on the parsed output (e.g. the mobkit console adapters) should pass
+   * `{ displayNormalization: false }` to parse the text faithfully.
+   */
+  displayNormalization?: boolean;
+}
+
+export function parseConversationRichBlocks(
+  content: string,
+  options?: ConversationRichParseOptions,
+): ConversationRichBlock[] {
+  const displayNormalization = options?.displayNormalization !== false;
+  const source = String(content || "").trim();
+  if (!source) {
+    return [];
+  }
+
+  // Whole-message JSON: structured-output extraction (e.g. a Fugue
+  // gate-schema reviewer) ships the agent's run result as a JSON
+  // string verbatim. Render as a code block instead of running it
+  // through the prose / markdown pipeline. Mid-message JSON is also
+  // handled per-section in `parseConversationTextBlocks`.
+  const wholeJson = tryParseJson(source);
+  if (wholeJson !== null) {
+    return [{
+      type: "code",
+      language: "json",
+      body: JSON.stringify(wholeJson, null, 2),
+    }];
+  }
+
+  const blocks: ConversationRichBlock[] = [];
+  const fenceRe = /```([^\n`]*)\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = fenceRe.exec(source))) {
+    const before = source.slice(lastIndex, match.index);
+    blocks.push(...parseConversationTextBlocks(before, displayNormalization));
+    blocks.push({
+      type: "code",
+      language: (match[1] || "text").trim() || "text",
+      body: match[2].replace(/\n+$/u, ""),
+    });
+    lastIndex = fenceRe.lastIndex;
+  }
+
+  blocks.push(...parseConversationTextBlocks(source.slice(lastIndex), displayNormalization));
+  return compactConversationBlocks(blocks);
+}
+
+function parseConversationTextBlocks(fragment: string, displayNormalization = true): ConversationRichBlock[] {
+  const source = (displayNormalization
+    ? normalizeConversationDisplayText(String(fragment || ""))
+    : String(fragment || "")).trim();
   if (!source) {
     return [];
   }

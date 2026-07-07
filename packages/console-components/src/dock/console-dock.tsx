@@ -146,11 +146,11 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
         onMouseDown={() => onFocusPanel?.(panel)}
       >
         {isSinglePanelLayout ? (
-          <div className="cc-dock-panel__floating-actions">
-            <div className="cc-dock-panel__actions">
-              {panelActions}
-            </div>
-          </div>
+          // Single-panel mode is the pristine conversation surface: no floating
+          // split arrows hovering over the first (right-aligned) user message.
+          // Layout changes happen through the compact layout control in the tab
+          // bar; a solitary panel has nothing to close.
+          null
         ) : (
           <header className="cc-dock-panel__header">
             <div className="cc-dock-panel__copy">
@@ -393,8 +393,8 @@ export function ConsoleDock<TTarget extends ConsoleDockTarget = ConsoleDockTarge
       )}
     >
       {hasMultipleTabs || hasTabToolbar ? (
-        <header className={clsx("cc-dock__tab-strip", !hasMultipleTabs && "is-toolbar-only")}>
-          {hasMultipleTabs ? (
+        <header className={clsx("cc-dock__tab-strip", !hasMultipleTabs && normalized.tabs.length === 0 && "is-toolbar-only")}>
+          {normalized.tabs.length > 0 ? (
             <div className="cc-dock__tabs" role="tablist" aria-label="Dock tabs">
               {normalized.tabs.map((tab) => (
                 <div

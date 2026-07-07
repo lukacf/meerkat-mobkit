@@ -18,6 +18,7 @@ Components:
 - `ConsoleComposer`
 - `ConsoleDock`
 - `ConsolePendingStack`
+- `PendingStack`
 - `ConsoleSidebar`
 - `TopologyPanel`
 - `ConsoleWorkbench`
@@ -40,6 +41,9 @@ Types:
 - `ConsolePendingDropWhere`
 - `ConsolePendingItem`
 - `ConsolePendingStackProps`
+- `PendingDropWhere`
+- `PendingItem`
+- `PendingStackProps`
 - `ConsoleSidebarActionButtonScope`
 - `ConsoleSidebarItemTrailingRenderArgs`
 - `ConsoleSidebarProps`

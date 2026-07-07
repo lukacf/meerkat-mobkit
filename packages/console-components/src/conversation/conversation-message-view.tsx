@@ -8,6 +8,7 @@ import {
 } from "@console-core";
 
 import { ConversationRichContent } from "./conversation-rich-content";
+import { FlowRunCard } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
@@ -25,12 +26,16 @@ type ConversationMessageViewProps = {
   entry: ConversationTimelineEntry;
   compact?: boolean;
   Icon?: IconRenderer | null;
+  onFlowRunMessageMember?: ((memberKey: string) => void) | null;
+  onFlowRunRestore?: (() => void) | null;
 };
 
 export function ConversationMessageView({
   entry,
   compact = false,
   Icon,
+  onFlowRunMessageMember = null,
+  onFlowRunRestore = null,
 }: ConversationMessageViewProps) {
   const presentation = conversationIdentityPresentation(entry.identity);
   const assistantClassName = [
@@ -39,6 +44,17 @@ export function ConversationMessageView({
     presentation === "participant" ? "cc-message--participant" : "",
     presentation === "system" ? "cc-message--system" : "",
   ].filter(Boolean).join(" ");
+
+  if (entry.kind === "flow_run") {
+    return (
+      <FlowRunCard
+        entry={entry}
+        Icon={Icon}
+        onMessageMember={onFlowRunMessageMember}
+        onRestore={onFlowRunRestore}
+      />
+    );
+  }
 
   if (entry.kind === "summary") {
     return <SummaryCard entry={entry} />;

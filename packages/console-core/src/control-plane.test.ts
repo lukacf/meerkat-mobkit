@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 
 import {
   normalizeConsoleInteractionRejectedError,
@@ -16,6 +15,15 @@ import {
   normalizeToolCallAccumulatorState,
 } from "./control-plane";
 import { normalizeConsoleSidebarViewState } from "./sidebar";
+
+// Dual-runner: mobkit's console gates bundle this file with esbuild and run it
+// under `node --test`; the meerkat-studio desktop app picks it up with vitest
+// (globals enabled). Resolve the registrar for whichever runner is active.
+type TestFn = (name: string, fn: () => void | Promise<void>) => void;
+const nodeTestModule = "node:test";
+const test: TestFn = process.env.VITEST
+  ? ((globalThis as Record<string, unknown>).test as TestFn)
+  : ((await import(/* @vite-ignore */ nodeTestModule)).default as unknown as TestFn);
 
 test("normalizeExperienceSectionMeta keeps valid poll and stream metadata", () => {
   assert.deepEqual(

@@ -73,7 +73,11 @@ describe("ConversationMessageView", () => {
 
     render(<ConversationMessageView entry={entry} Icon={Icon} />);
 
-    expect(screen.getByText("send_message → worker-a")).toBeInTheDocument();
+    // The transcript keeps peer sends humanized: the header carries the peer
+    // target, never the raw tool name (mobkit's pre-union `send_message →
+    // worker-a` label was superseded by the studio's title-neutral rendering).
+    expect(screen.getByText("worker-a")).toBeInTheDocument();
+    expect(screen.queryByText(/send_message/)).not.toBeInTheDocument();
   });
 
   test("deduplicates repeated incoming peer targets in grouped peer tool labels", () => {
@@ -161,5 +165,119 @@ describe("ConversationMessageView", () => {
     const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
 
     expect(container.querySelector(".cc-message--participant")).toBeTruthy();
+  });
+
+  test("collapses persisted thinking summaries by default", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "assistant-thinking",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: "Used project context before answering.",
+      blocks: [{
+        type: "thinking",
+        label: "Thinking Summary",
+        text: "Used project context before answering.",
+        final: true,
+        persisted: true,
+      }],
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    const thinking = container.querySelector("details.cc-rich-thinking");
+    expect(thinking).toBeInTheDocument();
+    expect(thinking).not.toHaveAttribute("open");
+    expect(screen.getByText("Thinking Summary")).toBeInTheDocument();
+  });
+
+  test("hides machine peer intents when peer messages have readable bodies", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "assistant-peer",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: "Hello from the app thread.",
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "peer-1",
+        name: "send_message",
+        arguments: JSON.stringify({
+          peer_id: "peer-lib",
+          handling_mode: "steer",
+          body: "Hello from the app thread.",
+          params: { subject: "peer-merge-123" },
+        }),
+        result: "completed",
+        status: "success",
+        peerTarget: "Lib thread",
+        peerIntent: "steer",
+        peerBody: "Hello from the app thread.",
+      }],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText("Lib thread")).toBeInTheDocument();
+    expect(screen.getByText("Hello from the app thread.")).toBeInTheDocument();
+    expect(screen.queryByText("steer")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Lib thread"));
+
+    expect(screen.getByText("Message")).toBeInTheDocument();
+    expect(screen.getAllByText("Hello from the app thread.")).toHaveLength(2);
+    expect(screen.queryByText(/peer-lib/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/handling_mode/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/peer-merge/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/completed/)).not.toBeInTheDocument();
+  });
+
+  test("renders persisted raw UUID peer targets as a generic peer label", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "assistant-peer-uuid",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: "Response token delivered.",
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "peer-uuid",
+        name: "send_response",
+        arguments: JSON.stringify({ peer_id: "e3ec9e90-460e-51b3-80b9-dea0f0c31752" }),
+        status: "success",
+        peerTarget: "e3ec9e90-460e-51b3-80b9-dea0f0c31752",
+        peerBody: "Response token delivered.",
+      }],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText("Peer")).toBeInTheDocument();
+    expect(screen.queryByText("e3ec9e90-460e-51b3-80b9-dea0f0c31752")).not.toBeInTheDocument();
+  });
+
+  test("summarizes legacy MobKit peer protocol prompts in peer cards", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "assistant-peer-protocol-body",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      text: "Response requested.",
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "peer-protocol-body",
+        name: "send_request",
+        arguments: JSON.stringify({ body: 'Please send_response with result.token exactly "peer-merge-123".' }),
+        status: "success",
+        peerIncoming: true,
+        peerTarget: "HSNS thread",
+        peerBody: 'Please send_response with result.token exactly "peer-merge-123".',
+      }],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText("Response requested.")).toBeInTheDocument();
+    expect(screen.queryByText(/send_response/)).not.toBeInTheDocument();
   });
 });

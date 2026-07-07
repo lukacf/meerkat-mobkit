@@ -44,7 +44,9 @@ export type {
 } from "./sidebar/console-sidebar";
 export type { ConsoleWorkbenchProps } from "./workbench/console-workbench";
 export { ConsoleComposer } from "./composer/console-composer";
+export { PendingStack } from "./composer/pending-stack";
 export type {
   ConsoleComposerProps,
   ConsoleComposerToolbarButtonScope,
 } from "./composer/console-composer";
+export type { PendingDropWhere, PendingItem, PendingStackProps } from "./composer/pending-stack";

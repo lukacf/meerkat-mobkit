@@ -29,6 +29,22 @@ export type ConsoleActivityRailProps = {
   renderSlotPreview: (slot: ConsoleActivityFeedSlot) => ReactNode;
 };
 
+function legacyPanelId(panel: Pick<ConsoleActivityPanel, "id" | "kind">): string | undefined {
+  if (panel.id === "chorus" || (panel.kind === "roster" && panel.id.includes("chorus"))) {
+    return "watchRailChorusPanel";
+  }
+  if (panel.id === "busy_member" || (panel.kind === "feed" && panel.id.includes("busy"))) {
+    return "watchRailBusyMemberPanel";
+  }
+  if (panel.id === "pulse" || panel.kind === "pulse") {
+    return "watchRailPulsePanel";
+  }
+  if (panel.id === "jobs" || (panel.kind === "roster" && panel.id.includes("jobs"))) {
+    return "watchRailJobsPanel";
+  }
+  return undefined;
+}
+
 function PinButton({
   Icon,
   item,
@@ -74,7 +90,7 @@ function RosterPanel({
   onPanelAction?: (panelId: string, actionId: string) => void;
 }) {
   return (
-    <section className="cc-activity-rail__section" key={panel.id}>
+    <section className="cc-activity-rail__section" id={legacyPanelId(panel)} key={panel.id}>
       <div className="cc-activity-rail__section-row">
         <h2>{panel.title}</h2>
         <div className="cc-activity-rail__section-actions">
@@ -90,7 +106,7 @@ function RosterPanel({
               {action.label}
             </button>
           ))}
-          {onRemovePanel ? (
+          {onRemovePanel && panel.removable !== false ? (
             <button
               type="button"
               className="cc-activity-rail__section-action"
@@ -113,12 +129,13 @@ function RosterPanel({
                 {group.items.map((item) => (
                   <div
                     className={clsx("cc-activity-rail__roster-item", item.selected && "is-selected")}
+                    data-workspace-member-key={panel.itemsRepresentMembers !== false ? (item.focusId || undefined) : undefined}
                     key={item.id}
                     style={toneStyle(item.tone)}
                   >
                     <button
                       type="button"
-                      className="cc-activity-rail__roster-main"
+                      className="cc-activity-rail__roster-main workspace-watch-roster-main"
                       title={item.tooltip || item.subtitle || item.title}
                       onClick={() => item.focusId && onSelectItem?.(item.focusId)}
                     >
@@ -156,7 +173,7 @@ function PulsePanel({
   onTogglePin?: (pinId: string, pinned: boolean) => void;
 }) {
   return (
-    <section className="cc-activity-rail__section" key={panel.id}>
+    <section className="cc-activity-rail__section" id={legacyPanelId(panel)} key={panel.id}>
       <div className="cc-activity-rail__section-row">
         <h2>{panel.title}</h2>
         <div className="cc-activity-rail__section-actions">
@@ -234,7 +251,7 @@ function FeedPanel({
   renderSlotPreview: (slot: ConsoleActivityFeedSlot) => ReactNode;
 }) {
   return (
-    <section className="cc-activity-rail__section cc-activity-rail__section--feed" key={panel.id}>
+    <section className="cc-activity-rail__section cc-activity-rail__section--feed" id={legacyPanelId(panel)} key={panel.id}>
       <div className="cc-activity-rail__section-row">
         <h2>{panel.title}</h2>
         <div className="cc-activity-rail__section-actions">
@@ -324,14 +341,14 @@ function renderPanel({
   if (panel.kind === "roster") {
     return (
       <RosterPanel
-        Icon={Icon}
-        key={panel.id}
-        onRemovePanel={onRemovePanel}
-        onSelectItem={onSelectItem}
-        onTogglePin={onTogglePin}
-        onPanelAction={onPanelAction}
-        panel={panel}
-      />
+          Icon={Icon}
+          key={panel.id}
+          onRemovePanel={onRemovePanel}
+          onPanelAction={onPanelAction}
+          onSelectItem={onSelectItem}
+          onTogglePin={onTogglePin}
+          panel={panel}
+        />
     );
   }
 
@@ -379,7 +396,7 @@ export function ConsoleActivityRail({
   renderSlotPreview,
 }: ConsoleActivityRailProps) {
   return (
-    <div className="cc-theme-scope cc-activity-rail">
+    <div className="cc-theme-scope cc-activity-rail" id="threadWatchRail">
       <div className="cc-activity-rail__controls">
         <button
           ref={addPanelButtonRef}
@@ -406,6 +423,7 @@ export function ConsoleActivityRail({
           {viewState.ingress ? (
             <div className="cc-activity-rail__ingress">
               <button
+                id="watchRailIngressBtn"
                 type="button"
                 className={clsx(
                   "cc-activity-rail__ingress-button",
@@ -439,6 +457,7 @@ export function ConsoleActivityRail({
               <div className="cc-activity-rail__empty-title">{viewState.emptyState.title}</div>
               <div className="cc-activity-rail__empty-copy">{viewState.emptyState.description}</div>
               <button
+                id={viewState.emptyState.actionLabel === "Restore helpers" ? "threadWatchRestoreBtn" : undefined}
                 type="button"
                 className="cc-activity-rail__empty-action"
                 onClick={onEmptyAction || onTogglePicker}

@@ -1,6 +1,10 @@
 import clsx from "clsx";
 
 import {
+  conversationRichPeerBodyForDisplay,
+  conversationRichPeerIntentForDisplay,
+  conversationRichPeerTargetForDisplay,
+  normalizeConversationDisplayText,
   renderConversationInlineMarkdown,
   type ConversationRichBlock,
   type ConversationRichCodeBlock,
@@ -12,7 +16,7 @@ import {
   type ConversationRichThinkingBlock,
 } from "@console-core";
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
@@ -22,10 +26,14 @@ type ConversationRichContentProps = {
   blocks: ConversationRichBlock[];
   richStyle?: "default" | "streaming";
   Icon?: IconRenderer | null;
+  // Default true preserves meerkat-studio's display normalization; the MobKit
+  // console passes false for faithful rendering of raw agent text (pairs with
+  // the parse-side `displayNormalization` option).
+  displayNormalization?: boolean;
 };
 
-function markdownHtml(text: string) {
-  return { __html: renderConversationInlineMarkdown(text) };
+function markdownHtml(text: string, displayNormalization = true) {
+  return { __html: renderConversationInlineMarkdown(text, { displayNormalization }) };
 }
 
 function commandCopyText(block: ConversationRichCommandBlock): string {
@@ -47,21 +55,24 @@ function alignmentAttr(alignment: ConversationTableAlignment | null | undefined)
   return alignment || "left";
 }
 
-function renderThinkingBlock(block: ConversationRichThinkingBlock) {
+function renderThinkingBlock(block: ConversationRichThinkingBlock, displayNormalization = true) {
   if (!block.label?.trim() && !block.text?.trim()) {
     return null;
   }
+  const collapsedByDefault = Boolean(block.final && block.persisted);
   return (
-    <div
+    <details
       className={clsx(
         "cc-rich-thinking",
         block.final && "cc-rich-thinking--final",
         block.persisted && "cc-rich-thinking--persisted",
+        collapsedByDefault && "cc-rich-thinking--collapsed",
       )}
+      open={!collapsedByDefault}
     >
-      <div className="cc-rich-thinking__label">{block.label}</div>
-      <p className="cc-rich-paragraph" dangerouslySetInnerHTML={markdownHtml(block.text)} />
-    </div>
+      <summary className="cc-rich-thinking__label">{block.label}</summary>
+      <p className="cc-rich-paragraph cc-rich-thinking__body" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} />
+    </details>
   );
 }
 
@@ -69,16 +80,17 @@ function renderBlock(
   block: ConversationRichBlock,
   index: number,
   Icon?: IconRenderer | null,
+  displayNormalization = true,
 ) {
   if (block.type === "paragraph") {
-    return <p className="cc-rich-paragraph" dangerouslySetInnerHTML={markdownHtml(block.text)} key={`paragraph-${index}`} />;
+    return <p className="cc-rich-paragraph" dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)} key={`paragraph-${index}`} />;
   }
 
   if (block.type === "heading") {
     return (
       <h3
         className={`cc-rich-heading cc-rich-heading--${Number(block.level) || 2}`}
-        dangerouslySetInnerHTML={markdownHtml(block.text)}
+        dangerouslySetInnerHTML={markdownHtml(block.text, displayNormalization)}
         key={`heading-${index}`}
       />
     );
@@ -120,7 +132,7 @@ function renderBlock(
               {block.headers.map((header, cellIndex) => (
                 <th
                   data-align={alignmentAttr(block.alignments[cellIndex])}
-                  dangerouslySetInnerHTML={markdownHtml(header)}
+                  dangerouslySetInnerHTML={markdownHtml(header, displayNormalization)}
                   key={`header-${cellIndex}`}
                 />
               ))}
@@ -132,7 +144,7 @@ function renderBlock(
                 {block.headers.map((_header, cellIndex) => (
                   <td
                     data-align={alignmentAttr(block.alignments[cellIndex])}
-                    dangerouslySetInnerHTML={markdownHtml(row[cellIndex] || "")}
+                    dangerouslySetInnerHTML={markdownHtml(row[cellIndex] || "", displayNormalization)}
                     key={`cell-${rowIndex}-${cellIndex}`}
                   />
                 ))}
@@ -171,9 +183,9 @@ function renderBlock(
       <section className="cc-rich-file-change" key={`file-change-${index}`}>
         <div className="cc-rich-file-change__main">
           <span className="cc-rich-file-change__verb">{block.verb}</span>
-          {block.before ? <span className="cc-rich-file-change__context" dangerouslySetInnerHTML={markdownHtml(block.before)} /> : null}
+          {block.before ? <span className="cc-rich-file-change__context" dangerouslySetInnerHTML={markdownHtml(block.before, displayNormalization)} /> : null}
           <button className="cc-rich-file-change__link" type="button">{block.name}</button>
-          {block.after ? <span className="cc-rich-file-change__context" dangerouslySetInnerHTML={markdownHtml(block.after)} /> : null}
+          {block.after ? <span className="cc-rich-file-change__context" dangerouslySetInnerHTML={markdownHtml(block.after, displayNormalization)} /> : null}
         </div>
         <div className="cc-rich-file-change__stats">
           <ChangeStatPair minus={block.minus} plus={block.plus} />
@@ -224,7 +236,7 @@ function renderBlock(
     return <ToolCallBlock block={block} key={`tool-call-${index}`} />;
   }
 
-  const thinking = renderThinkingBlock(block);
+  const thinking = renderThinkingBlock(block, displayNormalization);
   if (!thinking) {
     return null;
   }
@@ -260,17 +272,81 @@ function formatJsonIfPossible(text: string): string {
 function toolBlockCopyText(block: ConversationRichToolCallBlock): string {
   if (block.peerTarget) {
     const dir = block.peerIncoming ? "← from" : "→ to";
+    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+    const result = meaningfulPeerResult(block.result);
     return [
-      `${dir} ${block.peerTarget}`,
-      block.peerIntent,
-      block.peerBody,
-      block.result,
+      `${dir} ${conversationRichPeerTargetForDisplay(block.peerTarget)}`,
+      conversationRichPeerIntentForDisplay(block.peerIntent, peerBody),
+      peerBody,
+      result,
     ].filter(Boolean).join(": ").trim();
   }
   const parts = [`$ ${block.name}`];
   if (block.arguments) parts.push(`Input: ${block.arguments}`);
   if (block.result) parts.push(`Result: ${block.result}`);
   return parts.join("\n").trim();
+}
+
+function parseObjectJson(text: string | null | undefined): Record<string, unknown> | null {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || !trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function textFromUnknown(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return normalizeConversationDisplayText(value).trim();
+  }
+  return normalizeConversationDisplayText(JSON.stringify(value, null, 2));
+}
+
+function meaningfulPeerResult(value: string | null | undefined): string {
+  const text = normalizeConversationDisplayText(String(value || "")).trim();
+  if (!text || /^(completed|delivered|ok|success)$/i.test(text)) {
+    return "";
+  }
+  return formatJsonIfPossible(text);
+}
+
+function peerDetailRows(block: ConversationRichToolCallBlock): Array<{ label: string; value: string }> {
+  const args = parseObjectJson(block.arguments) || {};
+  const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+  const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
+  const body = peerBody
+    || textFromUnknown(args.body)
+    || textFromUnknown(args.message)
+    || textFromUnknown(args.content)
+    || textFromUnknown(args.text);
+  const params = textFromUnknown(args.params);
+  const requestId = textFromUnknown(args.in_reply_to)
+    || textFromUnknown(args.inReplyTo)
+    || textFromUnknown(args.request_id)
+    || textFromUnknown(args.requestId);
+  const result = meaningfulPeerResult(block.result);
+  const primaryLabel = block.name === "send_request"
+    ? "Request"
+    : block.name === "send_response"
+      ? "Response"
+      : "Message";
+  return [
+    body ? { label: primaryLabel, value: body } : null,
+    peerIntent ? { label: "Intent", value: peerIntent } : null,
+    params ? { label: "Params", value: params } : null,
+    requestId ? { label: "Request ID", value: requestId } : null,
+    result ? { label: "Result", value: result } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
 }
 
 function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
@@ -287,6 +363,14 @@ function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
   );
 }
 
+function onToolHeaderKeyDown(event: KeyboardEvent<HTMLDivElement>, toggle: () => void) {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  toggle();
+}
+
 function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   const [expanded, setExpanded] = useState(false);
   const isPeer = PEER_TOOL_NAMES.has(block.name);
@@ -294,43 +378,30 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   const statusClass = `cc-tool-call--${block.status}`;
 
   if (isPeer || block.peerIncoming) {
-    const target = block.peerTarget || "peer";
-    const content = block.peerBody || block.peerIntent || "";
+    const target = conversationRichPeerTargetForDisplay(block.peerTarget);
+    const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+    const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
+    const content = peerBody || peerIntent || "";
     const arrow = block.peerIncoming ? "↙" : "↗";
-    // Prefer the structured `arguments` (raw JSON) for the expanded
-    // Input section if it carries more than what the header preview
-    // already shows; fall back to the trimmed body. For incoming
-    // requests the parser stuffs `arguments = paramsBody` so this
-    // reads back the params; for outgoing peer tools `arguments` is
-    // the full tool-call args (peer_id, in_reply_to, params, ...).
-    const inputDetail = block.arguments && block.arguments.trim()
-      ? formatJsonIfPossible(block.arguments)
-      : content;
+    const detailRows = peerDetailRows(block);
     return (
       <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass)}>
-        <button
-          className={clsx("cc-tool-call__header", block.peerIncoming && "cc-tool-call__header--incoming-peer")}
-          type="button"
+        <div
+          className="cc-tool-call__header"
+          role="button"
+          tabIndex={0}
           onClick={() => setExpanded((prev) => !prev)}
+          onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
           aria-expanded={expanded}
         >
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
           <span className="cc-tool-call__icon">{arrow}</span>
-          {block.peerIncoming ? (
-            <span className="cc-tool-call__peer-summary">
-              <span className="cc-tool-call__name">Received from {target}</span>
-              {content && <span className="cc-tool-call__preview">{content}</span>}
-            </span>
-          ) : (
-            <>
-              <span className="cc-tool-call__name">{block.name} → {target}</span>
-              {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
-              {content && <span className="cc-tool-call__preview">{content}</span>}
-            </>
-          )}
+          <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
+          {peerIntent && <span className="cc-tool-call__peer-intent">{peerIntent}</span>}
+          {content && <span className="cc-tool-call__preview">{content}</span>}
           <span className="cc-tool-call__status">{statusIcon}</span>
           <CopyBtn text={toolBlockCopyText(block)} />
-        </button>
+        </div>
         {block.peerImages && block.peerImages.length > 0 && (
           <div className="cc-tool-call__attachments">
             {block.peerImages.map((image, index) => (
@@ -352,30 +423,14 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
             ))}
           </div>
         )}
-        {expanded && (
+        {expanded && detailRows.length > 0 && (
           <div className="cc-tool-call__body">
-            <div className="cc-tool-call__section">
-              <div className="cc-tool-call__section-label">Tool</div>
-              <pre className="cc-tool-call__pre">{block.name}</pre>
-            </div>
-            {block.peerIntent && (
-              <div className="cc-tool-call__section">
-                <div className="cc-tool-call__section-label">Intent</div>
-                <pre className="cc-tool-call__pre">{block.peerIntent}</pre>
+            {detailRows.map((row) => (
+              <div className="cc-tool-call__section" key={`${row.label}:${row.value}`}>
+                <div className="cc-tool-call__section-label">{row.label}</div>
+                <pre className="cc-tool-call__pre">{formatJsonIfPossible(row.value)}</pre>
               </div>
-            )}
-            {inputDetail && (
-              <div className="cc-tool-call__section">
-                <div className="cc-tool-call__section-label">{block.peerIncoming ? "Params" : "Input"}</div>
-                <pre className="cc-tool-call__pre">{inputDetail}</pre>
-              </div>
-            )}
-            {block.result && (
-              <div className="cc-tool-call__section">
-                <div className="cc-tool-call__section-label">Result</div>
-                <pre className="cc-tool-call__pre">{formatJsonIfPossible(block.result)}</pre>
-              </div>
-            )}
+            ))}
           </div>
         )}
       </section>
@@ -395,10 +450,12 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
 
   return (
     <section className={clsx("cc-tool-call", statusClass)}>
-      <button
+      <div
         className="cc-tool-call__header"
-        type="button"
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
@@ -407,7 +464,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
         {argsPreview && <span className="cc-tool-call__preview">{argsPreview}</span>}
         <span className="cc-tool-call__status">{statusIcon} {block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"}</span>
         <CopyBtn text={toolBlockCopyText(block)} />
-      </button>
+      </div>
       {expanded && (
         <div className="cc-tool-call__body">
           {argsPreview && (
@@ -447,10 +504,12 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 
   return (
     <section className={clsx("cc-tool-call cc-tool-call--group", statusClass)}>
-      <button
+      <div
         className="cc-tool-call__header"
-        type="button"
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
@@ -459,7 +518,7 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
         <span className="cc-tool-call__count">×{blocks.length}</span>
         <span className="cc-tool-call__status">{statusIcon} {statusLabel}</span>
         <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
-      </button>
+      </div>
       {expanded && (
         <div className="cc-tool-call__body">
           {blocks.map((block, i) => {
@@ -500,7 +559,7 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 
 function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
   const [expanded, setExpanded] = useState(false);
-  const targets = Array.from(new Set(blocks.map((b) => b.peerTarget || "peer")));
+  const targets = Array.from(new Set(blocks.map((b) => conversationRichPeerTargetForDisplay(b.peerTarget))));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
@@ -509,16 +568,16 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
   const arrow = isIncoming ? "↙" : "↗";
   const label = isIncoming
     ? `Received from ${targets.join(", ")}`
-    : blocks.length === 1
-      ? `${blocks[0]?.name || "peer"} → ${targets[0] || "peer"}`
-      : `Sent to ${targets.join(", ")}`;
+    : `Sent to ${targets.join(", ")}`;
 
   return (
     <section className={clsx("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass)}>
-      <button
+      <div
         className="cc-tool-call__header"
-        type="button"
+        role="button"
+        tabIndex={0}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => onToolHeaderKeyDown(event, () => setExpanded((prev) => !prev))}
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
@@ -526,20 +585,29 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
         <span className="cc-tool-call__name">{label}</span>
         <span className="cc-tool-call__status">{statusIcon}</span>
         <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
-      </button>
+      </div>
       {expanded && (
         <div className="cc-tool-call__body">
-          {blocks.map((block, i) => (
-            <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
-              <span className="cc-tool-call__peer-intent">{block.name}</span>
-              <span className="cc-tool-call__peer-target">{isIncoming ? "←" : "→"} {block.peerTarget || "peer"}</span>
-              {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
-              {block.peerBody && <span className="cc-tool-call__peer-body">{block.peerBody}</span>}
-              <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
-                {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
-              </span>
-            </div>
-          ))}
+          {blocks.map((block, i) => {
+            const peerBody = conversationRichPeerBodyForDisplay(block.peerBody);
+            const peerIntent = conversationRichPeerIntentForDisplay(block.peerIntent, peerBody);
+            return (
+              <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
+                <span className="cc-tool-call__peer-target">{isIncoming ? "←" : "→"} {conversationRichPeerTargetForDisplay(block.peerTarget)}</span>
+                {peerIntent ? (
+                  <span className="cc-tool-call__peer-intent">
+                    {peerIntent}
+                  </span>
+                ) : null}
+                {peerBody && (
+                  <span className="cc-tool-call__peer-body">{peerBody}</span>
+                )}
+                <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
+                  {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </section>
@@ -550,6 +618,7 @@ export function ConversationRichContent({
   blocks,
   richStyle = "default",
   Icon,
+  displayNormalization = true,
 }: ConversationRichContentProps) {
   // Render multi-block tool runs as a single collapsible group:
   // peer tools get the `Sent to a, b, c` blob, generic same-name
@@ -571,7 +640,7 @@ export function ConversationRichContent({
   }
 
   const body = blocks
-    .map((block, index) => renderBlock(block, index, Icon))
+    .map((block, index) => renderBlock(block, index, Icon, displayNormalization))
     .filter(Boolean);
 
   if (body.length === 0) {

@@ -68,7 +68,41 @@ export interface ConversationSummaryEntry extends ConversationTimelineEntryBase 
   actionLabel?: string | null;
 }
 
-export type ConversationTimelineEntry = ConversationMessageEntry | ConversationSummaryEntry;
+export type FlowRunStatus = "idle" | "running" | "completed" | "failed";
+
+export interface ConversationFlowRunMemberRow {
+  memberKey: string;
+  label: string;
+  caption: string;
+  status: FlowRunStatus;
+  tone?: ConversationTone | null;
+  // A prebuilt view of this member's own streamed transcript (tool cards,
+  // thinking, code) rendered when the row is expanded. Absent until the live
+  // execution snapshot has hydrated the member's sub-transcript.
+  subView?: ConversationViewState | null;
+}
+
+// A flow run (a helper-mob crew spawned on demand) rendered inline in the
+// conversation as one card, replacing the deleted watch rail. Rows are the crew
+// members with honest live status — there is no fabricated step ordering because
+// flow definitions carry no ordered-step model.
+export interface ConversationFlowRunEntry extends ConversationTimelineEntryBase {
+  kind: "flow_run";
+  helperId: string;
+  flowName: string;
+  objective?: string | null;
+  status: FlowRunStatus;
+  outcome?: string | null;
+  rows: ConversationFlowRunMemberRow[];
+  // True when the crew exists only as persisted records (no live execution
+  // snapshot) and can be brought back — the card offers a Resume action.
+  restorable?: boolean;
+}
+
+export type ConversationTimelineEntry =
+  | ConversationMessageEntry
+  | ConversationSummaryEntry
+  | ConversationFlowRunEntry;
 
 export interface ConversationTimelineGroup {
   id: string;
@@ -167,6 +201,13 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
       .map((file) => `${file.name} +${file.plus} -${file.minus}`)
       .join("\n");
     return [entry.title, fileLines].filter(Boolean).join("\n");
+  }
+
+  if (entry.kind === "flow_run") {
+    const rowLines = entry.rows.map((row) => `${row.label}: ${row.caption}`);
+    return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""]
+      .filter(Boolean)
+      .join("\n");
   }
 
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();

@@ -109,7 +109,9 @@ describe("ConversationPane", () => {
       );
 
       expect(screen.getByRole("navigation", { name: "Conversation turns" })).toBeInTheDocument();
-      expect(screen.getByText("Review the contract.")).toBeInTheDocument();
+      // The rail preview repeats the opening user line, so the text appears in
+      // both the preview card and the transcript itself.
+      expect(screen.getAllByText("Review the contract.").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("Done. I left a focused finding.").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("agent-memory-architecture.mdx").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("docs.json").length).toBeGreaterThanOrEqual(1);

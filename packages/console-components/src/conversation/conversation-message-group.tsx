@@ -40,12 +40,16 @@ type ConversationMessageGroupProps = {
   group: ConversationTimelineGroup;
   compact?: boolean;
   Icon?: IconRenderer | null;
+  onFlowRunMessageMember?: ((memberKey: string) => void) | null;
+  onFlowRunRestore?: (() => void) | null;
 };
 
 export function ConversationMessageGroup({
   group,
   compact = false,
   Icon,
+  onFlowRunMessageMember = null,
+  onFlowRunRestore = null,
 }: ConversationMessageGroupProps) {
   const presentation = conversationIdentityPresentation(group.identity);
   const isUserGroup = presentation === "user";
@@ -54,7 +58,14 @@ export function ConversationMessageGroup({
     return (
       <>
         {group.entries.map((entry) => (
-          <ConversationMessageView compact={compact} entry={entry} Icon={Icon} key={entry.id} />
+          <ConversationMessageView
+            compact={compact}
+            entry={entry}
+            Icon={Icon}
+            key={entry.id}
+            onFlowRunMessageMember={onFlowRunMessageMember}
+            onFlowRunRestore={onFlowRunRestore}
+          />
         ))}
       </>
     );
@@ -95,7 +106,14 @@ export function ConversationMessageGroup({
       ) : null}
       <div className="cc-message-group__body">
         {group.entries.map((entry) => (
-          <ConversationMessageView compact={compact} entry={entry} Icon={Icon} key={entry.id} />
+          <ConversationMessageView
+            compact={compact}
+            entry={entry}
+            Icon={Icon}
+            key={entry.id}
+            onFlowRunMessageMember={onFlowRunMessageMember}
+            onFlowRunRestore={onFlowRunRestore}
+          />
         ))}
       </div>
     </section>
