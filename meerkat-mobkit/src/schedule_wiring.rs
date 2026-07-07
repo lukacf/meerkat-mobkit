@@ -1301,6 +1301,261 @@ mod tests {
         );
     }
 
+    /// HomeCore 0.7.26 "last link" e2e: an agent-authored one-shot must
+    /// DELIVER through the real schedule host — the full rpc_gateway chain
+    /// (attach_schedule_tools_with_identity_targets → agent tool dispatch →
+    /// planning → claim → delivery). `register_mob_state` toggles whether
+    /// the mob-target registry can resolve the authoring session at create
+    /// time (the field failure fired on the unresolved path).
+    async fn one_shot_delivery_e2e(register_mob_state: bool) -> (String, String) {
+        use meerkat_core::AgentToolDispatcher;
+        use serde_json::value::RawValue;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let state = temp_dir.path().join("state");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(state.join("sessions.db"))
+                .expect("session store"),
+        );
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+            meerkat_runtime::store::SqliteRuntimeStore::new(state.join("runtime.sqlite"))
+                .expect("runtime store"),
+        );
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
+        let factory = meerkat::AgentFactory::new(&state).comms(true);
+        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        inner_builder.default_blob_store = Some(blob_store.clone());
+        let attached = attach_schedule_tools_with_identity_targets(&inner_builder, &state)
+            .expect("schedule tools attach");
+        let inner_builder_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
+        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
+        let concrete = Arc::new(PersistentSessionService::new(
+            inner_builder,
+            16,
+            session_store,
+            runtime_store,
+            blob_store,
+        ));
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "delivery-e2e"
+
+[profiles.general]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.general.tools]
+comms = true
+schedule = true
+"#,
+        )
+        .expect("definition");
+        let agent_mob_tools_slot = Arc::clone(&inner_builder_mob_tools_slot);
+        let mob_spec = crate::mob_handle_runtime::MobBootstrapSpec::new(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            concrete.clone(),
+        )
+        .with_session_runtime_adapter(adapter.clone())
+        .with_agent_mob_tools(agent_mob_tools_slot)
+        .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = crate::UnifiedRuntime::bootstrap(
+            mob_spec,
+            crate::MobKitConfig {
+                modules: vec![],
+                discovery: crate::DiscoverySpec {
+                    namespace: "delivery-e2e".to_string(),
+                    modules: vec![],
+                },
+                pre_spawn: vec![],
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("bootstrap");
+
+        let handle = runtime.mob_handle();
+        handle
+            .ensure_member(meerkat_mob::SpawnMemberSpec::new(
+                meerkat_mob::ProfileName::from("general"),
+                meerkat_mob::ids::AgentIdentity::from("digest-owner"),
+            ))
+            .await
+            .expect("ensure digest-owner");
+        let owner_session = handle
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
+                "digest-owner",
+            ))
+            .await
+            .expect("owner session id");
+
+        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
+        assert!(
+            mob_state.is_some(),
+            "with_agent_mob_tools must install the mob authority"
+        );
+        if register_mob_state {
+            attached
+                .mob_target_registry
+                .set_mob_state(mob_state.clone());
+        }
+
+        // Author AS THE AGENT: through the installed dispatcher chain, bound
+        // to the member's session, current-session target, due just-past.
+        let mob_dispatcher = MobIdentityScheduleToolDispatcher::new(
+            Arc::new(ScheduleToolDispatcher::new(attached.service.clone())),
+            attached.mob_target_registry.clone(),
+        );
+        let dispatcher = meerkat_schedule::CurrentSessionScheduleToolDispatcher::new(
+            Arc::new(mob_dispatcher),
+            owner_session.clone(),
+        );
+        let due = chrono::Utc::now() + chrono::Duration::seconds(2);
+        let create_args = RawValue::from_string(
+            serde_json::json!({
+                "name": "delivery-e2e-oneshot",
+                "trigger": { "type": "once", "due_at_utc": due.to_rfc3339() },
+                "target": {
+                    "target_kind": "session",
+                    "type": "current_session",
+                    "action": {
+                        "type": "prompt",
+                        "prompt": "Fire the e2e one-shot.",
+                        "render_metadata": { "class": "external_event", "salience": "important", "source": "delivery-e2e" }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("create args");
+        dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "create-e2e",
+                name: "meerkat_schedule_create",
+                args: &create_args,
+            })
+            .await
+            .expect("author one-shot through the agent dispatcher");
+        let authored_target = attached
+            .service
+            .list()
+            .await
+            .expect("list")
+            .first()
+            .map(|s| s.target.clone());
+        if register_mob_state {
+            assert!(
+                matches!(
+                    &authored_target,
+                    Some(TargetBinding::Mob(binding))
+                        if matches!(binding.as_ref(), MobTargetBinding::Member { .. })
+                ),
+                "with the mob authority registered, agent-authored current-session \
+                 schedules must rewrite to mob-member targets: {authored_target:?}"
+            );
+        }
+
+        // Ensure mob state is registered for DELIVERY either way (rpc_gateway
+        // always sets it before spawning the host).
+        attached
+            .mob_target_registry
+            .set_mob_state(mob_state.clone());
+        let _host = spawn_schedule_host(
+            concrete,
+            adapter,
+            attached.service.clone(),
+            mob_state,
+            None,
+            "delivery-e2e",
+        )
+        .expect("spawn schedule host");
+
+        // Poll receipts until one lands (or timeout) — receipts are keyed by
+        // occurrence, so read raw rows from the store file.
+        let receipts_path = state.join(SCHEDULE_STORE_FILE);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let row: Option<Vec<u8>> = {
+                let conn = rusqlite::Connection::open(&receipts_path).expect("open receipts store");
+                conn.query_row(
+                    "SELECT receipt_json FROM schedule_receipts ORDER BY rowid DESC LIMIT 1",
+                    [],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .ok()
+            };
+            if let Some(receipt_bytes) = row {
+                let receipt_json = String::from_utf8_lossy(&receipt_bytes).to_string();
+                let receipt: serde_json::Value =
+                    serde_json::from_str(&receipt_json).unwrap_or_default();
+                let stage = receipt["stage"].as_str().unwrap_or_default().to_string();
+                // Only a TERMINAL delivery verdict counts — planner
+                // bookkeeping (superseded) and in-flight stages
+                // (dispatch_started/accepted) keep the poll waiting.
+                if matches!(
+                    stage.as_str(),
+                    "completed" | "delivery_failed" | "misfired" | "skipped"
+                ) {
+                    runtime.shutdown().await;
+                    return (stage, receipt_json);
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                let conn = rusqlite::Connection::open(&receipts_path).expect("open store for dump");
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT phase, due_at_ms, lease_expires_at_ms FROM schedule_occurrences",
+                    )
+                    .expect("prep");
+                let rows: Vec<(String, i64, Option<i64>)> = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .expect("q")
+                    .filter_map(Result::ok)
+                    .collect();
+                panic!("no delivery receipt within 20s; occurrences: {rows:?}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Registry-resolved authoring (rpc_gateway steady state): the one-shot
+    /// rewrites to a mob-member target at authoring and DELIVERS.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_authored_one_shot_delivers_to_mob_member() {
+        let (stage, detail) = one_shot_delivery_e2e(true).await;
+        assert_eq!(
+            stage, "completed",
+            "one-shot must deliver to the member: {detail}"
+        );
+    }
+
+    /// Unresolved-at-authoring shape (the HomeCore 0.7.26 field path): the
+    /// target stays a resumable session, and DELIVERY-TIME recovery resolves
+    /// the mob-member identity through the (now installed) mob authority.
+    /// Before the with_agent_mob_tools fix this failed with
+    /// "scheduled identity targets are not supported by this session host".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_authored_one_shot_delivers_via_identity_recovery() {
+        let (stage, detail) = one_shot_delivery_e2e(false).await;
+        assert_eq!(
+            stage, "completed",
+            "delivery-time identity recovery must deliver: {detail}"
+        );
+    }
+
     /// Ask-22 upgrade-carry guard: a just-past ONE-SHOT must converge —
     /// bounded occurrences over repeated refill+claim rounds.
     ///
