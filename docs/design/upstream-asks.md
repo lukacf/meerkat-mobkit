@@ -1074,3 +1074,46 @@ Trace capture recipe unchanged (tracing_subscriber in the test body;
 `meerkat_mob=debug,meerkat_runtime=debug` shows the full timeline:
 RunFailed authority-absent ERROR → "unregister_session_inner start" with
 no "locked mutation gate" → "retire_runtime_control_plane start" → silence).
+
+### Ask 21 addendum (21d) — 0.7.22 verification: classic chain converged, identity-first-construction workers still archive-NotFound — P1
+
+meerkat 0.7.22 (#847) verification with both mobkit acceptance repros:
+
+- `studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew`
+  (classic persistent chain): **PASSES** — retire AND respawn of never-run
+  members converge in <0.3s. Ask 21c fixed as specified; the whole
+  20/21/21b/21c family is closed on this construction. Un-ignored for good.
+- `doctrine_member_rpcs_route_identity_owned_members_through_identity_authority`
+  (identity-first gateway construction, mob-plane worker): **still fails**,
+  fast, with the ORIGINAL error: "respawn_member failed: … disposal
+  completed but ArchiveSession failed: … mob archive authority returned
+  NotFound for registered runtime session <id>".
+
+Trace delta vs the (now green) classic chain: on this construction
+`SessionBackend::retire_runtime_before_archive` logs "calling runtime
+retire" → "runtime retired" (the runtime is NOT already terminal, and the
+0.7.22 bounded retire genuinely succeeds — no deadlock, no 30s stall),
+then "archive_with_authority_then_unregister archiving session service"
+→ the dispose ArchiveSession step fails NotFound with the session still
+REGISTERED per the escalation text. I.e. the durable runtime is Retired
+by the pre-archive retire, yet the archive protocol still resolves
+NotFound and the machine still reports the session registered — the #845
+Ready+Archived+registered retire-only arm apparently does not fire (or
+fires and NotFounds) on this wiring. Construction difference to focus on:
+the identity-first gateway runtime (mobkit `gateway_wiring::
+open_identity_substrate` + identity_first bridge on MobHandle) with the
+worker member on the mob plane; session service wiring differs from the
+classic FactoryAgentBuilder → PersistentSessionService chain.
+
+Repro: `meerkat-mobkit/tests/studio_k_asks.rs`,
+`doctrine_member_rpcs_route_identity_owned_members_through_identity_authority`
+— currently TOLERANT of the ArchiveSession failure class (assert-routing
+only); tighten the branch at the end of the test when 21d lands. Trace
+recipe: tracing_subscriber init in the test body,
+`meerkat_mob=debug,meerkat_runtime=info,meerkat_session=debug`.
+
+Severity: P1 not P0 — fast-fail (no wedge, no strand escalation beyond the
+known retiring-retry state), identity-first DURABLE members are unaffected
+(tolerant disposal on the identity plane), and the classic chain is fixed.
+Affects mob-plane worker churn under identity-first gateways (HomeCore
+agent-tool workers, OB3 worker plane after migration).

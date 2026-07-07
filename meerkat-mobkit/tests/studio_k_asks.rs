@@ -4,12 +4,15 @@
 // multi-member crew created via mobkit/ensure_member. Works on the ephemeral
 // session service; on the persistent chain (studio's construction:
 // FactoryAgentBuilder -> PersistentSessionService -> MobBootstrapSpec ->
-// UnifiedRuntime) BOTH fail for never-ran members: disposal completes but the
-// ArchiveSession step's authority lookup NotFounds (no runtime snapshot was
-// ever committed for an idle member), meerkat-mob escalates to a fatal
-// error, and the member is stranded in state=retiring (respawn aborts after
-// the failed retire, leaving a cancelled-kickoff zombie). Upstream ask 20;
-// the persistent test below is #[ignore]d until the meerkat fix lands.
+// UnifiedRuntime) BOTH used to fail for never-ran members: disposal completed
+// but the ArchiveSession step's authority lookup NotFounded (no runtime
+// snapshot was ever committed for an idle member), meerkat-mob escalated to a
+// fatal error, and the member was stranded in state=retiring — and on meerkat
+// 0.7.21 the same path DEADLOCKED the whole mob instead. Fixed upstream
+// across asks 20/21/21b/21c; converged in meerkat 0.7.22 (the runtime-loop
+// stop-under-gate self-deadlock was the root producer of the strand state).
+// Residue: the identity-first gateway construction's mob-plane workers still
+// archive-NotFound on 0.7.22 (ask 21d, tolerated in the doctrine test below).
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::sync::Arc;
@@ -174,7 +177,6 @@ comms = true
 /// PersistentSessionService → MobBootstrapSpec → UnifiedRuntime, then a
 /// 3-member crew via mobkit/ensure_member and per-member retire/respawn.
 #[tokio::test]
-#[ignore = "blocked on meerkat ask 21c: on 0.7.21 this test DEADLOCKS (hangs forever at 0% CPU) instead of fast-failing — the #845 retire-completing archive arm calls retire_runtime_control_plane from inside the mob actor's disposal chain and wedges against the concurrent runtime-loop-stop unregister; the wedged MobActor takes the whole mob with it. Do NOT un-ignore without a per-test timeout. See docs/design/upstream-asks.md ask 21c. (Prior state, ask 21b: 0.7.20 fast-failed with archive NotFound; that NotFound still reproduces on 0.7.21 in the doctrine worker-respawn construction, so 21b is not fixed either.)"]
 async fn studio_k1_retire_respawn_succeed_on_persistent_ensure_member_crew() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let state = temp_dir.path().join("state");
@@ -729,9 +731,11 @@ comms = true
         json!({"member_id": "scratch-worker"}),
     )
     .await;
-    // Never-ran member respawn remains archive-blocked (ask 21b residue —
-    // the 0.7.20 read fix commits the document but the archive still
-    // NotFounds afterwards). Assert the ROUTING; tighten when 21b lands.
+    // Never-ran worker respawn on THIS construction still archive-NotFounds
+    // on meerkat 0.7.22 (ask 21d residue: retire_runtime_before_archive
+    // retires the runtime, yet the archive still resolves NotFound with the
+    // session left registered — unlike the classic persistent chain, which
+    // converged with ask 21c). Assert the ROUTING; tighten when 21d lands.
     assert!(
         respawn["result"].get("identity_first").is_none(),
         "worker respawn must NOT route through the identity authority: {respawn}"
@@ -740,7 +744,7 @@ comms = true
         let detail = error["data"]["detail"].as_str().unwrap_or_default();
         assert!(
             detail.contains("ArchiveSession"),
-            "the only acceptable worker-respawn failure is the ask-21b class: {respawn}"
+            "the only acceptable worker-respawn failure is the ask-21d class: {respawn}"
         );
     }
 }
