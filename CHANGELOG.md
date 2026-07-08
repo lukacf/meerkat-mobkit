@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Full WorkGraph integration (meerkat 0.7.23's goals, work items, and
+  attention bindings): a realm-scoped `WorkGraphService` per runtime with
+  the member tool surface (profile `tools.workgraph`, default off),
+  apply-time attention overlays on every mob-executor turn, the
+  `mobkit/workgraph/*` JSON-RPC group (22 methods on the unified and
+  console surfaces, `workgraph.view`/`workgraph.manage` ABAC actions,
+  capabilities and experience projection), full Python and TypeScript SDK
+  parity with typed results and conflict errors, and a conversation-native
+  inline WorkGraph card in the console chat pane (live goal/work-item tree
+  folded from agent tool calls, ABAC-gated operator actions with CAS
+  revisions) plus a WorkGraph workbench panel. A one-binding-per-target
+  admission layer (occupancy guard across create/reassign/resume on both
+  the RPC and agent tool planes, session/identity target unification,
+  cross-process serialization) protects members from upstream's
+  MultipleActiveBindings hard-fail until meerkat lands binding uniqueness
+  (upstream ask 25). Hardened by a six-round adversarial review battery
+  (64 verified findings fixed) and live-fire verified end to end.
+
+### Changed
+
+- meerkat family pinned to `=0.7.24` (from `=0.7.23`): machine-owned
+  revival of Stopped sessions + cold-load snapshot reconciliation — the
+  root fix for the 0.7.19–0.7.23 resume-strand class. Disposal-adjacent
+  suites re-verified under per-test timeouts against the new semantics.
+
 ## [0.7.29] - 2026-07-08
 
 ### Changed
