@@ -31,8 +31,8 @@ console additionally gated by `can_mutate`):
 | `mobkit/workgraph/claim` | `{id, expected_revision, owner: {kind, id, display_name?}, lease_seconds?, namespace?}` | `{item}` |
 | `mobkit/workgraph/release` | `{id, expected_revision, namespace?}` | `{item}` |
 | `mobkit/workgraph/close` | `{id, expected_revision, status?("completed" default\|"cancelled"\|"failed"), namespace?}` | `{item}` |
-| `mobkit/workgraph/block` | upstream `BlockWorkItemRequest` fields (check exact — includes id, expected_revision, blocker linkage) | `{item}` |
-| `mobkit/workgraph/link` | `{kind, from_id, to_id, namespace?}` | upstream link result |
+| `mobkit/workgraph/block` | `{id, expected_revision, namespace?}` (verified upstream: `block(realm_id, namespace, id, expected_revision)` — no blocker-linkage field; use `link` with kind=`blocks` for blocker edges) | `{item}` |
+| `mobkit/workgraph/link` | `{kind, from_id, to_id, namespace?}` | `{edge: WorkEdge}` (upstream returns a bare `WorkEdge`; mobkit wraps it) |
 | `mobkit/workgraph/evidence/add` | `{id, expected_revision, evidence: {kind, id, label?, summary?}, namespace?}` | `{item}` |
 | `mobkit/workgraph/policy/escalate` | `{binding_id, id, expected_revision, completion_policy, namespace?}` — witness (`AttentionContextProjection`) fetched SERVER-SIDE from `binding_id` | `{item}` |
 | `mobkit/workgraph/goal/create` | `{title, description?, target: {kind:"session", session_id} \| {kind:"identity", identity} \| {kind:"owner", owner_key:{kind,id}}, mode?("pursue" default), completion_policy?, delegated_authority?, namespace?}` — `identity` lowered via `lower_agent_identity_attention_target` with the runtime's mob id | `{item, attention}` |
@@ -87,7 +87,7 @@ TypeScript: same set camelCased (`workgraphSnapshot`, ...,
 Typed results both SDKs: `WorkGraphItem`, `WorkGraphEdge`,
 `WorkGraphAttentionBinding`, `WorkGraphSnapshotResult`, `WorkGraphGoalResult`
 (= item+attention), `WorkGraphAttentionReassignResult` (= previous+attention),
-`WorkGraphEventEntry`, `WorkGraphItemsResult`. Tolerant parsing (`.get()` /
+`WorkGraphEventEntry` (fields: seq, realm_id, namespace, item_id?, kind, at, payload — upstream `WorkGraphEvent`), `WorkGraphItemsResult`. Tolerant parsing (`.get()` /
 optional fields); retain `revision` fields verbatim.
 
 Builder opt-out both SDKs: Python `MobKitBuilder.workgraph(enabled: bool)`,
