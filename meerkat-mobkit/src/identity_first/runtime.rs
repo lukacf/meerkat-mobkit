@@ -2612,6 +2612,23 @@ impl IdentityRuntime {
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
     ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_with_mode_and_interaction(identity, content, handling_mode, None)
+            .await
+    }
+
+    /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
+    /// 0.7.25 ask 15 addendum). The id rides `WorkSpec` into runtime
+    /// admission, so the turn's live events and its committed transcript
+    /// messages carry the same identity the console stamped on its frames —
+    /// the exact live↔history join the console dedup needs. Only UUID-form
+    /// ids thread; others are delivered without one.
+    pub async fn send_with_mode_and_interaction(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -2716,6 +2733,7 @@ impl IdentityRuntime {
                     &content_to_deliver,
                     &injected_context,
                     handling_mode,
+                    interaction_id,
                 )
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;

@@ -959,7 +959,12 @@ async fn console_send_identity_first(
 
     if handling_mode == meerkat_core::types::HandlingMode::Steer {
         match identity_runtime
-            .send_with_mode(&identity, &content, handling_mode)
+            .send_with_mode_and_interaction(
+                &identity,
+                &content,
+                handling_mode,
+                Some(accepted.interaction_id.as_str()),
+            )
             .await
         {
             Ok(_) => {
@@ -1016,7 +1021,12 @@ async fn console_send_identity_first(
     let dispatch_accepted = accepted.clone();
     tokio::spawn(async move {
         match identity_runtime
-            .send_with_mode(&dispatch_identity, &dispatch_content, handling_mode)
+            .send_with_mode_and_interaction(
+                &dispatch_identity,
+                &dispatch_content,
+                handling_mode,
+                Some(dispatch_accepted.interaction_id.as_str()),
+            )
             .await
         {
             Ok(_) => {
@@ -5166,6 +5176,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                 if can_mutate {
                     methods
                         .extend_from_slice(crate::rpc::workgraph_methods::WORKGRAPH_MUTATE_METHODS);
+                    methods.extend_from_slice(
+                        crate::rpc::workgraph_methods::WORKGRAPH_CONSOLE_MUTATE_METHODS,
+                    );
                 }
             }
             if access.is_some() {
@@ -7850,19 +7863,20 @@ async fn handle_console_runtime_rpc_with_visibility(
         }
         method if crate::rpc::workgraph_methods::is_workgraph_method(method) => {
             // The read-only gate and the workgraph.view/manage ABAC checks
-            // already ran above; goal/confirm promotes the authenticated
-            // console principal into the trusted confirmation seam. The
-            // admission always comes from the runtime (never a parameter):
-            // whatever constructed the service, the unified stdin surface
-            // acquires the runtime's admission, so the console must acquire
-            // that same one.
-            let trusted_principal =
-                crate::rpc::workgraph_methods::console_trusted_principal(authenticated_principal);
+            // already ran above; the surface carries the authenticated
+            // console principal, which goal/confirm promotes into the
+            // trusted confirmation seam and break_glass_reassign records as
+            // the audited operator. The admission always comes from the
+            // runtime (never a parameter): whatever constructed the service,
+            // the unified stdin surface acquires the runtime's admission, so
+            // the console must acquire that same one.
             let admission = runtime.workgraph_admission();
             match crate::rpc::workgraph_methods::handle_workgraph_method(
                 workgraph,
                 &admission,
-                trusted_principal,
+                crate::rpc::workgraph_methods::WorkgraphSurface::Console {
+                    authenticated_principal,
+                },
                 method,
                 &request.params,
             )

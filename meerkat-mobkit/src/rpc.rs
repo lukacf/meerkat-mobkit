@@ -3882,7 +3882,7 @@ async fn handle_unified_rpc_json_inner(
             match workgraph_methods::handle_workgraph_method(
                 service.as_ref(),
                 &admission,
-                None,
+                workgraph_methods::WorkgraphSurface::HostStdin,
                 method,
                 &request.params,
             )

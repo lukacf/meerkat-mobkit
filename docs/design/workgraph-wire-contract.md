@@ -41,6 +41,8 @@ console additionally gated by `can_mutate`):
 | `mobkit/workgraph/attention/pause` | `{binding_id, expected_revision, until?, namespace?}` | `{attention}` |
 | `mobkit/workgraph/attention/resume` | `{binding_id, expected_revision, namespace?}` | `{attention}` |
 | `mobkit/workgraph/attention/reassign` | `{binding_id, expected_revision, target: GoalAttentionTarget-or-identity form (as goal/create), namespace?}` — witness fetched server-side | `{previous, attention}` |
+| `mobkit/workgraph/attention/prune` | `{updated_before?: RFC3339, namespace?}` — deletes TERMINAL (superseded/stopped) binding rows only; the event stream keeps the audit history (meerkat 0.7.25, ask 24) | `{pruned}` |
+| `mobkit/workgraph/attention/break_glass_reassign` | CONSOLE SURFACE ONLY. `{binding_id, expected_revision, target (as reassign), reason (required, non-empty), namespace?}` — principal is the AUTHENTICATED console principal (never a wire param; unauthenticated consoles get `-32030`); bypasses the mode-derived authority for the one unrecoverable state (binding stuck on a wedged/retired agent with no coordinator); upstream records principal+reason in the workgraph event stream + WARN log (meerkat 0.7.25, ask 23). Not present on the host stdin surface or in its capabilities catalog. | `{previous, attention}` |
 
 ## Errors
 
@@ -79,10 +81,15 @@ workgraph_release, workgraph_close, workgraph_block, workgraph_link,
 workgraph_add_evidence, workgraph_escalate_policy, workgraph_goal_create,
 workgraph_goal_confirm, workgraph_goal_request_close,
 workgraph_attention_pause, workgraph_attention_resume,
-workgraph_attention_reassign`.
+workgraph_attention_reassign, workgraph_attention_prune` (prune returns the
+pruned row count as `int`).
 
 TypeScript: same set camelCased (`workgraphSnapshot`, ...,
-`workgraphAttentionReassign`).
+`workgraphAttentionPrune`).
+
+`attention/break_glass_reassign` is deliberately NOT in either SDK: it is a
+console-operator recovery act whose principal comes from console
+authentication; the SDK stdin surface has no principal to attribute.
 
 Typed results both SDKs: `WorkGraphItem`, `WorkGraphEdge`,
 `WorkGraphAttentionBinding`, `WorkGraphSnapshotResult`, `WorkGraphGoalResult`
@@ -143,22 +150,30 @@ frames. Operator actions on the card gated by
   `attention/reassign` (the new target), and `attention/resume`: a second
   ACTIVE — or PAUSED, since pauses expire — binding whose target aliases the
   same member (session and identity forms are unified through the roster)
-  returns `-32042` naming the existing binding. Upstream
-  `MultipleActiveBindings` would otherwise hard-fail every subsequent turn
-  of that member. The same admission (`WorkGraphAdmission`) guards the agent
-  tool plane's `workgraph_attention_reassign` (conflict surfaces as a
-  `workgraph_conflict` tool error naming the occupant); the check-then-act
-  is serialized per runtime across the RPC surfaces and the tool plane, and
-  — for SQLite-backed stores, which two processes may share — cross-process
-  via a `workgraph.admission.sqlite3` sidecar lock beside the store.
+  returns `-32042` naming the existing binding. As of meerkat 0.7.25
+  (ask 25) the uniqueness invariant is OWNED UPSTREAM: the store enforces
+  at-most-one-ACTIVE-binding-per-target transactionally inside the same
+  write that mints or revives a binding, with a typed `Conflict` naming the
+  occupant (mapped to `-32042` here), and `MultipleActiveBindings` is gone —
+  legacy duplicates arbitrate newest-wins with a loud diagnostic instead of
+  hard-failing every turn. Mobkit's admission (`WorkGraphAdmission`) is now
+  DEFENSE-IN-DEPTH plus the pieces upstream does not own: session↔identity
+  target aliasing through the roster/shared-session-store (upstream
+  uniqueness keys the literal target), Paused-occupancy, and friendlier
+  pre-write conflicts on the RPC and tool planes. The check-then-act is
+  serialized per runtime, and — for SQLite-backed stores, which two
+  processes may share — cross-process via a `workgraph.admission.sqlite3`
+  sidecar lock beside the store (candidate for removal in 0.7.31 now that
+  the store owns the invariant for literal targets).
 - `goal/create`, `attention/*`, and `policy/escalate` reject non-default
   `namespace` (`-32602`) — upstream turn-overlay resolution only reads the
   service default namespace, so goals elsewhere would be silently inert.
 - `attention/reassign` is restricted by upstream's authority model to
-  COORDINATE-mode bindings at meerkat 0.7.23 (the witness's
-  `can_link_derived_from` derives from mode); other modes get a precise
-  error, and the console hides the affordance. Upstream ask filed for a
-  host-plane reassign.
+  COORDINATE-mode bindings (the witness's `can_link_derived_from` derives
+  from mode); other modes get a precise error, and the console hides the
+  affordance. The host-plane escape hatch shipped in meerkat 0.7.25 as
+  `break_glass_reassign_attention` and is exposed ONLY on the console
+  surface (see the methods table) — never to agents.
 - Upstream semantics consumers should know: `due_at` is an ELIGIBILITY time
   (claims guard-reject until `due_at <= now`), not a deadline; an
   attention-bound member turn's provider-visible tools are hard-filtered to

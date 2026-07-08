@@ -34,7 +34,8 @@
 
 use meerkat::{
     AddEvidenceRequest, AttentionListRequest, AttentionPauseRequest, AttentionProjectionRequest,
-    AttentionReassignRequest, AttentionResumeRequest, ClaimWorkItemRequest, CloseWorkItemRequest,
+    AttentionPruneRequest, AttentionReassignRequest, AttentionResumeRequest,
+    BreakGlassAttentionReassignRequest, ClaimWorkItemRequest, CloseWorkItemRequest,
     CreateWorkItemRequest, GoalAttentionTarget, GoalConfirmRequest, GoalCreateRequest,
     GoalRequestCloseRequest, GoalStatusRequest, LinkWorkItemsRequest, PolicyEscalateRequest,
     ReadyWorkFilter, ReleaseWorkItemRequest, UpdateWorkItemRequest, WorkAttentionBindingId,
@@ -76,7 +77,16 @@ pub(crate) const WORKGRAPH_MUTATE_METHODS: &[&str] = &[
     "mobkit/workgraph/attention/pause",
     "mobkit/workgraph/attention/resume",
     "mobkit/workgraph/attention/reassign",
+    "mobkit/workgraph/attention/prune",
 ];
+
+/// Console-surface-only mutating methods (ABAC `workgraph.manage` + the
+/// read-only switch, like [`WORKGRAPH_MUTATE_METHODS`]). Break-glass
+/// reassignment is an operator recovery act (upstream ask 23): its principal
+/// is the AUTHENTICATED console principal, so the method does not exist on
+/// the host stdin surface, which carries no wire principal to attribute.
+pub(crate) const WORKGRAPH_CONSOLE_MUTATE_METHODS: &[&str] =
+    &["mobkit/workgraph/attention/break_glass_reassign"];
 
 /// Whether `method` belongs to the workgraph RPC namespace (known or not).
 pub(crate) fn is_workgraph_method(method: &str) -> bool {
@@ -88,7 +98,7 @@ pub(crate) fn is_workgraph_read_method(method: &str) -> bool {
 }
 
 pub(crate) fn is_workgraph_mutating_method(method: &str) -> bool {
-    WORKGRAPH_MUTATE_METHODS.contains(&method)
+    WORKGRAPH_MUTATE_METHODS.contains(&method) || WORKGRAPH_CONSOLE_MUTATE_METHODS.contains(&method)
 }
 
 fn invalid_params(message: impl std::fmt::Display) -> JsonRpcError {
@@ -468,16 +478,42 @@ fn admission_error_to_rpc(error: WorkGraphAdmissionError) -> JsonRpcError {
 /// its gate serializes the guards' check-then-act windows — both RPC
 /// surfaces (unified stdin + console) and the agent tool plane must pass the
 /// SAME instance or concurrent creates race past the check.
+/// Which RPC surface a workgraph call arrived on. The host stdin surface is
+/// host-trusted but carries no wire principal; the console surface carries
+/// the authenticated console principal (`None` when console auth is off),
+/// which `goal/confirm` promotes into the trusted confirmation seam and
+/// `attention/break_glass_reassign` requires for audit attribution.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WorkgraphSurface<'a> {
+    HostStdin,
+    Console {
+        authenticated_principal: Option<&'a str>,
+    },
+}
+
 pub(crate) async fn handle_workgraph_method(
     service: Option<&WorkGraphService>,
     admission: &WorkGraphAdmission,
-    trusted_principal: Option<WorkOwnerKey>,
+    surface: WorkgraphSurface<'_>,
     method: &str,
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     if !is_workgraph_read_method(method) && !is_workgraph_mutating_method(method) {
         return Err(method_not_found());
     }
+    // Console-only methods do not exist on the host stdin surface (mirrors
+    // the console-methods-HTTP-only split in docs/api/rpc.mdx).
+    if WORKGRAPH_CONSOLE_MUTATE_METHODS.contains(&method)
+        && matches!(surface, WorkgraphSurface::HostStdin)
+    {
+        return Err(method_not_found());
+    }
+    let trusted_principal = match surface {
+        WorkgraphSurface::HostStdin => None,
+        WorkgraphSurface::Console {
+            authenticated_principal,
+        } => console_trusted_principal(authenticated_principal),
+    };
     let Some(service) = service else {
         return Err(workgraph_unavailable_error());
     };
@@ -827,6 +863,101 @@ pub(crate) async fn handle_workgraph_method(
                 })
                 .await
                 .map_err(|error| reassign_error_to_rpc(error, &binding_id, binding_mode))?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/attention/prune" => {
+            // Terminal-binding GC (upstream ask 24): deletes only
+            // superseded/stopped binding rows; the event stream keeps the
+            // audit history. Scope narrowing beyond this runtime's realm and
+            // default namespace is the caller's `updated_before` bound.
+            reject_non_default_namespace(service, &object)?;
+            let request: AttentionPruneRequest = parse_request(object)?;
+            let result = service
+                .prune_terminal_attention(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/attention/break_glass_reassign" => {
+            // Upstream ask 23, doctrine-reframed: the ONE host-plane recovery
+            // for a binding stuck on a wedged/retired agent with no
+            // coordinator holding authority. Console surface only (the
+            // HostStdin gate above); the principal is the authenticated
+            // console principal — never a wire parameter — and a non-empty
+            // reason is mandatory. Upstream records both in the workgraph
+            // event stream and bypasses the authority witness while keeping
+            // revision CAS, item non-terminality, and target occupancy.
+            reject_non_default_namespace(service, &object)?;
+            let WorkgraphSurface::Console {
+                authenticated_principal,
+            } = surface
+            else {
+                return Err(method_not_found());
+            };
+            let Some(principal) = authenticated_principal
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return Err(JsonRpcError {
+                    code: -32030,
+                    message: "break-glass reassignment requires an authenticated console \
+                              principal for audit attribution"
+                        .to_string(),
+                    data: Some(serde_json::json!({ "kind": "access_denied" })),
+                });
+            };
+            if object.contains_key("principal") {
+                return Err(invalid_params(
+                    "principal is not accepted; the authenticated console principal is recorded",
+                ));
+            }
+            if object.contains_key("authority_projection") {
+                return Err(invalid_params(
+                    "authority_projection is not accepted; break-glass bypasses the witness \
+                     by design and is audited instead",
+                ));
+            }
+            let binding_id = parse_binding_id(&object)?;
+            let expected_revision = parse_expected_revision(&object)?;
+            let namespace = parse_namespace(&object)?;
+            let reason = object
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| invalid_params("reason is required and must be non-empty"))?
+                .to_string();
+            let target_value = object
+                .get("target")
+                .ok_or_else(|| invalid_params("target is required"))?;
+            let target = resolve_goal_target(mob_id, target_value)?;
+            let target = admission
+                .lower_member_session_target(target)
+                .await
+                .map_err(admission_error_to_rpc)?;
+            let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
+            admission
+                .check_target_free(
+                    service,
+                    namespace.clone(),
+                    &target.to_attention_target(),
+                    Some(&binding_id),
+                    "break-glass reassigning this binding onto the same target",
+                )
+                .await
+                .map_err(admission_error_to_rpc)?;
+            let result = service
+                .break_glass_reassign_attention(BreakGlassAttentionReassignRequest {
+                    binding_id,
+                    realm_id: None,
+                    namespace,
+                    expected_revision,
+                    target,
+                    principal: principal.to_string(),
+                    reason,
+                })
+                .await
+                .map_err(workgraph_error_to_rpc)?;
             Ok(to_result_value(&result))
         }
         _ => Err(method_not_found()),

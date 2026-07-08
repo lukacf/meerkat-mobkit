@@ -37,9 +37,11 @@ agent's turn calls workgraph tools. A light workbench panel is secondary.
   identity-first bridge submits (`bridge.rs:230` submit_work lane) and schedule
   internal deliveries (`schedule_wiring.rs:591`) both ride this executor;
   mobkit's `normalize_runtime_turn_request` does NOT strip the overlay
-  (only handling_mode + render_metadata). Failure mode: `MultipleActiveBindings`
-  is a HARD per-turn error (`meerkat/src/surface.rs:96-101`) — RPC/console must
-  expose binding state for diagnosability.
+  (only handling_mode + render_metadata). Failure mode (HISTORICAL, ≤0.7.24):
+  `MultipleActiveBindings` was a HARD per-turn error — meerkat 0.7.25 (ask 25)
+  removed it (newest-binding-wins arbitration with a loud diagnostic) and
+  moved binding uniqueness into the store; mobkit's admission demotes to
+  defense-in-depth + alias unification (see workgraph-wire-contract.md).
 - Nested mobs: `MobMcpState::with_workgraph_service` (`meerkat-mob-mcp/src/lib.rs:245`)
   — thread in mobkit's `install_agent_mob_tools` so delegate/spawned child mobs inherit.
 - Schedule host: `spawn_runtime_backed_schedule_host_with_mobs(..., workgraph_service, owner_id)`

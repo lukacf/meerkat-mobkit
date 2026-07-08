@@ -1611,7 +1611,7 @@ impl MobKitConsoleAggregator {
             return Ok(accepted_from_frame(&existing));
         }
 
-        let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        let interaction_id = identity_first_interaction_uuid(&dedupe_key);
         let new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
@@ -3958,6 +3958,23 @@ fn frames_from_session_history_message_with_namespace(
             })
             .collect();
     }
+    // meerkat 0.7.25 persists `TranscriptMessageIdentity` onto committed
+    // transcript messages (ask 15 addendum). Stamping it here gives history
+    // frames the SAME interaction identity the live pipeline stamped (for
+    // identity-first sends the host-minted id round-trips through runtime
+    // admission), so the console can join live↔history twins exactly instead
+    // of by content heuristics.
+    let transcript_identity = match &parsed {
+        Message::User(user) => Some(&user.identity),
+        Message::BlockAssistant(assistant) => Some(&assistant.identity),
+        _ => None,
+    };
+    let history_interaction_id = transcript_identity
+        .and_then(|identity| identity.interaction_id.as_ref())
+        .map(|id| id.0.to_string());
+    let history_run_id = transcript_identity
+        .and_then(|identity| identity.run_id.as_ref())
+        .map(|id| id.0.to_string());
     let (kind, timestamp_ms, payload) = match &parsed {
         Message::User(user) => {
             if session_history_user_message_is_scaffold(&message) {
@@ -4019,9 +4036,9 @@ fn frames_from_session_history_message_with_namespace(
             source_cursor: Some(format!("{session_id}:{offset}")),
         },
         source_event_id: None,
-        interaction_id: None,
+        interaction_id: history_interaction_id,
         turn_id: None,
-        run_id: None,
+        run_id: history_run_id,
         parent_frame_id: None,
         caused_by_frame_id: None,
     }];
@@ -4765,6 +4782,23 @@ fn send_dedupe_key(
 fn send_request_fingerprint(origin: &str, content: &Value, handling_mode: &str) -> String {
     let content_json = serde_json::to_string(content).unwrap_or_default();
     hash_short(&format!("{origin}\n{handling_mode}\n{content_json}"))
+}
+
+/// Namespace for identity-first console interaction ids (UUIDv5 over the
+/// send's dedupe key). Deterministic: an idempotent retry mints the SAME id.
+/// UUID form is deliberate — the identity-first delivery path threads this id
+/// into meerkat runtime admission (`WorkSpec.interaction_id`, 0.7.25 ask 15
+/// addendum), so the turn's live frames and its persisted transcript messages
+/// carry one joinable identity. The classic send path keeps the legacy
+/// `console-interaction-{hash}` string: it cannot thread ids (the external
+/// work door has no interaction parameter), and the console's dedup treats
+/// only UUID-form ids as authoritative.
+const CONSOLE_INTERACTION_UUID_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x6d, 0x6f, 0x62, 0x6b, 0x69, 0x74, 0x2d, 0x63, 0x6f, 0x6e, 0x73, 0x6f, 0x6c, 0x65, 0x2d, 0x69,
+]);
+
+fn identity_first_interaction_uuid(dedupe_key: &str) -> String {
+    uuid::Uuid::new_v5(&CONSOLE_INTERACTION_UUID_NAMESPACE, dedupe_key.as_bytes()).to_string()
 }
 
 fn hash_short(value: &str) -> String {
@@ -9743,6 +9777,80 @@ comms = true
                 .all(|frame| frame.identity == "review:singleton"),
             "child initial messages must not leak into parent timeline: {:#?}",
             parent_page.frames
+        );
+    }
+
+    #[test]
+    fn session_history_frames_carry_transcript_interaction_identity() {
+        // meerkat 0.7.25 ask 15 addendum: persisted TranscriptMessageIdentity
+        // must reach the projected frames so the console can join
+        // live/history twins by id instead of content heuristics.
+        let interaction = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+        let run = "886313e1-3b8a-5372-9b90-0c9aee199e5d";
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            3,
+            json!({
+                "role": "user",
+                "content": "please ack",
+                "identity": { "interaction_id": interaction, "run_id": run },
+                "created_at": "1970-01-01T00:00:00.100Z"
+            }),
+        );
+        assert_eq!(frames.len(), 1, "{frames:#?}");
+        assert_eq!(frames[0].interaction_id.as_deref(), Some(interaction));
+        assert_eq!(frames[0].run_id.as_deref(), Some(run));
+
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            4,
+            json!({
+                "role": "block_assistant",
+                "blocks": [ { "block_type": "text", "data": { "text": "ACK" } } ],
+                "identity": { "interaction_id": interaction },
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.200Z"
+            }),
+        );
+        assert!(!frames.is_empty(), "assistant history frame expected");
+        assert_eq!(frames[0].interaction_id.as_deref(), Some(interaction));
+        assert_eq!(frames[0].run_id, None);
+
+        // Messages without a persisted identity stay unstamped (pre-0.7.25
+        // transcripts deserialize with the empty default).
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            5,
+            json!({
+                "role": "user",
+                "content": "legacy row",
+                "created_at": "1970-01-01T00:00:00.300Z"
+            }),
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].interaction_id, None);
+    }
+
+    #[test]
+    fn identity_first_interaction_ids_are_deterministic_uuids() {
+        let a = identity_first_interaction_uuid("send:key:1");
+        let b = identity_first_interaction_uuid("send:key:1");
+        let c = identity_first_interaction_uuid("send:key:2");
+        assert_eq!(a, b, "idempotent retries must mint the same id");
+        assert_ne!(a, c);
+        assert!(
+            a.parse::<uuid::Uuid>().is_ok(),
+            "identity-first interaction ids must be UUID-form (the console's \
+             authoritative twin-identity scheme): {a}"
         );
     }
 

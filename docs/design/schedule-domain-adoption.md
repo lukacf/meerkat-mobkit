@@ -1,8 +1,19 @@
 # Schedule-domain seam adoption (meerkat 0.7.25 → mobkit 0.7.30)
 
-Status: audit complete 2026-07-08; adoption work lands with the meerkat 0.7.25
-pin bump. Companion to the meerkat-side root fix for the two-writer
-schedule-binding race reported from the HomeCore deployment.
+Status: RESOLVED at the 0.7.25 pin bump (2026-07-09). The upstream fix
+shipped as meerkat #860 ("SessionRuntime arms its own schedule firing host"):
+the runtime that binds the `meerkat_schedule_*` tools now arms the firing
+host for that same store at session creation / executor attach, so
+tools-bound-but-undriven is no longer a representable topology. No composed
+"schedule domain" seam API shipped — the single-owner guarantee landed
+inside `SessionRuntime` instead, which mobkit does not use (no meerkat-rpc
+dependency). Per the audit below, mobkit's gateways already bind tools +
+host + watchdog from one `ScheduleService`, so NO mobkit code change was
+needed. Stranded-data recovery also resolves upstream: an embedder on
+0.7.25 gets a driver pointed at the previously-undriven store automatically
+(HomeCore's pending occurrences fire on their upgrade, subject to catch-up
+policy). Items 1–3 below stay as the design record; item 2's ordering
+discipline remains good hygiene for any future build path.
 
 ## The upstream defect pair (context)
 

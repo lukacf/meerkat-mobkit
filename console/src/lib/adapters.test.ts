@@ -8022,3 +8022,114 @@ test("createWorkGraphHydrationGate tracks identities independently", () => {
   );
   assert.equal(gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }), false);
 });
+
+// ---------------------------------------------------------------------------
+// meerkat 0.7.25 ask 15: UUID interaction ids are authoritative twin identity
+// ---------------------------------------------------------------------------
+
+const UUID_A = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+const UUID_B = "886313e1-3b8a-5372-9b90-0c9aee199e5d";
+
+function entryVisibleTestText(entry: unknown): string {
+  const record = entry as { text?: unknown; blocks?: unknown };
+  if (typeof record.text === "string") return record.text;
+  if (Array.isArray(record.blocks)) {
+    return record.blocks
+      .map((block) => (typeof (block as { text?: unknown }).text === "string"
+        ? (block as { text: string }).text
+        : ""))
+      .join(" ");
+  }
+  return "";
+}
+
+test("history twin of a live terminal frame is dropped by interaction id even when texts drift", () => {
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      {
+        id: "live-terminal",
+        event: "interaction_complete",
+        interactionId: UUID_A,
+        timestampMs: 1000,
+        data: { text: "Done.", result: "Done." },
+      },
+      {
+        id: "history-twin",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        interactionId: UUID_A,
+        timestampMs: 900_000,
+        data: {
+          // Persisted rendering can differ from the live text (whitespace,
+          // scaffold stripping) — the id join must not depend on it.
+          text: "Done.\n",
+          result: "Done.\n",
+          source_event_type: "session_history",
+        },
+      },
+    ],
+  );
+  const doneEntries = entries.filter((e) => entryVisibleTestText(e).includes("Done."));
+  assert.equal(doneEntries.length, 1, JSON.stringify(entries, null, 2));
+});
+
+test("identical repeated replies from DISTINCT interactions both render (over-cull fix)", () => {
+  // The over-cull class: an agent legitimately answers two different
+  // interactions with the same text. The content+time heuristic used to
+  // collapse the second reply; differing UUID interaction ids now veto it.
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      {
+        id: "live-first",
+        event: "interaction_complete",
+        interactionId: UUID_A,
+        timestampMs: 1000,
+        data: { text: "ACK", result: "ACK" },
+      },
+      {
+        id: "live-second",
+        event: "interaction_complete",
+        interactionId: UUID_B,
+        timestampMs: 2000,
+        data: { text: "ACK", result: "ACK" },
+      },
+    ],
+  );
+  const ackEntries = entries.filter((e) => entryVisibleTestText(e).includes("ACK"));
+  assert.equal(ackEntries.length, 2, JSON.stringify(entries, null, 2));
+});
+
+test("legacy console-interaction ids keep the text heuristic (same interaction, mixed schemes)", () => {
+  // Classic (non-identity-first) sends: the live frame carries a legacy
+  // reservation id, the history frame carries meerkat's UUID — the SAME
+  // interaction under two id schemes. Mixed schemes must fall back to the
+  // text heuristic, not read the id mismatch as two interactions.
+  const entries = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      {
+        id: "live-terminal",
+        event: "interaction_complete",
+        interactionId: "console-interaction-abc123",
+        timestampMs: 1000,
+        data: { text: "Same reply.", result: "Same reply." },
+      },
+      {
+        id: "history-twin",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        interactionId: UUID_B,
+        timestampMs: 1500,
+        data: {
+          text: "Same reply.",
+          result: "Same reply.",
+          source_event_type: "session_history",
+        },
+      },
+    ],
+  );
+  const replyEntries = entries.filter((e) => entryVisibleTestText(e).includes("Same reply."));
+  assert.equal(replyEntries.length, 1, JSON.stringify(entries, null, 2));
+});

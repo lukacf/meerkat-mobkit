@@ -43,6 +43,11 @@ interface ConversationTimelineEntryBase {
   identity: ConversationIdentity;
   createdAt?: string;
   copyText?: string;
+  /** Source frame's interaction id. UUID-form ids are authoritative for
+   * live/history twin identity (mobkit 0.7.30, meerkat ask 15 addendum);
+   * legacy `console-interaction-*` strings are not comparable across
+   * live/history sources. */
+  interactionId?: string;
 }
 
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
