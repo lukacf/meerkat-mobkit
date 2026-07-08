@@ -1165,3 +1165,28 @@ facility for terminal (Superseded/Stopped) bindings, mirroring the ask-2
 memory-store lifecycle shape. mobkit interim: realm+status-filtered list
 calls (upstream still decodes every row) and an actionable lock-timeout
 error.
+
+## Ask 25 — attention-binding uniqueness belongs in the service/store (or arbitrate like sessions) — P1
+
+`MultipleActiveBindings` is a HARD per-turn error (0.7.23
+meerkat/src/surface.rs:209): two active bindings matching one member's
+turns brick that member until an operator intervenes. But nothing upstream
+prevents the state: no store-level uniqueness constraint, and
+`create_goal` / `reassign_attention` / `resume_attention` all mint
+duplicates freely. mobkit 0.7.30 compensates with a host-layer admission
+guard (occupancy check + per-runtime gate + cross-process SQLite sidecar +
+write-time target normalization + session-metadata fallback) — five
+review rounds of hardening for an invariant that can only be enforced
+race-free next to the data. Residual holes remain by construction
+(meerkat-CLI writes to a shared store bypass any host guard).
+
+Ask, either (both is best):
+1. Service/store-level uniqueness — active-binding-per-target enforced
+   transactionally at create/reassign/resume (typed conflict naming the
+   occupant), so hosts get the invariant instead of building it.
+2. Degrade the overlay failure the way 0.7.23 degraded session
+   arbitration (newest-session-wins): MultipleActiveBindings resolves
+   deterministically (e.g. newest-binding-wins) with a loud diagnostic,
+   instead of hard-failing every turn.
+
+When either lands, mobkit's admission layer demotes to defense-in-depth.
