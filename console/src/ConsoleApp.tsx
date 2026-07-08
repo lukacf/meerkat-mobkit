@@ -103,7 +103,13 @@ import {
   type MemoryRecordDetail,
 } from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
-import { WorkGraphPanel, type WorkGraphPanelData } from "./panels/WorkGraphPanel";
+import {
+  WorkGraphPanel,
+  createWorkGraphRefreshSequencer,
+  workGraphEventsNewestFirst,
+  workGraphEventsParams,
+  type WorkGraphPanelData,
+} from "./panels/WorkGraphPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
@@ -2295,8 +2301,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
 
+  // Overlapping refreshes (debounced live signals, manual refresh, post-
+  // mutation re-reads) can resolve out of order — sequence them so a stale
+  // snapshot never overwrites a fresher one.
+  const workGraphRefreshSequencerRef = React.useRef(createWorkGraphRefreshSequencer());
   const refreshWorkGraphData = React.useCallback(async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
+    const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
       let snapshot: WorkGraphSnapshotResult | null = null;
       let denied = false;
@@ -2313,17 +2324,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       let events: WorkGraphWireEvent[] = [];
       if (!denied) {
         try {
+          // Page the tail from the snapshot's high-water mark: upstream
+          // returns events ASCENDING truncated to limit, so a bare {limit}
+          // query would freeze on the oldest window forever.
           const eventsResult = (await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES.workgraphEvents,
             workGraphTarget,
-            { limit: 50 },
+            workGraphEventsParams(snapshot?.event_high_water_mark, 50),
           )) as WorkGraphEventsResult | null;
-          events = eventsResult?.events || [];
+          events = workGraphEventsNewestFirst(eventsResult?.events || []);
         } catch (err) {
           // The events tail is optional; a denied ledger leaves it empty.
           if (jsonRpcErrorCode(err) !== -32030) throw err;
         }
       }
+      if (!isCurrent()) return;
       setWorkGraphData({
         items: snapshot?.items || [],
         edges: snapshot?.edges || [],
@@ -2335,6 +2350,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         error: null,
       });
     } catch (err) {
+      if (!isCurrent()) return;
       // -32601 (method absent) and -32041 (workgraph_unavailable) both mean
       // no WorkGraph service on this runtime; so does a missing capability
       // advertisement (the headless layer throws before dispatch).

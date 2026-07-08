@@ -150,6 +150,10 @@ export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBas
   items: ConversationWorkGraphItemRow[];
   attention: ConversationWorkGraphAttentionRow[];
   recentEvents?: string[];
+  // True when the most recent workgraph tool call folded into this card
+  // failed — the card shows a subtle failure indicator (failures never
+  // resurrect generic tool rows).
+  lastActionFailed?: boolean;
   lastUpdatedAt?: string;
 }
 

@@ -93,20 +93,40 @@ pub(crate) fn workgraph_unavailable_error() -> JsonRpcError {
     }
 }
 
-/// Map a WorkGraph domain error onto the wire taxonomy: CAS conflicts get
-/// the typed conflict code, domain-level input rejections read as invalid
-/// params, everything else is a workgraph error with full detail.
+/// Upstream `validate_workgraph_attention_projection_current` spells a stale
+/// authority witness as a generic `InvalidTransition` with this message
+/// prefix (meerkat 0.7.23, meerkat-workgraph/src/tool_surface.rs). The
+/// variant carries no structure to match on, so the prefix is pinned by
+/// `stale_attention_witness_maps_to_conflict`.
+const STALE_ATTENTION_WITNESS_PREFIX: &str = "stale WorkGraph attention projection";
+
+fn workgraph_conflict(detail: String) -> JsonRpcError {
+    JsonRpcError {
+        code: WORKGRAPH_CONFLICT_CODE,
+        message: format!("workgraph conflict: {detail}"),
+        data: Some(serde_json::json!({
+            "kind": "workgraph_conflict",
+            "detail": detail,
+        })),
+    }
+}
+
+/// Map a WorkGraph domain error onto the wire taxonomy: CAS conflicts and
+/// stale authority witnesses (a retryable race — the binding or item moved
+/// between witness fetch and use) get the typed conflict code, domain-level
+/// input rejections read as invalid params, everything else is a workgraph
+/// error with full detail.
 fn workgraph_error_to_rpc(error: WorkGraphError) -> JsonRpcError {
     let detail = error.to_string();
     match error {
-        WorkGraphError::StaleRevision { .. } | WorkGraphError::Conflict(_) => JsonRpcError {
-            code: WORKGRAPH_CONFLICT_CODE,
-            message: format!("workgraph conflict: {detail}"),
-            data: Some(serde_json::json!({
-                "kind": "workgraph_conflict",
-                "detail": detail,
-            })),
-        },
+        WorkGraphError::StaleRevision { .. } | WorkGraphError::Conflict(_) => {
+            workgraph_conflict(detail)
+        }
+        WorkGraphError::InvalidTransition(ref message)
+            if message.starts_with(STALE_ATTENTION_WITNESS_PREFIX) =>
+        {
+            workgraph_conflict(detail)
+        }
         WorkGraphError::InvalidInput(_) => invalid_params(detail),
         _ => JsonRpcError {
             code: WORKGRAPH_ERROR_CODE,
@@ -288,6 +308,84 @@ async fn fetch_authority_projection(
         .await
         .map_err(workgraph_error_to_rpc)?;
     Ok(result.projection)
+}
+
+/// `attention/reassign` demands `can_link_derived_from`, which the authority
+/// machine derives only for coordinate-mode bindings — so for every other
+/// mode the server-side witness ALWAYS fails the upstream authority check,
+/// as a generic `InvalidInput`. Name the binding's mode and the restriction
+/// so the caller learns why instead of retrying a request that can never
+/// succeed. Everything else keeps the standard taxonomy.
+fn reassign_error_to_rpc(
+    error: WorkGraphError,
+    binding_id: &WorkAttentionBindingId,
+    mode: meerkat::WorkAttentionMode,
+) -> JsonRpcError {
+    match &error {
+        WorkGraphError::InvalidInput(message)
+            if message.contains("requires derived_from link authority") =>
+        {
+            let mode = serde_json::to_value(mode)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{mode:?}"));
+            let detail = format!(
+                "attention binding {binding_id} is in '{mode}' mode; meerkat 0.7.23 derives the \
+                 derived_from link authority reassignment requires only for coordinate-mode \
+                 bindings — pause the binding or recreate the goal with mode 'coordinate'",
+            );
+            JsonRpcError {
+                code: WORKGRAPH_ERROR_CODE,
+                message: format!("workgraph attention reassignment denied: {detail}"),
+                data: Some(serde_json::json!({
+                    "kind": "workgraph_error",
+                    "detail": detail,
+                })),
+            }
+        }
+        _ => workgraph_error_to_rpc(error),
+    }
+}
+
+/// Reject a `goal/create` whose lowered target already has an ACTIVE
+/// attention binding. Upstream happily creates the second binding, but then
+/// every scoped turn of that member is a hard `MultipleActiveBindings` error
+/// (meerkat 0.7.23, meerkat/src/surface.rs) until an operator intervenes —
+/// a bricked member. Surface the conflict at creation time instead.
+async fn reject_duplicate_active_binding(
+    service: &WorkGraphService,
+    request: &GoalCreateRequest,
+) -> Result<(), JsonRpcError> {
+    // Compare lowered owner keys, not raw target forms: a session target and
+    // its lowered-owner spelling address the same member.
+    let desired_key = request
+        .target
+        .to_attention_target()
+        .owner_key()
+        .map_err(workgraph_error_to_rpc)?;
+    let active = service
+        .list_attention(AttentionListRequest {
+            realm_id: None,
+            namespace: request.namespace.clone(),
+            target: None,
+            status: Some(meerkat::WorkAttentionStatus::Active),
+        })
+        .await
+        .map_err(workgraph_error_to_rpc)?;
+    let Some(existing) = active.attention.iter().find(|binding| {
+        binding
+            .target
+            .owner_key()
+            .is_ok_and(|key| key == desired_key)
+    }) else {
+        return Ok(());
+    };
+    Err(workgraph_conflict(format!(
+        "target '{}' already has an active attention binding {}; pause or reassign it before \
+         creating another goal for the same target",
+        desired_key.canonical(),
+        existing.binding_id,
+    )))
 }
 
 /// Dispatch one `mobkit/workgraph/*` request against `service`.
@@ -517,6 +615,7 @@ pub(crate) async fn handle_workgraph_method(
             let target = resolve_goal_target(mob_id, &target_value)?;
             object.insert("target".to_string(), to_result_value(&target));
             let request: GoalCreateRequest = parse_request(object)?;
+            reject_duplicate_active_binding(service, &request).await?;
             let result = service
                 .create_goal(request)
                 .await
@@ -599,9 +698,10 @@ pub(crate) async fn handle_workgraph_method(
             let target = resolve_goal_target(mob_id, target_value)?;
             let projection =
                 fetch_authority_projection(service, binding_id.clone(), namespace.clone()).await?;
+            let binding_mode = projection.mode;
             let result = service
                 .reassign_attention(AttentionReassignRequest {
-                    binding_id,
+                    binding_id: binding_id.clone(),
                     realm_id: None,
                     namespace,
                     expected_revision,
@@ -609,7 +709,7 @@ pub(crate) async fn handle_workgraph_method(
                     target,
                 })
                 .await
-                .map_err(workgraph_error_to_rpc)?;
+                .map_err(|error| reassign_error_to_rpc(error, &binding_id, binding_mode))?;
             Ok(to_result_value(&result))
         }
         _ => Err(method_not_found()),
@@ -705,5 +805,94 @@ mod tests {
         assert!(console_trusted_principal(Some("   ")).is_none());
         let key = console_trusted_principal(Some("alice@example.test")).expect("principal key");
         assert_eq!(key.canonical(), "principal:alice@example.test");
+    }
+
+    /// Adversarial finding F12: a witness that goes stale between fetch and
+    /// use (the item moved underneath) must surface as the retryable -32042
+    /// conflict, not the generic -32000. Drives the real service so the
+    /// upstream `InvalidTransition` spelling the message-guard matches on
+    /// stays pinned.
+    #[tokio::test]
+    async fn stale_attention_witness_maps_to_conflict() {
+        use meerkat::{
+            AttentionProjectionRequest, GoalAttentionTarget, GoalCreateRequest,
+            PolicyEscalateRequest, UpdateWorkItemRequest, WorkCompletionPolicy,
+        };
+
+        let service = crate::workgraph_wiring::ephemeral_workgraph_service("stale-realm");
+        let goal = service
+            .create_goal(GoalCreateRequest {
+                realm_id: None,
+                namespace: None,
+                title: "goes stale".to_string(),
+                description: None,
+                target: GoalAttentionTarget::Owner {
+                    owner_key: WorkOwnerKey::principal("operator@example.test").expect("key"),
+                },
+                mode: Default::default(),
+                completion_policy: Default::default(),
+                delegated_authority: Default::default(),
+                projection_policy: Default::default(),
+            })
+            .await
+            .expect("create goal");
+        let stale_witness = service
+            .attention_projection(AttentionProjectionRequest {
+                binding_id: goal.attention.binding_id.clone(),
+                realm_id: None,
+                namespace: None,
+            })
+            .await
+            .expect("attention projection")
+            .projection;
+        // Bump the item revision underneath the witness.
+        let bumped = service
+            .update(UpdateWorkItemRequest {
+                id: goal.item.id.clone(),
+                realm_id: None,
+                namespace: None,
+                expected_revision: goal.item.revision,
+                title: Some("moved underneath".to_string()),
+                description: None,
+                priority: None,
+                completion_policy: None,
+                labels: None,
+                due_at: None,
+                not_before: None,
+                snoozed_until: None,
+                external_refs: Vec::new(),
+            })
+            .await
+            .expect("bump item revision");
+        let error = service
+            .escalate_policy(PolicyEscalateRequest {
+                id: goal.item.id.clone(),
+                realm_id: None,
+                namespace: None,
+                expected_revision: bumped.revision,
+                authority_projection: stale_witness,
+                completion_policy: WorkCompletionPolicy::HostConfirmed,
+            })
+            .await
+            .expect_err("a stale witness must be rejected");
+        assert!(
+            matches!(&error, WorkGraphError::InvalidTransition(message)
+                if message.starts_with(STALE_ATTENTION_WITNESS_PREFIX)),
+            "pins the upstream stale-witness spelling: {error}"
+        );
+
+        let rpc_error = workgraph_error_to_rpc(error);
+        assert_eq!(rpc_error.code, WORKGRAPH_CONFLICT_CODE, "{rpc_error:?}");
+        assert_eq!(
+            rpc_error.data.as_ref().unwrap()["kind"],
+            serde_json::json!("workgraph_conflict")
+        );
+        assert!(
+            rpc_error.data.as_ref().unwrap()["detail"]
+                .as_str()
+                .unwrap()
+                .contains(STALE_ATTENTION_WITNESS_PREFIX),
+            "{rpc_error:?}"
+        );
     }
 }

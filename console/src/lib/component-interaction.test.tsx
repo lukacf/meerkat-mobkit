@@ -5,9 +5,11 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
-import { ConsoleActivityRail } from "@console-components";
+import type { ConversationWorkGraphEntry } from "@console-core";
+import { ConsoleActivityRail, WorkGraphCard } from "@console-components";
 import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
+import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
 test("ConsoleActivityRail wires roster panel actions to host callbacks", async () => {
@@ -283,6 +285,194 @@ test("MemoryLiveStrip pause-on-scroll freezes, jump-to-live resumes, top auto-un
     render([frame("f-4"), ...second]);
     assert.ok(query("[data-testid='memory-live-row:f-4']"), "auto-unfrozen at top");
     assert.equal(query("[data-testid='memory-live-jump']"), null);
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard actions carry the right CAS token per class: goal actions the item revision, attention actions the binding revision", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:goal-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "goal-1",
+    title: "Release 0.7.30",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [
+      { itemId: "goal-1", title: "Release 0.7.30", status: "in_progress", revision: 4, depth: 0 },
+    ],
+    attention: [
+      // Binding machine revision 7 vs bound goal item revision 4 — the two
+      // CAS classes must not leak into each other.
+      { bindingId: "b-coord", mode: "coordinate", statusLabel: "active", revision: 7, itemId: "goal-1" },
+      { bindingId: "b-pursue", mode: "pursue", statusLabel: "active", revision: 9, itemId: "goal-1" },
+    ],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphCard
+          entry={entry}
+          actions={{
+            onGoalConfirm: record("confirm"),
+            onGoalRequestClose: record("request-close"),
+            onAttentionPause: record("pause"),
+            onAttentionResume: record("resume"),
+            onAttentionReassign: record("reassign"),
+          }}
+        />,
+      );
+    });
+
+    const click = (testId: string) => {
+      const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+      assert.ok(button, `expected button ${testId}`);
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    };
+    click("workgraph-attention:b-coord:confirm");
+    click("workgraph-attention:b-coord:request-close");
+    click("workgraph-attention:b-coord:pause");
+    click("workgraph-attention:b-coord:reassign");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "request-close", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "pause", input: { bindingId: "b-coord", revision: 7 } },
+      { action: "reassign", input: { bindingId: "b-coord", revision: 7 } },
+    ]);
+
+    // Reassign is coordinate-only (upstream derives the authority from the
+    // binding mode); pursue bindings render no reassign affordance.
+    assert.equal(
+      dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:reassign']"),
+      null,
+    );
+    assert.ok(dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:pause']"));
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphPanel attention actions split CAS tokens the same way and gate reassign to coordinate mode", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const data: WorkGraphPanelData = {
+    items: [
+      { id: "goal-1", title: "Release 0.7.30", status: "in_progress", revision: 4, created_at: "2026-07-08T08:00:00Z" },
+    ],
+    edges: [],
+    attention: [
+      {
+        binding_id: "b-coord",
+        work_ref: { item_id: "goal-1" },
+        mode: "coordinate",
+        status: { state: "active" },
+        machine_state: { revision: 7 },
+      },
+      {
+        binding_id: "b-pursue",
+        work_ref: { item_id: "goal-1" },
+        mode: "pursue",
+        status: { state: "active" },
+        machine_state: { revision: 9 },
+      },
+    ],
+    events: [],
+    capturedAt: "2026-07-08T09:00:00Z",
+    unavailable: false,
+    denied: false,
+    error: null,
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphPanel
+          data={data}
+          canManage
+          onRefresh={() => undefined}
+          onGoalConfirm={record("confirm")}
+          onGoalRequestClose={record("request-close")}
+          onAttentionPause={record("pause")}
+          onAttentionResume={record("resume")}
+          onAttentionReassign={record("reassign")}
+        />,
+      );
+    });
+
+    const bindingRow = (bindingId: string) => {
+      const row = dom.window.document.querySelector(`[data-testid='workgraph-panel-binding:${bindingId}']`);
+      assert.ok(row, `expected binding row ${bindingId}`);
+      return row;
+    };
+    const clickByLabel = (row: Element, label: string) => {
+      const button = [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+      assert.ok(button, `expected "${label}" button`);
+      // flushSync so state updates (the reassign popover) commit before the
+      // next query.
+      flushSync(() => {
+        button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      });
+    };
+
+    const coordRow = bindingRow("b-coord");
+    clickByLabel(coordRow, "Confirm");
+    clickByLabel(coordRow, "Request close");
+    clickByLabel(coordRow, "Pause");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "request-close", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "pause", input: { bindingId: "b-coord", revision: 7 } },
+    ]);
+
+    // Reassign renders only on the coordinate binding (upstream derives the
+    // authority from the binding mode).
+    const pursueRow = bindingRow("b-pursue");
+    assert.equal(
+      [...pursueRow.querySelectorAll("button")].some((candidate) => candidate.textContent === "Reassign"),
+      false,
+      "pursue bindings expose no reassign affordance",
+    );
+    clickByLabel(coordRow, "Reassign");
+    const input = dom.window.document.querySelector("[data-testid='workgraph-panel-reassign-input:b-coord']");
+    assert.ok(input, "reassign popover opens for coordinate bindings");
+    const submit = dom.window.document.querySelector(
+      "[data-testid='workgraph-panel-reassign-submit:b-coord']",
+    ) as HTMLButtonElement | null;
+    assert.ok(submit);
+    assert.equal(submit.disabled, true, "submit stays disabled until an identity is typed");
+    // A disabled submit never fires the callback.
+    flushSync(() => {
+      submit.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.equal(calls.some((call) => call.action === "reassign"), false);
   } finally {
     root.unmount();
     globalThis.window = previousWindow;

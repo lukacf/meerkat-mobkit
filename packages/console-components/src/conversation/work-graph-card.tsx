@@ -29,7 +29,10 @@ const ITEM_STATUS_LABEL: Record<string, string> = {
 // Operator action callbacks. Buttons render only for callbacks that are
 // provided (the undefined-handler convention) — a read-only console passes
 // no actions and gets a purely observational card. Every payload carries the
-// latest observed revision: mutations are CAS-guarded upstream.
+// latest observed revision: mutations are CAS-guarded upstream. Two CAS
+// classes: goal actions (confirm / request-close) CAS against the goal WORK
+// ITEM's revision; attention actions (pause / resume / reassign) CAS against
+// the binding's machine revision.
 export interface WorkGraphCardActions {
   onClaim?: (input: { itemId: string; revision: number }) => void;
   onClose?: (input: { itemId: string; revision: number }) => void;
@@ -180,12 +183,17 @@ function attentionIsActive(row: ConversationWorkGraphAttentionRow): boolean {
 
 function AttentionRow({
   row,
+  goalRevision,
   actions,
 }: {
   row: ConversationWorkGraphAttentionRow;
+  // Latest observed revision of the bound goal WORK ITEM — goal confirm /
+  // request-close CAS against it, not against the binding revision.
+  goalRevision?: number;
   actions?: WorkGraphCardActions | null;
 }) {
-  const input = { bindingId: row.bindingId, revision: row.revision };
+  const bindingInput = { bindingId: row.bindingId, revision: row.revision };
+  const goalInput = { bindingId: row.bindingId, revision: goalRevision };
   const live = attentionIsActive(row) || attentionIsPaused(row);
   const buttons: Array<{ key: string; label: string; title: string; onClick: () => void }> = [];
   if (actions?.onAttentionPause && attentionIsActive(row)) {
@@ -193,7 +201,7 @@ function AttentionRow({
       key: "pause",
       label: "Pause",
       title: "Pause this attention binding",
-      onClick: () => actions.onAttentionPause?.(input),
+      onClick: () => actions.onAttentionPause?.(bindingInput),
     });
   }
   if (actions?.onAttentionResume && attentionIsPaused(row)) {
@@ -201,7 +209,7 @@ function AttentionRow({
       key: "resume",
       label: "Resume",
       title: "Resume this attention binding",
-      onClick: () => actions.onAttentionResume?.(input),
+      onClick: () => actions.onAttentionResume?.(bindingInput),
     });
   }
   if (actions?.onGoalConfirm && live) {
@@ -209,7 +217,7 @@ function AttentionRow({
       key: "confirm",
       label: "Confirm",
       title: "Confirm goal completion",
-      onClick: () => actions.onGoalConfirm?.(input),
+      onClick: () => actions.onGoalConfirm?.(goalInput),
     });
   }
   if (actions?.onGoalRequestClose && live) {
@@ -217,15 +225,17 @@ function AttentionRow({
       key: "request-close",
       label: "Request close",
       title: "Request goal closure",
-      onClick: () => actions.onGoalRequestClose?.(input),
+      onClick: () => actions.onGoalRequestClose?.(goalInput),
     });
   }
-  if (actions?.onAttentionReassign && live) {
+  // Reassign authority is machine-derived from the binding mode upstream:
+  // only coordinate-mode bindings can reassign, so others get no affordance.
+  if (actions?.onAttentionReassign && live && row.mode === "coordinate") {
     buttons.push({
       key: "reassign",
       label: "Reassign",
       title: "Reassign this attention binding",
-      onClick: () => actions.onAttentionReassign?.(input),
+      onClick: () => actions.onAttentionReassign?.(bindingInput),
     });
   }
 
@@ -274,6 +284,13 @@ export function WorkGraphCard({
   const hasBody = entry.items.length > 0
     || entry.attention.length > 0
     || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
+  // Goal actions CAS against the goal work item, not the binding: resolve
+  // each binding's bound item revision (falling back to the card root).
+  const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
+  const goalRevisionFor = (row: ConversationWorkGraphAttentionRow): number | undefined => (
+    (row.itemId != null ? revisionByItemId.get(row.itemId) : undefined)
+      ?? revisionByItemId.get(entry.rootId)
+  );
 
   return (
     <section
@@ -310,6 +327,15 @@ export function WorkGraphCard({
           {entry.status === "active" ? <span className="cc-work-graph__pulse" aria-hidden="true" /> : null}
           {CARD_STATUS_LABEL[entry.status]}
         </span>
+        {entry.lastActionFailed ? (
+          <span
+            className="cc-work-graph__last-failed"
+            title="The last WorkGraph action failed"
+            data-testid={`workgraph-card:${entry.rootId}:last-action-failed`}
+          >
+            ✗
+          </span>
+        ) : null}
         {hasBody ? (
           <button
             type="button"
@@ -333,7 +359,12 @@ export function WorkGraphCard({
       {!collapsed && entry.attention.length > 0 ? (
         <ul className="cc-work-graph__attention">
           {entry.attention.map((row) => (
-            <AttentionRow key={row.bindingId} row={row} actions={actions} />
+            <AttentionRow
+              key={row.bindingId}
+              row={row}
+              goalRevision={goalRevisionFor(row)}
+              actions={actions}
+            />
           ))}
         </ul>
       ) : null}

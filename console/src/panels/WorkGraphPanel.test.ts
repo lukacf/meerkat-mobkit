@@ -10,6 +10,10 @@ const {
   workGraphBindingTargetLabel,
   workGraphEventLine,
   workGraphOwnerLabelOf,
+  workGraphGoalRevisionOf,
+  workGraphEventsParams,
+  workGraphEventsNewestFirst,
+  createWorkGraphRefreshSequencer,
 } = __workGraphPanelTest;
 
 function item(id: string, createdAt: string, extra: Partial<WorkGraphWireItem> = {}): WorkGraphWireItem {
@@ -99,6 +103,58 @@ test("workgraph event lines render timestamp, kind, and item id compactly", () =
     "2026-07-08 09:15 · item claimed · item-1",
   );
   assert.equal(workGraphEventLine({}), "event");
+});
+
+test("workgraph goal revision resolves the binding's bound work item, not the binding machine", () => {
+  const items: WorkGraphWireItem[] = [
+    item("goal-1", "2026-07-08T08:00:00Z", { revision: 4 }),
+    item("child-1", "2026-07-08T08:10:00Z", { revision: 2 }),
+  ];
+  const binding: WorkGraphWireBinding = {
+    binding_id: "attention-1",
+    work_ref: { item_id: "goal-1" },
+    machine_state: { revision: 7 },
+  };
+  assert.equal(workGraphGoalRevisionOf(binding, items), 4);
+  // Unknown bound item / missing work_ref: no token (the action falls back
+  // to 0 and surfaces the CAS conflict rather than silently guessing).
+  assert.equal(
+    workGraphGoalRevisionOf({ binding_id: "b", work_ref: { item_id: "gone" } }, items),
+    undefined,
+  );
+  assert.equal(workGraphGoalRevisionOf({ binding_id: "b" }, items), undefined);
+});
+
+test("workgraph events params page from the snapshot high-water mark so the tail never freezes", () => {
+  // Upstream returns ASCENDING truncated to limit: a bare {limit} query pins
+  // the oldest window once the ledger outgrows it.
+  assert.deepEqual(workGraphEventsParams(137, 50), { limit: 50, after_seq: 87 });
+  assert.deepEqual(workGraphEventsParams(50, 50), { limit: 50, after_seq: 0 });
+  assert.deepEqual(workGraphEventsParams(12, 50), { limit: 50, after_seq: 0 });
+  // Fresh store (null mark) and older runtimes (absent mark) fall back to
+  // the bare query.
+  assert.deepEqual(workGraphEventsParams(null, 50), { limit: 50 });
+  assert.deepEqual(workGraphEventsParams(undefined, 50), { limit: 50 });
+});
+
+test("workgraph events render newest-first without mutating the wire order", () => {
+  const ascending = [{ seq: 1, kind: "a" }, { seq: 2, kind: "b" }, { seq: 3, kind: "c" }];
+  const rendered = workGraphEventsNewestFirst(ascending);
+  assert.deepEqual(rendered.map((event) => event.seq), [3, 2, 1]);
+  assert.deepEqual(ascending.map((event) => event.seq), [1, 2, 3]);
+  assert.deepEqual(workGraphEventsNewestFirst([]), []);
+});
+
+test("workgraph refresh sequencer invalidates stale refreshes the moment a newer one begins", () => {
+  const sequencer = createWorkGraphRefreshSequencer();
+  const first = sequencer.begin();
+  assert.equal(first(), true);
+  const second = sequencer.begin();
+  assert.equal(first(), false, "an older refresh must not overwrite a newer one");
+  assert.equal(second(), true);
+  const third = sequencer.begin();
+  assert.equal(second(), false);
+  assert.equal(third(), true);
 });
 
 test("workgraph owner labels prefer display names, then key ids, then claim owners", () => {

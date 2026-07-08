@@ -86,6 +86,14 @@ pub fn install_workgraph_tools(builder: &FactoryAgentBuilder, service: &WorkGrap
 /// definition id) and one namespace: mechanism owns scope, agents don't
 /// wander realms. Pinning uniformly on reads AND writes keeps the agent's
 /// view self-consistent whatever values it invents.
+///
+/// Both dispatch entry points are overridden: the trait-default
+/// `dispatch_with_context` funnels through `dispatch`, which would DROP the
+/// `ToolDispatchContext` carrying the attention-projection witness
+/// (`WORKGRAPH_ATTENTION_DISPATCH_CONTEXT_KEY`) — silently bypassing every
+/// attention-scoped enforcement in the inner surface and permanently denying
+/// `workgraph_policy_escalate`/`workgraph_attention_reassign` to
+/// legitimately-delegated agents.
 struct ScopePinnedWorkGraphTools {
     inner: Arc<WorkGraphToolSurface>,
     realm_id: String,
@@ -100,20 +108,16 @@ impl ScopePinnedWorkGraphTools {
             namespace: service.default_namespace().as_str().to_string(),
         }
     }
-}
 
-#[async_trait::async_trait]
-impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
-    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
-        self.inner.tools()
-    }
-
-    async fn dispatch(
+    /// Re-encode a `workgraph_*` call's arguments with the service scope
+    /// pinned; `None` means the call is not a workgraph tool and must be
+    /// forwarded unchanged.
+    fn pin_args(
         &self,
-        call: meerkat_core::types::ToolCallView<'_>,
-    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        call: &meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<Option<Box<serde_json::value::RawValue>>, meerkat_core::ToolError> {
         if !call.name.starts_with("workgraph_") {
-            return self.inner.dispatch(call).await;
+            return Ok(None);
         }
         let mut args: serde_json::Value =
             serde_json::from_str(call.args.get()).map_err(|error| {
@@ -134,19 +138,56 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
             // A pinned namespace makes cross-namespace reads meaningless.
             object.remove("all_namespaces");
         }
-        let pinned =
-            serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+        serde_json::value::RawValue::from_string(args.to_string())
+            .map(Some)
+            .map_err(|error| {
                 meerkat_core::ToolError::invalid_arguments(
                     call.name,
                     format!("failed to encode pinned workgraph arguments: {error}"),
                 )
-            })?;
+            })
+    }
+}
+
+#[async_trait::async_trait]
+impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let Some(pinned) = self.pin_args(&call)? else {
+            return self.inner.dispatch(call).await;
+        };
         self.inner
             .dispatch(meerkat_core::types::ToolCallView {
                 id: call.id,
                 name: call.name,
                 args: &pinned,
             })
+            .await
+    }
+
+    async fn dispatch_with_context(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+        context: &meerkat_core::agent::ToolDispatchContext,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let Some(pinned) = self.pin_args(&call)? else {
+            return self.inner.dispatch_with_context(call, context).await;
+        };
+        self.inner
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: call.id,
+                    name: call.name,
+                    args: &pinned,
+                },
+                context,
+            )
             .await
     }
 }
@@ -329,5 +370,113 @@ mod tests {
             rendered.contains("invented scope"),
             "pinned snapshot must see the pinned item: {rendered}"
         );
+    }
+
+    /// Regression (adversarial finding F1): the trait-default
+    /// `dispatch_with_context` funnels through `dispatch` and drops the
+    /// dispatch context carrying the attention-projection witness. The wrapper
+    /// must forward the context so the inner surface's attention-scoped
+    /// enforcement (item-id pinning et al.) still fires on member turns.
+    #[tokio::test]
+    async fn dispatch_with_context_forwards_the_attention_witness_to_the_surface() {
+        use std::collections::BTreeMap;
+
+        use meerkat::{
+            AttentionProjectionRequest, GoalAttentionTarget, GoalCreateRequest,
+            WORKGRAPH_ATTENTION_DISPATCH_CONTEXT_KEY, WorkOwnerKey,
+        };
+        use meerkat_core::AgentToolDispatcher;
+        use serde_json::value::RawValue;
+
+        let service = ephemeral_workgraph_service("mob-realm");
+        let tools = ScopePinnedWorkGraphTools::new(&service);
+
+        let goal = service
+            .create_goal(GoalCreateRequest {
+                realm_id: None,
+                namespace: None,
+                title: "attention-scoped goal".to_string(),
+                description: None,
+                target: GoalAttentionTarget::Owner {
+                    owner_key: WorkOwnerKey::principal("operator@example.test").expect("owner key"),
+                },
+                mode: Default::default(),
+                completion_policy: Default::default(),
+                delegated_authority: Default::default(),
+                projection_policy: Default::default(),
+            })
+            .await
+            .expect("create goal");
+        let projection = service
+            .attention_projection(AttentionProjectionRequest {
+                binding_id: goal.attention.binding_id.clone(),
+                realm_id: None,
+                namespace: None,
+            })
+            .await
+            .expect("attention projection")
+            .projection;
+        let decoy = service
+            .create(CreateWorkItemRequest {
+                title: "outside the attention scope".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("decoy item");
+        let context = meerkat_core::agent::ToolDispatchContext::default().with_turn_metadata(
+            BTreeMap::from([(
+                WORKGRAPH_ATTENTION_DISPATCH_CONTEXT_KEY.to_string(),
+                serde_json::to_value(&projection).expect("projection json"),
+            )]),
+        );
+
+        // A mutation against a DIFFERENT item must hit the upstream
+        // attention-scope rejection — proof the witness reached the surface.
+        let foreign_args = RawValue::from_string(
+            serde_json::json!({
+                "id": decoy.id,
+                "expected_revision": decoy.revision,
+                "evidence": { "kind": "note", "id": "n-1", "summary": "smuggled" },
+            })
+            .to_string(),
+        )
+        .expect("foreign args");
+        let error = tools
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-scope-1",
+                    name: "workgraph_add_evidence",
+                    args: &foreign_args,
+                },
+                &context,
+            )
+            .await
+            .expect_err("attention scope must pin the item id");
+        assert!(
+            error.to_string().contains("scoped to attention work item"),
+            "upstream attention-scope rejection must surface: {error}"
+        );
+
+        // The same mutation against the bound item passes the scope checks.
+        let scoped_args = RawValue::from_string(
+            serde_json::json!({
+                "id": goal.item.id,
+                "expected_revision": goal.item.revision,
+                "evidence": { "kind": "note", "id": "n-2", "summary": "in scope" },
+            })
+            .to_string(),
+        )
+        .expect("scoped args");
+        tools
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-scope-2",
+                    name: "workgraph_add_evidence",
+                    args: &scoped_args,
+                },
+                &context,
+            )
+            .await
+            .expect("attention-scoped call on the bound item succeeds");
     }
 }

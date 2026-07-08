@@ -641,9 +641,12 @@ impl UnifiedRuntime {
 
     /// Wire the realm-scoped WorkGraph service into the `mobkit/workgraph/*`
     /// RPC group and the console experience section. Usually seeded from the
-    /// bootstrap spec; `&self` deliberately (memory-panel pattern) so a
-    /// gateway that constructs the service late can still wire it after the
-    /// runtime is `Arc`-shared.
+    /// bootstrap spec; `&self` deliberately (memory-panel pattern) so the
+    /// slot can be filled after the runtime is `Arc`-shared. Note the console
+    /// routers capture `workgraph_service()` by value when built — set the
+    /// service BEFORE `build_console_json_router`/`build_reference_app_router`
+    /// or the console serves without workgraph; setting it late reaches only
+    /// the unified stdin RPC surface.
     pub fn set_workgraph_service(&self, service: meerkat::WorkGraphService) {
         *self
             .workgraph_service

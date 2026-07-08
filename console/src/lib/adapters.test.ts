@@ -6914,3 +6914,172 @@ test("workgraph failed tool results do not poison the card fold", () => {
   assert.equal(card.items[0].status, "open");
   assert.equal(card.items[0].revision, 1);
 });
+
+test("workgraph history backfill result frames without a name still fold into the card and never leak generic rows", () => {
+  // Backfill (session_history) tool_execution_completed frames carry no
+  // `name` — the tool_call_id pairing with the requested frame must resolve
+  // it so fold-inclusion and generic-row-exclusion agree.
+  const frames = [
+    {
+      id: "wg-h1-call",
+      event: "tool_call_requested",
+      interactionId: "turn-history",
+      timestampMs: 1_779_405_464_000,
+      sourceKind: "session_history",
+      data: { id: "wg-h1-tc", name: "workgraph_create", args: { title: "Restored goal" } },
+    },
+    {
+      id: "wg-h1-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-history",
+      timestampMs: 1_779_405_464_200,
+      sourceKind: "session_history",
+      // No `name` field — exactly what session-history backfill emits.
+      data: {
+        id: "wg-h1-tc",
+        result: JSON.stringify({
+          item: workGraphItem({ id: "item-h1", title: "Restored goal", status: "open", revision: 1 }),
+        }),
+      },
+    },
+    {
+      id: "wg-h2-call",
+      event: "tool_call_requested",
+      interactionId: "turn-history",
+      timestampMs: 1_779_405_465_000,
+      sourceKind: "session_history",
+      data: { id: "wg-h2-tc", name: "workgraph_close", args: { id: "item-h1", expected_revision: 1 } },
+    },
+    {
+      id: "wg-h2-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-history",
+      timestampMs: 1_779_405_465_200,
+      sourceKind: "session_history",
+      data: {
+        id: "wg-h2-tc",
+        result: JSON.stringify({
+          item: workGraphItem({ id: "item-h1", title: "Restored goal", status: "completed", revision: 2 }),
+        }),
+      },
+    },
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1, "the card survives a reload-shaped replay");
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.items.length, 1);
+  assert.equal(card.items[0].status, "completed", "result payloads without a name still fold");
+  assert.equal(card.items[0].revision, 2);
+  assert.equal(card.status, "completed");
+
+  // The same resolution excludes the frames from generic rows.
+  const toolBlocks = entries.flatMap((entry) => (
+    entry.kind === "message" && Array.isArray(entry.blocks)
+      ? entry.blocks.filter((block) => block.type === "tool-call")
+      : []
+  ));
+  assert.deepEqual(toolBlocks, [], "no generic rows for workgraph activity after reload");
+});
+
+test("workgraph failed calls fold a failure note into recent events and flag the card", () => {
+  const failedClaim = [
+    {
+      id: "wg-f1-call",
+      event: "tool_call_requested",
+      interactionId: "turn-wg",
+      timestampMs: 1_779_405_465_000,
+      data: { id: "wg-f1-tc", name: "workgraph_claim", args: { id: "item-a", expected_revision: 9 } },
+    },
+    {
+      id: "wg-f1-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-wg",
+      timestampMs: 1_779_405_465_200,
+      data: {
+        id: "wg-f1-tc",
+        name: "workgraph_claim",
+        is_error: true,
+        result: "revision conflict: expected 9, found 1, and this overlong upstream detail keeps going past the truncation budget",
+      },
+    },
+  ];
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-ok",
+      name: "workgraph_create",
+      callArgs: { title: "Item A" },
+      result: { item: workGraphItem({ id: "item-a", title: "Item A", status: "open", revision: 1 }) },
+    }),
+    ...failedClaim,
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.lastActionFailed, true, "latest action failed → card carries the flag");
+  const failureLines = (card.recentEvents || []).filter((line) => line.startsWith("✗ workgraph_claim failed:"));
+  assert.equal(failureLines.length, 1, `expected a failure note, got ${JSON.stringify(card.recentEvents)}`);
+  assert.ok(failureLines[0].length <= "✗ workgraph_claim failed: ".length + 80, "message truncates to ~80 chars");
+  assert.match(failureLines[0], /revision conflict/);
+  // Failures still never resurrect generic tool rows.
+  const toolBlockNames = entries.flatMap((entry) => (
+    entry.kind === "message" && Array.isArray(entry.blocks)
+      ? entry.blocks.filter((block) => block.type === "tool-call").map((block) => block.name)
+      : []
+  ));
+  assert.deepEqual(toolBlockNames.filter((name) => String(name).startsWith("workgraph_")), []);
+
+  // A subsequent successful call clears the failed flag.
+  const recovered = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [
+    ...frames,
+    ...workGraphToolFrames({
+      idPrefix: "wg-f2",
+      name: "workgraph_claim",
+      callArgs: { id: "item-a", expected_revision: 1 },
+      result: { item: workGraphItem({ id: "item-a", title: "Item A", status: "in_progress", revision: 2 }) },
+      timestampMs: 1_779_405_466_000,
+    }),
+  ]).filter((entry) => entry.kind === "workgraph");
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].kind === "workgraph" ? recovered[0].lastActionFailed : true, undefined);
+});
+
+test("workgraph root items missing from the fold render a friendly title, never the bare ULID", () => {
+  // The parent goal was created in an earlier conversation: only the child
+  // and the parent edge are visible in this session's frames.
+  const rootUlid = "01JZX3B7Q0R9TKVMH2E8S4WGXA";
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-c1",
+      name: "workgraph_create",
+      callArgs: { title: "Child task" },
+      result: { item: workGraphItem({ id: "child-1", title: "Child task", status: "open", revision: 1 }) },
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-l1",
+      name: "workgraph_link",
+      callArgs: { kind: "parent", from_id: "child-1", to_id: rootUlid },
+      result: { edge: { kind: "parent", from_id: "child-1", to_id: rootUlid } },
+      timestampMs: 1_779_405_465_000,
+    }),
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.rootId, rootUlid);
+  assert.equal(card.title, "Goal from an earlier conversation");
+  assert.notEqual(card.title, rootUlid);
+  assert.ok(
+    (card.objective || "").includes(rootUlid.slice(-6)),
+    `short id lands in the objective slot: ${card.objective}`,
+  );
+  assert.deepEqual(card.items.map((item) => item.itemId), ["child-1"]);
+});

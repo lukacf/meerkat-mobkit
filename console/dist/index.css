@@ -2017,6 +2017,15 @@ span.cc-conversation-turn-preview__file-icon::after {
   background: rgba(240, 200, 120, 0.16);
   color: rgb(240, 200, 120);
 }
+.cc-work-graph__last-failed {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 130, 130, 0.16);
+  color: rgb(255, 155, 155);
+}
 .cc-work-graph__pulse {
   width: 6px;
   height: 6px;

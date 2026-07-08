@@ -20,6 +20,9 @@ export interface WorkGraphPanelData {
   error: string | null;
 }
 
+// Two CAS classes on the action payloads: goal actions (confirm /
+// request-close) carry the goal WORK ITEM's revision; attention actions
+// (pause / resume / reassign) carry the binding's machine revision.
 interface WorkGraphPanelProps {
   data: WorkGraphPanelData;
   canManage: boolean;
@@ -134,12 +137,63 @@ export function workGraphOwnerLabelOf(item: WorkGraphWireItem): string {
     || "";
 }
 
+/// Latest observed revision of the binding's bound goal work item. Goal
+/// confirm / request-close CAS against this (the server checks the ITEM's
+/// revision), never against the binding's machine revision.
+export function workGraphGoalRevisionOf(
+  binding: WorkGraphWireBinding,
+  items: WorkGraphWireItem[],
+): number | undefined {
+  const itemId = binding.work_ref?.item_id;
+  if (!itemId) return undefined;
+  const item = items.find((candidate) => candidate.id === itemId);
+  return typeof item?.revision === "number" ? item.revision : undefined;
+}
+
+/// `mobkit/workgraph/events` params for the panel's recent-events tail.
+/// Upstream returns events ASCENDING truncated to `limit`, so a bare
+/// `{limit}` query pins the OLDEST window forever once the ledger outgrows
+/// it. Page from the snapshot's `event_high_water_mark` instead; a null/
+/// absent mark (fresh store or older runtime) falls back to the bare query.
+export function workGraphEventsParams(
+  eventHighWaterMark: number | null | undefined,
+  limit: number,
+): { limit: number; after_seq?: number } {
+  if (typeof eventHighWaterMark === "number" && Number.isFinite(eventHighWaterMark)) {
+    return { limit, after_seq: Math.max(0, Math.floor(eventHighWaterMark) - limit) };
+  }
+  return { limit };
+}
+
+/// The panel renders the tail newest-first; upstream delivers ascending.
+export function workGraphEventsNewestFirst(events: WorkGraphWireEvent[]): WorkGraphWireEvent[] {
+  return [...events].reverse();
+}
+
+/// Sequences overlapping refreshes: `begin()` returns an `isCurrent` probe
+/// that goes false the moment a newer refresh begins, so a stale resolution
+/// never overwrites a fresher snapshot.
+export function createWorkGraphRefreshSequencer(): { begin: () => () => boolean } {
+  let latest = 0;
+  return {
+    begin() {
+      latest += 1;
+      const token = latest;
+      return () => token === latest;
+    },
+  };
+}
+
 export const __workGraphPanelTest = {
   buildWorkGraphPanelTree,
   workGraphBindingStatusLabel,
   workGraphBindingTargetLabel,
   workGraphEventLine,
   workGraphOwnerLabelOf,
+  workGraphGoalRevisionOf,
+  workGraphEventsParams,
+  workGraphEventsNewestFirst,
+  createWorkGraphRefreshSequencer,
 };
 
 function statusDotClass(status: string | undefined): string {
@@ -203,6 +257,7 @@ function ItemRow({
 
 function AttentionRow({
   binding,
+  goalRevision,
   canManage,
   onGoalConfirm,
   onGoalRequestClose,
@@ -211,6 +266,8 @@ function AttentionRow({
   onAttentionReassign,
 }: {
   binding: WorkGraphWireBinding;
+  // Bound goal work item's revision — the CAS token for confirm/request-close.
+  goalRevision?: number;
   canManage: boolean;
 } & Pick<WorkGraphPanelProps,
   "onGoalConfirm" | "onGoalRequestClose" | "onAttentionPause" | "onAttentionResume" | "onAttentionReassign"
@@ -224,7 +281,11 @@ function AttentionRow({
   const isActive = statusLabel === "active";
   const isPaused = statusLabel.startsWith("paused");
   const live = isActive || isPaused;
-  const input = { bindingId, revision };
+  // Reassign authority is machine-derived from the binding mode upstream:
+  // only coordinate-mode bindings can reassign, so others get no affordance.
+  const canReassign = live && binding.mode === "coordinate";
+  const bindingInput = { bindingId, revision };
+  const goalInput = { bindingId, revision: goalRevision };
   if (!bindingId) return null;
   return (
     <div className="workgraph__binding" data-testid={`workgraph-panel-binding:${bindingId}`}>
@@ -237,18 +298,18 @@ function AttentionRow({
         ) : null}
         <span className="workgraph__spacer" />
         {canManage && onAttentionPause && isActive ? (
-          <button type="button" className="workgraph__action" onClick={() => onAttentionPause(input)}>Pause</button>
+          <button type="button" className="workgraph__action" onClick={() => onAttentionPause(bindingInput)}>Pause</button>
         ) : null}
         {canManage && onAttentionResume && isPaused ? (
-          <button type="button" className="workgraph__action" onClick={() => onAttentionResume(input)}>Resume</button>
+          <button type="button" className="workgraph__action" onClick={() => onAttentionResume(bindingInput)}>Resume</button>
         ) : null}
         {canManage && onGoalConfirm && live ? (
-          <button type="button" className="workgraph__action" onClick={() => onGoalConfirm(input)}>Confirm</button>
+          <button type="button" className="workgraph__action" onClick={() => onGoalConfirm(goalInput)}>Confirm</button>
         ) : null}
         {canManage && onGoalRequestClose && live ? (
-          <button type="button" className="workgraph__action" onClick={() => onGoalRequestClose(input)}>Request close</button>
+          <button type="button" className="workgraph__action" onClick={() => onGoalRequestClose(goalInput)}>Request close</button>
         ) : null}
-        {canManage && onAttentionReassign && live ? (
+        {canManage && onAttentionReassign && canReassign ? (
           <button
             type="button"
             className="workgraph__action"
@@ -259,7 +320,7 @@ function AttentionRow({
           </button>
         ) : null}
       </div>
-      {reassignOpen && canManage && onAttentionReassign ? (
+      {reassignOpen && canManage && onAttentionReassign && canReassign ? (
         <div className="workgraph__reassign">
           <input
             placeholder="Target agent identity…"
@@ -273,7 +334,7 @@ function AttentionRow({
             disabled={!reassignIdentity.trim()}
             data-testid={`workgraph-panel-reassign-submit:${bindingId}`}
             onClick={() => {
-              onAttentionReassign({ ...input, identity: reassignIdentity.trim() });
+              onAttentionReassign({ ...bindingInput, identity: reassignIdentity.trim() });
               setReassignOpen(false);
               setReassignIdentity("");
             }}
@@ -360,6 +421,7 @@ export function WorkGraphPanel({
                 <AttentionRow
                   key={binding.binding_id || `binding-${index}`}
                   binding={binding}
+                  goalRevision={workGraphGoalRevisionOf(binding, data.items)}
                   canManage={canManage}
                   onGoalConfirm={onGoalConfirm}
                   onGoalRequestClose={onGoalRequestClose}

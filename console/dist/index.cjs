@@ -3229,9 +3229,11 @@ function attentionIsActive(row) {
 }
 function AttentionRow({
   row,
+  goalRevision,
   actions
 }) {
-  const input = { bindingId: row.bindingId, revision: row.revision };
+  const bindingInput = { bindingId: row.bindingId, revision: row.revision };
+  const goalInput = { bindingId: row.bindingId, revision: goalRevision };
   const live = attentionIsActive(row) || attentionIsPaused(row);
   const buttons = [];
   if (actions?.onAttentionPause && attentionIsActive(row)) {
@@ -3239,7 +3241,7 @@ function AttentionRow({
       key: "pause",
       label: "Pause",
       title: "Pause this attention binding",
-      onClick: () => actions.onAttentionPause?.(input)
+      onClick: () => actions.onAttentionPause?.(bindingInput)
     });
   }
   if (actions?.onAttentionResume && attentionIsPaused(row)) {
@@ -3247,7 +3249,7 @@ function AttentionRow({
       key: "resume",
       label: "Resume",
       title: "Resume this attention binding",
-      onClick: () => actions.onAttentionResume?.(input)
+      onClick: () => actions.onAttentionResume?.(bindingInput)
     });
   }
   if (actions?.onGoalConfirm && live) {
@@ -3255,7 +3257,7 @@ function AttentionRow({
       key: "confirm",
       label: "Confirm",
       title: "Confirm goal completion",
-      onClick: () => actions.onGoalConfirm?.(input)
+      onClick: () => actions.onGoalConfirm?.(goalInput)
     });
   }
   if (actions?.onGoalRequestClose && live) {
@@ -3263,15 +3265,15 @@ function AttentionRow({
       key: "request-close",
       label: "Request close",
       title: "Request goal closure",
-      onClick: () => actions.onGoalRequestClose?.(input)
+      onClick: () => actions.onGoalRequestClose?.(goalInput)
     });
   }
-  if (actions?.onAttentionReassign && live) {
+  if (actions?.onAttentionReassign && live && row.mode === "coordinate") {
     buttons.push({
       key: "reassign",
       label: "Reassign",
       title: "Reassign this attention binding",
-      onClick: () => actions.onAttentionReassign?.(input)
+      onClick: () => actions.onAttentionReassign?.(bindingInput)
     });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
@@ -3312,6 +3314,8 @@ function WorkGraphCard({
   const { completed, total } = entry.progress;
   const percent = total > 0 ? Math.round(completed / total * 100) : 0;
   const hasBody = entry.items.length > 0 || entry.attention.length > 0 || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
+  const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
+  const goalRevisionFor = (row) => (row.itemId != null ? revisionByItemId.get(row.itemId) : void 0) ?? revisionByItemId.get(entry.rootId);
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
     "section",
     {
@@ -3350,6 +3354,15 @@ function WorkGraphCard({
             entry.status === "active" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-work-graph__pulse", "aria-hidden": "true" }) : null,
             CARD_STATUS_LABEL[entry.status]
           ] }),
+          entry.lastActionFailed ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            "span",
+            {
+              className: "cc-work-graph__last-failed",
+              title: "The last WorkGraph action failed",
+              "data-testid": `workgraph-card:${entry.rootId}:last-action-failed`,
+              children: "\u2717"
+            }
+          ) : null,
           hasBody ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
             "button",
             {
@@ -3364,7 +3377,15 @@ function WorkGraphCard({
           ) : null
         ] }),
         !collapsed && entry.items.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__items", children: entry.items.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ItemRow, { row, actions }, row.itemId)) }) : null,
-        !collapsed && entry.attention.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__attention", children: entry.attention.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(AttentionRow, { row, actions }, row.bindingId)) }) : null,
+        !collapsed && entry.attention.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__attention", children: entry.attention.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+          AttentionRow,
+          {
+            row,
+            goalRevision: goalRevisionFor(row),
+            actions
+          },
+          row.bindingId
+        )) }) : null,
         !collapsed && entry.recentEvents && entry.recentEvents.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-work-graph__events", children: entry.recentEvents.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-work-graph__event", children: line }, `${line}-${index}`)) }) : null
       ]
     }
@@ -4388,12 +4409,12 @@ function parseToolResult(frame) {
     status: isError ? "error" : "success"
   };
 }
-function buildToolBlocks(frames) {
+function buildToolBlocks(frames, workGraphNamesByCallId) {
   const toolCalls = /* @__PURE__ */ new Map();
   const pendingResults = /* @__PURE__ */ new Map();
   const peerRegistry = buildPeerRegistry(frames);
   for (const frame of frames) {
-    if (isWorkGraphToolFrame(frame)) continue;
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
       const parsed = serverToolContentSummary(frame);
@@ -4513,8 +4534,29 @@ var WORKGRAPH_TOOL_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
-function isWorkGraphToolFrame(frame) {
-  return WORKGRAPH_TOOL_EVENTS.has(frame.event) && WORKGRAPH_TOOL_NAMES.has(parseToolName(frame));
+function workGraphToolNamesByCallId(frames) {
+  const names = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) continue;
+    const name = parseToolName(frame);
+    if (!WORKGRAPH_TOOL_NAMES.has(name)) continue;
+    const toolCallId = parseToolCallId(frame);
+    if (toolCallId) names.set(toolCallId, name);
+  }
+  return names;
+}
+function isWorkGraphToolFrame(frame, namesByCallId) {
+  if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) return false;
+  if (WORKGRAPH_TOOL_NAMES.has(parseToolName(frame))) return true;
+  if (!namesByCallId || namesByCallId.size === 0) return false;
+  const toolCallId = parseToolCallId(frame);
+  return toolCallId !== null && namesByCallId.has(toolCallId);
+}
+function workGraphToolNameOf(frame, namesByCallId) {
+  const name = parseToolName(frame);
+  if (WORKGRAPH_TOOL_NAMES.has(name)) return name;
+  const toolCallId = parseToolCallId(frame);
+  return toolCallId && namesByCallId?.get(toolCallId) || name;
 }
 function workGraphString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
@@ -4647,6 +4689,27 @@ function foldWorkGraphEvent(state, value) {
     text: [kind.replace(/_/g, " "), clock].filter(Boolean).join(" \xB7 ")
   });
 }
+var WORKGRAPH_FAILURE_MESSAGE_LIMIT = 80;
+function workGraphFailureLine(name, raw) {
+  let message = "";
+  if (typeof raw === "string") {
+    message = raw.trim();
+  } else if (raw && typeof raw === "object") {
+    const record = raw;
+    message = workGraphString(record.message) || workGraphString(record.detail) || workGraphString(record.error) || "";
+    if (!message) {
+      try {
+        message = JSON.stringify(raw);
+      } catch {
+        message = "";
+      }
+    }
+  }
+  if (message.length > WORKGRAPH_FAILURE_MESSAGE_LIMIT) {
+    message = `${message.slice(0, WORKGRAPH_FAILURE_MESSAGE_LIMIT - 1)}\u2026`;
+  }
+  return message ? `\u2717 ${name} failed: ${message}` : `\u2717 ${name} failed`;
+}
 function parseWorkGraphResult(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (!record || record.is_error === true) return null;
@@ -4765,7 +4828,7 @@ function workGraphAttentionRows(bindings) {
   }));
 }
 var WORKGRAPH_RECENT_EVENT_LIMIT = 5;
-function buildWorkGraphEntries(agent, frames) {
+function buildWorkGraphEntries(agent, frames, namesByCallId) {
   const state = {
     items: /* @__PURE__ */ new Map(),
     parents: /* @__PURE__ */ new Map(),
@@ -4774,24 +4837,46 @@ function buildWorkGraphEntries(agent, frames) {
     contributions: []
   };
   let sawWorkGraphFrame = false;
+  const argIdsByCallId = /* @__PURE__ */ new Map();
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
-    if (!isWorkGraphToolFrame(frame)) continue;
+    if (!isWorkGraphToolFrame(frame, namesByCallId)) continue;
     sawWorkGraphFrame = true;
     const frameIso = isoFromTimestampMs(frame.timestampMs);
     const contribution = {
       frameIndex: index,
       interactionId: frame.interactionId?.trim() || "",
       itemIds: [],
-      bindingIds: []
+      bindingIds: [],
+      outcome: void 0
     };
     const record = frame.data && typeof frame.data === "object" ? frame.data : null;
     const args = record?.args && typeof record.args === "object" ? record.args : null;
-    const argItemId = workGraphString(args?.id);
+    const toolCallId = parseToolCallId(frame);
+    let argItemId = workGraphString(args?.id);
+    let argBindingId = workGraphString(args?.binding_id);
+    if (args && toolCallId) {
+      argIdsByCallId.set(toolCallId, { itemId: argItemId, bindingId: argBindingId });
+    } else if (!args && toolCallId) {
+      const paired = argIdsByCallId.get(toolCallId);
+      argItemId = argItemId || paired?.itemId;
+      argBindingId = argBindingId || paired?.bindingId;
+    }
     if (argItemId) contribution.itemIds.push(argItemId);
-    const argBindingId = workGraphString(args?.binding_id);
     if (argBindingId) contribution.bindingIds.push(argBindingId);
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const failed = record?.is_error === true;
+      contribution.outcome = failed ? "error" : "ok";
+      if (failed) {
+        state.events.push({
+          at: frameIso,
+          itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
+          text: workGraphFailureLine(
+            workGraphToolNameOf(frame, namesByCallId),
+            record?.result ?? record?.content
+          )
+        });
+      }
       const result = parseWorkGraphResult(frame);
       if (result) {
         const foldItem = (value) => {
@@ -4849,6 +4934,7 @@ function buildWorkGraphEntries(agent, frames) {
     }
   }
   const anchorByCard = /* @__PURE__ */ new Map();
+  const lastOutcomeByCard = /* @__PURE__ */ new Map();
   const catchAllMembers = /* @__PURE__ */ new Map();
   const catchAllForItem = /* @__PURE__ */ new Map();
   const bindingRoot = (bindingId) => {
@@ -4882,6 +4968,9 @@ function buildWorkGraphEntries(agent, frames) {
           interactionId: contribution.interactionId
         });
       }
+      if (contribution.outcome) {
+        lastOutcomeByCard.set(key, contribution.outcome);
+      }
     }
   }
   const eventsForMembers = (memberSet) => {
@@ -4912,19 +5001,22 @@ function buildWorkGraphEntries(agent, frames) {
     const memberSet = /* @__PURE__ */ new Set([root, ...rootMembers.get(root) || []]);
     const recentEvents = eventsForMembers(memberSet);
     const lastUpdatedAt = latestIso(items.flatMap((item) => [item.updatedAt, item.lastEventAt]));
+    const title = rootItem ? rootItem.title : "Goal from an earlier conversation";
+    const objective = rootItem ? rootItem.description ?? null : `Goal \u2026${root.slice(-6)}`;
     pushEntry({
       kind: "workgraph",
       id: entryId,
       identity: agentIdentity(agent),
       ...anchor.createdAt ? { createdAt: anchor.createdAt } : {},
       rootId: root,
-      title: rootItem?.title || root,
-      objective: rootItem?.description ?? null,
+      title,
+      objective,
       status: deriveWorkGraphStatus(items),
       progress: { completed, total: items.length },
       items,
       attention,
       ...recentEvents ? { recentEvents } : {},
+      ...lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {},
       ...lastUpdatedAt ? { lastUpdatedAt } : {}
     }, anchor.frameIndex);
   }
@@ -4950,6 +5042,7 @@ function buildWorkGraphEntries(agent, frames) {
       items: rows,
       attention: [],
       ...recentEvents ? { recentEvents } : {},
+      ...lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {},
       ...lastUpdatedAt ? { lastUpdatedAt } : {}
     }, anchor.frameIndex);
   }
@@ -5473,7 +5566,7 @@ function toolResultTextFromContent(content) {
     return "";
   }).filter((value) => value.trim().length > 0).join("");
 }
-function historyToolResults(frames) {
+function historyToolResults(frames, workGraphNamesByCallId) {
   const results = /* @__PURE__ */ new Map();
   for (const frame of frames) {
     if (frame.sourceKind !== "session_history" || frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received") {
@@ -5482,6 +5575,7 @@ function historyToolResults(frames) {
     const data = frame.data && typeof frame.data === "object" ? frame.data : null;
     const historyToolName = typeof data?.name === "string" ? data.name : typeof data?.tool_name === "string" ? data.tool_name : "";
     if (WORKGRAPH_TOOL_NAMES.has(historyToolName)) continue;
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim() ? data.tool_call_id.trim() : typeof data?.id === "string" && data.id.trim() ? data.id.trim() : "";
     if (!toolCallId) continue;
     const rawResult = data?.result ?? data?.content;
@@ -6311,10 +6405,11 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
 function mapFramesToTimelineEntries2(agent, frames, options = {}) {
   const orderedFrames = options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames;
   const entries = [];
-  const toolBlocks = buildToolBlocks(orderedFrames);
-  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames);
+  const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
+  const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
+  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const peerRegistry = buildPeerRegistry(orderedFrames);
-  const sessionToolResults = historyToolResults(orderedFrames);
+  const sessionToolResults = historyToolResults(orderedFrames, workGraphNamesByCallId);
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -6512,7 +6607,7 @@ ${text.trimStart()}`;
       }
       continue;
     }
-    if (isWorkGraphToolFrame(frame)) {
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) {
       const workGraphCards = workGraphEntriesByAnchor.get(i);
       if (workGraphCards && workGraphCards.length > 0) {
         flushPendingReasoning(true);
@@ -12899,6 +12994,31 @@ function workGraphEventLine(event) {
 function workGraphOwnerLabelOf(item) {
   return item.owner?.display_name || item.owner?.key?.id || item.claim?.owner?.display_name || item.claim?.owner?.key?.id || "";
 }
+function workGraphGoalRevisionOf(binding, items) {
+  const itemId = binding.work_ref?.item_id;
+  if (!itemId) return void 0;
+  const item = items.find((candidate) => candidate.id === itemId);
+  return typeof item?.revision === "number" ? item.revision : void 0;
+}
+function workGraphEventsParams(eventHighWaterMark, limit) {
+  if (typeof eventHighWaterMark === "number" && Number.isFinite(eventHighWaterMark)) {
+    return { limit, after_seq: Math.max(0, Math.floor(eventHighWaterMark) - limit) };
+  }
+  return { limit };
+}
+function workGraphEventsNewestFirst(events) {
+  return [...events].reverse();
+}
+function createWorkGraphRefreshSequencer() {
+  let latest = 0;
+  return {
+    begin() {
+      latest += 1;
+      const token = latest;
+      return () => token === latest;
+    }
+  };
+}
 function statusDotClass(status) {
   return `workgraph__dot is-${status || "open"}`;
 }
@@ -12951,6 +13071,7 @@ function ItemRow2({
 }
 function AttentionRow2({
   binding,
+  goalRevision,
   canManage,
   onGoalConfirm,
   onGoalRequestClose,
@@ -12967,7 +13088,9 @@ function AttentionRow2({
   const isActive = statusLabel2 === "active";
   const isPaused = statusLabel2.startsWith("paused");
   const live = isActive || isPaused;
-  const input = { bindingId, revision };
+  const canReassign = live && binding.mode === "coordinate";
+  const bindingInput = { bindingId, revision };
+  const goalInput = { bindingId, revision: goalRevision };
   if (!bindingId) return null;
   return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__binding", "data-testid": `workgraph-panel-binding:${bindingId}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__binding-line", children: [
@@ -12976,11 +13099,11 @@ function AttentionRow2({
       targetLabel ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__binding-target", children: targetLabel }) : null,
       binding.work_ref?.item_id ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__chip", title: "Bound work item", children: binding.work_ref.item_id }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("span", { className: "workgraph__spacer" }),
-      canManage && onAttentionPause && isActive ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionPause(input), children: "Pause" }) : null,
-      canManage && onAttentionResume && isPaused ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionResume(input), children: "Resume" }) : null,
-      canManage && onGoalConfirm && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalConfirm(input), children: "Confirm" }) : null,
-      canManage && onGoalRequestClose && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalRequestClose(input), children: "Request close" }) : null,
-      canManage && onAttentionReassign && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
+      canManage && onAttentionPause && isActive ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionPause(bindingInput), children: "Pause" }) : null,
+      canManage && onAttentionResume && isPaused ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onAttentionResume(bindingInput), children: "Resume" }) : null,
+      canManage && onGoalConfirm && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalConfirm(goalInput), children: "Confirm" }) : null,
+      canManage && onGoalRequestClose && live ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { type: "button", className: "workgraph__action", onClick: () => onGoalRequestClose(goalInput), children: "Request close" }) : null,
+      canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
         "button",
         {
           type: "button",
@@ -12991,7 +13114,7 @@ function AttentionRow2({
         }
       ) : null
     ] }),
-    reassignOpen && canManage && onAttentionReassign ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__reassign", children: [
+    reassignOpen && canManage && onAttentionReassign && canReassign ? /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "workgraph__reassign", children: [
       /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
         "input",
         {
@@ -13009,7 +13132,7 @@ function AttentionRow2({
           disabled: !reassignIdentity.trim(),
           "data-testid": `workgraph-panel-reassign-submit:${bindingId}`,
           onClick: () => {
-            onAttentionReassign({ ...input, identity: reassignIdentity.trim() });
+            onAttentionReassign({ ...bindingInput, identity: reassignIdentity.trim() });
             setReassignOpen(false);
             setReassignIdentity("");
           },
@@ -13078,6 +13201,7 @@ function WorkGraphPanel({
           AttentionRow2,
           {
             binding,
+            goalRevision: workGraphGoalRevisionOf(binding, data.items),
             canManage,
             onGoalConfirm,
             onGoalRequestClose,
@@ -18696,8 +18820,10 @@ function ConsoleApp({ baseUrl }) {
       setMemoryData((current) => ({ ...current, error: errorMessage(err) }));
     }
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
+  const workGraphRefreshSequencerRef = import_react34.default.useRef(createWorkGraphRefreshSequencer());
   const refreshWorkGraphData = import_react34.default.useCallback(async () => {
     const workGraphTarget = controlWorkbenchTarget("workgraph");
+    const isCurrent = workGraphRefreshSequencerRef.current.begin();
     try {
       let snapshot = null;
       let denied = false;
@@ -18716,13 +18842,14 @@ function ConsoleApp({ baseUrl }) {
           const eventsResult = await executeHeadlessCommand(
             CONSOLE_COMMAND_NAMES2.workgraphEvents,
             workGraphTarget,
-            { limit: 50 }
+            workGraphEventsParams(snapshot?.event_high_water_mark, 50)
           );
-          events = eventsResult?.events || [];
+          events = workGraphEventsNewestFirst(eventsResult?.events || []);
         } catch (err) {
           if (jsonRpcErrorCode(err) !== -32030) throw err;
         }
       }
+      if (!isCurrent()) return;
       setWorkGraphData({
         items: snapshot?.items || [],
         edges: snapshot?.edges || [],
@@ -18734,6 +18861,7 @@ function ConsoleApp({ baseUrl }) {
         error: null
       });
     } catch (err) {
+      if (!isCurrent()) return;
       const code = jsonRpcErrorCode(err);
       const capabilityMissing = err instanceof Error && err.message.startsWith("MobKit capability missing");
       if (code === -32601 || code === -32041 || capabilityMissing) {

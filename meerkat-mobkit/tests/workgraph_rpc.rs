@@ -657,6 +657,144 @@ async fn attention_reassign_injects_witness_server_side() {
     runtime.mob_handle().stop().await.expect("stop");
 }
 
+/// Adversarial finding F10: a second ACTIVE binding for a target that
+/// already has one bricks the member — every subsequent scoped turn is a
+/// hard upstream `MultipleActiveBindings` error. `goal/create` must reject
+/// it up front as the typed conflict, naming the existing binding.
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_active_binding_for_same_target_is_conflict() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "first goal",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let first = result(&response).clone();
+    let first_binding = first["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "second goal, same target",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    assert_eq!(
+        response["error"]["data"]["kind"],
+        json!("workgraph_conflict")
+    );
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&first_binding),
+        "conflict must name the existing binding: {detail}"
+    );
+    assert!(
+        detail.contains("pause") && detail.contains("reassign"),
+        "detail must hint the way out: {detail}"
+    );
+
+    // A different target is unaffected.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "different member",
+            "target": { "kind": "identity", "identity": "backup" },
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+
+    // Pausing the existing binding frees the target — the hinted way out.
+    let binding_revision = first["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/pause",
+        json!({ "binding_id": first_binding, "expected_revision": binding_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "after pause",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Adversarial finding F11: reassign of a non-coordinate binding can never
+/// succeed on meerkat 0.7.23 (only coordinate mode derives the required
+/// `derived_from` link authority), and the raw upstream denial is a generic
+/// invalid-input. The RPC must name the binding's mode and the restriction.
+/// The coordinate-mode success path is covered by
+/// `attention_reassign_injects_witness_server_side`.
+#[tokio::test(flavor = "multi_thread")]
+async fn reassign_of_non_coordinate_binding_names_the_mode_restriction() {
+    let runtime = build_runtime().await;
+    // Default mode is pursue.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "pursue goal",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let binding_id = goal["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let binding_revision = goal["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": binding_revision,
+            "target": { "kind": "identity", "identity": "backup" },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32000, "{response:#?}");
+    assert_eq!(response["error"]["data"]["kind"], json!("workgraph_error"));
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&binding_id),
+        "must name the binding: {detail}"
+    );
+    assert!(
+        detail.contains("'pursue' mode"),
+        "must name the binding's mode: {detail}"
+    );
+    assert!(
+        detail.contains("coordinate"),
+        "must name the mode restriction: {detail}"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_escalate_injects_witness_server_side() {
     let runtime = build_runtime().await;
