@@ -1246,7 +1246,12 @@ async fn console_timeline_stream_handler(
         loop {
             match rx.recv().await {
                 Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
-                    if !Box::pin(aggregator.timeline_event_visible(&event)).await {
+                    if !Box::pin(
+                        aggregator
+                            .timeline_event_visible_for_subscriber(&event, identity.as_deref()),
+                    )
+                    .await
+                    {
                         continue;
                     }
                     if let Some(view) = access_view.as_ref()

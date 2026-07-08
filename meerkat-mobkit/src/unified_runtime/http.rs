@@ -106,11 +106,32 @@ impl UnifiedRuntime {
                 Arc::new(move |agent_id| {
                     let runtime = agent_runtime.clone();
                     Box::pin(async move {
-                        runtime
-                            .handle()
-                            .subscribe_agent_events(&crate::member_comms_id::mob_member_id(
-                                &agent_id,
-                            ))
+                        // Accept every public spelling (issue #254 item 4,
+                        // the #252 canonicalization class): a plain member
+                        // name or runtime ALIAS ("rt:lead:0") encodes
+                        // straight to its roster id, but a DURABLE IDENTITY
+                        // ("lead") has no encodable roster form — resolve it
+                        // via the roster's `agent_identity` label (the same
+                        // durable→roster mapping list_members projects).
+                        // Unresolvable ids keep the direct encoding so the
+                        // route still 404s with member_not_found.
+                        let handle = runtime.handle();
+                        let direct = crate::member_comms_id::mob_member_id(&agent_id);
+                        let member_id = if handle.get_member(&direct).await.ok().flatten().is_some()
+                        {
+                            direct
+                        } else if let Some(identity) = handle
+                            .roster()
+                            .await
+                            .find_by_label("agent_identity", &agent_id)
+                            .map(|entry| entry.agent_identity.clone())
+                        {
+                            identity
+                        } else {
+                            direct
+                        };
+                        handle
+                            .subscribe_agent_events(&member_id)
                             .await
                             .map_err(Into::into)
                     })

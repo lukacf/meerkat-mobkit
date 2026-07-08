@@ -89,6 +89,12 @@ struct AggregatorInner {
     session_backfill_permits: Arc<Semaphore>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
+    /// Per-runtime shutdown signals for the live-projection tasks spawned by
+    /// [`ConsoleAggregator::register_runtime_handles_with_policy`]. Without
+    /// them, every registration leaked an immortal projection task (its
+    /// broadcast receiver can never observe `Closed` while the runtime Arc
+    /// lives) after the runtime was destroyed (issue #254 follow-up).
+    live_projection_shutdowns: std::sync::Mutex<BTreeMap<String, tokio::sync::watch::Sender<bool>>>,
 }
 
 #[derive(Clone)]
@@ -342,6 +348,7 @@ impl MobKitConsoleAggregator {
                 )),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
+                live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -396,6 +403,14 @@ impl MobKitConsoleAggregator {
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
             runtimes.insert(runtime_key.clone(), entry);
         }
+        // Re-registering a key replaces its live-projection task: signal the
+        // old one before spawning the new (otherwise both would project).
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        if let Ok(mut shutdowns) = self.inner.live_projection_shutdowns.lock()
+            && let Some(previous) = shutdowns.insert(runtime_key.clone(), shutdown_tx)
+        {
+            let _ = previous.send(true);
+        }
         self.inner
             .identity_read_model
             .refresh_soon(self.inner.clone());
@@ -406,21 +421,32 @@ impl MobKitConsoleAggregator {
         tokio::spawn(async move {
             let mut rx = events_for_live.subscribe();
             loop {
-                match rx.recv().await {
-                    Ok(envelope) => {
-                        let _ =
-                            project_console_event(inner.clone(), &runtime_key_for_live, envelope)
-                                .await;
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        // Sender dropped or unregister signalled: stop.
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let _ = recover_lagged_source_events(
-                            inner.clone(),
-                            &runtime_key_for_live,
-                            &events_for_live_recovery,
-                        )
-                        .await;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    received = rx.recv() => match received {
+                        Ok(envelope) => {
+                            let _ = project_console_event(
+                                inner.clone(),
+                                &runtime_key_for_live,
+                                envelope,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let _ = recover_lagged_source_events(
+                                inner.clone(),
+                                &runtime_key_for_live,
+                                &events_for_live_recovery,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
                 }
             }
         });
@@ -450,6 +476,35 @@ impl MobKitConsoleAggregator {
             }
             let _ = ingestion_state.apply(SourceIngestionTransition::StartLive);
         });
+    }
+
+    /// Unregister a runtime (issue #254 follow-up): removes the registry
+    /// entry (which also terminates the 5s session-history discovery loop on
+    /// its next tick — it checks registration), signals the live-projection
+    /// task to stop (its broadcast receiver would otherwise never observe
+    /// `Closed` while the runtime's event store lives), and refreshes the
+    /// identity read model so the dead runtime's identities leave the
+    /// console. Frames already projected into the store remain queryable —
+    /// unregister detaches the LIVE source, it does not erase history.
+    /// Idempotent; unknown keys are a no-op.
+    pub fn unregister_runtime(&self, runtime_key: &str) {
+        let removed = self
+            .inner
+            .runtimes
+            .write()
+            .ok()
+            .and_then(|mut runtimes| runtimes.remove(runtime_key))
+            .is_some();
+        if let Ok(mut shutdowns) = self.inner.live_projection_shutdowns.lock()
+            && let Some(shutdown) = shutdowns.remove(runtime_key)
+        {
+            let _ = shutdown.send(true);
+        }
+        if removed {
+            self.inner
+                .identity_read_model
+                .refresh_soon(self.inner.clone());
+        }
     }
 
     pub async fn list_identities(&self) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
@@ -1261,14 +1316,59 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn timeline_event_visible(&self, event: &ConsoleTimelineEvent) -> bool {
+        self.timeline_event_visible_for_subscriber(event, None)
+            .await
+    }
+
+    /// Live-stream visibility gate, subscriber-aware (issue #254).
+    ///
+    /// The windowed query paths grant an own-identity allowance
+    /// (`allow_historical_identity = query.identity == frame.identity`), but
+    /// the live gate used to pass `false` unconditionally — so an
+    /// identity-scoped SSE stream dropped every frame of a member the
+    /// identity read model had not yet observed (`records=0 → Missing`),
+    /// starving live tails while reconnect-with-snapshot showed full
+    /// history. Two fixes, matching the issue's suggestions:
+    ///
+    /// 1. An identity-scoped subscriber gets the SAME own-identity
+    ///    allowance the query paths grant, so its frames flow immediately.
+    /// 2. A frame whose identity is unknown to the read model triggers a
+    ///    debounced [`ConsoleIdentityReadModel::refresh_soon`] — the model
+    ///    converges for UNSCOPED streams too (members spawned mid-run via
+    ///    `ensure_member` previously stayed invisible until an unrelated
+    ///    refresh).
+    pub async fn timeline_event_visible_for_subscriber(
+        &self,
+        event: &ConsoleTimelineEvent,
+        subscriber_identity: Option<&str>,
+    ) -> bool {
         match event {
             ConsoleTimelineEvent::ConsoleFrame { frame }
             | ConsoleTimelineEvent::FrameUpdated { frame } => {
                 let identity_records = self.inner.identity_read_model.current().await;
+                let identity_known = identity_records.iter().any(|record| {
+                    record.runtime_key == frame.runtime_key
+                        && (record.identity == frame.identity
+                            || record.runtime_member_id == frame.identity)
+                });
+                if !identity_known
+                    && frame.identity != "__console__"
+                    && frame.identity != SYSTEM_EVENT_IDENTITY
+                {
+                    // Self-heal: the read model has never seen this identity
+                    // (e.g. ensure_member mid-run). Debounced internally; a
+                    // spurious trigger for a namespaced alias mismatch just
+                    // refreshes early.
+                    self.inner
+                        .identity_read_model
+                        .refresh_soon(self.inner.clone());
+                }
+                let allow_historical_identity =
+                    subscriber_identity == Some(frame.identity.as_str());
                 Box::pin(frame_is_visible(
                     &self.inner,
                     frame,
-                    false,
+                    allow_historical_identity,
                     &identity_records,
                 ))
                 .await
@@ -5516,6 +5616,167 @@ comms = true
         assert_eq!(
             inspection.identity.runtime_member_id,
             "rt:channel:C0SMOKEOB3:0"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// Issue #254 (root cause of "flows stuck forever"): the live SSE gate
+    /// passed `allow_historical_identity = false` unconditionally, so an
+    /// identity-scoped stream dropped every frame of a member the identity
+    /// read model had not yet observed — while the windowed query path
+    /// passed the same frames via the own-identity allowance. The
+    /// subscriber-aware gate grants the same allowance, and an unknown
+    /// identity triggers a debounced read-model refresh so UNSCOPED streams
+    /// converge too (members spawned mid-run via ensure_member).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_scoped_live_stream_sees_members_unknown_to_the_read_model()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("live-tail-unknown-identity-test").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        // Prime the read model BEFORE the member exists — the exact state a
+        // mid-run ensure_member leaves an already-connected live stream in.
+        let _ = aggregator.list_identities_fresh().await?;
+
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "late-member".to_string(),
+                Some("You are the late member.".into()),
+                None,
+                None,
+            ))
+            .await?;
+        let outcome = aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "late-member-live-frame".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "late-member".to_string(),
+                conversation_id: Some("late-member".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Completed,
+                payload: json!({"delta": "hi"}),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: None,
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        let event = ConsoleTimelineEvent::ConsoleFrame {
+            frame: outcome.frame,
+        };
+
+        // The identity-scoped subscriber sees the frame IMMEDIATELY (the
+        // own-identity allowance the query path always had).
+        assert!(
+            aggregator
+                .timeline_event_visible_for_subscriber(&event, Some("late-member"))
+                .await,
+            "identity-scoped live stream must not starve on a read-model miss"
+        );
+        // A differently-scoped subscriber does not inherit the allowance.
+        assert!(
+            !aggregator
+                .timeline_event_visible_for_subscriber(&event, Some("someone-else"))
+                .await,
+            "the allowance is strictly own-identity"
+        );
+
+        // The miss triggered refresh_soon: the read model converges, after
+        // which even the UNSCOPED gate passes the frame.
+        let mut converged = false;
+        for _ in 0..40 {
+            if aggregator.timeline_event_visible(&event).await {
+                converged = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            converged,
+            "the unknown-identity miss must self-heal the read model"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// Issue #254 follow-up: registrations leaked an immortal live-projection
+    /// task (broadcast receiver never sees Closed while the runtime Arc
+    /// lives) plus the discovery loop. unregister_runtime detaches the live
+    /// source; already-projected frames stay queryable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unregister_runtime_stops_live_projection()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("unregister-live-projection-test").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        aggregator.unregister_runtime("runtime-a");
+        assert!(
+            aggregator
+                .inner
+                .runtimes
+                .read()
+                .expect("runtime registry")
+                .is_empty(),
+            "unregister must remove the registry entry"
+        );
+        assert!(
+            aggregator
+                .inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("shutdown registry")
+                .is_empty(),
+            "unregister must consume the live-projection shutdown handle"
+        );
+        // Idempotent on unknown keys.
+        aggregator.unregister_runtime("runtime-a");
+
+        // Re-registration works and replaces cleanly.
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        assert_eq!(
+            aggregator
+                .inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("shutdown registry")
+                .len(),
+            1
         );
 
         let _ = runtime.mob_handle().stop().await;

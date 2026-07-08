@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Console live tails no longer starve on identities the read model has not
+  observed (issue #254): identity-scoped SSE streams get the same
+  own-identity allowance the windowed query path always had, and a frame
+  for an unknown identity triggers a debounced identity read-model
+  refresh, so members spawned mid-run (`ensure_member`) become visible on
+  unscoped streams without a reconnect.
+- The console aggregator gained `unregister_runtime` (issue #254
+  follow-up): removes the registration, signals the live-projection task
+  (previously immortal — its broadcast receiver could never observe
+  `Closed` while the runtime lived), terminates the discovery loop, and
+  refreshes the identity read model. Re-registering a key now also
+  replaces its projection task instead of double-projecting.
+- `/agents/{id}/events` accepts durable identities (issue #254 item 4):
+  ids resolve via the roster's `agent_identity` label when direct encoding
+  misses (the #252 canonicalization class), so identity-first consumers no
+  longer need a `list_members` round-trip; unknown ids keep the proper 404.
+- Docs: `mobkit/console/*` methods are HTTP-only (the stdio surface never
+  dispatched them), and session-history backfill frames
+  (`source.kind == "session_history"`, `interaction_id` null) are a
+  mandatory exclusion when correlating completions.
+
 ### Added
 
 - Full WorkGraph integration (meerkat 0.7.23's goals, work items, and
