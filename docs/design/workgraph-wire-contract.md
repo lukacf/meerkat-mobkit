@@ -107,3 +107,32 @@ Inline card entry kind: `"workgraph"` (`ConversationWorkGraphEntry`), one
 evolving entry per goal/root work-item, aggregated from workgraph tool-call
 frames. Operator actions on the card gated by
 `experience.workgraph.can_manage` + `!consoleReadOnly`.
+
+## Implementation notes (as-built, 0.7.30)
+
+- `claim.owner`: the wire accepts BOTH the flat `{kind, id, display_name?}`
+  form and upstream's nested `{key: {kind, id}, display_name?}`; results
+  always serialize the nested upstream shape (canonical).
+- `goal/confirm` with absent `evidence`: the evidence kind is derived from
+  the goal's completion policy (matching the machine's confirmation
+  admission). Wire-supplied evidence is restricted to
+  `{kind, id, label, summary}` — `confirmation_kind` /
+  `confirming_owner_key` are rejected (reserved-classification smuggling);
+  the service stamps the canonical classification. PrincipalConfirmed
+  policies confirm only on the console surface (authenticated principal);
+  the host-trusted stdin surface has no principal.
+- `realm_id` is rejected (-32602) on every method — the service is
+  realm-scoped at construction (mob definition id), and agent tool calls are
+  scope-pinned (`ScopePinnedWorkGraphTools`) for the same reason.
+- Upstream request fields the tables omit (e.g. `goal/create`
+  `projection_policy`, `update` `external_refs`, `claim`
+  `lease_expires_at`) are accepted verbatim.
+- Library-mode spec constructors and `UnifiedRuntimeBuilder` also wire
+  workgraph (not just the gateways) — a profile with `tools.workgraph=true`
+  and no dispatcher is a fail-closed member-build error upstream.
+- Upstream semantics consumers should know: `due_at` is an ELIGIBILITY time
+  (claims guard-reject until `due_at <= now`), not a deadline; an
+  attention-bound member turn's provider-visible tools are hard-filtered to
+  the binding mode's workgraph allow-set for that turn; there are no push
+  events at meerkat 0.7.23 — poll `snapshot`
+  (`event_high_water_mark`) + `events(after_seq)`.
