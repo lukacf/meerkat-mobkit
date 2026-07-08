@@ -70,9 +70,11 @@ agent's turn calls workgraph tools. A light workbench panel is secondary.
    `MobBuilder::with_workgraph_service` (`mob_handle_runtime.rs:~3016`);
    `install_agent_mob_tools` forwards to `MobMcpState::with_workgraph_service`
    (`mob_handle_runtime.rs:940`).
-3. `UnifiedRuntime`: `workgraph_service: std::sync::RwLock<Option<WorkGraphService>>`
-   (memory_panel_store pattern, `unified_runtime/mod.rs:166/616/626`) +
-   `set_workgraph_service`/`workgraph_service()`.
+3. `UnifiedRuntime`: `workgraph_service: Option<WorkGraphService>` seeded once
+   from the bootstrap spec + `workgraph_service()` accessor. There is
+   deliberately NO late setter: the admission machinery (cross-process
+   sidecar, tool-plane slots) freezes at `MobRuntime::bootstrap`, so
+   spec-at-bootstrap is the only blessed wiring.
 4. `spawn_schedule_host` gains `workgraph_service: Option<WorkGraphService>`
    param → upstream arg 8. Call sites: rpc_gateway.rs:4588, mobkit_gateway.rs:867,
    in-crate e2e harness.
