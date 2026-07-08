@@ -1145,3 +1145,23 @@ authenticated principal, audit-logged, intended for debug/recovery only
 (`with_trusted_principal`-style promotion on `AttentionReassignRequest`).
 Not an operating path; the agent tool surface's mode-derived restriction
 stays untouched.
+
+## Ask 24 — filtered attention queries + terminal-binding GC — P2
+
+`SqliteWorkGraphStore::list_sqlite_attention` (0.7.23 store.rs:1576) runs
+`SELECT attention_json FROM workgraph_attention` with no WHERE clause and
+JSON-decodes EVERY row — all realms, all statuses — before Rust-side
+filtering; and every `reassign_attention` keeps the superseded row forever,
+so the table grows monotonically with binding churn. Any host that must
+read binding state on a hot path (mobkit's one-binding-per-target
+admission guard runs under a runtime-wide gate and, on shared stores, a
+cross-process lock) pays an unbounded scan while serializing all binding
+mutations behind it; at OB3-style eternal-fleet churn this walks into
+lock-timeout territory.
+
+Ask: (1) push `realm_id`/`namespace`/`status`/`target` filters into the
+SQL (indexed columns or generated columns over the JSON); (2) a GC/prune
+facility for terminal (Superseded/Stopped) bindings, mirroring the ask-2
+memory-store lifecycle shape. mobkit interim: realm+status-filtered list
+calls (upstream still decodes every row) and an actionable lock-timeout
+error.
