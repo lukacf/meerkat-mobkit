@@ -92,21 +92,25 @@ optional fields); retain `revision` fields verbatim.
 
 Builder opt-out both SDKs: Python `MobKitBuilder.workgraph(enabled: bool)`,
 TS `.workgraph(enabled: boolean)` → `runtime_options.workgraph` (bool,
-default true; the gateway also accepts a STRING path for an explicit
-durable store location — identity-first launches without a state dir are
-otherwise memory-backed, warned at boot).
+default true; the gateway also accepts a STRING directory for an explicit
+durable store location (`workgraph.sqlite3` created inside) —
+identity-first launches without a state dir are otherwise memory-backed,
+warned at boot).
 
 Typed `CapabilitiesResult` in both SDKs carries the `workgraph: bool` flag.
 
 ## Console
 
 Headless command names (console/src/lib/headless.ts):
-`workgraphSnapshot`, `workgraphGoalStatus`, `workgraphClaim`,
+`workgraphSnapshot`, `workgraphGet`, `workgraphGoalStatus`, `workgraphClaim`,
 `workgraphRelease`, `workgraphClose`, `workgraphGoalConfirm`,
 `workgraphGoalRequestClose`, `workgraphAttentionPause`,
 `workgraphAttentionResume`, `workgraphAttentionReassign`,
 `workgraphEvents` → the RPC methods
 above (CONSOLE_RPC_METHODS entries in console/src/lib/contract.ts).
+`workgraphGet`/`workgraphGoalStatus` also back the operator-action CAS
+resolution path (console/src/lib/workgraph-actions.ts): when the UI never
+observed a revision it fetches the live one instead of guessing 0.
 
 Inline card entry kind: `"workgraph"` (`ConversationWorkGraphEntry`), one
 evolving entry per goal/root work-item, aggregated from workgraph tool-call
