@@ -1117,3 +1117,22 @@ known retiring-retry state), identity-first DURABLE members are unaffected
 (tolerant disposal on the identity plane), and the classic chain is fixed.
 Affects mob-plane worker churn under identity-first gateways (HomeCore
 agent-tool workers, OB3 worker plane after migration).
+
+## Ask 23 — host-plane attention reassignment (mode-independent) — P2
+
+meerkat 0.7.23's `reassign_attention` requires the witness's
+`can_link_derived_from`, which the machine derives ONLY for
+coordinate-mode bindings (`tool_surface.rs` pins: coordinate=true,
+pursue=false). That is the right model for AGENT-driven reassignment,
+but it also binds the HOST: an operator console cannot move a
+pursue/review/falsify/judge/observe binding to another member at all —
+there is no host-authenticated reassign that bypasses the mode-derived
+authority, and hosts must not forge projections. mobkit 0.7.30 surfaces
+a precise error and hides the affordance for non-coordinate bindings;
+the workaround (goal_request_close + create a new goal on the new
+target) loses binding history/evidence continuity.
+
+Ask: a host-plane reassign on `WorkGraphService` (or a
+`with_trusted_principal`-style promotion on `AttentionReassignRequest`)
+that lets an authenticated host/operator move any non-terminal binding,
+keeping the agent tool surface's mode-derived restriction intact.

@@ -100,7 +100,8 @@ Headless command names (console/src/lib/headless.ts):
 `workgraphSnapshot`, `workgraphGoalStatus`, `workgraphClaim`,
 `workgraphRelease`, `workgraphClose`, `workgraphGoalConfirm`,
 `workgraphGoalRequestClose`, `workgraphAttentionPause`,
-`workgraphAttentionResume`, `workgraphAttentionReassign` → the RPC methods
+`workgraphAttentionResume`, `workgraphAttentionReassign`,
+`workgraphEvents` → the RPC methods
 above (CONSOLE_RPC_METHODS entries in console/src/lib/contract.ts).
 
 Inline card entry kind: `"workgraph"` (`ConversationWorkGraphEntry`), one
@@ -130,6 +131,15 @@ frames. Operator actions on the card gated by
 - Library-mode spec constructors and `UnifiedRuntimeBuilder` also wire
   workgraph (not just the gateways) — a profile with `tools.workgraph=true`
   and no dispatcher is a fail-closed member-build error upstream.
+- `goal/create` rejects a second ACTIVE binding for a target that already has
+  one (`-32042`, detail names the existing binding) — upstream
+  `MultipleActiveBindings` would otherwise hard-fail every subsequent turn of
+  that member.
+- `attention/reassign` is restricted by upstream's authority model to
+  COORDINATE-mode bindings at meerkat 0.7.23 (the witness's
+  `can_link_derived_from` derives from mode); other modes get a precise
+  error, and the console hides the affordance. Upstream ask filed for a
+  host-plane reassign.
 - Upstream semantics consumers should know: `due_at` is an ELIGIBILITY time
   (claims guard-reject until `due_at <= now`), not a deadline; an
   attention-bound member turn's provider-visible tools are hard-filtered to
