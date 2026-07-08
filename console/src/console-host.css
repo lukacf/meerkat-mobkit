@@ -2430,6 +2430,18 @@ svg[data-svg="fit"],
   transition: width var(--motion-hover), background var(--motion-hover);
 }
 
+.conv-turn-rail__tick--overflow {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: transparent;
+  border: 1.5px solid color-mix(in oklch, var(--ink) 32%, transparent);
+}
+
+.conv-turn-rail__button:hover .conv-turn-rail__tick--overflow {
+  border-color: color-mix(in oklch, var(--ink) 60%, transparent);
+}
+
 .conv-turn-rail__button:hover .conv-turn-rail__tick,
 .conv-turn-rail__button:focus-visible .conv-turn-rail__tick {
   background: color-mix(in oklch, var(--ink) 52%, transparent);
