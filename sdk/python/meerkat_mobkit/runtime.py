@@ -24,6 +24,8 @@ from .errors import (
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
+    WORKGRAPH_CONFLICT_CODE,
+    WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     ConsoleTimelineReplayUnavailableError,
@@ -33,6 +35,8 @@ from .errors import (
     NotConnectedError,
     RpcError,
     TransportError,
+    WorkGraphConflictError,
+    WorkGraphUnavailableError,
 )
 from .events import AgentEvent, MobEvent
 from ._sse import SseEvent, parse_sse_stream
@@ -85,6 +89,14 @@ from .types import (
     SpawnResult,
     StatusResult,
     SubscribeResult,
+    WorkGraphAttentionBinding,
+    WorkGraphAttentionReassignResult,
+    WorkGraphEdge,
+    WorkGraphEventEntry,
+    WorkGraphGoalResult,
+    WorkGraphItem,
+    WorkGraphItemsResult,
+    WorkGraphSnapshotResult,
 )
 
 from ._client import _build_request as _rpc_request
@@ -129,6 +141,21 @@ def _rpc_error_from_payload(
     if code == CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE:
         return ConsoleTimelineReplayUnavailableError(
             message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == WORKGRAPH_UNAVAILABLE_CODE:
+        return WorkGraphUnavailableError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == WORKGRAPH_CONFLICT_CODE:
+        return WorkGraphConflictError(
+            message,
+            detail=(data.get("detail") if isinstance(data, dict) else None),
             request_id=request_id,
             method=method,
             data=data,
@@ -305,6 +332,8 @@ class MobKitRuntime:
             runtime_options["gating_config_path"] = self._config.gating_config_path
         if self._config.access_config_path:
             runtime_options["access_config_path"] = self._config.access_config_path
+        if self._config.workgraph_enabled is not None:
+            runtime_options["workgraph"] = self._config.workgraph_enabled
         if self._config.routing_config_path:
             runtime_options["routing_config_path"] = self._config.routing_config_path
         if self._config.scheduling_files:
@@ -1611,6 +1640,272 @@ class MobHandle:
         }
         raw = await self._runtime._rpc("mobkit/memory/index", params)
         return MemoryIndexResult.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # WorkGraph — collaborative work-item graph
+    # -----------------------------------------------------------------
+
+    async def workgraph_snapshot(self, **kwargs: Any) -> WorkGraphSnapshotResult:
+        """Return a full WorkGraph snapshot (items, edges, attention, ready ids)."""
+        raw = await self._runtime._rpc("mobkit/workgraph/snapshot", dict(kwargs))
+        return WorkGraphSnapshotResult.from_dict(raw)
+
+    async def workgraph_list(self, **kwargs: Any) -> WorkGraphItemsResult:
+        """List WorkGraph items matching the given filter."""
+        raw = await self._runtime._rpc("mobkit/workgraph/list", dict(kwargs))
+        return WorkGraphItemsResult.from_dict(raw)
+
+    async def workgraph_get(self, id: str, **kwargs: Any) -> WorkGraphItem:
+        """Fetch a single WorkGraph item by id."""
+        params: dict[str, Any] = {"id": id, **kwargs}
+        raw = await self._runtime._rpc("mobkit/workgraph/get", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_ready(self, **kwargs: Any) -> WorkGraphItemsResult:
+        """List WorkGraph items that are ready to claim (no unresolved blockers)."""
+        raw = await self._runtime._rpc("mobkit/workgraph/ready", dict(kwargs))
+        return WorkGraphItemsResult.from_dict(raw)
+
+    async def workgraph_events(self, **kwargs: Any) -> list[WorkGraphEventEntry]:
+        """Query the WorkGraph event log."""
+        raw = await self._runtime._rpc("mobkit/workgraph/events", dict(kwargs))
+        events = raw.get("events", []) if isinstance(raw, dict) else []
+        return [WorkGraphEventEntry.from_dict(e) for e in events]
+
+    async def workgraph_attention_list(
+        self, **kwargs: Any
+    ) -> list[WorkGraphAttentionBinding]:
+        """List attention bindings matching the given filter."""
+        raw = await self._runtime._rpc("mobkit/workgraph/attention/list", dict(kwargs))
+        bindings = raw.get("attention", []) if isinstance(raw, dict) else []
+        return [WorkGraphAttentionBinding.from_dict(b) for b in bindings]
+
+    async def workgraph_goal_status(
+        self, binding_id: str, **kwargs: Any
+    ) -> WorkGraphGoalResult:
+        """Fetch the goal work item + attention binding for a binding id."""
+        params: dict[str, Any] = {"binding_id": binding_id, **kwargs}
+        raw = await self._runtime._rpc("mobkit/workgraph/goal/status", params)
+        return WorkGraphGoalResult.from_dict(raw)
+
+    async def workgraph_create(self, title: str, **kwargs: Any) -> WorkGraphItem:
+        """Create a new WorkGraph item."""
+        params: dict[str, Any] = {"title": title, **kwargs}
+        raw = await self._runtime._rpc("mobkit/workgraph/create", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_update(
+        self, id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphItem:
+        """Update a WorkGraph item's mutable fields (CAS via ``expected_revision``)."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/update", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_claim(
+        self,
+        id: str,
+        expected_revision: int,
+        owner: dict[str, Any],
+        **kwargs: Any,
+    ) -> WorkGraphItem:
+        """Claim a WorkGraph item for an owner (CAS via ``expected_revision``)."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            "owner": owner,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/claim", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_release(
+        self, id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphItem:
+        """Release a claimed WorkGraph item (CAS via ``expected_revision``)."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/release", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_close(
+        self, id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphItem:
+        """Close a WorkGraph item (default status ``completed``)."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/close", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_block(
+        self, id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphItem:
+        """Mark a WorkGraph item blocked (CAS via ``expected_revision``)."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/block", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_link(
+        self, kind: str, from_id: str, to_id: str, **kwargs: Any
+    ) -> WorkGraphEdge:
+        """Link two WorkGraph items with an edge (e.g. ``blocks``, ``parent``)."""
+        params: dict[str, Any] = {
+            "kind": kind,
+            "from_id": from_id,
+            "to_id": to_id,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/link", params)
+        edge_data = raw.get("edge", raw) if isinstance(raw, dict) else raw
+        return WorkGraphEdge.from_dict(edge_data)
+
+    async def workgraph_add_evidence(
+        self,
+        id: str,
+        expected_revision: int,
+        evidence: dict[str, Any],
+        **kwargs: Any,
+    ) -> WorkGraphItem:
+        """Attach an evidence reference to a WorkGraph item."""
+        params: dict[str, Any] = {
+            "id": id,
+            "expected_revision": expected_revision,
+            "evidence": evidence,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/evidence/add", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_escalate_policy(
+        self,
+        binding_id: str,
+        id: str,
+        expected_revision: int,
+        completion_policy: dict[str, Any],
+        **kwargs: Any,
+    ) -> WorkGraphItem:
+        """Escalate a WorkGraph item's completion policy under a goal's authority.
+
+        The witness (``AttentionContextProjection``) is fetched server-side
+        from ``binding_id`` — the SDK does not build or forward it.
+        """
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "id": id,
+            "expected_revision": expected_revision,
+            "completion_policy": completion_policy,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/policy/escalate", params)
+        item_data = raw.get("item", raw) if isinstance(raw, dict) else raw
+        return WorkGraphItem.from_dict(item_data)
+
+    async def workgraph_goal_create(
+        self, title: str, target: dict[str, Any], **kwargs: Any
+    ) -> WorkGraphGoalResult:
+        """Create a goal work item plus its attention binding.
+
+        ``target`` is ``{"kind": "session", "session_id": ...}``,
+        ``{"kind": "identity", "identity": ...}`` (lowered server-side to an
+        owner key against the runtime's mob id), or
+        ``{"kind": "owner", "owner_key": {"kind": ..., "id": ...}}``.
+        """
+        params: dict[str, Any] = {"title": title, "target": target, **kwargs}
+        raw = await self._runtime._rpc("mobkit/workgraph/goal/create", params)
+        return WorkGraphGoalResult.from_dict(raw)
+
+    async def workgraph_goal_confirm(
+        self, binding_id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphGoalResult:
+        """Confirm a goal's completion (CAS via ``expected_revision``)."""
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/goal/confirm", params)
+        return WorkGraphGoalResult.from_dict(raw)
+
+    async def workgraph_goal_request_close(
+        self, binding_id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphGoalResult:
+        """Request closure of a goal (default status ``completed``)."""
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/goal/request_close", params)
+        return WorkGraphGoalResult.from_dict(raw)
+
+    async def workgraph_attention_pause(
+        self, binding_id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphAttentionBinding:
+        """Pause an attention binding (optionally until a given time)."""
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/attention/pause", params)
+        binding_data = raw.get("attention", raw) if isinstance(raw, dict) else raw
+        return WorkGraphAttentionBinding.from_dict(binding_data)
+
+    async def workgraph_attention_resume(
+        self, binding_id: str, expected_revision: int, **kwargs: Any
+    ) -> WorkGraphAttentionBinding:
+        """Resume a paused attention binding."""
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "expected_revision": expected_revision,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/attention/resume", params)
+        binding_data = raw.get("attention", raw) if isinstance(raw, dict) else raw
+        return WorkGraphAttentionBinding.from_dict(binding_data)
+
+    async def workgraph_attention_reassign(
+        self,
+        binding_id: str,
+        expected_revision: int,
+        target: dict[str, Any],
+        **kwargs: Any,
+    ) -> WorkGraphAttentionReassignResult:
+        """Reassign an attention binding to a new target.
+
+        The witness is fetched server-side from ``binding_id``, mirroring
+        ``workgraph_escalate_policy``.
+        """
+        params: dict[str, Any] = {
+            "binding_id": binding_id,
+            "expected_revision": expected_revision,
+            "target": target,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/workgraph/attention/reassign", params)
+        return WorkGraphAttentionReassignResult.from_dict(raw)
 
     # -----------------------------------------------------------------
     # Cross-mob operations

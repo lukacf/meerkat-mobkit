@@ -28,6 +28,8 @@ import {
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
   LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
+  WORKGRAPH_UNAVAILABLE_CODE,
+  WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
   LeaseLostError,
@@ -36,6 +38,8 @@ import {
   NotConnectedError,
   RpcError,
   TransportError,
+  WorkGraphUnavailableError,
+  WorkGraphConflictError,
   isRpcError,
 } from "./errors.js";
 import { PersistentTransport, buildJsonRpcRequest } from "./transport.js";
@@ -107,6 +111,29 @@ import {
   parseBlobUploadResult,
   dispatchInputToDict,
   contentBlockToDict,
+  parseWorkGraphItem,
+  parseWorkGraphEdge,
+  parseWorkGraphAttentionBinding,
+  parseWorkGraphSnapshotResult,
+  parseWorkGraphItemsResult,
+  parseWorkGraphGoalResult,
+  parseWorkGraphAttentionReassignResult,
+  parseWorkGraphEventEntry,
+  workGraphFilterOptionsToDict,
+  workGraphReadyOptionsToDict,
+  workGraphEventsOptionsToDict,
+  workGraphAttentionListOptionsToDict,
+  workGraphCreateOptionsToDict,
+  workGraphUpdateOptionsToDict,
+  workGraphOwnerInputToDict,
+  workGraphClaimOptionsToDict,
+  workGraphCloseOptionsToDict,
+  workGraphEvidenceInputToDict,
+  workGraphGoalTargetToDict,
+  workGraphGoalCreateOptionsToDict,
+  workGraphGoalConfirmOptionsToDict,
+  workGraphGoalRequestCloseOptionsToDict,
+  workGraphAttentionPauseOptionsToDict,
   type StatusResult,
   type CapabilitiesResult,
   type ReconcileResult,
@@ -164,6 +191,29 @@ import {
   type BlobUploadResult,
   type DispatchInput,
   type DispatchContentBlock,
+  type WorkGraphItem,
+  type WorkGraphEdge,
+  type WorkGraphAttentionBinding,
+  type WorkGraphSnapshotResult,
+  type WorkGraphItemsResult,
+  type WorkGraphGoalResult,
+  type WorkGraphAttentionReassignResult,
+  type WorkGraphEventEntry,
+  type WorkGraphFilterOptions,
+  type WorkGraphReadyOptions,
+  type WorkGraphEventsOptions,
+  type WorkGraphAttentionListOptions,
+  type WorkGraphCreateOptions,
+  type WorkGraphUpdateOptions,
+  type WorkGraphOwnerInput,
+  type WorkGraphClaimOptions,
+  type WorkGraphCloseOptions,
+  type WorkGraphEvidenceInput,
+  type WorkGraphGoalTarget,
+  type WorkGraphGoalCreateOptions,
+  type WorkGraphGoalConfirmOptions,
+  type WorkGraphGoalRequestCloseOptions,
+  type WorkGraphAttentionPauseOptions,
 } from "./types.js";
 
 // -- Request ID counter ---------------------------------------------------
@@ -171,6 +221,13 @@ import {
 let requestCounter = 0;
 function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
+}
+
+/** Narrow an RPC result to a plain record, or `{}` for non-object results. */
+function asWireRecord(raw: unknown): Record<string, unknown> {
+  return typeof raw === "object" && raw !== null
+    ? (raw as Record<string, unknown>)
+    : {};
 }
 
 function extractMobStructuralEvents(raw: unknown): MobStructuralEvent[] {
@@ -473,6 +530,9 @@ export class MobKitRuntime {
     if (this._config.schedulingFiles.length > 0) {
       runtimeOptions.scheduling_files = this._config.schedulingFiles;
     }
+    if (this._config.workgraphEnabled !== null) {
+      runtimeOptions.workgraph = this._config.workgraphEnabled;
+    }
     if (this._config.memoryConfig) {
       runtimeOptions.memory_config = serializeConfig(this._config.memoryConfig);
     }
@@ -568,6 +628,12 @@ export class MobKitRuntime {
       }
       if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
         throw new ConsoleTimelineReplayUnavailableError(message, rid, method, err.data);
+      }
+      if (code === WORKGRAPH_UNAVAILABLE_CODE) {
+        throw new WorkGraphUnavailableError(message, rid, method, err.data);
+      }
+      if (code === WORKGRAPH_CONFLICT_CODE) {
+        throw new WorkGraphConflictError(message, rid, method, err.data);
       }
       const rpcError = new RpcError(code, message, rid, method, err.data);
       if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
@@ -1755,6 +1821,312 @@ export class MobHandle {
         ? (((raw as Record<string, unknown>).entries as unknown[]) ?? [])
         : [];
     return (entries as unknown[]).map(parseGatingAuditEntry);
+  }
+
+  // -- WorkGraph ------------------------------------------------------------
+  //
+  // Goals, work items, and attention bindings (`mobkit/workgraph/*`). Wire
+  // params are snake_case; option objects here are typed camelCase and
+  // converted at the call site. See docs/design/workgraph-wire-contract.md.
+
+  async workgraphSnapshot(
+    options?: WorkGraphFilterOptions,
+  ): Promise<WorkGraphSnapshotResult> {
+    return parseWorkGraphSnapshotResult(
+      await this._runtime._rpc(
+        "mobkit/workgraph/snapshot",
+        workGraphFilterOptionsToDict(options),
+      ),
+    );
+  }
+
+  async workgraphList(
+    options?: WorkGraphFilterOptions,
+  ): Promise<WorkGraphItem[]> {
+    const result = parseWorkGraphItemsResult(
+      await this._runtime._rpc(
+        "mobkit/workgraph/list",
+        workGraphFilterOptionsToDict(options),
+      ),
+    );
+    return [...result.items];
+  }
+
+  async workgraphGet(
+    id: string,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphItem> {
+    const params: Record<string, unknown> = { id };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc("mobkit/workgraph/get", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphReady(
+    options?: WorkGraphReadyOptions,
+  ): Promise<WorkGraphItem[]> {
+    const result = parseWorkGraphItemsResult(
+      await this._runtime._rpc(
+        "mobkit/workgraph/ready",
+        workGraphReadyOptionsToDict(options),
+      ),
+    );
+    return [...result.items];
+  }
+
+  async workgraphEvents(
+    options?: WorkGraphEventsOptions,
+  ): Promise<WorkGraphEventEntry[]> {
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/events",
+      workGraphEventsOptionsToDict(options),
+    );
+    const events = asWireRecord(raw).events;
+    return (Array.isArray(events) ? events : []).map(parseWorkGraphEventEntry);
+  }
+
+  async workgraphAttentionList(
+    options?: WorkGraphAttentionListOptions,
+  ): Promise<WorkGraphAttentionBinding[]> {
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/attention/list",
+      workGraphAttentionListOptionsToDict(options),
+    );
+    const attention = asWireRecord(raw).attention;
+    return (Array.isArray(attention) ? attention : []).map(
+      parseWorkGraphAttentionBinding,
+    );
+  }
+
+  async workgraphGoalStatus(
+    bindingId: string,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphGoalResult> {
+    const params: Record<string, unknown> = { binding_id: bindingId };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    return parseWorkGraphGoalResult(
+      await this._runtime._rpc("mobkit/workgraph/goal/status", params),
+    );
+  }
+
+  async workgraphCreate(
+    title: string,
+    options?: WorkGraphCreateOptions,
+  ): Promise<WorkGraphItem> {
+    const params = workGraphCreateOptionsToDict(options);
+    params.title = title;
+    const raw = await this._runtime._rpc("mobkit/workgraph/create", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphUpdate(
+    id: string,
+    expectedRevision: number,
+    options?: WorkGraphUpdateOptions,
+  ): Promise<WorkGraphItem> {
+    const params = workGraphUpdateOptionsToDict(options);
+    params.id = id;
+    params.expected_revision = expectedRevision;
+    const raw = await this._runtime._rpc("mobkit/workgraph/update", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphClaim(
+    id: string,
+    expectedRevision: number,
+    owner: WorkGraphOwnerInput,
+    options?: WorkGraphClaimOptions,
+  ): Promise<WorkGraphItem> {
+    const params = workGraphClaimOptionsToDict(options);
+    params.id = id;
+    params.expected_revision = expectedRevision;
+    params.owner = workGraphOwnerInputToDict(owner);
+    const raw = await this._runtime._rpc("mobkit/workgraph/claim", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphRelease(
+    id: string,
+    expectedRevision: number,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphItem> {
+    const params: Record<string, unknown> = {
+      id,
+      expected_revision: expectedRevision,
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc("mobkit/workgraph/release", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphClose(
+    id: string,
+    expectedRevision: number,
+    options?: WorkGraphCloseOptions,
+  ): Promise<WorkGraphItem> {
+    const params = workGraphCloseOptionsToDict(options);
+    params.id = id;
+    params.expected_revision = expectedRevision;
+    const raw = await this._runtime._rpc("mobkit/workgraph/close", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphBlock(
+    id: string,
+    expectedRevision: number,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphItem> {
+    const params: Record<string, unknown> = {
+      id,
+      expected_revision: expectedRevision,
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc("mobkit/workgraph/block", params);
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphLink(
+    kind: string,
+    fromId: string,
+    toId: string,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphEdge> {
+    const params: Record<string, unknown> = {
+      kind,
+      from_id: fromId,
+      to_id: toId,
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc("mobkit/workgraph/link", params);
+    return parseWorkGraphEdge(asWireRecord(raw).edge);
+  }
+
+  async workgraphAddEvidence(
+    id: string,
+    expectedRevision: number,
+    evidence: WorkGraphEvidenceInput,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphItem> {
+    const params: Record<string, unknown> = {
+      id,
+      expected_revision: expectedRevision,
+      evidence: workGraphEvidenceInputToDict(evidence),
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/evidence/add",
+      params,
+    );
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphEscalatePolicy(
+    bindingId: string,
+    id: string,
+    expectedRevision: number,
+    completionPolicy: unknown,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphItem> {
+    const params: Record<string, unknown> = {
+      binding_id: bindingId,
+      id,
+      expected_revision: expectedRevision,
+      completion_policy: completionPolicy,
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/policy/escalate",
+      params,
+    );
+    return parseWorkGraphItem(asWireRecord(raw).item);
+  }
+
+  async workgraphGoalCreate(
+    title: string,
+    target: WorkGraphGoalTarget,
+    options?: WorkGraphGoalCreateOptions,
+  ): Promise<WorkGraphGoalResult> {
+    const params = workGraphGoalCreateOptionsToDict(options);
+    params.title = title;
+    params.target = workGraphGoalTargetToDict(target);
+    return parseWorkGraphGoalResult(
+      await this._runtime._rpc("mobkit/workgraph/goal/create", params),
+    );
+  }
+
+  async workgraphGoalConfirm(
+    bindingId: string,
+    expectedRevision: number,
+    options?: WorkGraphGoalConfirmOptions,
+  ): Promise<WorkGraphGoalResult> {
+    const params = workGraphGoalConfirmOptionsToDict(options);
+    params.binding_id = bindingId;
+    params.expected_revision = expectedRevision;
+    return parseWorkGraphGoalResult(
+      await this._runtime._rpc("mobkit/workgraph/goal/confirm", params),
+    );
+  }
+
+  async workgraphGoalRequestClose(
+    bindingId: string,
+    expectedRevision: number,
+    options?: WorkGraphGoalRequestCloseOptions,
+  ): Promise<WorkGraphGoalResult> {
+    const params = workGraphGoalRequestCloseOptionsToDict(options);
+    params.binding_id = bindingId;
+    params.expected_revision = expectedRevision;
+    return parseWorkGraphGoalResult(
+      await this._runtime._rpc("mobkit/workgraph/goal/request_close", params),
+    );
+  }
+
+  async workgraphAttentionPause(
+    bindingId: string,
+    expectedRevision: number,
+    options?: WorkGraphAttentionPauseOptions,
+  ): Promise<WorkGraphAttentionBinding> {
+    const params = workGraphAttentionPauseOptionsToDict(options);
+    params.binding_id = bindingId;
+    params.expected_revision = expectedRevision;
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/attention/pause",
+      params,
+    );
+    return parseWorkGraphAttentionBinding(asWireRecord(raw).attention);
+  }
+
+  async workgraphAttentionResume(
+    bindingId: string,
+    expectedRevision: number,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphAttentionBinding> {
+    const params: Record<string, unknown> = {
+      binding_id: bindingId,
+      expected_revision: expectedRevision,
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/attention/resume",
+      params,
+    );
+    return parseWorkGraphAttentionBinding(asWireRecord(raw).attention);
+  }
+
+  async workgraphAttentionReassign(
+    bindingId: string,
+    expectedRevision: number,
+    target: WorkGraphGoalTarget,
+    options?: { namespace?: string },
+  ): Promise<WorkGraphAttentionReassignResult> {
+    const params: Record<string, unknown> = {
+      binding_id: bindingId,
+      expected_revision: expectedRevision,
+      target: workGraphGoalTargetToDict(target),
+    };
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    return parseWorkGraphAttentionReassignResult(
+      await this._runtime._rpc("mobkit/workgraph/attention/reassign", params),
+    );
   }
 
   // -- Topology -----------------------------------------------------------

@@ -2702,3 +2702,659 @@ export interface TopologyProvider {
     context: unknown,
   ): Promise<ManagedPeerEdge[]>;
 }
+
+// =========================================================================
+// WorkGraph
+// =========================================================================
+//
+// Wire shapes mirror meerkat-workgraph 0.7.23's `WorkItem` / `WorkEdge` /
+// `WorkAttentionBinding` / `WorkGraphSnapshot` / `WorkGraphEvent` (serde,
+// snake_case) verbatim, per docs/design/workgraph-wire-contract.md.
+// `machineState` and `completionPolicy` on `WorkGraphItem`, and `target` /
+// `status` / `projectionPolicy` on `WorkGraphAttentionBinding`, are
+// internally-tagged Rust enums/structs the SDK does not re-model — they pass
+// through as opaque JSON so a future upstream variant never breaks parsing.
+
+// -- WorkGraphOwnerKey / WorkGraphOwner ------------------------------------
+
+export interface WorkGraphOwnerKey {
+  readonly kind: string;
+  readonly id: string;
+}
+
+export function parseWorkGraphOwnerKey(raw: unknown): WorkGraphOwnerKey {
+  const d = asRecord(raw);
+  return { kind: String(d.kind ?? ""), id: String(d.id ?? "") };
+}
+
+/** Input form of {@link WorkGraphOwnerKey} for claim/goal-target requests. */
+export interface WorkGraphOwnerKeyInput {
+  readonly kind: string;
+  readonly id: string;
+}
+
+export function workGraphOwnerKeyInputToDict(
+  owner: WorkGraphOwnerKeyInput,
+): Record<string, unknown> {
+  return { kind: owner.kind, id: owner.id };
+}
+
+export interface WorkGraphOwner {
+  readonly key: WorkGraphOwnerKey;
+  readonly displayName: string | null;
+}
+
+export function parseWorkGraphOwner(raw: unknown): WorkGraphOwner {
+  const d = asRecord(raw);
+  return {
+    key: parseWorkGraphOwnerKey(d.key),
+    displayName: typeof d.display_name === "string" ? d.display_name : null,
+  };
+}
+
+/** Input form for `workgraphClaim`'s `owner` parameter. */
+export interface WorkGraphOwnerInput {
+  readonly kind: string;
+  readonly id: string;
+  readonly displayName?: string;
+}
+
+export function workGraphOwnerInputToDict(
+  owner: WorkGraphOwnerInput,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { kind: owner.kind, id: owner.id };
+  if (owner.displayName !== undefined) result.display_name = owner.displayName;
+  return result;
+}
+
+// -- WorkGraphClaim ---------------------------------------------------------
+
+export interface WorkGraphClaim {
+  readonly owner: WorkGraphOwner;
+  readonly claimedAt: string;
+  readonly leaseExpiresAt: string | null;
+}
+
+export function parseWorkGraphClaim(raw: unknown): WorkGraphClaim {
+  const d = asRecord(raw);
+  return {
+    owner: parseWorkGraphOwner(d.owner),
+    claimedAt: String(d.claimed_at ?? ""),
+    leaseExpiresAt:
+      typeof d.lease_expires_at === "string" ? d.lease_expires_at : null,
+  };
+}
+
+// -- WorkGraphExternalRef / WorkGraphEvidenceRef ---------------------------
+
+export interface WorkGraphExternalRef {
+  readonly kind: string;
+  readonly id: string;
+  readonly url: string | null;
+}
+
+export function parseWorkGraphExternalRef(raw: unknown): WorkGraphExternalRef {
+  const d = asRecord(raw);
+  return {
+    kind: String(d.kind ?? ""),
+    id: String(d.id ?? ""),
+    url: typeof d.url === "string" ? d.url : null,
+  };
+}
+
+export interface WorkGraphEvidenceRef {
+  readonly kind: string;
+  readonly id: string;
+  readonly label: string | null;
+  readonly summary: string | null;
+  readonly confirmationKind: string | null;
+  readonly confirmingOwnerKey: WorkGraphOwnerKey | null;
+}
+
+export function parseWorkGraphEvidenceRef(raw: unknown): WorkGraphEvidenceRef {
+  const d = asRecord(raw);
+  return {
+    kind: String(d.kind ?? ""),
+    id: String(d.id ?? ""),
+    label: typeof d.label === "string" ? d.label : null,
+    summary: typeof d.summary === "string" ? d.summary : null,
+    confirmationKind:
+      typeof d.confirmation_kind === "string" ? d.confirmation_kind : null,
+    confirmingOwnerKey:
+      d.confirming_owner_key != null
+        ? parseWorkGraphOwnerKey(d.confirming_owner_key)
+        : null,
+  };
+}
+
+/** Input form for `workgraphAddEvidence` / `workgraphGoalConfirm`'s `evidence` parameter. */
+export interface WorkGraphEvidenceInput {
+  readonly kind: string;
+  readonly id: string;
+  readonly label?: string;
+  readonly summary?: string;
+}
+
+export function workGraphEvidenceInputToDict(
+  evidence: WorkGraphEvidenceInput,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    kind: evidence.kind,
+    id: evidence.id,
+  };
+  if (evidence.label !== undefined) result.label = evidence.label;
+  if (evidence.summary !== undefined) result.summary = evidence.summary;
+  return result;
+}
+
+// -- WorkGraphItem -----------------------------------------------------------
+
+export interface WorkGraphItem {
+  readonly id: string;
+  readonly realmId: string;
+  readonly namespace: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly status: string;
+  /** Internally-tagged `WorkCompletionPolicy` enum — opaque passthrough. */
+  readonly completionPolicy: unknown;
+  readonly priority: string;
+  readonly labels: readonly string[];
+  readonly owner: WorkGraphOwner | null;
+  readonly claim: WorkGraphClaim | null;
+  /** Machine-owned lifecycle/revision authority — opaque passthrough. */
+  readonly machineState: unknown;
+  readonly revision: number;
+  readonly dueAt: string | null;
+  readonly notBefore: string | null;
+  readonly snoozedUntil: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly terminalAt: string | null;
+  readonly externalRefs: readonly WorkGraphExternalRef[];
+  readonly evidenceRefs: readonly WorkGraphEvidenceRef[];
+}
+
+export function parseWorkGraphItem(raw: unknown): WorkGraphItem {
+  const d = asRecord(raw);
+  return {
+    id: String(d.id ?? ""),
+    realmId: String(d.realm_id ?? ""),
+    namespace: String(d.namespace ?? ""),
+    title: String(d.title ?? ""),
+    description: typeof d.description === "string" ? d.description : null,
+    status: String(d.status ?? ""),
+    completionPolicy: d.completion_policy,
+    priority: String(d.priority ?? ""),
+    labels: asStringArray(d.labels),
+    owner: d.owner != null ? parseWorkGraphOwner(d.owner) : null,
+    claim: d.claim != null ? parseWorkGraphClaim(d.claim) : null,
+    machineState: d.machine_state,
+    revision: Number(d.revision ?? 0),
+    dueAt: typeof d.due_at === "string" ? d.due_at : null,
+    notBefore: typeof d.not_before === "string" ? d.not_before : null,
+    snoozedUntil: typeof d.snoozed_until === "string" ? d.snoozed_until : null,
+    createdAt: String(d.created_at ?? ""),
+    updatedAt: String(d.updated_at ?? ""),
+    terminalAt: typeof d.terminal_at === "string" ? d.terminal_at : null,
+    externalRefs: asRecordArray(d.external_refs).map(parseWorkGraphExternalRef),
+    evidenceRefs: asRecordArray(d.evidence_refs).map(parseWorkGraphEvidenceRef),
+  };
+}
+
+// -- WorkGraphEdge -----------------------------------------------------------
+
+export interface WorkGraphEdge {
+  readonly realmId: string;
+  readonly namespace: string;
+  readonly kind: string;
+  readonly fromId: string;
+  readonly toId: string;
+  readonly createdAt: string;
+}
+
+export function parseWorkGraphEdge(raw: unknown): WorkGraphEdge {
+  const d = asRecord(raw);
+  return {
+    realmId: String(d.realm_id ?? ""),
+    namespace: String(d.namespace ?? ""),
+    kind: String(d.kind ?? ""),
+    fromId: String(d.from_id ?? ""),
+    toId: String(d.to_id ?? ""),
+    createdAt: String(d.created_at ?? ""),
+  };
+}
+
+// -- WorkGraphAttentionBinding ------------------------------------------------
+
+export interface WorkGraphWorkRef {
+  readonly itemId: string;
+  readonly realmId: string;
+  readonly namespace: string;
+}
+
+export function parseWorkGraphWorkRef(raw: unknown): WorkGraphWorkRef {
+  const d = asRecord(raw);
+  return {
+    itemId: String(d.item_id ?? ""),
+    realmId: String(d.realm_id ?? ""),
+    namespace: String(d.namespace ?? ""),
+  };
+}
+
+export interface WorkGraphAttentionBinding {
+  readonly bindingId: string;
+  readonly workRef: WorkGraphWorkRef;
+  /** Internally-tagged `WorkAttentionTarget` enum (session | lowered_owner) — opaque passthrough. */
+  readonly target: Readonly<Record<string, unknown>>;
+  readonly mode: string;
+  /** Internally-tagged `WorkAttentionStatus` enum (active | paused{until} | superseded | stopped) — opaque passthrough. */
+  readonly status: Readonly<Record<string, unknown>>;
+  /** Machine-owned lifecycle/revision authority — opaque passthrough. */
+  readonly machineState: unknown;
+  readonly delegatedAuthority: string;
+  readonly projectionPolicy: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export function parseWorkGraphAttentionBinding(
+  raw: unknown,
+): WorkGraphAttentionBinding {
+  const d = asRecord(raw);
+  return {
+    bindingId: String(d.binding_id ?? ""),
+    workRef: parseWorkGraphWorkRef(d.work_ref),
+    target: asRecord(d.target),
+    mode: String(d.mode ?? ""),
+    status: asRecord(d.status),
+    machineState: d.machine_state,
+    delegatedAuthority: String(d.delegated_authority ?? ""),
+    projectionPolicy: asRecord(d.projection_policy),
+    createdAt: String(d.created_at ?? ""),
+    updatedAt: String(d.updated_at ?? ""),
+  };
+}
+
+// -- WorkGraphSnapshotResult / WorkGraphItemsResult --------------------------
+
+export interface WorkGraphSnapshotResult {
+  readonly realmId: string;
+  readonly namespace: string | null;
+  readonly allNamespaces: boolean;
+  readonly capturedAt: string;
+  readonly eventHighWaterMark: number | null;
+  readonly items: readonly WorkGraphItem[];
+  readonly edges: readonly WorkGraphEdge[];
+  readonly attention: readonly WorkGraphAttentionBinding[];
+  readonly readyItemIds: readonly string[];
+}
+
+export function parseWorkGraphSnapshotResult(
+  raw: unknown,
+): WorkGraphSnapshotResult {
+  const d = asRecord(raw);
+  return {
+    realmId: String(d.realm_id ?? ""),
+    namespace: typeof d.namespace === "string" ? d.namespace : null,
+    allNamespaces: Boolean(d.all_namespaces),
+    capturedAt: String(d.captured_at ?? ""),
+    eventHighWaterMark:
+      typeof d.event_high_water_mark === "number"
+        ? d.event_high_water_mark
+        : null,
+    items: asRecordArray(d.items).map(parseWorkGraphItem),
+    edges: asRecordArray(d.edges).map(parseWorkGraphEdge),
+    attention: asRecordArray(d.attention).map(parseWorkGraphAttentionBinding),
+    readyItemIds: asStringArray(d.ready_item_ids),
+  };
+}
+
+export interface WorkGraphItemsResult {
+  readonly items: readonly WorkGraphItem[];
+}
+
+export function parseWorkGraphItemsResult(raw: unknown): WorkGraphItemsResult {
+  const d = asRecord(raw);
+  return { items: asRecordArray(d.items).map(parseWorkGraphItem) };
+}
+
+// -- WorkGraphGoalResult / WorkGraphAttentionReassignResult ------------------
+
+export interface WorkGraphGoalResult {
+  readonly item: WorkGraphItem;
+  readonly attention: WorkGraphAttentionBinding;
+}
+
+export function parseWorkGraphGoalResult(raw: unknown): WorkGraphGoalResult {
+  const d = asRecord(raw);
+  return {
+    item: parseWorkGraphItem(d.item),
+    attention: parseWorkGraphAttentionBinding(d.attention),
+  };
+}
+
+export interface WorkGraphAttentionReassignResult {
+  readonly previous: WorkGraphAttentionBinding;
+  readonly attention: WorkGraphAttentionBinding;
+}
+
+export function parseWorkGraphAttentionReassignResult(
+  raw: unknown,
+): WorkGraphAttentionReassignResult {
+  const d = asRecord(raw);
+  return {
+    previous: parseWorkGraphAttentionBinding(d.previous),
+    attention: parseWorkGraphAttentionBinding(d.attention),
+  };
+}
+
+// -- WorkGraphEventEntry ------------------------------------------------------
+
+export interface WorkGraphEventEntry {
+  readonly seq: number | null;
+  readonly realmId: string;
+  readonly namespace: string;
+  readonly itemId: string | null;
+  readonly kind: string;
+  readonly at: string;
+  readonly payload: unknown;
+}
+
+export function parseWorkGraphEventEntry(raw: unknown): WorkGraphEventEntry {
+  const d = asRecord(raw);
+  return {
+    seq: typeof d.seq === "number" ? d.seq : null,
+    realmId: String(d.realm_id ?? ""),
+    namespace: String(d.namespace ?? ""),
+    itemId: typeof d.item_id === "string" ? d.item_id : null,
+    kind: String(d.kind ?? ""),
+    at: String(d.at ?? ""),
+    payload: d.payload,
+  };
+}
+
+// -- WorkGraph request-side option helpers -----------------------------------
+
+/** Shared filter for `workgraphSnapshot` / `workgraphList`. */
+export interface WorkGraphFilterOptions {
+  readonly namespace?: string;
+  readonly allNamespaces?: boolean;
+  readonly statuses?: readonly string[];
+  readonly labels?: readonly string[];
+  readonly includeTerminal?: boolean;
+  readonly limit?: number;
+}
+
+export function workGraphFilterOptionsToDict(
+  options: WorkGraphFilterOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  if (options.allNamespaces !== undefined) {
+    result.all_namespaces = options.allNamespaces;
+  }
+  if (options.statuses !== undefined && options.statuses.length > 0) {
+    result.statuses = [...options.statuses];
+  }
+  if (options.labels !== undefined && options.labels.length > 0) {
+    result.labels = [...options.labels];
+  }
+  if (options.includeTerminal !== undefined) {
+    result.include_terminal = options.includeTerminal;
+  }
+  if (options.limit !== undefined) result.limit = options.limit;
+  return result;
+}
+
+export interface WorkGraphReadyOptions {
+  readonly namespace?: string;
+  readonly labels?: readonly string[];
+  readonly limit?: number;
+}
+
+export function workGraphReadyOptionsToDict(
+  options: WorkGraphReadyOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  if (options.labels !== undefined && options.labels.length > 0) {
+    result.labels = [...options.labels];
+  }
+  if (options.limit !== undefined) result.limit = options.limit;
+  return result;
+}
+
+export interface WorkGraphEventsOptions {
+  readonly namespace?: string;
+  readonly allNamespaces?: boolean;
+  readonly afterSeq?: number;
+  readonly limit?: number;
+}
+
+export function workGraphEventsOptionsToDict(
+  options: WorkGraphEventsOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  if (options.allNamespaces !== undefined) {
+    result.all_namespaces = options.allNamespaces;
+  }
+  if (options.afterSeq !== undefined) result.after_seq = options.afterSeq;
+  if (options.limit !== undefined) result.limit = options.limit;
+  return result;
+}
+
+export interface WorkGraphAttentionListOptions {
+  readonly namespace?: string;
+  readonly status?: string;
+}
+
+export function workGraphAttentionListOptionsToDict(
+  options: WorkGraphAttentionListOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  if (options.status !== undefined) result.status = options.status;
+  return result;
+}
+
+/** Options for `workgraphCreate` beyond the required `title`. */
+export interface WorkGraphCreateOptions {
+  readonly description?: string;
+  readonly priority?: string;
+  /** Internally-tagged `WorkCompletionPolicy` enum, e.g. `{ kind: "self_attest" }`. */
+  readonly completionPolicy?: unknown;
+  readonly labels?: readonly string[];
+  readonly dueAt?: string;
+  readonly notBefore?: string;
+  readonly snoozedUntil?: string;
+  readonly externalRefs?: readonly Record<string, unknown>[];
+  readonly evidenceRefs?: readonly Record<string, unknown>[];
+  readonly status?: "open" | "blocked";
+  readonly namespace?: string;
+}
+
+export function workGraphCreateOptionsToDict(
+  options: WorkGraphCreateOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.description !== undefined) result.description = options.description;
+  if (options.priority !== undefined) result.priority = options.priority;
+  if (options.completionPolicy !== undefined) {
+    result.completion_policy = options.completionPolicy;
+  }
+  if (options.labels !== undefined && options.labels.length > 0) {
+    result.labels = [...options.labels];
+  }
+  if (options.dueAt !== undefined) result.due_at = options.dueAt;
+  if (options.notBefore !== undefined) result.not_before = options.notBefore;
+  if (options.snoozedUntil !== undefined) {
+    result.snoozed_until = options.snoozedUntil;
+  }
+  if (options.externalRefs !== undefined && options.externalRefs.length > 0) {
+    result.external_refs = [...options.externalRefs];
+  }
+  if (options.evidenceRefs !== undefined && options.evidenceRefs.length > 0) {
+    result.evidence_refs = [...options.evidenceRefs];
+  }
+  if (options.status !== undefined) result.status = options.status;
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+/** Options for `workgraphUpdate` beyond `id`/`expectedRevision`. */
+export interface WorkGraphUpdateOptions {
+  readonly title?: string;
+  readonly description?: string;
+  readonly priority?: string;
+  /** Explicit `[]` clears labels; omit to leave labels untouched. */
+  readonly labels?: readonly string[];
+  readonly dueAt?: string;
+  readonly notBefore?: string;
+  readonly snoozedUntil?: string;
+  readonly namespace?: string;
+}
+
+export function workGraphUpdateOptionsToDict(
+  options: WorkGraphUpdateOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.title !== undefined) result.title = options.title;
+  if (options.description !== undefined) result.description = options.description;
+  if (options.priority !== undefined) result.priority = options.priority;
+  if (options.labels !== undefined) result.labels = [...options.labels];
+  if (options.dueAt !== undefined) result.due_at = options.dueAt;
+  if (options.notBefore !== undefined) result.not_before = options.notBefore;
+  if (options.snoozedUntil !== undefined) {
+    result.snoozed_until = options.snoozedUntil;
+  }
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+export interface WorkGraphClaimOptions {
+  readonly leaseSeconds?: number;
+  readonly namespace?: string;
+}
+
+export function workGraphClaimOptionsToDict(
+  options: WorkGraphClaimOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.leaseSeconds !== undefined) {
+    result.lease_seconds = options.leaseSeconds;
+  }
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+export interface WorkGraphCloseOptions {
+  readonly status?: "completed" | "cancelled" | "failed";
+  readonly namespace?: string;
+}
+
+export function workGraphCloseOptionsToDict(
+  options: WorkGraphCloseOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.status !== undefined) result.status = options.status;
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+/**
+ * Attention/goal target — mirrors upstream `GoalAttentionTarget` plus the
+ * `identity` convenience form (lowered server-side via
+ * `lower_agent_identity_attention_target` using the runtime's mob id). Used
+ * by both `workgraphGoalCreate` and `workgraphAttentionReassign`.
+ */
+export type WorkGraphGoalTarget =
+  | { readonly kind: "session"; readonly sessionId: string }
+  | { readonly kind: "identity"; readonly identity: string }
+  | { readonly kind: "owner"; readonly ownerKey: WorkGraphOwnerKeyInput };
+
+export function workGraphGoalTargetToDict(
+  target: WorkGraphGoalTarget,
+): Record<string, unknown> {
+  switch (target.kind) {
+    case "session":
+      return { kind: "session", session_id: target.sessionId };
+    case "identity":
+      return { kind: "identity", identity: target.identity };
+    case "owner":
+      return {
+        kind: "owner",
+        owner_key: workGraphOwnerKeyInputToDict(target.ownerKey),
+      };
+  }
+}
+
+export interface WorkGraphGoalCreateOptions {
+  readonly description?: string;
+  readonly mode?: string;
+  /** Internally-tagged `WorkCompletionPolicy` enum, e.g. `{ kind: "self_attest" }`. */
+  readonly completionPolicy?: unknown;
+  readonly delegatedAuthority?: string;
+  readonly namespace?: string;
+}
+
+export function workGraphGoalCreateOptionsToDict(
+  options: WorkGraphGoalCreateOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.description !== undefined) result.description = options.description;
+  if (options.mode !== undefined) result.mode = options.mode;
+  if (options.completionPolicy !== undefined) {
+    result.completion_policy = options.completionPolicy;
+  }
+  if (options.delegatedAuthority !== undefined) {
+    result.delegated_authority = options.delegatedAuthority;
+  }
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+export interface WorkGraphGoalConfirmOptions {
+  readonly evidence?: WorkGraphEvidenceInput;
+  readonly namespace?: string;
+}
+
+export function workGraphGoalConfirmOptionsToDict(
+  options: WorkGraphGoalConfirmOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.evidence !== undefined) {
+    result.evidence = workGraphEvidenceInputToDict(options.evidence);
+  }
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+export interface WorkGraphGoalRequestCloseOptions {
+  readonly status?: "completed" | "cancelled" | "failed";
+  readonly namespace?: string;
+}
+
+export function workGraphGoalRequestCloseOptionsToDict(
+  options: WorkGraphGoalRequestCloseOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.status !== undefined) result.status = options.status;
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}
+
+export interface WorkGraphAttentionPauseOptions {
+  readonly until?: string;
+  readonly namespace?: string;
+}
+
+export function workGraphAttentionPauseOptionsToDict(
+  options: WorkGraphAttentionPauseOptions = {},
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (options.until !== undefined) result.until = options.until;
+  if (options.namespace !== undefined) result.namespace = options.namespace;
+  return result;
+}

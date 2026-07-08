@@ -109,6 +109,7 @@ export interface MobKitBuilderConfig {
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
   schedulingFiles: string[];
+  workgraphEnabled: boolean | null;
   memoryConfig: unknown;
   agentMemoryConfig: unknown;
   authConfig: unknown;
@@ -144,6 +145,7 @@ function defaultConfig(): MobKitBuilderConfig {
     gatingConfigPath: null,
     routingConfigPath: null,
     schedulingFiles: [],
+    workgraphEnabled: null,
     memoryConfig: null,
     agentMemoryConfig: null,
     authConfig: null,
@@ -267,6 +269,16 @@ export class MobKitBuilder {
 
   scheduling(...scheduleFiles: string[]): this {
     this._config.schedulingFiles = scheduleFiles;
+    return this;
+  }
+
+  /**
+   * Enable or disable WorkGraph service construction (goals, work items,
+   * attention bindings). Defaults to enabled on the gateway; pass `false`
+   * to opt out of construction entirely.
+   */
+  workgraph(enabled = true): this {
+    this._config.workgraphEnabled = enabled;
     return this;
   }
 

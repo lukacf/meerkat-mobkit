@@ -7,6 +7,8 @@ import {
   RpcError,
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
+  WorkGraphUnavailableError,
+  WorkGraphConflictError,
   ContractMismatchError,
   LeaseLostError,
   NotConnectedError,
@@ -161,6 +163,43 @@ describe("ConsoleTimelineReplayUnavailableError", () => {
     assert.ok(err instanceof MobKitError);
     assert.equal(err.name, "ConsoleTimelineReplayUnavailableError");
     assert.equal(err.code, -32013);
+    assert.deepEqual(err.data, data);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkGraphUnavailableError / WorkGraphConflictError
+// ---------------------------------------------------------------------------
+
+describe("WorkGraphUnavailableError", () => {
+  it("extends MobKitError and uses the dedicated workgraph-unavailable code", () => {
+    const err = new WorkGraphUnavailableError(
+      "workgraph service not configured",
+      "rid",
+      "mobkit/workgraph/snapshot",
+      { kind: "workgraph_unavailable" },
+    );
+    assert.ok(err instanceof MobKitError);
+    assert.ok(err instanceof RpcError);
+    assert.equal(err.name, "WorkGraphUnavailableError");
+    assert.equal(err.code, -32041);
+    assert.deepEqual(err.data, { kind: "workgraph_unavailable" });
+  });
+});
+
+describe("WorkGraphConflictError", () => {
+  it("extends MobKitError and uses the dedicated CAS-conflict code", () => {
+    const data = { kind: "workgraph_conflict", detail: "revision mismatch" };
+    const err = new WorkGraphConflictError(
+      "revision conflict",
+      "rid",
+      "mobkit/workgraph/update",
+      data,
+    );
+    assert.ok(err instanceof MobKitError);
+    assert.ok(err instanceof RpcError);
+    assert.equal(err.name, "WorkGraphConflictError");
+    assert.equal(err.code, -32042);
     assert.deepEqual(err.data, data);
   });
 });

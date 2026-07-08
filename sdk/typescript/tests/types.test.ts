@@ -62,6 +62,36 @@ import {
   parseMobpackDeployCommandResult,
   parseMobpackDeployResult,
   eventQueryToDict,
+  parseWorkGraphOwnerKey,
+  workGraphOwnerKeyInputToDict,
+  parseWorkGraphOwner,
+  workGraphOwnerInputToDict,
+  parseWorkGraphClaim,
+  parseWorkGraphExternalRef,
+  parseWorkGraphEvidenceRef,
+  workGraphEvidenceInputToDict,
+  parseWorkGraphItem,
+  parseWorkGraphEdge,
+  parseWorkGraphWorkRef,
+  parseWorkGraphAttentionBinding,
+  parseWorkGraphSnapshotResult,
+  parseWorkGraphItemsResult,
+  parseWorkGraphGoalResult,
+  parseWorkGraphAttentionReassignResult,
+  parseWorkGraphEventEntry,
+  workGraphFilterOptionsToDict,
+  workGraphReadyOptionsToDict,
+  workGraphEventsOptionsToDict,
+  workGraphAttentionListOptionsToDict,
+  workGraphCreateOptionsToDict,
+  workGraphUpdateOptionsToDict,
+  workGraphClaimOptionsToDict,
+  workGraphCloseOptionsToDict,
+  workGraphGoalTargetToDict,
+  workGraphGoalCreateOptionsToDict,
+  workGraphGoalConfirmOptionsToDict,
+  workGraphGoalRequestCloseOptionsToDict,
+  workGraphAttentionPauseOptionsToDict,
 } from "../dist/index.js";
 
 // ---------------------------------------------------------------------------
@@ -1764,5 +1794,569 @@ describe("mobpack authoring parsers", () => {
     assert.equal(deployed.stderr, null);
     assert.deepEqual(deployed.planTrace, [{ step: "validate" }]);
     assert.equal(deployed.displayRows[0].head, "deploy executed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkGraph
+// ---------------------------------------------------------------------------
+
+describe("parseWorkGraphOwnerKey / owner", () => {
+  it("parses an owner key", () => {
+    const key = parseWorkGraphOwnerKey({ kind: "agent", id: "agent-1" });
+    assert.equal(key.kind, "agent");
+    assert.equal(key.id, "agent-1");
+  });
+
+  it("workGraphOwnerKeyInputToDict passes fields through verbatim", () => {
+    assert.deepEqual(
+      workGraphOwnerKeyInputToDict({ kind: "agent", id: "agent-1" }),
+      { kind: "agent", id: "agent-1" },
+    );
+  });
+
+  it("parses an owner with display_name", () => {
+    const owner = parseWorkGraphOwner({
+      key: { kind: "principal", id: "luka" },
+      display_name: "Luka",
+    });
+    assert.equal(owner.key.kind, "principal");
+    assert.equal(owner.displayName, "Luka");
+  });
+
+  it("defaults missing display_name to null", () => {
+    const owner = parseWorkGraphOwner({ key: { kind: "principal", id: "luka" } });
+    assert.equal(owner.displayName, null);
+  });
+
+  it("workGraphOwnerInputToDict omits displayName when absent", () => {
+    const dict = workGraphOwnerInputToDict({ kind: "agent", id: "agent-1" });
+    assert.deepEqual(dict, { kind: "agent", id: "agent-1" });
+  });
+
+  it("workGraphOwnerInputToDict includes display_name when set", () => {
+    const dict = workGraphOwnerInputToDict({
+      kind: "agent",
+      id: "agent-1",
+      displayName: "Agent One",
+    });
+    assert.deepEqual(dict, {
+      kind: "agent",
+      id: "agent-1",
+      display_name: "Agent One",
+    });
+  });
+});
+
+describe("parseWorkGraphClaim", () => {
+  it("parses a claim with a lease", () => {
+    const claim = parseWorkGraphClaim({
+      owner: { key: { kind: "agent", id: "a1" }, display_name: null },
+      claimed_at: "2026-01-01T00:00:00Z",
+      lease_expires_at: "2026-01-01T01:00:00Z",
+    });
+    assert.equal(claim.owner.key.id, "a1");
+    assert.equal(claim.claimedAt, "2026-01-01T00:00:00Z");
+    assert.equal(claim.leaseExpiresAt, "2026-01-01T01:00:00Z");
+  });
+
+  it("leaseExpiresAt defaults to null", () => {
+    const claim = parseWorkGraphClaim({
+      owner: { key: { kind: "agent", id: "a1" } },
+      claimed_at: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(claim.leaseExpiresAt, null);
+  });
+});
+
+describe("parseWorkGraphExternalRef / parseWorkGraphEvidenceRef", () => {
+  it("parses an external ref", () => {
+    const ref = parseWorkGraphExternalRef({
+      kind: "jira",
+      id: "PROJ-1",
+      url: "https://example/PROJ-1",
+    });
+    assert.equal(ref.kind, "jira");
+    assert.equal(ref.url, "https://example/PROJ-1");
+  });
+
+  it("external ref url defaults to null", () => {
+    const ref = parseWorkGraphExternalRef({ kind: "jira", id: "PROJ-1" });
+    assert.equal(ref.url, null);
+  });
+
+  it("parses an evidence ref with confirmation fields", () => {
+    const ref = parseWorkGraphEvidenceRef({
+      kind: "host_confirmation",
+      id: "ev-1",
+      label: "Host confirmed",
+      summary: "Verified via CI",
+      confirmation_kind: "host_confirmation",
+      confirming_owner_key: { kind: "agent", id: "host-1" },
+    });
+    assert.equal(ref.confirmationKind, "host_confirmation");
+    assert.equal(ref.confirmingOwnerKey?.id, "host-1");
+  });
+
+  it("evidence ref optional fields default to null", () => {
+    const ref = parseWorkGraphEvidenceRef({ kind: "self_attest", id: "ev-1" });
+    assert.equal(ref.label, null);
+    assert.equal(ref.summary, null);
+    assert.equal(ref.confirmationKind, null);
+    assert.equal(ref.confirmingOwnerKey, null);
+  });
+
+  it("workGraphEvidenceInputToDict omits optional fields when absent", () => {
+    assert.deepEqual(
+      workGraphEvidenceInputToDict({ kind: "self_attest", id: "ev-1" }),
+      { kind: "self_attest", id: "ev-1" },
+    );
+  });
+
+  it("workGraphEvidenceInputToDict includes label/summary when set", () => {
+    assert.deepEqual(
+      workGraphEvidenceInputToDict({
+        kind: "self_attest",
+        id: "ev-1",
+        label: "lbl",
+        summary: "sum",
+      }),
+      { kind: "self_attest", id: "ev-1", label: "lbl", summary: "sum" },
+    );
+  });
+});
+
+describe("parseWorkGraphItem", () => {
+  const fullWireItem = {
+    id: "work_1",
+    realm_id: "realm-1",
+    namespace: "default",
+    title: "Ship the thing",
+    description: "A description",
+    status: "in_progress",
+    completion_policy: { kind: "self_attest" },
+    priority: "high",
+    labels: ["backend", "urgent"],
+    owner: { key: { kind: "agent", id: "agent-1" }, display_name: "Agent One" },
+    claim: {
+      owner: { key: { kind: "agent", id: "agent-1" }, display_name: null },
+      claimed_at: "2026-01-01T00:00:00Z",
+      lease_expires_at: "2026-01-01T01:00:00Z",
+    },
+    machine_state: { lifecycle_phase: "in_progress", revision: 3 },
+    revision: 3,
+    due_at: "2026-02-01T00:00:00Z",
+    not_before: "2026-01-15T00:00:00Z",
+    snoozed_until: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-05T00:00:00Z",
+    terminal_at: null,
+    external_refs: [{ kind: "jira", id: "PROJ-1", url: "https://x/PROJ-1" }],
+    evidence_refs: [{ kind: "self_attest", id: "ev-1" }],
+  };
+
+  it("parses a fully populated wire-format WorkItem", () => {
+    const item = parseWorkGraphItem(fullWireItem);
+    assert.equal(item.id, "work_1");
+    assert.equal(item.realmId, "realm-1");
+    assert.equal(item.namespace, "default");
+    assert.equal(item.title, "Ship the thing");
+    assert.equal(item.description, "A description");
+    assert.equal(item.status, "in_progress");
+    assert.deepEqual(item.completionPolicy, { kind: "self_attest" });
+    assert.equal(item.priority, "high");
+    assert.deepEqual(item.labels, ["backend", "urgent"]);
+    assert.equal(item.owner?.key.id, "agent-1");
+    assert.equal(item.claim?.claimedAt, "2026-01-01T00:00:00Z");
+    assert.deepEqual(item.machineState, { lifecycle_phase: "in_progress", revision: 3 });
+    assert.equal(item.revision, 3);
+    assert.equal(item.dueAt, "2026-02-01T00:00:00Z");
+    assert.equal(item.notBefore, "2026-01-15T00:00:00Z");
+    assert.equal(item.snoozedUntil, null);
+    assert.equal(item.createdAt, "2026-01-01T00:00:00Z");
+    assert.equal(item.updatedAt, "2026-01-05T00:00:00Z");
+    assert.equal(item.terminalAt, null);
+    assert.equal(item.externalRefs.length, 1);
+    assert.equal(item.externalRefs[0].id, "PROJ-1");
+    assert.equal(item.evidenceRefs.length, 1);
+    assert.equal(item.evidenceRefs[0].id, "ev-1");
+  });
+
+  it("defaults missing/optional fields (skip_serializing_if omissions)", () => {
+    const item = parseWorkGraphItem({
+      id: "work_2",
+      realm_id: "realm-1",
+      namespace: "default",
+      title: "Minimal item",
+      status: "open",
+      priority: "medium",
+      revision: 0,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(item.description, null);
+    assert.deepEqual(item.labels, []);
+    assert.equal(item.owner, null);
+    assert.equal(item.claim, null);
+    assert.equal(item.dueAt, null);
+    assert.equal(item.notBefore, null);
+    assert.equal(item.snoozedUntil, null);
+    assert.equal(item.terminalAt, null);
+    assert.deepEqual(item.externalRefs, []);
+    assert.deepEqual(item.evidenceRefs, []);
+  });
+
+  it("defaults every field on an empty object", () => {
+    const item = parseWorkGraphItem({});
+    assert.equal(item.id, "");
+    assert.equal(item.title, "");
+    assert.equal(item.status, "");
+    assert.equal(item.priority, "");
+    assert.equal(item.revision, 0);
+    assert.deepEqual(item.labels, []);
+  });
+});
+
+describe("parseWorkGraphEdge", () => {
+  it("parses a wire-format WorkEdge", () => {
+    const edge = parseWorkGraphEdge({
+      realm_id: "realm-1",
+      namespace: "default",
+      kind: "blocks",
+      from_id: "work_1",
+      to_id: "work_2",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(edge.kind, "blocks");
+    assert.equal(edge.fromId, "work_1");
+    assert.equal(edge.toId, "work_2");
+  });
+
+  it("defaults missing fields", () => {
+    const edge = parseWorkGraphEdge({});
+    assert.equal(edge.realmId, "");
+    assert.equal(edge.kind, "");
+    assert.equal(edge.fromId, "");
+    assert.equal(edge.toId, "");
+  });
+});
+
+describe("parseWorkGraphAttentionBinding", () => {
+  it("parses a fully populated binding, passing target/status through opaquely", () => {
+    const binding = parseWorkGraphAttentionBinding({
+      binding_id: "attention_1",
+      work_ref: { item_id: "work_1", realm_id: "realm-1", namespace: "default" },
+      target: { kind: "session", session_id: "sess-1" },
+      mode: "pursue",
+      status: { state: "paused", until: "2026-02-01T00:00:00Z" },
+      machine_state: { lifecycle_phase: "active", revision: 2 },
+      delegated_authority: "add_evidence",
+      projection_policy: { max_text_chars: 4096, include_parent_context: true },
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+    });
+    assert.equal(binding.bindingId, "attention_1");
+    assert.equal(binding.workRef.itemId, "work_1");
+    assert.deepEqual(binding.target, { kind: "session", session_id: "sess-1" });
+    assert.equal(binding.mode, "pursue");
+    assert.deepEqual(binding.status, { state: "paused", until: "2026-02-01T00:00:00Z" });
+    assert.deepEqual(binding.machineState, { lifecycle_phase: "active", revision: 2 });
+    assert.equal(binding.delegatedAuthority, "add_evidence");
+    assert.deepEqual(binding.projectionPolicy, {
+      max_text_chars: 4096,
+      include_parent_context: true,
+    });
+  });
+
+  it("defaults missing fields to empty records/strings", () => {
+    const binding = parseWorkGraphAttentionBinding({});
+    assert.equal(binding.bindingId, "");
+    assert.deepEqual(binding.target, {});
+    assert.deepEqual(binding.status, {});
+    assert.deepEqual(binding.projectionPolicy, {});
+  });
+});
+
+describe("parseWorkGraphSnapshotResult", () => {
+  it("parses a full snapshot", () => {
+    const snapshot = parseWorkGraphSnapshotResult({
+      realm_id: "realm-1",
+      namespace: "default",
+      all_namespaces: false,
+      captured_at: "2026-01-01T00:00:00Z",
+      event_high_water_mark: 42,
+      items: [
+        {
+          id: "work_1",
+          realm_id: "realm-1",
+          namespace: "default",
+          title: "Item one",
+          status: "open",
+          priority: "medium",
+          revision: 1,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      edges: [
+        {
+          realm_id: "realm-1",
+          namespace: "default",
+          kind: "parent",
+          from_id: "work_0",
+          to_id: "work_1",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      attention: [],
+      ready_item_ids: ["work_1"],
+    });
+    assert.equal(snapshot.realmId, "realm-1");
+    assert.equal(snapshot.namespace, "default");
+    assert.equal(snapshot.allNamespaces, false);
+    assert.equal(snapshot.eventHighWaterMark, 42);
+    assert.equal(snapshot.items.length, 1);
+    assert.equal(snapshot.items[0].id, "work_1");
+    assert.equal(snapshot.edges.length, 1);
+    assert.deepEqual(snapshot.readyItemIds, ["work_1"]);
+  });
+
+  it("defaults missing fields", () => {
+    const snapshot = parseWorkGraphSnapshotResult({});
+    assert.equal(snapshot.realmId, "");
+    assert.equal(snapshot.namespace, null);
+    assert.equal(snapshot.allNamespaces, false);
+    assert.equal(snapshot.eventHighWaterMark, null);
+    assert.deepEqual(snapshot.items, []);
+    assert.deepEqual(snapshot.edges, []);
+    assert.deepEqual(snapshot.attention, []);
+    assert.deepEqual(snapshot.readyItemIds, []);
+  });
+});
+
+describe("parseWorkGraphItemsResult", () => {
+  it("parses a wrapped items list", () => {
+    const result = parseWorkGraphItemsResult({
+      items: [
+        {
+          id: "work_1",
+          realm_id: "realm-1",
+          namespace: "default",
+          title: "Item one",
+          status: "open",
+          priority: "medium",
+          revision: 1,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    assert.equal(result.items.length, 1);
+  });
+
+  it("defaults to an empty list", () => {
+    assert.deepEqual(parseWorkGraphItemsResult({}).items, []);
+  });
+});
+
+describe("parseWorkGraphGoalResult / parseWorkGraphAttentionReassignResult", () => {
+  const item = {
+    id: "work_1",
+    realm_id: "realm-1",
+    namespace: "default",
+    title: "Goal item",
+    status: "open",
+    priority: "medium",
+    revision: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const attention = {
+    binding_id: "attention_1",
+    work_ref: { item_id: "work_1", realm_id: "realm-1", namespace: "default" },
+    target: { kind: "session", session_id: "sess-1" },
+    mode: "pursue",
+    status: { state: "active" },
+    delegated_authority: "add_evidence",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("parses a goal result (item + attention)", () => {
+    const result = parseWorkGraphGoalResult({ item, attention });
+    assert.equal(result.item.id, "work_1");
+    assert.equal(result.attention.bindingId, "attention_1");
+  });
+
+  it("parses an attention reassign result (previous + attention)", () => {
+    const previous = { ...attention, binding_id: "attention_0" };
+    const result = parseWorkGraphAttentionReassignResult({
+      previous,
+      attention,
+    });
+    assert.equal(result.previous.bindingId, "attention_0");
+    assert.equal(result.attention.bindingId, "attention_1");
+  });
+});
+
+describe("parseWorkGraphEventEntry", () => {
+  it("parses an item-scoped event", () => {
+    const event = parseWorkGraphEventEntry({
+      seq: 7,
+      realm_id: "realm-1",
+      namespace: "default",
+      item_id: "work_1",
+      kind: "claimed",
+      at: "2026-01-01T00:00:00Z",
+      payload: { owner: "agent-1" },
+    });
+    assert.equal(event.seq, 7);
+    assert.equal(event.itemId, "work_1");
+    assert.equal(event.kind, "claimed");
+    assert.deepEqual(event.payload, { owner: "agent-1" });
+  });
+
+  it("seq and itemId default to null for graph-scoped events", () => {
+    const event = parseWorkGraphEventEntry({
+      realm_id: "realm-1",
+      namespace: "default",
+      kind: "attention_created",
+      at: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(event.seq, null);
+    assert.equal(event.itemId, null);
+  });
+});
+
+describe("WorkGraph option toDict helpers", () => {
+  it("workGraphFilterOptionsToDict converts and omits empty arrays", () => {
+    assert.deepEqual(
+      workGraphFilterOptionsToDict({
+        namespace: "default",
+        allNamespaces: true,
+        statuses: ["open", "blocked"],
+        labels: ["urgent"],
+        includeTerminal: true,
+        limit: 10,
+      }),
+      {
+        namespace: "default",
+        all_namespaces: true,
+        statuses: ["open", "blocked"],
+        labels: ["urgent"],
+        include_terminal: true,
+        limit: 10,
+      },
+    );
+    assert.deepEqual(workGraphFilterOptionsToDict(), {});
+    assert.deepEqual(workGraphFilterOptionsToDict({ statuses: [] }), {});
+  });
+
+  it("workGraphReadyOptionsToDict / workGraphEventsOptionsToDict / workGraphAttentionListOptionsToDict", () => {
+    assert.deepEqual(workGraphReadyOptionsToDict({ namespace: "ns", limit: 5 }), {
+      namespace: "ns",
+      limit: 5,
+    });
+    assert.deepEqual(
+      workGraphEventsOptionsToDict({ afterSeq: 10, allNamespaces: true }),
+      { after_seq: 10, all_namespaces: true },
+    );
+    assert.deepEqual(
+      workGraphAttentionListOptionsToDict({ status: "active" }),
+      { status: "active" },
+    );
+  });
+
+  it("workGraphCreateOptionsToDict converts full option set", () => {
+    const dict = workGraphCreateOptionsToDict({
+      description: "desc",
+      priority: "high",
+      completionPolicy: { kind: "self_attest" },
+      labels: ["a", "b"],
+      dueAt: "2026-02-01T00:00:00Z",
+      notBefore: "2026-01-15T00:00:00Z",
+      snoozedUntil: "2026-01-20T00:00:00Z",
+      externalRefs: [{ kind: "jira", id: "PROJ-1" }],
+      evidenceRefs: [{ kind: "self_attest", id: "ev-1" }],
+      status: "blocked",
+      namespace: "default",
+    });
+    assert.deepEqual(dict, {
+      description: "desc",
+      priority: "high",
+      completion_policy: { kind: "self_attest" },
+      labels: ["a", "b"],
+      due_at: "2026-02-01T00:00:00Z",
+      not_before: "2026-01-15T00:00:00Z",
+      snoozed_until: "2026-01-20T00:00:00Z",
+      external_refs: [{ kind: "jira", id: "PROJ-1" }],
+      evidence_refs: [{ kind: "self_attest", id: "ev-1" }],
+      status: "blocked",
+      namespace: "default",
+    });
+    assert.deepEqual(workGraphCreateOptionsToDict(), {});
+  });
+
+  it("workGraphUpdateOptionsToDict forwards an explicit empty labels array (clears labels)", () => {
+    const dict = workGraphUpdateOptionsToDict({ labels: [] });
+    assert.deepEqual(dict, { labels: [] });
+  });
+
+  it("workGraphUpdateOptionsToDict omits labels entirely when unset", () => {
+    const dict = workGraphUpdateOptionsToDict({ title: "New title" });
+    assert.deepEqual(dict, { title: "New title" });
+  });
+
+  it("workGraphClaimOptionsToDict / workGraphCloseOptionsToDict", () => {
+    assert.deepEqual(workGraphClaimOptionsToDict({ leaseSeconds: 60 }), {
+      lease_seconds: 60,
+    });
+    assert.deepEqual(workGraphCloseOptionsToDict({ status: "failed" }), {
+      status: "failed",
+    });
+    assert.deepEqual(workGraphCloseOptionsToDict(), {});
+  });
+
+  it("workGraphGoalTargetToDict handles all three target kinds", () => {
+    assert.deepEqual(
+      workGraphGoalTargetToDict({ kind: "session", sessionId: "sess-1" }),
+      { kind: "session", session_id: "sess-1" },
+    );
+    assert.deepEqual(
+      workGraphGoalTargetToDict({ kind: "identity", identity: "identity:luka" }),
+      { kind: "identity", identity: "identity:luka" },
+    );
+    assert.deepEqual(
+      workGraphGoalTargetToDict({
+        kind: "owner",
+        ownerKey: { kind: "agent", id: "agent-1" },
+      }),
+      { kind: "owner", owner_key: { kind: "agent", id: "agent-1" } },
+    );
+  });
+
+  it("workGraphGoalCreateOptionsToDict / workGraphGoalConfirmOptionsToDict / workGraphGoalRequestCloseOptionsToDict", () => {
+    assert.deepEqual(
+      workGraphGoalCreateOptionsToDict({ mode: "review", delegatedAuthority: "request_closure" }),
+      { mode: "review", delegated_authority: "request_closure" },
+    );
+    assert.deepEqual(
+      workGraphGoalConfirmOptionsToDict({
+        evidence: { kind: "self_attest", id: "ev-1" },
+      }),
+      { evidence: { kind: "self_attest", id: "ev-1" } },
+    );
+    assert.deepEqual(
+      workGraphGoalRequestCloseOptionsToDict({ status: "cancelled" }),
+      { status: "cancelled" },
+    );
+  });
+
+  it("workGraphAttentionPauseOptionsToDict", () => {
+    assert.deepEqual(
+      workGraphAttentionPauseOptionsToDict({ until: "2026-03-01T00:00:00Z" }),
+      { until: "2026-03-01T00:00:00Z" },
+    );
+    assert.deepEqual(workGraphAttentionPauseOptionsToDict(), {});
   });
 });

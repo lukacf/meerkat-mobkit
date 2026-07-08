@@ -48,6 +48,24 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["console_read_only"] is True
 
+    def test_workgraph_defaults_to_omitted(self):
+        b = MobKit.builder()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert "workgraph" not in params["runtime_options"]
+
+    def test_workgraph_enabled_sets_runtime_option(self):
+        b = MobKit.builder().workgraph()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["workgraph"] is True
+
+    def test_workgraph_disabled_sets_runtime_option(self):
+        b = MobKit.builder().workgraph(False)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["workgraph"] is False
+
     def test_console_fetch_timeout_ms_rejects_non_positive_values(self):
         with pytest.raises(ValueError):
             MobKit.builder().console_fetch_timeout_ms(0)

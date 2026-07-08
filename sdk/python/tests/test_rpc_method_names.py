@@ -1173,6 +1173,360 @@ async def test_wire_local_forwards_optional_pubkey():
     assert params["remote_address"] == "tcp://10.0.0.2:9001"
 
 
+def _wg_item(**overrides):
+    payload = {
+        "id": "item-1",
+        "realm_id": "realm-1",
+        "namespace": "default",
+        "title": "Ship it",
+        "status": "open",
+        "completion_policy": {"kind": "self_attest"},
+        "priority": "medium",
+        "labels": [],
+        "machine_state": {"lifecycle_phase": "open", "revision": 1},
+        "revision": 1,
+        "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+        "external_refs": [],
+        "evidence_refs": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _wg_binding(**overrides):
+    payload = {
+        "binding_id": "binding-1",
+        "work_ref": {"item_id": "item-1", "realm_id": "realm-1", "namespace": "default"},
+        "target": {"kind": "session", "session_id": "sess-1"},
+        "mode": "pursue",
+        "status": {"state": "active"},
+        "machine_state": {"lifecycle_phase": "active", "revision": 1},
+        "delegated_authority": "add_evidence",
+        "projection_policy": {"max_text_chars": 4096, "include_parent_context": True},
+        "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_workgraph_rpc_names_and_params():
+    """Every WorkGraph wrapper must hit its exact RPC name with snake_case
+    params and parse the typed result (docs/design/workgraph-wire-contract.md)."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/workgraph/snapshot": {
+            "realm_id": "realm-1",
+            "namespace": "default",
+            "all_namespaces": False,
+            "captured_at": "2026-07-08T00:00:00Z",
+            "event_high_water_mark": 5,
+            "items": [_wg_item()],
+            "edges": [],
+            "attention": [_wg_binding()],
+            "ready_item_ids": ["item-1"],
+        },
+        "mobkit/workgraph/list": {"items": [_wg_item()]},
+        "mobkit/workgraph/get": {"item": _wg_item()},
+        "mobkit/workgraph/ready": {"items": [_wg_item()]},
+        "mobkit/workgraph/events": {
+            "events": [{
+                "seq": 1,
+                "realm_id": "realm-1",
+                "namespace": "default",
+                "item_id": "item-1",
+                "kind": "created",
+                "at": "2026-07-01T00:00:00Z",
+                "payload": {},
+            }]
+        },
+        "mobkit/workgraph/attention/list": {"attention": [_wg_binding()]},
+        "mobkit/workgraph/goal/status": {"item": _wg_item(), "attention": _wg_binding()},
+        "mobkit/workgraph/create": {"item": _wg_item()},
+        "mobkit/workgraph/update": {"item": _wg_item(revision=2)},
+        "mobkit/workgraph/claim": {"item": _wg_item(revision=2)},
+        "mobkit/workgraph/release": {"item": _wg_item(revision=3)},
+        "mobkit/workgraph/close": {"item": _wg_item(status="completed", revision=4)},
+        "mobkit/workgraph/block": {"item": _wg_item(status="blocked", revision=2)},
+        "mobkit/workgraph/link": {
+            "edge": {
+                "realm_id": "realm-1",
+                "namespace": "default",
+                "kind": "blocks",
+                "from_id": "item-1",
+                "to_id": "item-2",
+                "created_at": "2026-07-01T00:00:00Z",
+            }
+        },
+        "mobkit/workgraph/evidence/add": {"item": _wg_item(revision=2)},
+        "mobkit/workgraph/policy/escalate": {"item": _wg_item(revision=2)},
+        "mobkit/workgraph/goal/create": {"item": _wg_item(), "attention": _wg_binding()},
+        "mobkit/workgraph/goal/confirm": {
+            "item": _wg_item(status="completed"),
+            "attention": _wg_binding(),
+        },
+        "mobkit/workgraph/goal/request_close": {
+            "item": _wg_item(status="completed"),
+            "attention": _wg_binding(),
+        },
+        "mobkit/workgraph/attention/pause": {
+            "attention": _wg_binding(status={"state": "paused", "until": None})
+        },
+        "mobkit/workgraph/attention/resume": {"attention": _wg_binding()},
+        "mobkit/workgraph/attention/reassign": {
+            "previous": _wg_binding(binding_id="binding-1"),
+            "attention": _wg_binding(binding_id="binding-2"),
+        },
+    })
+
+    snapshot = await handle.workgraph_snapshot(namespace="default")
+    assert snapshot.items[0].id == "item-1"
+    assert snapshot.attention[0].binding_id == "binding-1"
+
+    listed = await handle.workgraph_list(statuses=["open"])
+    assert listed.items[0].id == "item-1"
+
+    got = await handle.workgraph_get("item-1")
+    assert got.id == "item-1"
+
+    ready = await handle.workgraph_ready(labels=["backend"])
+    assert ready.items[0].id == "item-1"
+
+    events = await handle.workgraph_events(after_seq=0)
+    assert events[0].seq == 1
+    assert events[0].kind == "created"
+
+    attention = await handle.workgraph_attention_list(status="active")
+    assert attention[0].binding_id == "binding-1"
+
+    goal_status = await handle.workgraph_goal_status("binding-1")
+    assert goal_status.item.id == "item-1"
+    assert goal_status.attention.binding_id == "binding-1"
+
+    created = await handle.workgraph_create("Ship it", priority="high")
+    assert created.id == "item-1"
+
+    updated = await handle.workgraph_update("item-1", 1, title="Ship it faster")
+    assert updated.revision == 2
+
+    claimed = await handle.workgraph_claim(
+        "item-1", 1, {"key": {"kind": "agent", "id": "worker-1"}}
+    )
+    assert claimed.revision == 2
+
+    released = await handle.workgraph_release("item-1", 2)
+    assert released.revision == 3
+
+    closed = await handle.workgraph_close("item-1", 3)
+    assert closed.status == "completed"
+
+    blocked = await handle.workgraph_block("item-1", 1)
+    assert blocked.status == "blocked"
+
+    linked = await handle.workgraph_link("blocks", "item-1", "item-2")
+    assert linked.kind == "blocks"
+    assert linked.from_id == "item-1"
+
+    with_evidence = await handle.workgraph_add_evidence(
+        "item-1", 1, {"kind": "self_attest", "id": "e1"}
+    )
+    assert with_evidence.revision == 2
+
+    escalated = await handle.workgraph_escalate_policy(
+        "binding-1", "item-1", 1, {"kind": "host_confirmed"}
+    )
+    assert escalated.revision == 2
+
+    goal_created = await handle.workgraph_goal_create(
+        "Ship the release", {"kind": "session", "session_id": "sess-1"}
+    )
+    assert goal_created.item.id == "item-1"
+    assert goal_created.attention.binding_id == "binding-1"
+
+    confirmed = await handle.workgraph_goal_confirm(
+        "binding-1", 1, evidence={"kind": "self_attest", "id": "e1"}
+    )
+    assert confirmed.item.status == "completed"
+
+    close_requested = await handle.workgraph_goal_request_close("binding-1", 1)
+    assert close_requested.item.status == "completed"
+
+    paused = await handle.workgraph_attention_pause("binding-1", 1)
+    assert paused.status["state"] == "paused"
+
+    resumed = await handle.workgraph_attention_resume("binding-1", 2)
+    assert resumed.binding_id == "binding-1"
+
+    reassigned = await handle.workgraph_attention_reassign(
+        "binding-1", 1, {"kind": "owner", "owner_key": {"kind": "agent", "id": "worker-2"}}
+    )
+    assert reassigned.previous.binding_id == "binding-1"
+    assert reassigned.attention.binding_id == "binding-2"
+
+    assert [c[0] for c in calls] == [
+        "mobkit/workgraph/snapshot",
+        "mobkit/workgraph/list",
+        "mobkit/workgraph/get",
+        "mobkit/workgraph/ready",
+        "mobkit/workgraph/events",
+        "mobkit/workgraph/attention/list",
+        "mobkit/workgraph/goal/status",
+        "mobkit/workgraph/create",
+        "mobkit/workgraph/update",
+        "mobkit/workgraph/claim",
+        "mobkit/workgraph/release",
+        "mobkit/workgraph/close",
+        "mobkit/workgraph/block",
+        "mobkit/workgraph/link",
+        "mobkit/workgraph/evidence/add",
+        "mobkit/workgraph/policy/escalate",
+        "mobkit/workgraph/goal/create",
+        "mobkit/workgraph/goal/confirm",
+        "mobkit/workgraph/goal/request_close",
+        "mobkit/workgraph/attention/pause",
+        "mobkit/workgraph/attention/resume",
+        "mobkit/workgraph/attention/reassign",
+    ]
+    assert calls[0][1] == {"namespace": "default"}
+    assert calls[1][1] == {"statuses": ["open"]}
+    assert calls[2][1] == {"id": "item-1"}
+    assert calls[3][1] == {"labels": ["backend"]}
+    assert calls[4][1] == {"after_seq": 0}
+    assert calls[5][1] == {"status": "active"}
+    assert calls[6][1] == {"binding_id": "binding-1"}
+    assert calls[7][1] == {"title": "Ship it", "priority": "high"}
+    assert calls[8][1] == {"id": "item-1", "expected_revision": 1, "title": "Ship it faster"}
+    assert calls[9][1] == {
+        "id": "item-1",
+        "expected_revision": 1,
+        "owner": {"key": {"kind": "agent", "id": "worker-1"}},
+    }
+    assert calls[10][1] == {"id": "item-1", "expected_revision": 2}
+    assert calls[11][1] == {"id": "item-1", "expected_revision": 3}
+    assert calls[12][1] == {"id": "item-1", "expected_revision": 1}
+    assert calls[13][1] == {"kind": "blocks", "from_id": "item-1", "to_id": "item-2"}
+    assert calls[14][1] == {
+        "id": "item-1",
+        "expected_revision": 1,
+        "evidence": {"kind": "self_attest", "id": "e1"},
+    }
+    assert calls[15][1] == {
+        "binding_id": "binding-1",
+        "id": "item-1",
+        "expected_revision": 1,
+        "completion_policy": {"kind": "host_confirmed"},
+    }
+    assert calls[16][1] == {
+        "title": "Ship the release",
+        "target": {"kind": "session", "session_id": "sess-1"},
+    }
+    assert calls[17][1] == {
+        "binding_id": "binding-1",
+        "expected_revision": 1,
+        "evidence": {"kind": "self_attest", "id": "e1"},
+    }
+    assert calls[18][1] == {"binding_id": "binding-1", "expected_revision": 1}
+    assert calls[19][1] == {"binding_id": "binding-1", "expected_revision": 1}
+    assert calls[20][1] == {"binding_id": "binding-1", "expected_revision": 2}
+    assert calls[21][1] == {
+        "binding_id": "binding-1",
+        "expected_revision": 1,
+        "target": {"kind": "owner", "owner_key": {"kind": "agent", "id": "worker-2"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_workgraph_read_methods_omit_filter_when_no_kwargs():
+    """Filter-style reads must send `{}` (server default filter), matching
+    the mobpack_list/list_runs precedent, not None."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/workgraph/snapshot": {
+            "realm_id": "realm-1",
+            "captured_at": "2026-07-08T00:00:00Z",
+            "all_namespaces": False,
+            "items": [],
+            "edges": [],
+            "attention": [],
+            "ready_item_ids": [],
+        },
+        "mobkit/workgraph/list": {"items": []},
+        "mobkit/workgraph/ready": {"items": []},
+        "mobkit/workgraph/events": {"events": []},
+        "mobkit/workgraph/attention/list": {"attention": []},
+    })
+
+    await handle.workgraph_snapshot()
+    await handle.workgraph_list()
+    await handle.workgraph_ready()
+    await handle.workgraph_events()
+    await handle.workgraph_attention_list()
+
+    assert [c[1] for c in calls] == [{}, {}, {}, {}, {}]
+
+
+@pytest.mark.asyncio
+async def test_workgraph_unavailable_error_reifies_from_payload():
+    """A -32041 RpcError must reify into WorkGraphUnavailableError."""
+    from meerkat_mobkit.errors import WorkGraphUnavailableError
+    from meerkat_mobkit.runtime import _rpc_error_from_payload
+
+    err = _rpc_error_from_payload(
+        {
+            "code": -32041,
+            "message": "workgraph service not configured",
+            "data": {"kind": "workgraph_unavailable"},
+        },
+        request_id="rid",
+        method="mobkit/workgraph/snapshot",
+    )
+
+    assert isinstance(err, WorkGraphUnavailableError)
+    assert err.code == -32041
+    assert err.method == "mobkit/workgraph/snapshot"
+    assert err.data == {"kind": "workgraph_unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_workgraph_conflict_error_reifies_from_payload_and_carries_detail():
+    """A -32042 RpcError must reify into WorkGraphConflictError carrying detail."""
+    from meerkat_mobkit.errors import WorkGraphConflictError
+    from meerkat_mobkit.runtime import _rpc_error_from_payload
+
+    err = _rpc_error_from_payload(
+        {
+            "code": -32042,
+            "message": "revision conflict",
+            "data": {"kind": "workgraph_conflict", "detail": "expected 3, found 4"},
+        },
+        request_id="rid",
+        method="mobkit/workgraph/update",
+    )
+
+    assert isinstance(err, WorkGraphConflictError)
+    assert err.code == -32042
+    assert err.method == "mobkit/workgraph/update"
+    assert err.detail == "expected 3, found 4"
+
+
+@pytest.mark.asyncio
+async def test_workgraph_conflict_error_reifies_via_from_rpc_error():
+    """WorkGraphConflictError.from_rpc_error must lift detail off a generic RpcError."""
+    from meerkat_mobkit.errors import RpcError, WorkGraphConflictError
+
+    generic = RpcError(
+        code=-32042,
+        message="revision conflict",
+        request_id="rid",
+        method="mobkit/workgraph/claim",
+        data={"detail": "expected 1, found 2"},
+    )
+    typed = WorkGraphConflictError.from_rpc_error(generic)
+    assert typed.detail == "expected 1, found 2"
+    assert typed.code == -32042
+    assert typed.method == "mobkit/workgraph/claim"
+
+
 @pytest.mark.asyncio
 async def test_wire_local_omits_pubkey_when_absent():
     """Backward compat: inproc-only callers must not see remote_pubkey_b64
