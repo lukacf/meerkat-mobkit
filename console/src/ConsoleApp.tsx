@@ -56,10 +56,12 @@ import {
   createMobKitConsoleController,
 } from "./lib/headless";
 import {
+  WORKGRAPH_CONFLICT_CODE,
   resolveWorkGraphBindingRevision,
   resolveWorkGraphGoalItemRevision,
   resolveWorkGraphItemRevision,
   workGraphClaimOwnerId,
+  workGraphConflictRefreshRequest,
   type WorkGraphCommandRunner,
 } from "./lib/workgraph-actions";
 import { createConsoleId } from "./lib/id";
@@ -3361,6 +3363,37 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         const message = errorMessage(err);
         setActionError(message);
         echoResultToCard(undefined, message);
+        // A -32042 conflict proves the revision the card folded is stale;
+        // without a fresh sighting every next click would resend it forever.
+        // Re-read the entity and fold the live state through the same echo
+        // path (marked `refresh` so the failure flag survives): the NEXT
+        // action CASes against the live revision. Best-effort — the banner
+        // and failure note above already surfaced the conflict.
+        if (cardIdentity && jsonRpcErrorCode(err) === WORKGRAPH_CONFLICT_CODE) {
+          const refresh = workGraphConflictRefreshRequest(params);
+          if (refresh) {
+            try {
+              const fresh = await executeHeadlessCommand(
+                refresh.command,
+                controlWorkbenchTarget("workgraph"),
+                refresh.params,
+              );
+              appendFrame(
+                cardIdentity,
+                buildWorkGraphOperatorResultFrame({
+                  method: consoleCommandMethod(refresh.command),
+                  params: refresh.params,
+                  result: fresh,
+                  identity: cardIdentity,
+                  refresh: true,
+                }),
+              );
+              forceRender();
+            } catch {
+              // The stale card stays; the conflict is already visible.
+            }
+          }
+        }
       }
       if (workGraphPanelDockedRef.current) {
         await refreshWorkGraphData().catch(() => {});

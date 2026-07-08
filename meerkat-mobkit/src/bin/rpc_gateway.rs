@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -3770,8 +3771,10 @@ external_addressable = true
             // explicitly configured directory), realm scoped to the mob
             // definition id. Fills the member tool slot, threads to the
             // bootstrap spec (mob-executor attention overlays + child-mob
-            // inheritance), the schedule host, and the RPC surface.
-            let workgraph_service = match &gateway_options.workgraph {
+            // inheritance), the schedule host, and the RPC surface. The
+            // state dir travels along for the cross-process admission
+            // sidecar (a durable store is shareable across processes).
+            let workgraph = match &gateway_options.workgraph {
                 GatewayWorkgraphOption::Disabled => None,
                 GatewayWorkgraphOption::Enabled => {
                     meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
@@ -3779,6 +3782,7 @@ external_addressable = true
                         state_path,
                         &schedule_owner_id,
                     )
+                    .map(|(service, slot)| (service, slot, state_path.clone()))
                 }
                 GatewayWorkgraphOption::DurableDir(dir) => {
                     // An explicit directory overrides the state-dir default.
@@ -3790,8 +3794,10 @@ external_addressable = true
                         dir,
                         &schedule_owner_id,
                     )
+                    .map(|(service, slot)| (service, slot, dir.clone()))
                 }
             };
+            let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
             let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
             let callback_builder = StdioCallbackAgentBuilder {
                 inner: inner_builder,
@@ -3839,6 +3845,13 @@ external_addressable = true
                     notify_orchestrator_on_resume: true,
                     default_llm_client: default_llm_client.clone(),
                 });
+            if let Some((_, admission_slot, workgraph_state_dir)) = &workgraph {
+                // Durable (cross-process shareable) store: register the
+                // tool-plane admission slot and the sidecar lock beside it.
+                spec = spec
+                    .with_workgraph_admission_slot(admission_slot.clone())
+                    .with_workgraph_admission_sidecar(workgraph_state_dir);
+            }
             spec.runtime_adapter = Some(adapter);
             spec.binary_blob_store = Some(binary_blob_store);
             (
@@ -3892,11 +3905,14 @@ external_addressable = true
             // No-persistent_state launches default to a memory-backed
             // workgraph (tools stay profile-gated, so nothing changes for
             // members that do not opt in); an explicit directory gets the
-            // durable store instead.
+            // durable store instead — and, being cross-process shareable, a
+            // cross-process admission sidecar beside it.
+            let mut workgraph_sidecar_dir: Option<PathBuf> = None;
             let workgraph_service = match &gateway_options.workgraph {
                 GatewayWorkgraphOption::Disabled => None,
                 GatewayWorkgraphOption::DurableDir(dir) => {
                     let _ = std::fs::create_dir_all(dir);
+                    workgraph_sidecar_dir = Some(dir.clone());
                     meerkat_mobkit::workgraph_wiring::open_workgraph_service(
                         dir,
                         &schedule_owner_id,
@@ -3926,8 +3942,17 @@ external_addressable = true
                     )
                 }
             };
+            // One admission slot per builder that carries the tool surface;
+            // the bootstrap spec registers them all so every dispatcher gets
+            // the runtime-wide admission (round-3 R1).
+            let mut workgraph_admission_slots = Vec::new();
             if let Some(service) = workgraph_service.as_ref() {
-                meerkat_mobkit::workgraph_wiring::install_workgraph_tools(&inner_builder, service);
+                workgraph_admission_slots.push(
+                    meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
+                        &inner_builder,
+                        service,
+                    ),
+                );
             }
             let callback_builder = StdioCallbackAgentBuilder {
                 inner: inner_builder,
@@ -3955,9 +3980,11 @@ external_addressable = true
                     ));
                     inner_builder.default_blob_store = Some(blob_store.clone());
                     if let Some(service) = workgraph_service.as_ref() {
-                        meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
-                            &inner_builder,
-                            service,
+                        workgraph_admission_slots.push(
+                            meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
+                                &inner_builder,
+                                service,
+                            ),
                         );
                     }
                     let callback_builder = StdioCallbackAgentBuilder {
@@ -3991,6 +4018,12 @@ external_addressable = true
                         notify_orchestrator_on_resume: true,
                         default_llm_client: default_llm_client.clone(),
                     });
+            for slot in workgraph_admission_slots {
+                spec = spec.with_workgraph_admission_slot(slot);
+            }
+            if let Some(dir) = workgraph_sidecar_dir.as_deref() {
+                spec = spec.with_workgraph_admission_sidecar(dir);
+            }
             spec.runtime_adapter = Some(adapter);
             spec.binary_blob_store = Some(binary_blob_store);
             // Ephemeral sessions have no persistent service; firing is persistent-only.

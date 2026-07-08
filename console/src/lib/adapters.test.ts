@@ -7343,7 +7343,7 @@ test("workgraph card uiStateKey stays anchored across the catch-all→rooted id 
   const before = beforeCards[0];
   if (before.kind !== "workgraph") return;
   assert.equal(before.id, "workgraph:interaction:turn-wg");
-  assert.equal(before.uiStateKey, "workgraph:interaction:turn-wg");
+  assert.equal(before.uiStateKey, "workgraph:interaction:turn-wg:item-mig");
 
   const hierarchyFrames = [
     ...looseFrames,
@@ -7370,7 +7370,367 @@ test("workgraph card uiStateKey stays anchored across the catch-all→rooted id 
   assert.equal(after.id, "workgraph:item-mig", "hierarchy promotes the entry to its rooted id");
   assert.equal(
     after.uiStateKey,
-    "workgraph:interaction:turn-wg",
+    "workgraph:interaction:turn-wg:item-mig",
     "the UI-state anchor survives the rekey so expansion state can be carried forward",
+  );
+});
+
+test("workgraph cards born in one interaction get distinct per-card uiStateKeys", () => {
+  // Two independent goals, each with a child hierarchy, created in the same
+  // interaction: collapse state must not bleed between their cards.
+  const goal = (goalId: string, childId: string, baseTs: number) => [
+    ...workGraphToolFrames({
+      idPrefix: `wg-${goalId}`,
+      name: "workgraph_create",
+      callArgs: { title: `Goal ${goalId}` },
+      result: { item: workGraphItem({ id: goalId, title: `Goal ${goalId}`, status: "open", revision: 1 }) },
+      timestampMs: baseTs,
+    }),
+    ...workGraphToolFrames({
+      idPrefix: `wg-${childId}`,
+      name: "workgraph_create",
+      callArgs: { title: `Child of ${goalId}` },
+      result: { item: workGraphItem({ id: childId, title: `Child of ${goalId}`, status: "open", revision: 1 }) },
+      timestampMs: baseTs + 1_000,
+    }),
+    ...workGraphToolFrames({
+      idPrefix: `wg-${goalId}-link`,
+      name: "workgraph_link",
+      callArgs: { kind: "parent", from_id: childId, to_id: goalId },
+      result: { edge: { kind: "parent", from_id: childId, to_id: goalId } },
+      timestampMs: baseTs + 2_000,
+    }),
+  ];
+  const frames = [
+    ...goal("goal-a", "child-a", 1_779_405_464_000),
+    ...goal("goal-b", "child-b", 1_779_405_470_000),
+  ];
+
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames)
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 2);
+  const keys = cards.map((card) => (card.kind === "workgraph" ? card.uiStateKey : undefined));
+  assert.equal(keys[0], "workgraph:interaction:turn-wg:goal-a");
+  assert.equal(keys[1], "workgraph:interaction:turn-wg:goal-b");
+  assert.notEqual(keys[0], keys[1], "collapse state must not bleed between same-interaction cards");
+});
+
+test("workgraph item-less catch-all cards anchor UI state on the unrooted placeholder", () => {
+  // An unroutable failure materializes a catch-all with no items: it still
+  // needs a deterministic anchor distinct from item-bearing cards.
+  const frames = [
+    {
+      id: "wg-ui-ghost-call",
+      event: "tool_call_requested",
+      interactionId: "turn-ghost",
+      timestampMs: 1_779_405_464_000,
+      data: { id: "wg-ui-ghost-tc", name: "workgraph_claim", args: { id: "item-ghost", expected_revision: 4 } },
+    },
+    {
+      id: "wg-ui-ghost-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-ghost",
+      timestampMs: 1_779_405_464_200,
+      data: { id: "wg-ui-ghost-tc", name: "workgraph_claim", is_error: true, result: "work item item-ghost not found" },
+    },
+  ];
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames)
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  assert.equal(
+    cards[0].kind === "workgraph" ? cards[0].uiStateKey : "",
+    "workgraph:interaction:turn-ghost:unrooted",
+  );
+
+  // Operator-echo-only activity (no interaction) keys per target id instead
+  // of one shared "unscoped" anchor.
+  const echo = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/claim",
+    params: { id: "item-echo", expected_revision: 1 },
+    result: { item: workGraphItem({ id: "item-echo", title: "Echo target", status: "in_progress", revision: 2 }) },
+    timestampMs: 1_779_405_465_000,
+    frameId: "local-wg-ui-echo",
+  });
+  const echoCards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [echo])
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(echoCards.length, 1);
+  assert.equal(
+    echoCards[0].kind === "workgraph" ? echoCards[0].uiStateKey : "",
+    "workgraph:interaction:unscoped:item-echo",
+  );
+});
+
+test("workgraph post-conflict refresh echoes heal the folded revision without clearing the failure flag", () => {
+  const base = workGraphToolFrames({
+    idPrefix: "wg-heal-0",
+    name: "workgraph_create",
+    callArgs: { title: "Wedged target" },
+    result: { item: workGraphItem({ id: "item-heal", title: "Wedged target", status: "open", revision: 1 }) },
+  });
+  // The inline card sent its folded revision 1, but the item moved to 5
+  // underneath: the mutation conflicts and echoes only the error…
+  const conflictEcho = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/claim",
+    params: { id: "item-heal", expected_revision: 1, owner: { kind: "principal", id: "ops@example.com" } },
+    errorMessage: "workgraph conflict: stale revision 1, item is at 5",
+    identity: "planner",
+    timestampMs: 1_779_405_465_000,
+    frameId: "local-wg-heal-fail",
+  });
+  // …then the console re-reads the entity and folds the live state through
+  // the same echo path, marked `refresh`.
+  const refreshEcho = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/get",
+    params: { id: "item-heal" },
+    result: { item: workGraphItem({ id: "item-heal", title: "Wedged target", status: "in_progress", revision: 5 }) },
+    identity: "planner",
+    timestampMs: 1_779_405_465_100,
+    frameId: "local-wg-heal-refresh",
+    refresh: true,
+  });
+
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, conflictEcho, refreshEcho])
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.items[0].revision, 5, "the refresh echo heals the CAS token the next action will send");
+  assert.equal(card.items[0].status, "in_progress", "the refresh echo carries the live status too");
+  assert.equal(card.lastActionFailed, true, "a refresh is a read, not an action: the failure flag stays");
+  assert.equal(
+    (card.recentEvents || []).filter((line) => line.startsWith("✗ workgraph_claim failed:")).length,
+    1,
+    "the conflict note stays visible alongside the healed state",
+  );
+
+  // The same refresh for a binding conflict: goal/status carries the goal
+  // item AND the binding machine state, healing both CAS classes.
+  const bindingBase = workGraphToolFrames({
+    idPrefix: "wg-heal-b0",
+    name: "workgraph_get",
+    callArgs: { id: "goal-heal" },
+    result: {
+      item: workGraphItem({ id: "goal-heal", title: "Bound goal", status: "in_progress", revision: 2 }),
+      attention: {
+        binding_id: "b-heal",
+        mode: "pursue",
+        status: { state: "active" },
+        target: { session_id: "sess-1" },
+        work_ref: { item_id: "goal-heal" },
+        machine_state: { revision: 3 },
+        updated_at: "2026-07-08T09:00:00Z",
+      },
+    },
+  });
+  const bindingConflict = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/attention/pause",
+    params: { binding_id: "b-heal", expected_revision: 3 },
+    errorMessage: "workgraph conflict: stale machine revision 3, binding is at 8",
+    identity: "planner",
+    timestampMs: 1_779_405_466_000,
+    frameId: "local-wg-heal-bfail",
+  });
+  const bindingRefresh = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/goal/status",
+    params: { binding_id: "b-heal" },
+    result: {
+      item: workGraphItem({ id: "goal-heal", title: "Bound goal", status: "in_progress", revision: 6 }),
+      attention: {
+        binding_id: "b-heal",
+        mode: "pursue",
+        status: { state: "active" },
+        target: { session_id: "sess-1" },
+        work_ref: { item_id: "goal-heal" },
+        machine_state: { revision: 8 },
+        updated_at: "2026-07-08T09:05:00Z",
+      },
+    },
+    identity: "planner",
+    timestampMs: 1_779_405_466_100,
+    frameId: "local-wg-heal-brefresh",
+    refresh: true,
+  });
+  const bindingCards = mapFramesToTimelineEntries(
+    WORKGRAPH_AGENT,
+    [...bindingBase, bindingConflict, bindingRefresh],
+  ).filter((entry) => entry.kind === "workgraph");
+  assert.equal(bindingCards.length, 1);
+  const bindingCard = bindingCards[0];
+  if (bindingCard.kind !== "workgraph") return;
+  assert.equal(bindingCard.attention[0].revision, 8, "binding machine CAS token heals");
+  assert.equal(bindingCard.items[0].revision, 6, "the bound goal item CAS token heals in the same read");
+  assert.equal(bindingCard.lastActionFailed, true);
+});
+
+test("workgraph second parent edges never re-home the subtree and surface as an also-under note", () => {
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-mp-a",
+      name: "workgraph_create",
+      callArgs: { title: "Goal A" },
+      result: { item: workGraphItem({ id: "goal-a", title: "Goal A", status: "open", revision: 1, createdAt: "2026-07-08T08:00:00Z" }) },
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-mp-b",
+      name: "workgraph_create",
+      callArgs: { title: "Goal B" },
+      result: { item: workGraphItem({ id: "goal-b", title: "Goal B", status: "open", revision: 1, createdAt: "2026-07-08T08:01:00Z" }) },
+      timestampMs: 1_779_405_465_000,
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-mp-c",
+      name: "workgraph_create",
+      callArgs: { title: "Shared child" },
+      result: { item: workGraphItem({ id: "child-shared", title: "Shared child", status: "open", revision: 1, createdAt: "2026-07-08T08:02:00Z" }) },
+      timestampMs: 1_779_405_466_000,
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-mp-l1",
+      name: "workgraph_link",
+      callArgs: { kind: "parent", from_id: "child-shared", to_id: "goal-a" },
+      result: { edge: { kind: "parent", from_id: "child-shared", to_id: "goal-a" } },
+      timestampMs: 1_779_405_467_000,
+    }),
+  ];
+  const secondParent = workGraphToolFrames({
+    idPrefix: "wg-mp-l2",
+    name: "workgraph_link",
+    callArgs: { kind: "parent", from_id: "child-shared", to_id: "goal-b" },
+    result: { edge: { kind: "parent", from_id: "child-shared", to_id: "goal-b" } },
+    timestampMs: 1_779_405_468_000,
+  });
+
+  const before = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames)
+    .filter((entry) => entry.kind === "workgraph");
+  const after = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...frames, ...secondParent])
+    .filter((entry) => entry.kind === "workgraph");
+
+  const cardFor = (cards: typeof after, rootId: string) => {
+    const card = cards.find((entry) => entry.kind === "workgraph" && entry.rootId === rootId);
+    assert.ok(card && card.kind === "workgraph", `expected a card rooted at ${rootId}`);
+    return card;
+  };
+
+  // The child stays homed under its first parent…
+  const beforeA = cardFor(before, "goal-a");
+  assert.deepEqual(beforeA.items.map((item) => item.itemId), ["goal-a", "child-shared"]);
+  const afterA = cardFor(after, "goal-a");
+  assert.deepEqual(
+    afterA.items.map((item) => item.itemId),
+    ["goal-a", "child-shared"],
+    "the second parent edge must not move the subtree",
+  );
+  assert.equal(afterA.id, beforeA.id, "goal A's card id stays stable");
+  const child = afterA.items.find((item) => item.itemId === "child-shared");
+  assert.ok(child);
+  assert.equal(child.parentId, "goal-a");
+  assert.deepEqual(child.alsoUnder, ["Goal B"], "the additional parent is listed by title in the row detail");
+
+  // …and goal B's card does not absorb it.
+  const afterB = after.find((entry) => entry.kind === "workgraph" && entry.rootId === "goal-b");
+  if (afterB && afterB.kind === "workgraph") {
+    assert.deepEqual(
+      afterB.items.map((item) => item.itemId).filter((id) => id === "child-shared"),
+      [],
+    );
+  }
+
+  // Duplicate re-delivery of the first edge never demotes it to an extra.
+  const redelivered = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [
+    ...frames,
+    ...secondParent,
+    ...workGraphToolFrames({
+      idPrefix: "wg-mp-l1-dup",
+      name: "workgraph_link",
+      callArgs: { kind: "parent", from_id: "child-shared", to_id: "goal-a" },
+      result: { edge: { kind: "parent", from_id: "child-shared", to_id: "goal-a" } },
+      timestampMs: 1_779_405_469_000,
+    }),
+  ]).filter((entry) => entry.kind === "workgraph");
+  const redeliveredChild = cardFor(redelivered, "goal-a").items.find((item) => item.itemId === "child-shared");
+  assert.ok(redeliveredChild);
+  assert.equal(redeliveredChild.parentId, "goal-a");
+  assert.deepEqual(redeliveredChild.alsoUnder, ["Goal B"]);
+});
+
+test("workgraph events dedupe by seq (content for seq-less echoes) so overlapping polls add nothing", () => {
+  const event = (seq: number | undefined, kind: string, at: string) => ({
+    ...(seq !== undefined ? { seq } : {}),
+    realm_id: "realm-1",
+    namespace: "default",
+    item_id: "item-ev",
+    kind,
+    at,
+  });
+  const base = workGraphToolFrames({
+    idPrefix: "wg-ev-0",
+    name: "workgraph_create",
+    callArgs: { title: "Event target" },
+    result: { item: workGraphItem({ id: "item-ev", title: "Event target", status: "open", revision: 1 }) },
+  });
+  const firstPoll = workGraphToolFrames({
+    idPrefix: "wg-ev-1",
+    name: "workgraph_events",
+    callArgs: { limit: 10 },
+    result: { events: [event(1, "created", "2026-07-08T09:00:00Z"), event(2, "claimed", "2026-07-08T09:01:00Z")] },
+    timestampMs: 1_779_405_465_000,
+  });
+  // The second poll window overlaps the first entirely and adds one new event.
+  const secondPoll = workGraphToolFrames({
+    idPrefix: "wg-ev-2",
+    name: "workgraph_events",
+    callArgs: { limit: 10 },
+    result: {
+      events: [
+        event(1, "created", "2026-07-08T09:00:00Z"),
+        event(2, "claimed", "2026-07-08T09:01:00Z"),
+        event(3, "updated", "2026-07-08T09:02:00Z"),
+      ],
+    },
+    timestampMs: 1_779_405_466_000,
+  });
+
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, ...firstPoll, ...secondPoll])
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.deepEqual(
+    card.recentEvents,
+    ["created · 09:00", "claimed · 09:01", "updated · 09:02"],
+    "replayed seq'd events fold exactly once",
+  );
+
+  // Seq-less events (local echoes) dedupe by content; distinct content still
+  // folds.
+  const echoPollOnce = workGraphToolFrames({
+    idPrefix: "wg-ev-3",
+    name: "workgraph_events",
+    callArgs: { limit: 10 },
+    result: { events: [event(undefined, "evidence added", "2026-07-08T09:03:00Z")] },
+    timestampMs: 1_779_405_467_000,
+  });
+  const echoPollAgain = workGraphToolFrames({
+    idPrefix: "wg-ev-4",
+    name: "workgraph_events",
+    callArgs: { limit: 10 },
+    result: {
+      events: [
+        event(undefined, "evidence added", "2026-07-08T09:03:00Z"),
+        event(undefined, "closed", "2026-07-08T09:04:00Z"),
+      ],
+    },
+    timestampMs: 1_779_405_468_000,
+  });
+  const echoCards = mapFramesToTimelineEntries(
+    WORKGRAPH_AGENT,
+    [...base, ...firstPoll, ...secondPoll, ...echoPollOnce, ...echoPollAgain],
+  ).filter((entry) => entry.kind === "workgraph");
+  const echoCard = echoCards[0];
+  if (echoCard.kind !== "workgraph") return;
+  assert.deepEqual(
+    echoCard.recentEvents,
+    ["created · 09:00", "claimed · 09:01", "updated · 09:02", "evidence added · 09:03", "closed · 09:04"],
+    "seq-less duplicates dedupe by content; the 5-slot window holds five distinct events",
   );
 });

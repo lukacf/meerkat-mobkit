@@ -112,13 +112,12 @@ pub struct ConsoleJsonState {
     pub(crate) identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     /// Realm-scoped WorkGraph service backing the console
     /// `mobkit/workgraph/*` RPCs and the experience `workgraph` section.
-    /// `None` leaves the group unadvertised.
+    /// `None` leaves the group unadvertised. The admission authority for the
+    /// duplicate-binding guards is NOT captured here: the dispatch arm takes
+    /// it from the mob runtime, so the console and the unified stdin surface
+    /// always serialize their check-then-act windows against the SAME
+    /// instance whatever constructed the service.
     pub(crate) workgraph: Option<meerkat::WorkGraphService>,
-    /// Admission gate for the workgraph duplicate-binding guards. Captured
-    /// by value at construction from the mob runtime (like the service), so
-    /// the console and the unified stdin surface serialize their
-    /// check-then-act windows against the SAME mutex.
-    pub(crate) workgraph_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,7 +264,6 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         operator_resolver: None,
         identity_roster: None,
         workgraph: None,
-        workgraph_gate: Arc::new(tokio::sync::Mutex::new(())),
     })
 }
 
@@ -300,7 +298,6 @@ pub fn console_json_router_with_aggregator_and_access(
         operator_resolver: None,
         identity_roster: None,
         workgraph: None,
-        workgraph_gate: Arc::new(tokio::sync::Mutex::new(())),
     })
 }
 
@@ -410,10 +407,6 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     // Fall back to the mob runtime's bootstrap-time service so routers built
     // through the thinner constructors still expose workgraph.
     let workgraph = workgraph.or_else(|| runtime.workgraph_service());
-    // The gate always comes from the runtime (never a parameter): whatever
-    // constructed the service, the unified stdin surface locks the runtime's
-    // gate, so the console must lock that same one.
-    let workgraph_gate = runtime.workgraph_rpc_gate();
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
@@ -433,7 +426,6 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         operator_resolver,
         identity_roster,
         workgraph,
-        workgraph_gate,
     })
 }
 
@@ -646,7 +638,6 @@ pub async fn console_rpc_handler(
         state.memory_panel.as_ref(),
         state.identity_roster.clone(),
         state.workgraph.as_ref(),
-        &state.workgraph_gate,
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -3128,7 +3119,6 @@ pub async fn console_rpc_multipart_handler(
                 state.memory_panel.as_ref(),
                 state.identity_roster.clone(),
                 state.workgraph.as_ref(),
-                &state.workgraph_gate,
             ))
             .await
         };
@@ -4999,7 +4989,6 @@ async fn handle_console_runtime_rpc(
         None,
         None,
         None,
-        &tokio::sync::Mutex::new(()),
     )
     .await
 }
@@ -5025,7 +5014,6 @@ async fn handle_console_runtime_rpc_with_visibility(
     memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<&meerkat::WorkGraphService>,
-    workgraph_gate: &tokio::sync::Mutex<()>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
@@ -7858,14 +7846,17 @@ async fn handle_console_runtime_rpc_with_visibility(
         method if crate::rpc::workgraph_methods::is_workgraph_method(method) => {
             // The read-only gate and the workgraph.view/manage ABAC checks
             // already ran above; goal/confirm promotes the authenticated
-            // console principal into the trusted confirmation seam.
+            // console principal into the trusted confirmation seam. The
+            // admission always comes from the runtime (never a parameter):
+            // whatever constructed the service, the unified stdin surface
+            // acquires the runtime's admission, so the console must acquire
+            // that same one.
             let trusted_principal =
                 crate::rpc::workgraph_methods::console_trusted_principal(authenticated_principal);
-            let mob_handle = runtime.handle();
+            let admission = runtime.workgraph_admission();
             match crate::rpc::workgraph_methods::handle_workgraph_method(
                 workgraph,
-                &mob_handle,
-                workgraph_gate,
+                &admission,
                 trusted_principal,
                 method,
                 &request.params,
@@ -10467,7 +10458,6 @@ comms = true
                 None,
                 None,
                 None,
-                &tokio::sync::Mutex::new(()),
             ))
             .await;
             assert_ne!(
@@ -10579,7 +10569,6 @@ comms = true
                     None,
                     None,
                     None,
-                    &tokio::sync::Mutex::new(()),
                 ))
                 .await;
                 assert_eq!(
@@ -10656,7 +10645,6 @@ comms = true
                 None,
                 None,
                 None,
-                &tokio::sync::Mutex::new(()),
             ))
             .await;
             assert_ne!(
@@ -10925,7 +10913,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11027,7 +11014,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11149,7 +11135,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11509,7 +11494,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11565,7 +11549,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11605,7 +11588,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11680,7 +11662,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11720,7 +11701,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(
@@ -11762,7 +11742,6 @@ comms = true
             None,
             None,
             None,
-            &tokio::sync::Mutex::new(()),
         ))
         .await;
         assert_eq!(

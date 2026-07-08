@@ -661,13 +661,16 @@ impl UnifiedRuntime {
             .clone()
     }
 
-    /// The runtime-wide admission gate serializing the workgraph RPC
-    /// duplicate-binding guards' check-then-act windows. Lives on the mob
-    /// runtime so console routers (which capture the mob runtime by value)
-    /// and the unified stdin dispatch reach the SAME mutex; a late
-    /// `set_workgraph_service` never changes the gate.
-    pub(crate) fn workgraph_rpc_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-        self.mob_runtime.workgraph_rpc_gate()
+    /// The runtime-wide admission authority serializing the workgraph
+    /// duplicate-binding guards' check-then-act windows (RPC arms + agent
+    /// tool plane). Lives on the mob runtime so console routers (which
+    /// capture the mob runtime by value) and the unified stdin dispatch
+    /// reach the SAME instance; a late `set_workgraph_service` never changes
+    /// the admission.
+    pub(crate) fn workgraph_admission(
+        &self,
+    ) -> std::sync::Arc<crate::workgraph_admission::WorkGraphAdmission> {
+        self.mob_runtime.workgraph_admission()
     }
 
     /// Wire the §16 Q1 console-principal operator resolver (set by the

@@ -66,6 +66,12 @@ class TestBuilderChain:
 
         assert params["runtime_options"]["workgraph"] is False
 
+    def test_workgraph_accepts_durable_store_directory_string(self):
+        b = MobKit.builder().workgraph("/var/lib/mob/workgraph")
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["workgraph"] == "/var/lib/mob/workgraph"
+
     def test_console_fetch_timeout_ms_rejects_non_positive_values(self):
         with pytest.raises(ValueError):
             MobKit.builder().console_fetch_timeout_ms(0)
@@ -384,3 +390,4 @@ class TestConventionDefaults:
         b = MobKit.builder().mob("config/mob.toml").scheduling("custom/s.toml")
         b._apply_convention_defaults()
         assert b._config.scheduling_files == ["custom/s.toml"]
+

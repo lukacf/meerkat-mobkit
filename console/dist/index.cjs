@@ -3134,7 +3134,7 @@ function formatClock(iso) {
 }
 function itemRowHasDetail(row) {
   return Boolean(
-    row.description || row.evidence && row.evidence.length > 0 || row.labels && row.labels.length > 0 || row.createdAt || row.updatedAt
+    row.description || row.evidence && row.evidence.length > 0 || row.labels && row.labels.length > 0 || row.alsoUnder && row.alsoUnder.length > 0 || row.createdAt || row.updatedAt
   );
 }
 function ItemRow({
@@ -3214,6 +3214,17 @@ function ItemRow({
         ] }),
         hasDetail && expanded ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "cc-work-graph__item-detail", style: { marginLeft: `${row.depth * 18 + 25}px` }, children: [
           row.description ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { className: "cc-work-graph__item-description", children: row.description }) : null,
+          row.alsoUnder && row.alsoUnder.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+            "p",
+            {
+              className: "cc-work-graph__item-also-under",
+              "data-testid": `workgraph-item:${row.itemId}:also-under`,
+              children: [
+                "also under ",
+                row.alsoUnder.join(", ")
+              ]
+            }
+          ) : null,
           row.labels && row.labels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-work-graph__item-labels", children: row.labels.map((label) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-work-graph__chip is-label", children: label }, label)) }) : null,
           row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("li", { children: line }, `${line}-${index}`)) }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "cc-work-graph__item-meta", children: [
@@ -4604,6 +4615,7 @@ function buildWorkGraphOperatorResultFrame(input) {
       // The sent params double as routing args (id / binding_id) so failed
       // mutations still land on the right card.
       args: input.params,
+      ...input.refresh ? { refresh: true } : {},
       ...input.errorMessage !== void 0 ? { is_error: true, result: input.errorMessage } : { result: input.result ?? null }
     }
   };
@@ -4751,15 +4763,34 @@ function foldWorkGraphEdge(state, value) {
   if (workGraphString(record.kind) !== "parent") return;
   const child = workGraphString(record.from_id);
   const parent = workGraphString(record.to_id);
-  if (child && parent && child !== parent) {
+  if (!child || !parent || child === parent) return;
+  const first = state.parents.get(child);
+  if (first === void 0) {
     state.parents.set(child, parent);
+    return;
   }
+  if (first === parent) return;
+  const extras = state.extraParents.get(child) || /* @__PURE__ */ new Set();
+  extras.add(parent);
+  state.extraParents.set(child, extras);
 }
 function foldWorkGraphEvent(state, value) {
   if (!value || typeof value !== "object") return;
   const record = value;
   const kind = workGraphString(record.kind);
   if (!kind) return;
+  let dedupeKey = typeof record.seq === "number" ? `seq:${record.seq}` : "";
+  if (!dedupeKey) {
+    try {
+      dedupeKey = `content:${JSON.stringify(record)}`;
+    } catch {
+      dedupeKey = "";
+    }
+  }
+  if (dedupeKey) {
+    if (state.seenEventKeys.has(dedupeKey)) return;
+    state.seenEventKeys.add(dedupeKey);
+  }
   const at = workGraphString(record.at);
   const clock = at ? `${at.slice(11, 16)}` : "";
   state.events.push({
@@ -4863,6 +4894,7 @@ function workGraphItemRows(rootId, memberIds, state) {
     const draft = state.items.get(itemId);
     let childDepth = depth;
     if (draft && memberSet.has(itemId)) {
+      const extraParents = state.extraParents.get(itemId);
       rows.push({
         itemId: draft.itemId,
         title: draft.title,
@@ -4872,6 +4904,9 @@ function workGraphItemRows(rootId, memberIds, state) {
         ...draft.revision !== void 0 ? { revision: draft.revision } : {},
         depth,
         parentId: state.parents.get(itemId) ?? null,
+        // Parents beyond the placement one (first-parent-wins), labeled by
+        // title when the parent item was observed in this window.
+        ...extraParents && extraParents.size > 0 ? { alsoUnder: [...extraParents].map((parent) => state.items.get(parent)?.title || parent) } : {},
         blocked: draft.status === "blocked",
         dueAt: draft.dueAt ?? null,
         lastEventAt: draft.lastEventAt ?? null,
@@ -4911,8 +4946,10 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   const state = {
     items: /* @__PURE__ */ new Map(),
     parents: /* @__PURE__ */ new Map(),
+    extraParents: /* @__PURE__ */ new Map(),
     bindings: /* @__PURE__ */ new Map(),
     events: [],
+    seenEventKeys: /* @__PURE__ */ new Set(),
     contributions: []
   };
   let sawWorkGraphFrame = false;
@@ -4946,7 +4983,9 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
       const failed = record?.is_error === true;
-      contribution.outcome = failed ? "error" : "ok";
+      if (record?.refresh !== true) {
+        contribution.outcome = failed ? "error" : "ok";
+      }
       if (failed) {
         state.events.push({
           at: frameIso,
@@ -5016,6 +5055,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   }
   const anchorByCard = /* @__PURE__ */ new Map();
   const lastOutcomeByCard = /* @__PURE__ */ new Map();
+  const firstItemByCard = /* @__PURE__ */ new Map();
   const catchAllMembers = /* @__PURE__ */ new Map();
   const catchAllForItem = /* @__PURE__ */ new Map();
   const bindingRoot = (bindingId) => {
@@ -5024,10 +5064,15 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   };
   for (const contribution of state.contributions) {
     const cardKeys = /* @__PURE__ */ new Set();
+    const recordFirstItem = (cardKey, itemId) => {
+      if (!firstItemByCard.has(cardKey)) firstItemByCard.set(cardKey, itemId);
+    };
     for (const itemId of contribution.itemIds) {
       const root = rootForItem(itemId);
       if (ownCardRoots.has(root)) {
-        cardKeys.add(`workgraph:${root}`);
+        const cardKey = `workgraph:${root}`;
+        cardKeys.add(cardKey);
+        recordFirstItem(cardKey, itemId);
       } else if (state.items.has(itemId) || state.items.has(root)) {
         const interactionKey = catchAllForItem.get(root) || `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
         catchAllForItem.set(root, interactionKey);
@@ -5035,6 +5080,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
         members.add(root);
         catchAllMembers.set(interactionKey, members);
         cardKeys.add(interactionKey);
+        recordFirstItem(interactionKey, itemId);
       }
     }
     for (const bindingId of contribution.bindingIds) {
@@ -5089,6 +5135,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }
     return latest;
   };
+  const uiStateKeyForCard = (entryId, anchorInteractionId) => `workgraph:interaction:${anchorInteractionId || "unscoped"}:${firstItemByCard.get(entryId) || "unrooted"}`;
   for (const root of ownCardRoots) {
     const entryId = `workgraph:${root}`;
     const anchor = anchorByCard.get(entryId);
@@ -5105,10 +5152,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     pushEntry({
       kind: "workgraph",
       id: entryId,
-      // The anchor interaction is stable across the catch-all→rooted id
-      // migration (it is the first frame that ever touched this graph), so
-      // card UI state keyed on it survives the rekey remount.
-      uiStateKey: `workgraph:interaction:${anchor.interactionId || "unscoped"}`,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
       identity: agentIdentity(agent),
       ...anchor.createdAt ? { createdAt: anchor.createdAt } : {},
       rootId: root,
@@ -5135,7 +5179,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     pushEntry({
       kind: "workgraph",
       id: entryId,
-      uiStateKey: entryId,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
       identity: agentIdentity(agent),
       ...anchor.createdAt ? { createdAt: anchor.createdAt } : {},
       rootId: entryId.replace(/^workgraph:/, ""),
@@ -8475,6 +8519,18 @@ function isMobKitTarget(target) {
 }
 
 // src/lib/workgraph-actions.ts
+var WORKGRAPH_CONFLICT_CODE = -32042;
+function workGraphConflictRefreshRequest(params) {
+  const itemId = typeof params.id === "string" && params.id.trim() ? params.id : null;
+  if (itemId) {
+    return { command: CONSOLE_COMMAND_NAMES2.workgraphGet, params: { id: itemId } };
+  }
+  const bindingId = typeof params.binding_id === "string" && params.binding_id.trim() ? params.binding_id : null;
+  if (bindingId) {
+    return { command: CONSOLE_COMMAND_NAMES2.workgraphGoalStatus, params: { binding_id: bindingId } };
+  }
+  return null;
+}
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -13046,7 +13102,7 @@ function buildWorkGraphPanelTree(items, edges) {
   const parentOf = /* @__PURE__ */ new Map();
   for (const edge of edges) {
     if (edge.kind !== "parent") continue;
-    if (typeof edge.from_id === "string" && edge.from_id && typeof edge.to_id === "string" && edge.to_id && edge.from_id !== edge.to_id) {
+    if (typeof edge.from_id === "string" && edge.from_id && typeof edge.to_id === "string" && edge.to_id && edge.from_id !== edge.to_id && !parentOf.has(edge.from_id)) {
       parentOf.set(edge.from_id, edge.to_id);
     }
   }
@@ -19698,6 +19754,30 @@ function ConsoleApp({ baseUrl }) {
         const message = errorMessage(err);
         setActionError(message);
         echoResultToCard(void 0, message);
+        if (cardIdentity && jsonRpcErrorCode(err) === WORKGRAPH_CONFLICT_CODE) {
+          const refresh = workGraphConflictRefreshRequest(params);
+          if (refresh) {
+            try {
+              const fresh = await executeHeadlessCommand(
+                refresh.command,
+                controlWorkbenchTarget("workgraph"),
+                refresh.params
+              );
+              appendFrame(
+                cardIdentity,
+                buildWorkGraphOperatorResultFrame({
+                  method: consoleCommandMethod(refresh.command),
+                  params: refresh.params,
+                  result: fresh,
+                  identity: cardIdentity,
+                  refresh: true
+                })
+              );
+              forceRender();
+            } catch {
+            }
+          }
+        }
       }
       if (workGraphPanelDockedRef.current) {
         await refreshWorkGraphData().catch(() => {

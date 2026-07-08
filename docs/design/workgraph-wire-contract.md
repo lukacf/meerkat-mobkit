@@ -145,8 +145,12 @@ frames. Operator actions on the card gated by
   same member (session and identity forms are unified through the roster)
   returns `-32042` naming the existing binding. Upstream
   `MultipleActiveBindings` would otherwise hard-fail every subsequent turn
-  of that member. The check-then-act is serialized per runtime across both
-  RPC surfaces.
+  of that member. The same admission (`WorkGraphAdmission`) guards the agent
+  tool plane's `workgraph_attention_reassign` (conflict surfaces as a
+  `workgraph_conflict` tool error naming the occupant); the check-then-act
+  is serialized per runtime across the RPC surfaces and the tool plane, and
+  — for SQLite-backed stores, which two processes may share — cross-process
+  via a `workgraph.admission.sqlite3` sidecar lock beside the store.
 - `goal/create`, `attention/*`, and `policy/escalate` reject non-default
   `namespace` (`-32602`) — upstream turn-overlay resolution only reads the
   service default namespace, so goals elsewhere would be silently inert.

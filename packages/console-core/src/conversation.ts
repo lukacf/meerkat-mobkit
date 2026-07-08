@@ -116,6 +116,11 @@ export interface ConversationWorkGraphItemRow {
   revision?: number;
   depth: number;
   parentId?: string | null;
+  // Upstream allows multiple parents per child; the row is placed under its
+  // first observed parent (parentId) and any further parents are listed here
+  // (parent titles, or ids when the parent was never observed) as an
+  // "also under …" note in the row detail.
+  alsoUnder?: string[];
   blocked?: boolean;
   dueAt?: string | null;
   lastEventAt?: string | null;
@@ -148,8 +153,10 @@ export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBas
   // Stable UI-state anchor. The entry `id` migrates when a loose item grows
   // a hierarchy (catch-all `workgraph:interaction:{id}` → rooted
   // `workgraph:{rootId}`), remounting the card; this key stays pinned to the
-  // first contributing interaction so collapse/expansion state can survive
-  // the rekey moment.
+  // first contributing interaction PLUS the first item id folded into this
+  // specific card, so collapse/expansion state survives the rekey moment
+  // without bleeding between cards born in the same interaction. Cards that
+  // never folded an item anchor on an "unrooted" placeholder segment.
   uiStateKey?: string;
   title: string;
   objective?: string | null;

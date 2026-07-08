@@ -19,6 +19,42 @@ export type WorkGraphCommandRunner = (
   params: Record<string, unknown>,
 ) => Promise<unknown>;
 
+/// JSON-RPC code of the retryable CAS-conflict class every workgraph
+/// mutation can return (`WORKGRAPH_CONFLICT_CODE` in rpc.rs, with
+/// `data.kind = "workgraph_conflict"`).
+export const WORKGRAPH_CONFLICT_CODE = -32042;
+
+export interface WorkGraphConflictRefresh {
+  command:
+    | typeof CONSOLE_COMMAND_NAMES.workgraphGet
+    | typeof CONSOLE_COMMAND_NAMES.workgraphGoalStatus;
+  params: Record<string, unknown>;
+}
+
+/// A -32042 conflict proves the revision the inline card folded is stale —
+/// and the fold only heals from observed frames, so without a fresh sighting
+/// every subsequent click would resend the same wedged revision. Plan the
+/// read that re-observes the entity the failed mutation addressed: item
+/// mutations (`id`) via `mobkit/workgraph/get`; binding-addressed mutations
+/// (`binding_id`) via `mobkit/workgraph/goal/status`, whose result carries
+/// the goal item AND the binding machine state, healing both CAS classes at
+/// once. Null when the failed params name no entity to refetch.
+export function workGraphConflictRefreshRequest(
+  params: Record<string, unknown>,
+): WorkGraphConflictRefresh | null {
+  const itemId = typeof params.id === "string" && params.id.trim() ? params.id : null;
+  if (itemId) {
+    return { command: CONSOLE_COMMAND_NAMES.workgraphGet, params: { id: itemId } };
+  }
+  const bindingId = typeof params.binding_id === "string" && params.binding_id.trim()
+    ? params.binding_id
+    : null;
+  if (bindingId) {
+    return { command: CONSOLE_COMMAND_NAMES.workgraphGoalStatus, params: { binding_id: bindingId } };
+  }
+  return null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>

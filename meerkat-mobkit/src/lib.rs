@@ -32,6 +32,7 @@ pub mod runtime;
 pub mod schedule_wiring;
 pub mod types;
 pub mod unified_runtime;
+pub mod workgraph_admission;
 pub mod workgraph_wiring;
 
 pub use access::{

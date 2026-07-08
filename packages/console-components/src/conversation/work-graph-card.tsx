@@ -89,6 +89,7 @@ function itemRowHasDetail(row: ConversationWorkGraphItemRow): boolean {
     row.description
     || (row.evidence && row.evidence.length > 0)
     || (row.labels && row.labels.length > 0)
+    || (row.alsoUnder && row.alsoUnder.length > 0)
     || row.createdAt
     || row.updatedAt,
   );
@@ -179,6 +180,14 @@ function ItemRow({
       {hasDetail && expanded ? (
         <div className="cc-work-graph__item-detail" style={{ marginLeft: `${row.depth * 18 + 25}px` }}>
           {row.description ? <p className="cc-work-graph__item-description">{row.description}</p> : null}
+          {row.alsoUnder && row.alsoUnder.length > 0 ? (
+            <p
+              className="cc-work-graph__item-also-under"
+              data-testid={`workgraph-item:${row.itemId}:also-under`}
+            >
+              also under {row.alsoUnder.join(", ")}
+            </p>
+          ) : null}
           {row.labels && row.labels.length > 0 ? (
             <div className="cc-work-graph__item-labels">
               {row.labels.map((label) => (

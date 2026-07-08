@@ -855,6 +855,11 @@ async fn reassign_onto_occupied_target_is_conflict() {
 /// directly on the service (the member tool surface and pre-guard data can
 /// both do that), so only the resume guard stands between the operator and
 /// the bricked member.
+///
+/// Round-3 R2: a PAUSED sibling occupies too — a timed pause auto-reactivates
+/// at expiry, so resuming "into" it just schedules the second Active. The
+/// resume guard counts siblings exactly like create/reassign (Active OR
+/// Paused); only closing the sibling's goal frees the target.
 #[tokio::test(flavor = "multi_thread")]
 async fn resume_with_another_active_binding_on_the_target_is_conflict() {
     let runtime = build_runtime().await;
@@ -919,13 +924,51 @@ async fn resume_with_another_active_binding_on_the_target_is_conflict() {
         "conflict must name the active binding: {detail}"
     );
 
-    // Pausing the other binding clears the way — resume only conflicts with
-    // bindings that are Active at now.
+    // Round-3 R2: a TIMED pause on the sibling does NOT clear the way — it
+    // auto-reactivates at expiry, so the resumed binding would become the
+    // second Active the moment it fires. The conflict must name the paused
+    // sibling and say why.
     let second_revision = second.attention.machine_state.revision;
     let response = rpc(
         &runtime,
         "mobkit/workgraph/attention/pause",
-        json!({ "binding_id": second_binding, "expected_revision": second_revision }),
+        json!({
+            "binding_id": second_binding,
+            "expected_revision": second_revision,
+            "until": "2099-01-01T00:00:00Z",
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/resume",
+        json!({ "binding_id": first_binding, "expected_revision": paused_revision }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&second_binding)
+            && detail.contains("paused")
+            && detail.contains("reactivate"),
+        "timed-paused sibling must block resume and name itself: {detail}"
+    );
+
+    // Closing the sibling's goal (confirm + request_close stops its binding)
+    // genuinely frees the target for the resume.
+    let second_item_revision = second.item.revision;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/confirm",
+        json!({ "binding_id": second_binding, "expected_revision": second_item_revision }),
+    )
+    .await;
+    let second_item_revision = result(&response)["item"]["revision"].as_u64().unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/request_close",
+        json!({ "binding_id": second_binding, "expected_revision": second_item_revision }),
     )
     .await;
     assert!(response["error"].is_null(), "{response:#?}");

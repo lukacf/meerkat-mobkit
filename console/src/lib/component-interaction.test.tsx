@@ -7,6 +7,7 @@ import { JSDOM } from "jsdom";
 
 import type { ConversationWorkGraphEntry } from "@console-core";
 import { ConsoleActivityRail, WorkGraphCard, __workGraphCardUiState } from "@console-components";
+import { buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
 import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
 import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
@@ -462,6 +463,142 @@ test("WorkGraphCard expansion and collapse survive the catch-all→rooted entry 
       null,
       "collapse state carries across a further rekey",
     );
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard row detail lists additional parents as an also-under note", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:goal-a",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "goal-a",
+    title: "Goal A",
+    status: "active",
+    progress: { completed: 0, total: 2 },
+    items: [
+      { itemId: "goal-a", title: "Goal A", status: "open", revision: 1, depth: 0 },
+      // Placed under its first parent; the second parent surfaces as detail.
+      { itemId: "child-shared", title: "Shared child", status: "open", revision: 1, depth: 1, parentId: "goal-a", alsoUnder: ["Goal B"] },
+    ],
+    attention: [],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(<WorkGraphCard entry={entry} />);
+    });
+    const row = dom.window.document.querySelector("[data-testid='workgraph-item:child-shared']");
+    assert.ok(row, "expected the shared child row");
+    assert.equal(row.getAttribute("aria-expanded"), "false", "the also-under note alone makes the row expandable");
+    flushSync(() => {
+      row.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    const note = dom.window.document.querySelector("[data-testid='workgraph-item:child-shared:also-under']");
+    assert.ok(note, "expected the also-under note in the expanded detail");
+    assert.equal(note.textContent, "also under Goal B");
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard actions after a CAS conflict send the refetched revision, not the wedged one", async () => {
+  // The full heal loop the console runs on a -32042 conflict: the failed
+  // mutation echoes its error, the refetch echoes the live entity (marked
+  // `refresh`), and the refolded card's NEXT action carries the fresh token.
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const agent = { agent_id: "planner", member_id: "planner", label: "Planner", kind: "identity" };
+  const item = (revision: number, status: string) => ({
+    id: "item-cas",
+    realm_id: "realm-1",
+    namespace: "default",
+    title: "Wedged target",
+    status,
+    priority: "medium",
+    revision,
+    created_at: "2026-07-08T09:00:00Z",
+    updated_at: "2026-07-08T09:00:00Z",
+  });
+  const frames = [
+    {
+      id: "wg-cas-call",
+      event: "tool_call_requested",
+      interactionId: "turn-cas",
+      timestampMs: 1_779_405_464_000,
+      data: { id: "wg-cas-tc", name: "workgraph_create", args: { title: "Wedged target" } },
+    },
+    {
+      id: "wg-cas-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-cas",
+      timestampMs: 1_779_405_464_200,
+      data: { id: "wg-cas-tc", name: "workgraph_create", result: JSON.stringify({ item: item(1, "open") }) },
+    },
+    // The claim sent revision 1 while the item had moved to 5: conflict…
+    buildWorkGraphOperatorResultFrame({
+      method: "mobkit/workgraph/claim",
+      params: { id: "item-cas", expected_revision: 1, owner: { kind: "principal", id: "ops@example.com" } },
+      errorMessage: "workgraph conflict: stale revision 1, item is at 5",
+      identity: "planner",
+      timestampMs: 1_779_405_465_000,
+      frameId: "local-wg-cas-fail",
+    }),
+    // …and the automatic post-conflict re-read folds the live state.
+    buildWorkGraphOperatorResultFrame({
+      method: "mobkit/workgraph/get",
+      params: { id: "item-cas" },
+      result: { item: item(5, "in_progress") },
+      identity: "planner",
+      timestampMs: 1_779_405_465_100,
+      frameId: "local-wg-cas-refresh",
+      refresh: true,
+    }),
+  ];
+  const cards = mapFramesToTimelineEntries(agent, frames)
+    .filter((entry): entry is ConversationWorkGraphEntry => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].lastActionFailed, true, "the conflict stays visible on the card");
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(<WorkGraphCard entry={cards[0]} actions={{ onClose: record("close") }} />);
+    });
+    const button = dom.window.document.querySelector("[data-testid='workgraph-action:item-cas:close']");
+    assert.ok(button, "expected the Done affordance");
+    button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    assert.deepEqual(calls, [
+      { action: "close", input: { itemId: "item-cas", revision: 5 } },
+    ], "the subsequent action payload carries the refetched revision");
   } finally {
     root.unmount();
     __workGraphCardUiState.reset();

@@ -1291,6 +1291,10 @@ export function buildWorkGraphOperatorResultFrame(input: {
   identity?: string;
   timestampMs?: number;
   frameId?: string;
+  // Marks a post-conflict re-read: the frame folds fresh entity state but is
+  // not an operator action, so it must never set (or clear) the card's
+  // latest-action outcome.
+  refresh?: boolean;
 }): ConsoleFrame {
   return {
     id: input.frameId || createConsoleId("local-workgraph"),
@@ -1303,6 +1307,7 @@ export function buildWorkGraphOperatorResultFrame(input: {
       // The sent params double as routing args (id / binding_id) so failed
       // mutations still land on the right card.
       args: input.params,
+      ...(input.refresh ? { refresh: true } : {}),
       ...(input.errorMessage !== undefined
         ? { is_error: true, result: input.errorMessage }
         : { result: input.result ?? null }),
@@ -1395,10 +1400,20 @@ interface WorkGraphEventDraft {
 
 interface WorkGraphFoldState {
   items: Map<string, WorkGraphItemDraft>;
-  // child item id -> parent item id (WorkEdge kind "parent" runs child→parent).
+  // child item id -> FIRST observed parent item id (WorkEdge kind "parent"
+  // runs child→parent). Upstream allows multiple parents per child; card
+  // placement is first-parent-wins so a later edge never silently re-homes
+  // the child's subtree to another card.
   parents: Map<string, string>;
+  // child item id -> parents beyond the first, surfaced as an
+  // "also under …" note in the row detail instead of moving the row.
+  extraParents: Map<string, Set<string>>;
   bindings: Map<string, WorkGraphBindingDraft>;
   events: WorkGraphEventDraft[];
+  // Dedupe keys for folded WorkGraphEvents (seq, or content for seq-less
+  // local echoes): overlapping poll windows replay the same events and would
+  // otherwise crowd the recent-events window with duplicates.
+  seenEventKeys: Set<string>;
   // Raw per-frame touch lists; resolved to roots only after the whole pass,
   // when the parent map is complete. `outcome` is set on result frames so the
   // card can surface whether its latest action failed.
@@ -1563,9 +1578,16 @@ function foldWorkGraphEdge(state: WorkGraphFoldState, value: unknown): void {
   if (workGraphString(record.kind) !== "parent") return;
   const child = workGraphString(record.from_id);
   const parent = workGraphString(record.to_id);
-  if (child && parent && child !== parent) {
+  if (!child || !parent || child === parent) return;
+  const first = state.parents.get(child);
+  if (first === undefined) {
     state.parents.set(child, parent);
+    return;
   }
+  if (first === parent) return;
+  const extras = state.extraParents.get(child) || new Set<string>();
+  extras.add(parent);
+  state.extraParents.set(child, extras);
 }
 
 function foldWorkGraphEvent(state: WorkGraphFoldState, value: unknown): void {
@@ -1573,6 +1595,20 @@ function foldWorkGraphEvent(state: WorkGraphFoldState, value: unknown): void {
   const record = value as Record<string, unknown>;
   const kind = workGraphString(record.kind);
   if (!kind) return;
+  // WorkGraphEvent.seq is the ledger's dedupe key; local echoes may carry
+  // none, so they fall back to the full event content.
+  let dedupeKey = typeof record.seq === "number" ? `seq:${record.seq}` : "";
+  if (!dedupeKey) {
+    try {
+      dedupeKey = `content:${JSON.stringify(record)}`;
+    } catch {
+      dedupeKey = "";
+    }
+  }
+  if (dedupeKey) {
+    if (state.seenEventKeys.has(dedupeKey)) return;
+    state.seenEventKeys.add(dedupeKey);
+  }
   const at = workGraphString(record.at);
   const clock = at ? `${at.slice(11, 16)}` : "";
   state.events.push({
@@ -1694,6 +1730,7 @@ function workGraphItemRows(
     const draft = state.items.get(itemId);
     let childDepth = depth;
     if (draft && memberSet.has(itemId)) {
+      const extraParents = state.extraParents.get(itemId);
       rows.push({
         itemId: draft.itemId,
         title: draft.title,
@@ -1703,6 +1740,11 @@ function workGraphItemRows(
         ...(draft.revision !== undefined ? { revision: draft.revision } : {}),
         depth,
         parentId: state.parents.get(itemId) ?? null,
+        // Parents beyond the placement one (first-parent-wins), labeled by
+        // title when the parent item was observed in this window.
+        ...(extraParents && extraParents.size > 0
+          ? { alsoUnder: [...extraParents].map((parent) => state.items.get(parent)?.title || parent) }
+          : {}),
         blocked: draft.status === "blocked",
         dueAt: draft.dueAt ?? null,
         lastEventAt: draft.lastEventAt ?? null,
@@ -1759,8 +1801,10 @@ function buildWorkGraphEntries(
   const state: WorkGraphFoldState = {
     items: new Map(),
     parents: new Map(),
+    extraParents: new Map(),
     bindings: new Map(),
     events: [],
+    seenEventKeys: new Set(),
     contributions: [],
   };
   let sawWorkGraphFrame = false;
@@ -1804,7 +1848,12 @@ function buildWorkGraphEntries(
       isOperatorResult
     ) {
       const failed = record?.is_error === true;
-      contribution.outcome = failed ? "error" : "ok";
+      // A refresh echo (post-conflict re-read, `data.refresh`) folds entity
+      // state without being an operator action: it never sets — or clears —
+      // the card's latest-action outcome.
+      if (record?.refresh !== true) {
+        contribution.outcome = failed ? "error" : "ok";
+      }
       if (failed) {
         state.events.push({
           at: frameIso,
@@ -1890,6 +1939,12 @@ function buildWorkGraphEntries(
   // last recorded outcome per card is the outcome of its latest action.
   const anchorByCard = new Map<string, { frameIndex: number; createdAt?: string; interactionId: string }>();
   const lastOutcomeByCard = new Map<string, "ok" | "error">();
+  // Per-card UI-state anchor: the first item id ever contributed to that
+  // card, in frame order. It is stable from the first create result and, for
+  // a graph that later grows a hierarchy, the same item routes to the rooted
+  // card from the same first frame — so the anchor survives the
+  // catch-all→rooted rekey.
+  const firstItemByCard = new Map<string, string>();
   const catchAllMembers = new Map<string, Set<string>>();
   const catchAllForItem = new Map<string, string>();
   const bindingRoot = (bindingId: string): string | null => {
@@ -1898,10 +1953,15 @@ function buildWorkGraphEntries(
   };
   for (const contribution of state.contributions) {
     const cardKeys = new Set<string>();
+    const recordFirstItem = (cardKey: string, itemId: string) => {
+      if (!firstItemByCard.has(cardKey)) firstItemByCard.set(cardKey, itemId);
+    };
     for (const itemId of contribution.itemIds) {
       const root = rootForItem(itemId);
       if (ownCardRoots.has(root)) {
-        cardKeys.add(`workgraph:${root}`);
+        const cardKey = `workgraph:${root}`;
+        cardKeys.add(cardKey);
+        recordFirstItem(cardKey, itemId);
       } else if (state.items.has(itemId) || state.items.has(root)) {
         const interactionKey = catchAllForItem.get(root)
           || `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
@@ -1910,6 +1970,7 @@ function buildWorkGraphEntries(
         members.add(root);
         catchAllMembers.set(interactionKey, members);
         cardKeys.add(interactionKey);
+        recordFirstItem(interactionKey, itemId);
       }
     }
     for (const bindingId of contribution.bindingIds) {
@@ -1977,6 +2038,15 @@ function buildWorkGraphEntries(
     return latest;
   };
 
+  // UI-state anchor: interaction of the first contributing frame plus the
+  // first item id folded into this specific card. The pair survives the
+  // catch-all→rooted rekey (both halves come from that same first frame) yet
+  // stays distinct between cards born in the same interaction and between
+  // operator-echo-only cards for different targets. A card that never folded
+  // an item (a host for unroutable failure notes) anchors on "unrooted".
+  const uiStateKeyForCard = (entryId: string, anchorInteractionId: string): string =>
+    `workgraph:interaction:${anchorInteractionId || "unscoped"}:${firstItemByCard.get(entryId) || "unrooted"}`;
+
   for (const root of ownCardRoots) {
     const entryId = `workgraph:${root}`;
     const anchor = anchorByCard.get(entryId);
@@ -1998,10 +2068,7 @@ function buildWorkGraphEntries(
     pushEntry({
       kind: "workgraph",
       id: entryId,
-      // The anchor interaction is stable across the catch-all→rooted id
-      // migration (it is the first frame that ever touched this graph), so
-      // card UI state keyed on it survives the rekey remount.
-      uiStateKey: `workgraph:interaction:${anchor.interactionId || "unscoped"}`,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
       identity: agentIdentity(agent),
       ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
       rootId: root,
@@ -2032,7 +2099,7 @@ function buildWorkGraphEntries(
     pushEntry({
       kind: "workgraph",
       id: entryId,
-      uiStateKey: entryId,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
       identity: agentIdentity(agent),
       ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
       rootId: entryId.replace(/^workgraph:/, ""),

@@ -3876,14 +3876,12 @@ async fn handle_unified_rpc_json_inner(
         }
         method if workgraph_methods::is_workgraph_method(method) => {
             let service = runtime.workgraph_service();
-            let mob_handle = runtime.mob_handle();
-            let admission_gate = runtime.workgraph_rpc_gate();
+            let admission = runtime.workgraph_admission();
             // The stdin surface is host-trusted; no wire principal exists to
             // promote into goal/confirm.
             match workgraph_methods::handle_workgraph_method(
                 service.as_ref(),
-                &mob_handle,
-                &admission_gate,
+                &admission,
                 None,
                 method,
                 &request.params,

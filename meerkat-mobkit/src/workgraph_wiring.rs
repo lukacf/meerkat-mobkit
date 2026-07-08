@@ -24,9 +24,26 @@ use meerkat::{
     WorkGraphStore, WorkGraphToolSurface, WorkNamespace,
 };
 
+use crate::workgraph_admission::{
+    WorkGraphAdmissionError, WorkGraphAdmissionPermit, WorkGraphAdmissionSlot,
+};
+
 /// File name for the durable workgraph store, kept beside the runtime DB so a
 /// gateway and a library-mode runtime pointed at the same dir share state.
 /// Matches meerkat's `PersistenceBundle` convention.
+///
+/// Because two PROCESSES may share this file, the duplicate-binding admission
+/// guards cannot rely on their per-process gate alone: for SQLite-backed
+/// stores the runtime's
+/// [`WorkGraphAdmission`](crate::workgraph_admission::WorkGraphAdmission)
+/// additionally serializes each
+/// check-then-mutate window cross-process through a sidecar lock database
+/// ([`WORKGRAPH_ADMISSION_SIDECAR_FILE`](crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE),
+/// created beside this store) — a `BEGIN IMMEDIATE` transaction held for the
+/// window's duration. The sidecar is deliberately NOT this store file:
+/// holding a write transaction on the real store would deadlock against the
+/// service's own writes. Memory-backed runtimes are single-process by
+/// construction and keep the in-process gate only.
 pub const WORKGRAPH_STORE_FILE: &str = "workgraph.sqlite3";
 
 /// Build a realm-scoped [`WorkGraphService`] over a durable SQLite store
@@ -68,11 +85,21 @@ fn scoped_workgraph_service(store: Arc<dyn WorkGraphStore>, realm_id: &str) -> W
 /// with the `workgraph_*` surface. Call on the `FactoryAgentBuilder` BEFORE
 /// it is consumed into a session service (the slot is interior-mutable, but
 /// attaching up front matches the schedule-tools wiring).
-pub fn install_workgraph_tools(builder: &FactoryAgentBuilder, service: &WorkGraphService) {
-    meerkat::surface::set_default_workgraph_tools(
-        builder,
-        Some(Arc::new(ScopePinnedWorkGraphTools::new(service))),
-    );
+///
+/// Returns the dispatcher's late-bound [`WorkGraphAdmissionSlot`]. Register
+/// it on the bootstrap spec
+/// ([`MobBootstrapSpec::with_workgraph_admission_slot`](crate::MobBootstrapSpec::with_workgraph_admission_slot))
+/// so `MobRuntime::bootstrap` fills it with the runtime-wide admission —
+/// otherwise the agent tool plane's `workgraph_attention_reassign` skips the
+/// duplicate-binding guard the RPC surfaces enforce.
+pub fn install_workgraph_tools(
+    builder: &FactoryAgentBuilder,
+    service: &WorkGraphService,
+) -> WorkGraphAdmissionSlot {
+    let tools = ScopePinnedWorkGraphTools::new(service);
+    let slot = tools.admission_slot();
+    meerkat::surface::set_default_workgraph_tools(builder, Some(Arc::new(tools)));
+    slot
 }
 
 /// Pin every `workgraph_*` tool call to the service's realm + namespace.
@@ -94,19 +121,98 @@ pub fn install_workgraph_tools(builder: &FactoryAgentBuilder, service: &WorkGrap
 /// attention-scoped enforcement in the inner surface and permanently denying
 /// `workgraph_policy_escalate`/`workgraph_attention_reassign` to
 /// legitimately-delegated agents.
+///
+/// Round-3 finding R1: `workgraph_attention_reassign` mints an Active
+/// binding on the NEW target, and upstream has no occupancy check — so a
+/// coordinate-mode member could land a second Active binding on an occupied
+/// member (bricking it with `MultipleActiveBindings`) where an ABAC-granted
+/// operator on the RPC surface is refused, and could race the RPC guards.
+/// Both dispatch paths therefore intercept the reassign: when the
+/// late-bound [`WorkGraphAdmissionSlot`] is filled (by
+/// `MobRuntime::bootstrap` — the wrapper is constructed before the mob
+/// exists), the call holds the runtime-wide admission across the forward
+/// and runs the same occupancy check as the RPC arms; when unfilled
+/// (non-mob embedder) it forwards as before.
 struct ScopePinnedWorkGraphTools {
     inner: Arc<WorkGraphToolSurface>,
+    service: WorkGraphService,
+    admission: WorkGraphAdmissionSlot,
     realm_id: String,
     namespace: String,
+}
+
+/// The subset of the upstream `workgraph_attention_reassign` tool schema the
+/// admission guard needs (meerkat 0.7.23, meerkat-workgraph/src/tools.rs
+/// `attention_reassign_schema`: `binding_id`, `expected_revision`, `target`
+/// all required; `target` is the tagged session/owner `GoalAttentionTarget`).
+#[derive(serde::Deserialize)]
+struct ReassignAdmissionArgs {
+    binding_id: meerkat::WorkAttentionBindingId,
+    target: meerkat::GoalAttentionTarget,
 }
 
 impl ScopePinnedWorkGraphTools {
     fn new(service: &WorkGraphService) -> Self {
         Self {
             inner: Arc::new(WorkGraphToolSurface::new(service.clone())),
+            service: service.clone(),
+            admission: Arc::new(std::sync::RwLock::new(None)),
             realm_id: service.default_realm_id().to_string(),
             namespace: service.default_namespace().as_str().to_string(),
         }
+    }
+
+    fn admission_slot(&self) -> WorkGraphAdmissionSlot {
+        Arc::clone(&self.admission)
+    }
+
+    /// Guard a `workgraph_attention_reassign` before it reaches the inner
+    /// surface: hold the runtime-wide admission and run the occupancy check
+    /// on the parsed target. `Ok(Some(permit))` must be held by the caller
+    /// across the forwarded dispatch so a racing RPC `goal/create` on the
+    /// same target cannot slip between check and mutate. `Ok(None)` means no
+    /// guard applies (not a reassign, or the slot is unfilled — a non-mob
+    /// embedder — where the call forwards exactly as before the guard).
+    async fn admit(
+        &self,
+        name: &str,
+        pinned: &serde_json::value::RawValue,
+    ) -> Result<Option<WorkGraphAdmissionPermit>, meerkat_core::ToolError> {
+        if name != "workgraph_attention_reassign" {
+            return Ok(None);
+        }
+        let admission = self
+            .admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(admission) = admission else {
+            return Ok(None);
+        };
+        let args: ReassignAdmissionArgs = serde_json::from_str(pinned.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(
+                name,
+                format!("invalid workgraph_attention_reassign arguments: {error}"),
+            )
+        })?;
+        let permit = admission
+            .acquire()
+            .await
+            .map_err(|error| admission_tool_error(name, error))?;
+        // The pinned args force the service's default namespace, so the
+        // occupancy check reads the same (default-namespace) binding set the
+        // RPC guards do.
+        admission
+            .check_target_free(
+                &self.service,
+                None,
+                &args.target.to_attention_target(),
+                Some(&args.binding_id),
+                "reassigning this binding onto the same target",
+            )
+            .await
+            .map_err(|error| admission_tool_error(name, error))?;
+        Ok(Some(permit))
     }
 
     /// Re-encode a `workgraph_*` call's arguments with the service scope
@@ -149,6 +255,31 @@ impl ScopePinnedWorkGraphTools {
     }
 }
 
+/// Project an admission refusal onto the tool plane. The occupancy conflict
+/// keeps the RPC surface's `workgraph_conflict` vocabulary in structured
+/// data and names the occupying binding plus the way out in the message, so
+/// the agent can act on it (close or reassign the occupant) instead of
+/// retrying a call that can never succeed.
+fn admission_tool_error(name: &str, error: WorkGraphAdmissionError) -> meerkat_core::ToolError {
+    match error {
+        WorkGraphAdmissionError::Occupied { detail } => {
+            meerkat_core::ToolError::execution_failed_with_data(
+                format!("workgraph conflict: {detail}"),
+                serde_json::json!({
+                    "kind": "workgraph_conflict",
+                    "detail": detail,
+                }),
+            )
+        }
+        WorkGraphAdmissionError::Service(error) => meerkat_core::ToolError::execution_failed(
+            format!("{name} admission check failed: {error}"),
+        ),
+        WorkGraphAdmissionError::Lock(detail) => meerkat_core::ToolError::execution_failed(
+            format!("{name} admission lock failed: {detail}"),
+        ),
+    }
+}
+
 #[async_trait::async_trait]
 impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
     fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
@@ -162,6 +293,7 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         let Some(pinned) = self.pin_args(&call)? else {
             return self.inner.dispatch(call).await;
         };
+        let _permit = self.admit(call.name, &pinned).await?;
         self.inner
             .dispatch(meerkat_core::types::ToolCallView {
                 id: call.id,
@@ -179,6 +311,7 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         let Some(pinned) = self.pin_args(&call)? else {
             return self.inner.dispatch_with_context(call, context).await;
         };
+        let _permit = self.admit(call.name, &pinned).await?;
         self.inner
             .dispatch_with_context(
                 meerkat_core::types::ToolCallView {
@@ -193,16 +326,17 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
 }
 
 /// Open the durable store under `state_dir` and attach its tool surface to
-/// `builder`. Returns the service, or `None` (boot-without) on open failure.
+/// `builder`. Returns the service and the tool-plane admission slot (see
+/// [`install_workgraph_tools`]), or `None` (boot-without) on open failure.
 #[must_use]
 pub fn attach_workgraph_tools(
     builder: &FactoryAgentBuilder,
     state_dir: &Path,
     realm_id: &str,
-) -> Option<WorkGraphService> {
+) -> Option<(WorkGraphService, WorkGraphAdmissionSlot)> {
     let service = open_workgraph_service(state_dir, realm_id)?;
-    install_workgraph_tools(builder, &service);
-    Some(service)
+    let slot = install_workgraph_tools(builder, &service);
+    Some((service, slot))
 }
 
 /// Memory-store variant of [`attach_workgraph_tools`] for ephemeral launches.
@@ -210,14 +344,14 @@ pub fn attach_workgraph_tools(
 pub fn attach_workgraph_tools_ephemeral(
     builder: &FactoryAgentBuilder,
     realm_id: &str,
-) -> WorkGraphService {
+) -> (WorkGraphService, WorkGraphAdmissionSlot) {
     let service = ephemeral_workgraph_service(realm_id);
-    install_workgraph_tools(builder, &service);
-    service
+    let slot = install_workgraph_tools(builder, &service);
+    (service, slot)
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat::{AgentFactory, Config, CreateWorkItemRequest, WorkGraphStoreKind};
@@ -240,7 +374,7 @@ mod tests {
         let builder = test_builder(dir.path());
         assert!(!slot_is_filled(&builder));
 
-        let service = attach_workgraph_tools(&builder, dir.path(), "wiring-realm")
+        let (service, _slot) = attach_workgraph_tools(&builder, dir.path(), "wiring-realm")
             .expect("sqlite workgraph store should open in a writable dir");
 
         assert!(
@@ -294,7 +428,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let builder = test_builder(dir.path());
 
-        let service = attach_workgraph_tools_ephemeral(&builder, "ephemeral-realm");
+        let (service, _slot) = attach_workgraph_tools_ephemeral(&builder, "ephemeral-realm");
 
         assert!(slot_is_filled(&builder));
         assert_eq!(service.default_realm_id(), "ephemeral-realm");
@@ -478,5 +612,388 @@ mod tests {
             )
             .await
             .expect("attention-scoped call on the bound item succeeds");
+    }
+
+    // -- Round-3 R1: the agent tool plane shares the RPC admission guard ----
+
+    const SESSION_OCCUPIED: &str = "019e63c2-0000-7000-8000-0000000000a1";
+    const SESSION_MOVER: &str = "019e63c2-0000-7000-8000-0000000000a2";
+    const SESSION_FREE: &str = "019e63c2-0000-7000-8000-0000000000a3";
+
+    fn admission_definition() -> meerkat_mob::MobDefinition {
+        meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "wiring-admission-mob"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+"#,
+        )
+        .expect("parse admission test definition")
+    }
+
+    /// Build the REAL tool plane the runtime installs: attach the dispatcher
+    /// to a builder, feed the builder into a session service, register the
+    /// admission slot on the bootstrap spec, and let `MobRuntime::bootstrap`
+    /// fill it — the exact wiring a gateway gets.
+    async fn bootstrapped_tool_plane() -> (
+        crate::MobRuntime,
+        WorkGraphService,
+        Arc<dyn meerkat_core::AgentToolDispatcher>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let builder = test_builder(dir.path());
+        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, "admission-realm");
+        let dispatcher = builder
+            .default_workgraph_tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("dispatcher installed");
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat_session::EphemeralSessionService::new(builder, 8));
+        let spec = crate::MobBootstrapSpec::new(
+            admission_definition(),
+            meerkat_mob::MobStorage::in_memory(),
+            session_service,
+        )
+        .with_workgraph_service(Some(service.clone()))
+        .with_workgraph_admission_slot(slot)
+        .with_options(crate::MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let runtime = crate::MobRuntime::bootstrap(spec)
+            .await
+            .expect("bootstrap mob runtime");
+        (runtime, service, dispatcher, dir)
+    }
+
+    async fn create_session_goal(
+        service: &WorkGraphService,
+        title: &str,
+        session_id: &str,
+        mode: meerkat::WorkAttentionMode,
+    ) -> meerkat::GoalCreateResult {
+        service
+            .create_goal(meerkat::GoalCreateRequest {
+                realm_id: None,
+                namespace: None,
+                title: title.to_string(),
+                description: None,
+                target: meerkat::GoalAttentionTarget::Session {
+                    session_id: meerkat_core::SessionId::parse(session_id).expect("session id"),
+                },
+                mode,
+                completion_policy: Default::default(),
+                delegated_authority: Default::default(),
+                projection_policy: Default::default(),
+            })
+            .await
+            .expect("create goal")
+    }
+
+    /// A dispatch context carrying the binding's attention witness — how a
+    /// legitimately-delegated coordinate-mode member's turns arrive.
+    async fn witness_context(
+        service: &WorkGraphService,
+        binding_id: &meerkat::WorkAttentionBindingId,
+    ) -> meerkat_core::agent::ToolDispatchContext {
+        use std::collections::BTreeMap;
+        let projection = service
+            .attention_projection(meerkat::AttentionProjectionRequest {
+                binding_id: binding_id.clone(),
+                realm_id: None,
+                namespace: None,
+            })
+            .await
+            .expect("attention projection")
+            .projection;
+        meerkat_core::agent::ToolDispatchContext::default().with_turn_metadata(BTreeMap::from([(
+            meerkat::WORKGRAPH_ATTENTION_DISPATCH_CONTEXT_KEY.to_string(),
+            serde_json::to_value(&projection).expect("projection json"),
+        )]))
+    }
+
+    fn reassign_args(
+        goal: &meerkat::GoalCreateResult,
+        target_session: &str,
+    ) -> Box<serde_json::value::RawValue> {
+        serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "binding_id": goal.attention.binding_id,
+                "expected_revision": goal.attention.machine_state.revision,
+                "target": { "kind": "session", "session_id": target_session },
+            })
+            .to_string(),
+        )
+        .expect("reassign args")
+    }
+
+    /// Round-3 R1: a coordinate-mode member's `workgraph_attention_reassign`
+    /// onto an occupied member must be refused with a conflict that names
+    /// the occupying binding — upstream would happily mint the second Active
+    /// binding (bricking the member with `MultipleActiveBindings`), which
+    /// the RPC surfaces already refuse to an ABAC-granted operator. A free
+    /// target must still forward and succeed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_plane_reassign_onto_an_occupied_target_names_the_occupant() {
+        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let occupant = create_session_goal(
+            &service,
+            "occupant",
+            SESSION_OCCUPIED,
+            meerkat::WorkAttentionMode::Pursue,
+        )
+        .await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let context = witness_context(&service, &mover.attention.binding_id).await;
+
+        let onto_occupied = reassign_args(&mover, SESSION_OCCUPIED);
+        let error = dispatcher
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-occupied",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_occupied,
+                },
+                &context,
+            )
+            .await
+            .expect_err("occupied target must be refused at admission");
+        let message = error.to_string();
+        assert!(
+            message.contains(occupant.attention.binding_id.as_str()),
+            "conflict must name the occupying binding: {message}"
+        );
+        assert!(
+            message.contains("close its goal"),
+            "conflict must be actionable for the agent: {message}"
+        );
+        assert_eq!(
+            error.structured_data().expect("structured conflict data")["kind"],
+            serde_json::json!("workgraph_conflict"),
+            "tool plane keeps the RPC conflict vocabulary"
+        );
+
+        // The refused move must not have touched the mover binding: the same
+        // witness and revision reassign cleanly onto a FREE target.
+        let onto_free = reassign_args(&mover, SESSION_FREE);
+        dispatcher
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-free",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_free,
+                },
+                &context,
+            )
+            .await
+            .expect("free target forwards and succeeds");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// An UNFILLED admission slot (non-mob embedder: no runtime, no roster)
+    /// forwards exactly as before the guard existed — upstream has no
+    /// occupancy check, so the reassign lands even onto an occupied target.
+    #[tokio::test]
+    async fn unfilled_admission_slot_forwards_reassign_unguarded() {
+        use meerkat_core::AgentToolDispatcher as _;
+
+        let service = ephemeral_workgraph_service("unfilled-realm");
+        let tools = ScopePinnedWorkGraphTools::new(&service);
+        create_session_goal(
+            &service,
+            "occupant",
+            SESSION_OCCUPIED,
+            meerkat::WorkAttentionMode::Pursue,
+        )
+        .await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let context = witness_context(&service, &mover.attention.binding_id).await;
+
+        let onto_occupied = reassign_args(&mover, SESSION_OCCUPIED);
+        tools
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-unguarded",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_occupied,
+                },
+                &context,
+            )
+            .await
+            .expect("unfilled slot forwards to the (check-less) upstream surface");
+    }
+
+    /// Round-3 R1 (race): a tool-plane reassign and an RPC `goal/create`
+    /// aimed at the same free target must admit exactly one — both sides
+    /// hold the SAME runtime-wide admission across their check-then-act
+    /// windows, so whichever acquires second sees the other's binding.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_reassign_and_rpc_goal_create_racing_admit_exactly_one() {
+        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let context = witness_context(&service, &mover.attention.binding_id).await;
+        let admission = runtime.workgraph_admission();
+
+        let tool_side = {
+            let dispatcher = Arc::clone(&dispatcher);
+            let args = reassign_args(&mover, SESSION_FREE);
+            tokio::spawn(async move {
+                dispatcher
+                    .dispatch_with_context(
+                        meerkat_core::types::ToolCallView {
+                            id: "call-race",
+                            name: "workgraph_attention_reassign",
+                            args: &args,
+                        },
+                        &context,
+                    )
+                    .await
+            })
+        };
+        let rpc_side = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                crate::rpc::workgraph_methods::handle_workgraph_method(
+                    Some(&service),
+                    &admission,
+                    None,
+                    "mobkit/workgraph/goal/create",
+                    &serde_json::json!({
+                        "title": "racer",
+                        "target": { "kind": "session", "session_id": SESSION_FREE },
+                    }),
+                )
+                .await
+            })
+        };
+        let (tool_result, rpc_result) = tokio::join!(tool_side, rpc_side);
+        let (tool_result, rpc_result) = (tool_result.expect("join"), rpc_result.expect("join"));
+
+        let successes = usize::from(tool_result.is_ok()) + usize::from(rpc_result.is_ok());
+        assert_eq!(
+            successes,
+            1,
+            "exactly one side wins the target: tool={:?} rpc={rpc_result:?}",
+            tool_result
+                .as_ref()
+                .map(|_| "ok")
+                .map_err(ToString::to_string),
+        );
+        // The loser lost to the occupancy check, not to some other failure.
+        match (&tool_result, &rpc_result) {
+            (Err(error), Ok(_)) => {
+                assert_eq!(
+                    error.structured_data().expect("conflict data")["kind"],
+                    serde_json::json!("workgraph_conflict"),
+                    "{error}"
+                );
+            }
+            (Ok(_), Err(error)) => {
+                assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+            }
+            other => panic!("exactly one winner expected: {other:?}"),
+        }
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    // -- Round-3 R3: cross-process serialization on shared sqlite stores ----
+
+    /// Two admission instances (two processes in real life) sharing one
+    /// sidecar serialize: the second `acquire` waits until the first permit
+    /// drops. The in-process gates are DISJOINT here, so only the sidecar
+    /// can be providing the exclusion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admissions_sharing_a_sidecar_serialize_like_two_processes() {
+        let (runtime, _service, _dispatcher, dir) = bootstrapped_tool_plane().await;
+        let sidecar = crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path());
+        let first = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime.handle(),
+            Some(sidecar.clone()),
+        );
+        let second =
+            crate::workgraph_admission::WorkGraphAdmission::new(runtime.handle(), Some(sidecar));
+
+        let permit = first.acquire().await.expect("first admission");
+        let waiter = tokio::spawn(async move { second.acquire().await.map(|_| ()) });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !waiter.is_finished(),
+            "second admission must wait on the sidecar while the first permit is held"
+        );
+
+        drop(permit);
+        waiter
+            .await
+            .expect("join")
+            .expect("released sidecar admits the waiter");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// The persistent spec (SQLite-backed store, shareable across processes)
+    /// must place the admission sidecar beside the store and register the
+    /// tool-plane slot; ephemeral (memory-backed, single-process) specs must
+    /// register the slot but NOT the sidecar.
+    #[test]
+    fn spec_constructors_configure_the_admission_sidecar_per_store_kind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let spec = crate::MobBootstrapSpec::persistent(
+            admission_definition(),
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            8,
+            Arc::new(meerkat_store::MemoryStore::new()),
+        );
+        assert_eq!(
+            spec.workgraph_admission_sidecar,
+            Some(crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path())),
+            "sqlite-backed store gets the sidecar beside it"
+        );
+        assert_eq!(
+            spec.workgraph_admission_slots.len(),
+            1,
+            "the tool-plane admission slot must travel on the spec"
+        );
+
+        let builder = test_builder(dir.path());
+        let (service, slot) = attach_workgraph_tools_ephemeral(&builder, "spec-check-realm");
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat_session::EphemeralSessionService::new(builder, 8));
+        let ephemeral_spec = crate::MobBootstrapSpec::new(
+            admission_definition(),
+            meerkat_mob::MobStorage::in_memory(),
+            session_service,
+        )
+        .with_workgraph_service(Some(service))
+        .with_workgraph_admission_slot(slot);
+        assert_eq!(
+            ephemeral_spec.workgraph_admission_sidecar, None,
+            "memory-backed runtimes are single-process; no sidecar"
+        );
+        assert_eq!(ephemeral_spec.workgraph_admission_slots.len(), 1);
     }
 }

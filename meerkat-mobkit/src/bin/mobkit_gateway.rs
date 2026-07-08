@@ -35,12 +35,21 @@ type ScheduleHostInputs = (
     Arc<PersistentSessionService<FactoryAgentBuilder>>,
     PathBuf,
 );
+/// WorkGraph wiring from a durable attach: the realm-scoped service, the
+/// tool-plane admission slot the bootstrap spec must register, and the state
+/// dir for the cross-process admission sidecar (the store file is shareable
+/// across processes).
+type WorkGraphParts = (
+    meerkat::WorkGraphService,
+    meerkat_mobkit::workgraph_admission::WorkGraphAdmissionSlot,
+    PathBuf,
+);
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
     Arc<meerkat_runtime::MeerkatMachine>,
     Arc<dyn BinaryBlobStore>,
     Option<ScheduleHostInputs>,
-    Option<meerkat::WorkGraphService>,
+    Option<WorkGraphParts>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -463,14 +472,19 @@ fn build_persistent_session_service(
                 .unwrap_or_else(|| std::path::Path::new(".")),
         );
     // WorkGraph: durable store beside the schedule store, realm scoped to
-    // the mob definition id (member tools + overlays + console RPCs).
-    let workgraph_service = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+    // the mob definition id (member tools + overlays + console RPCs). The
+    // state dir travels along so the bootstrap spec can place the
+    // cross-process admission sidecar beside the store.
+    let workgraph_state_dir = runtime_db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let workgraph = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
         &builder,
-        runtime_db_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(".")),
+        &workgraph_state_dir,
         realm_id,
-    );
+    )
+    .map(|(service, admission_slot)| (service, admission_slot, workgraph_state_dir));
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -495,7 +509,7 @@ fn build_persistent_session_service(
         adapter,
         binary_blob_store,
         schedule_host_inputs,
-        workgraph_service,
+        workgraph,
     ))
 }
 
@@ -749,7 +763,7 @@ async fn run() -> anyhow::Result<()> {
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
     let (session_spec, schedule_host_inputs, workgraph_service) = if persistent_sessions {
-        let (service, adapter, binary_blob_store, schedule_host_inputs, workgraph_service) =
+        let (service, adapter, binary_blob_store, schedule_host_inputs, workgraph) =
             build_persistent_session_service(
                 &store_path,
                 runtime_root.clone(),
@@ -762,6 +776,7 @@ async fn run() -> anyhow::Result<()> {
         // firing host can be spawned once the runtime has booted (below).
         let schedule_host_inputs = schedule_host_inputs
             .map(|(sched, registry, svc, path)| (sched, registry, svc, path, adapter.clone()));
+        let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
         // The explicit runtime adapter must share the session service's runtime
         // persistence authority or meerkat 0.7 fails the bootstrap closed.
         // `with_session_runtime_adapter` wires the SAME adapter into the session
@@ -771,6 +786,13 @@ async fn run() -> anyhow::Result<()> {
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
+        if let Some((_, admission_slot, state_dir)) = &workgraph {
+            // Durable (cross-process shareable) store: register the tool-plane
+            // admission slot and the sidecar lock beside the store.
+            spec = spec
+                .with_workgraph_admission_slot(admission_slot.clone())
+                .with_workgraph_admission_sidecar(state_dir);
+        }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         (spec, schedule_host_inputs, workgraph_service)
@@ -804,13 +826,14 @@ async fn run() -> anyhow::Result<()> {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         // The default TUX launch is ephemeral: a memory-backed workgraph
-        // keeps the feature available (tools stay profile-gated).
-        let workgraph_service = Some(
+        // keeps the feature available (tools stay profile-gated). Memory
+        // store = single process, so no admission sidecar.
+        let (ephemeral_workgraph, workgraph_admission_slot) =
             meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_ephemeral(
                 &builder,
                 &runtime_id,
-            ),
-        );
+            );
+        let workgraph_service = Some(ephemeral_workgraph);
         let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
         // THE FIX: share the explicit adapter's persistence authority with the
         // session service. Without this, EphemeralSessionService keeps its own
@@ -821,7 +844,8 @@ async fn run() -> anyhow::Result<()> {
         // every launch hits). rpc_gateway.rs already had this call.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_session_runtime_adapter(adapter.clone())
-            .with_workgraph_service(workgraph_service.clone());
+            .with_workgraph_service(workgraph_service.clone())
+            .with_workgraph_admission_slot(workgraph_admission_slot);
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         // Ephemeral sessions have no persistent service; the runtime-backed

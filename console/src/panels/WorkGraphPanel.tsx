@@ -62,6 +62,9 @@ export function buildWorkGraphPanelTree(
       typeof edge.from_id === "string" && edge.from_id
       && typeof edge.to_id === "string" && edge.to_id
       && edge.from_id !== edge.to_id
+      // Multiple parents per child are allowed upstream; placement is
+      // first-parent-wins, matching the inline card fold.
+      && !parentOf.has(edge.from_id)
     ) {
       parentOf.set(edge.from_id, edge.to_id);
     }
