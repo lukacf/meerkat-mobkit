@@ -99,10 +99,88 @@ export interface ConversationFlowRunEntry extends ConversationTimelineEntryBase 
   restorable?: boolean;
 }
 
+// Aggregate posture of one goal/root work-item card. "mixed" is a fully
+// terminal graph that ended in a blend of completed/cancelled outcomes.
+export type WorkGraphCardStatus = "active" | "blocked" | "completed" | "failed" | "mixed";
+
+export interface ConversationWorkGraphItemRow {
+  itemId: string;
+  title: string;
+  // Upstream WorkStatus wire value: open|in_progress|blocked|completed|cancelled|failed.
+  status: string;
+  priority?: string | null;
+  ownerLabel?: string | null;
+  // CAS token — operator actions must send the latest observed revision.
+  // Absent means no frame ever carried one: actions must resolve it from the
+  // service before mutating (never guess 0).
+  revision?: number;
+  depth: number;
+  parentId?: string | null;
+  // Upstream allows multiple parents per child; the row is placed under its
+  // first observed parent (parentId) and any further parents are listed here
+  // (parent titles, or ids when the parent was never observed) as an
+  // "also under …" note in the row detail.
+  alsoUnder?: string[];
+  blocked?: boolean;
+  dueAt?: string | null;
+  lastEventAt?: string | null;
+  description?: string | null;
+  labels?: string[];
+  evidence?: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ConversationWorkGraphAttentionRow {
+  bindingId: string;
+  // pursue|coordinate|review|falsify|judge|observe
+  mode: string;
+  // Human form of the binding status: "active", "paused until …", …
+  statusLabel: string;
+  targetLabel?: string | null;
+  // Binding machine revision (CAS token for attention mutations).
+  revision?: number;
+  itemId?: string | null;
+}
+
+// One evolving in-conversation card per goal/root work item, aggregated from
+// the turn's workgraph tool-call frames. Rebuilt from scratch on every adapter
+// pass (same posture as tool blocks) with a stable `workgraph:{rootId}` id so
+// live updates land in place.
+export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBase {
+  kind: "workgraph";
+  rootId: string;
+  // Stable UI-state anchor. The entry `id` migrates when a loose item grows
+  // a hierarchy (catch-all `workgraph:interaction:{id}` → rooted
+  // `workgraph:{rootId}`), remounting the card; this key stays pinned to the
+  // first contributing interaction PLUS the first item id folded into this
+  // specific card, so collapse/expansion state survives the rekey moment
+  // without bleeding between cards born in the same interaction. Cards that
+  // never folded an item anchor on an "unrooted" placeholder segment.
+  uiStateKey?: string;
+  title: string;
+  objective?: string | null;
+  status: WorkGraphCardStatus;
+  progress: { completed: number; total: number };
+  items: ConversationWorkGraphItemRow[];
+  // Items hidden by the per-card render cap (the most recently active rows
+  // stay in `items`). Hidden items still count toward `progress` and the
+  // card status; the card renders one "+N more items" overflow row for them.
+  itemOverflowCount?: number;
+  attention: ConversationWorkGraphAttentionRow[];
+  recentEvents?: string[];
+  // True when the most recent workgraph tool call folded into this card
+  // failed — the card shows a subtle failure indicator (failures never
+  // resurrect generic tool rows).
+  lastActionFailed?: boolean;
+  lastUpdatedAt?: string;
+}
+
 export type ConversationTimelineEntry =
   | ConversationMessageEntry
   | ConversationSummaryEntry
-  | ConversationFlowRunEntry;
+  | ConversationFlowRunEntry
+  | ConversationWorkGraphEntry;
 
 export interface ConversationTimelineGroup {
   id: string;
@@ -208,6 +286,21 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
     return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""]
       .filter(Boolean)
       .join("\n");
+  }
+
+  if (entry.kind === "workgraph") {
+    const itemLines = entry.items.map((item) => (
+      `${"  ".repeat(item.depth)}${item.title} — ${item.status.replace(/_/g, " ")}`
+    ));
+    const attentionLines = entry.attention.map((row) => (
+      `${row.mode}: ${row.statusLabel}${row.targetLabel ? ` → ${row.targetLabel}` : ""}`
+    ));
+    return [
+      `${entry.title} (${entry.progress.completed}/${entry.progress.total})`,
+      entry.objective || "",
+      ...itemLines,
+      ...attentionLines,
+    ].filter(Boolean).join("\n");
   }
 
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();

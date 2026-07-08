@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,6 +79,24 @@ struct GatewayRuntimeOptions {
     access: Option<meerkat_mobkit::AccessController>,
     demo_llm: bool,
     agent_memory: Option<GatewayAgentMemoryOptions>,
+    /// WorkGraph service construction switch (default on). `false` disables
+    /// the store, member tools, overlays, and the mobkit/workgraph/* RPCs.
+    workgraph: GatewayWorkgraphOption,
+}
+
+/// `runtime_options.workgraph` wire forms. Booleans keep the original
+/// semantics (on with defaulted store placement / off). A string is an
+/// explicit DIRECTORY for the durable store — `workgraph.sqlite3` is created
+/// inside it. The explicit form exists for identity-first launches that
+/// persist through an SDK-hosted continuity store (`has_continuity_store`
+/// without `persistent_state`): those have no state dir to default to, so a
+/// bare `true` silently rides a memory store.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum GatewayWorkgraphOption {
+    #[default]
+    Enabled,
+    Disabled,
+    DurableDir(std::path::PathBuf),
 }
 
 struct GatewayAgentMemoryOptions {
@@ -143,6 +162,7 @@ impl Default for GatewayRuntimeOptions {
             access: None,
             demo_llm: false,
             agent_memory: None,
+            workgraph: GatewayWorkgraphOption::Enabled,
         }
     }
 }
@@ -1629,6 +1649,53 @@ actions = ["agent.view"]
 
         assert!(err.contains("runtime_options.max_sessions"));
     }
+
+    #[test]
+    fn gateway_runtime_options_workgraph_parses_bool_and_path_forms() {
+        let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults parse");
+        assert_eq!(
+            defaults.workgraph,
+            GatewayWorkgraphOption::Enabled,
+            "workgraph defaults on"
+        );
+
+        let enabled = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "workgraph": true } }),
+            None,
+        )
+        .expect("explicit true parses");
+        assert_eq!(enabled.workgraph, GatewayWorkgraphOption::Enabled);
+
+        let disabled = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "workgraph": false } }),
+            None,
+        )
+        .expect("explicit false parses");
+        assert_eq!(disabled.workgraph, GatewayWorkgraphOption::Disabled);
+
+        // A string is an explicit durable store directory — the escape hatch
+        // for SDK-hosted-continuity launches that have no persistent_state.
+        let durable = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "workgraph": "/var/lib/mobkit/workgraph" } }),
+            None,
+        )
+        .expect("string path parses");
+        assert_eq!(
+            durable.workgraph,
+            GatewayWorkgraphOption::DurableDir("/var/lib/mobkit/workgraph".into())
+        );
+
+        for invalid in [json!(42), json!(""), json!("   "), json!({ "dir": "x" })] {
+            let err = match parse_gateway_runtime_options(
+                &json!({ "runtime_options": { "workgraph": invalid } }),
+                None,
+            ) {
+                Ok(_) => panic!("invalid workgraph value should fail: {invalid}"),
+                Err(err) => err,
+            };
+            assert!(err.contains("runtime_options.workgraph"), "{err}");
+        }
+    }
 }
 
 fn parse_gateway_runtime_options(
@@ -1658,6 +1725,7 @@ fn parse_gateway_runtime_options(
         "agent_memory",
         "implicit_delegate_idle_retire_secs",
         "implicit_delegate_idle_sweep_interval_ms",
+        "workgraph",
     ];
     let unsupported = runtime_options
         .keys()
@@ -1740,6 +1808,22 @@ fn parse_gateway_runtime_options(
             }
             parsed.console_fetch_timeout_ms = Some(timeout_ms);
         }
+    }
+    if let Some(value) = runtime_options.get("workgraph") {
+        parsed.workgraph = match value {
+            Value::Bool(true) => GatewayWorkgraphOption::Enabled,
+            Value::Bool(false) => GatewayWorkgraphOption::Disabled,
+            Value::String(path) if !path.trim().is_empty() => {
+                GatewayWorkgraphOption::DurableDir(std::path::PathBuf::from(path))
+            }
+            _ => {
+                return Err(
+                    "runtime_options.workgraph must be a boolean or a non-empty string \
+                     (the directory for the durable workgraph store)"
+                        .to_string(),
+                );
+            }
+        };
     }
     if let Some(value) = runtime_options.get("demo_llm") {
         parsed.demo_llm = value
@@ -3599,239 +3683,358 @@ external_addressable = true
     // Stable owner id for the schedule driver, captured before `definition` is
     // moved into the bootstrap spec.
     let schedule_owner_id = definition.id.to_string();
-    let (mob_spec, _temp_dir, schedule_host_inputs, transcript_edit_service) = if let Some(
-        ref state_path,
-    ) =
-        persistent_state
-    {
-        if let Err(e) = std::fs::create_dir_all(state_path) {
-            fail_init(
-                &request_id,
-                -32603,
-                format!("failed to create persistent state directory: {e}"),
-            );
-        }
-        let sqlite_path = state_path.join("sessions.db");
-        let session_store: Arc<dyn meerkat::SessionStore> =
-            if let Some(adapter) = identity_session_store_adapter.clone() {
-                adapter
-            } else {
-                match meerkat_store::SqliteSessionStore::open(sqlite_path) {
-                    Ok(s) => Arc::new(s),
+    let (mob_spec, _temp_dir, schedule_host_inputs, transcript_edit_service, workgraph_service) =
+        if let Some(ref state_path) = persistent_state {
+            if let Err(e) = std::fs::create_dir_all(state_path) {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to create persistent state directory: {e}"),
+                );
+            }
+            let sqlite_path = state_path.join("sessions.db");
+            let session_store: Arc<dyn meerkat::SessionStore> =
+                if let Some(adapter) = identity_session_store_adapter.clone() {
+                    adapter
+                } else {
+                    match meerkat_store::SqliteSessionStore::open(sqlite_path) {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => fail_init(
+                            &request_id,
+                            -32603,
+                            format!("failed to open SQLite session store: {e}"),
+                        ),
+                    }
+                };
+            let mob_storage = MobStorage::in_memory();
+            let binary_blob_store: Arc<dyn BinaryBlobStore> =
+                match ObjectStoreBlobStore::local(state_path.join("blobs")) {
+                    Ok(store) => Arc::new(store),
                     Err(e) => fail_init(
                         &request_id,
                         -32603,
-                        format!("failed to open SQLite session store: {e}"),
+                        format!("failed to open binary blob store: {e}"),
                     ),
+                };
+            let blob_store: Arc<dyn meerkat_core::BlobStore> =
+                Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+            // Persistent runtime store at <state_path>/runtime.sqlite — must
+            // be Some() on the session service so archive/retire can mutate
+            // the authoritative session, and must be persistent so resume
+            // works across gateway restart.
+            let runtime_db_path = state_path.join("runtime.sqlite");
+            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+                match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
+                    Ok(store) => Arc::new(store),
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %runtime_db_path.display(),
+                            error = %err,
+                            "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
+                             Sessions will not survive process restart and archive operations may fail.",
+                        );
+                        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
+                    }
+                };
+            let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            ));
+            // Match the ephemeral path's capability mask — only comms is enabled
+            // by default. Apps control additional capabilities via their mob
+            // definition profiles, not the gateway factory.
+            let mut factory = AgentFactory::new(state_path)
+                .builtins(false)
+                .shell(shell)
+                .comms(true);
+            if image_generation {
+                factory = factory.with_image_generation_machine(adapter.clone());
+            }
+            let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+            inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+                session_store.clone(),
+            )));
+            inner_builder.default_blob_store = Some(blob_store.clone());
+            // Attach meerkat's per-session schedule tools so SDK-hosted members whose
+            // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
+            // slot lives on the inner FactoryAgentBuilder and propagates through the
+            // callback wrapper). The returned service backs the firing host spawned
+            // after the runtime boots — meerkat's runtime-backed host is now generic
+            // over the session builder, so scheduled sessions materialize through the
+            // SDK build callback and keep their identity-scoped tools.
+            let schedule_tools =
+                meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+                    &inner_builder,
+                    state_path,
+                );
+            // WorkGraph: durable store beside the schedule store (or in the
+            // explicitly configured directory), realm scoped to the mob
+            // definition id. Fills the member tool slot, threads to the
+            // bootstrap spec (mob-executor attention overlays + child-mob
+            // inheritance), the schedule host, and the RPC surface. The
+            // state dir travels along for the cross-process admission
+            // sidecar (a durable store is shareable across processes).
+            let workgraph = match &gateway_options.workgraph {
+                GatewayWorkgraphOption::Disabled => None,
+                GatewayWorkgraphOption::Enabled => {
+                    meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                        &inner_builder,
+                        state_path,
+                        &schedule_owner_id,
+                    )
+                    .map(|(service, slot)| (service, slot, state_path.clone()))
+                }
+                GatewayWorkgraphOption::DurableDir(dir) => {
+                    // An explicit directory overrides the state-dir default.
+                    // Open failure keeps the boot-without-workgraph posture
+                    // (attach_workgraph_tools warns with the path).
+                    let _ = std::fs::create_dir_all(dir);
+                    meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                        &inner_builder,
+                        dir,
+                        &schedule_owner_id,
+                    )
+                    .map(|(service, slot)| (service, slot, dir.clone()))
                 }
             };
-        let mob_storage = MobStorage::in_memory();
-        let binary_blob_store: Arc<dyn BinaryBlobStore> =
-            match ObjectStoreBlobStore::local(state_path.join("blobs")) {
-                Ok(store) => Arc::new(store),
-                Err(e) => fail_init(
+            let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
+            let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
+            let callback_builder = StdioCallbackAgentBuilder {
+                inner: inner_builder,
+                bridge: bridge.clone(),
+                has_session_builder,
+                session_store: Some(session_store.clone()),
+            };
+            // Keep the CONCRETE typed service for the firing host (the runtime-backed
+            // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
+            // erased Arc<dyn MobSessionService> the spec consumes).
+            let concrete_service = Arc::new(meerkat_session::PersistentSessionService::new(
+                callback_builder,
+                gateway_options.max_sessions,
+                session_store,
+                Arc::clone(&runtime_store),
+                blob_store,
+            ));
+            let schedule_host_inputs = schedule_tools.map(|tools| {
+                (
+                    tools.service,
+                    tools.mob_target_registry,
+                    Arc::clone(&concrete_service),
+                    adapter.clone(),
+                    state_path.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
+                )
+            });
+            // §8.6 Hygienist apply seam: the CONCRETE service implements
+            // meerkat's transcript-edit extension; the erased MobSessionService
+            // does not carry it, so the typed handle is kept here.
+            let transcript_edit_service: Option<
+                Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
+            > = Some(Arc::clone(&concrete_service) as _);
+            let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
+            let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+                .with_session_runtime_adapter(adapter.clone())
+                // Order matters: workgraph before agent mob tools so child mobs
+                // inherit the service at mob-state install time.
+                .with_workgraph_service(workgraph_service.clone())
+                // Agent mob tools + the schedule host's mob authority (HomeCore
+                // 0.7.26 last-link fix): without this, agent-authored schedules
+                // can't rewrite to mob-member targets or deliver them.
+                .with_agent_mob_tools(agent_mob_tools_slot)
+                .with_options(MobBootstrapOptions {
+                    allow_ephemeral_sessions: true,
+                    notify_orchestrator_on_resume: true,
+                    default_llm_client: default_llm_client.clone(),
+                });
+            if let Some((_, admission_slot, workgraph_state_dir)) = &workgraph {
+                // Durable (cross-process shareable) store: register the
+                // tool-plane admission slot and the sidecar lock beside it.
+                spec = spec
+                    .with_workgraph_admission_slot(admission_slot.clone())
+                    .with_workgraph_admission_sidecar(workgraph_state_dir);
+            }
+            spec.runtime_adapter = Some(adapter);
+            spec.binary_blob_store = Some(binary_blob_store);
+            (
+                spec,
+                None,
+                schedule_host_inputs,
+                transcript_edit_service,
+                workgraph_service,
+            )
+        } else {
+            // Ephemeral mode (original behavior).
+            // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
+            // so agent-level persistence is not needed. This avoids failures on read-only
+            // filesystems (e.g., GKE containers) where the default JSONL store can't write.
+            let temp_dir = if scratch_dir.is_none() {
+                Some(tempfile::tempdir().expect("create temp dir for agent working space"))
+            } else {
+                None
+            };
+            let agent_workspace = scratch_dir
+                .as_deref()
+                .or_else(|| temp_dir.as_ref().map(|dir| dir.path()))
+                .expect("scratch dir or temp dir");
+            if let Err(err) = std::fs::create_dir_all(agent_workspace) {
+                fail_init(
                     &request_id,
                     -32603,
-                    format!("failed to open binary blob store: {e}"),
-                ),
-            };
-        let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        // Persistent runtime store at <state_path>/runtime.sqlite — must
-        // be Some() on the session service so archive/retire can mutate
-        // the authoritative session, and must be persistent so resume
-        // works across gateway restart.
-        let runtime_db_path = state_path.join("runtime.sqlite");
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
-                Ok(store) => Arc::new(store),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %runtime_db_path.display(),
-                        error = %err,
-                        "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
-                         Sessions will not survive process restart and archive operations may fail.",
-                    );
-                    Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
+                    format!("failed to create scratch directory: {err}"),
+                );
+            }
+            let binary_blob_store: Arc<dyn BinaryBlobStore> =
+                Arc::new(ObjectStoreBlobStore::memory());
+            let blob_store: Arc<dyn meerkat_core::BlobStore> =
+                Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+            let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+                Arc::clone(&runtime_store),
+                Arc::clone(&blob_store),
+            ));
+            let mut factory = AgentFactory::new(agent_workspace)
+                .builtins(false)
+                .shell(shell)
+                .comms(true)
+                .session_store(Arc::new(meerkat::MemoryStore::new()));
+            if image_generation {
+                factory = factory.with_image_generation_machine(adapter.clone());
+            }
+            let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+            inner_builder.default_blob_store = Some(blob_store.clone());
+            // No-persistent_state launches default to a memory-backed
+            // workgraph (tools stay profile-gated, so nothing changes for
+            // members that do not opt in); an explicit directory gets the
+            // durable store instead — and, being cross-process shareable, a
+            // cross-process admission sidecar beside it.
+            let mut workgraph_sidecar_dir: Option<PathBuf> = None;
+            let workgraph_service = match &gateway_options.workgraph {
+                GatewayWorkgraphOption::Disabled => None,
+                GatewayWorkgraphOption::DurableDir(dir) => {
+                    let _ = std::fs::create_dir_all(dir);
+                    workgraph_sidecar_dir = Some(dir.clone());
+                    meerkat_mobkit::workgraph_wiring::open_workgraph_service(
+                        dir,
+                        &schedule_owner_id,
+                    )
+                }
+                GatewayWorkgraphOption::Enabled => {
+                    if has_continuity_store {
+                        // Identity-first launch persisting through the
+                        // SDK-hosted continuity store: everything else about
+                        // it is durable, but the continuity store is a stdio
+                        // callback (no local db path to co-locate a default
+                        // workgraph.sqlite3 with), so the workgraph silently
+                        // rides memory unless a path is configured.
+                        tracing::warn!(
+                            "workgraph is MEMORY-BACKED for this launch: the continuity store \
+                             is SDK-hosted (no local path) and no persistent_state dir is set, \
+                             so goals, work items and attention bindings will NOT survive a \
+                             gateway restart. Set runtime_options.workgraph to a directory \
+                             path (or provide persistent_state) to place a durable \
+                             workgraph.sqlite3.",
+                        );
+                    }
+                    Some(
+                        meerkat_mobkit::workgraph_wiring::ephemeral_workgraph_service(
+                            &schedule_owner_id,
+                        ),
+                    )
                 }
             };
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
-        // Match the ephemeral path's capability mask — only comms is enabled
-        // by default. Apps control additional capabilities via their mob
-        // definition profiles, not the gateway factory.
-        let mut factory = AgentFactory::new(state_path)
-            .builtins(false)
-            .shell(shell)
-            .comms(true);
-        if image_generation {
-            factory = factory.with_image_generation_machine(adapter.clone());
-        }
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
-            session_store.clone(),
-        )));
-        inner_builder.default_blob_store = Some(blob_store.clone());
-        // Attach meerkat's per-session schedule tools so SDK-hosted members whose
-        // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
-        // slot lives on the inner FactoryAgentBuilder and propagates through the
-        // callback wrapper). The returned service backs the firing host spawned
-        // after the runtime boots — meerkat's runtime-backed host is now generic
-        // over the session builder, so scheduled sessions materialize through the
-        // SDK build callback and keep their identity-scoped tools.
-        let schedule_tools =
-            meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
-                &inner_builder,
-                state_path,
-            );
-        let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
-        let callback_builder = StdioCallbackAgentBuilder {
-            inner: inner_builder,
-            bridge: bridge.clone(),
-            has_session_builder,
-            session_store: Some(session_store.clone()),
-        };
-        // Keep the CONCRETE typed service for the firing host (the runtime-backed
-        // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
-        // erased Arc<dyn MobSessionService> the spec consumes).
-        let concrete_service = Arc::new(meerkat_session::PersistentSessionService::new(
-            callback_builder,
-            gateway_options.max_sessions,
-            session_store,
-            Arc::clone(&runtime_store),
-            blob_store,
-        ));
-        let schedule_host_inputs = schedule_tools.map(|tools| {
-            (
-                tools.service,
-                tools.mob_target_registry,
-                Arc::clone(&concrete_service),
-                adapter.clone(),
-                state_path.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
-            )
-        });
-        // §8.6 Hygienist apply seam: the CONCRETE service implements
-        // meerkat's transcript-edit extension; the erased MobSessionService
-        // does not carry it, so the typed handle is kept here.
-        let transcript_edit_service: Option<
-            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
-        > = Some(Arc::clone(&concrete_service) as _);
-        let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
-        let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
-            .with_session_runtime_adapter(adapter.clone())
-            // Agent mob tools + the schedule host's mob authority (HomeCore
-            // 0.7.26 last-link fix): without this, agent-authored schedules
-            // can't rewrite to mob-member targets or deliver them.
-            .with_agent_mob_tools(agent_mob_tools_slot)
-            .with_options(MobBootstrapOptions {
-                allow_ephemeral_sessions: true,
-                notify_orchestrator_on_resume: true,
-                default_llm_client: default_llm_client.clone(),
-            });
-        spec.runtime_adapter = Some(adapter);
-        spec.binary_blob_store = Some(binary_blob_store);
-        (spec, None, schedule_host_inputs, transcript_edit_service)
-    } else {
-        // Ephemeral mode (original behavior).
-        // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
-        // so agent-level persistence is not needed. This avoids failures on read-only
-        // filesystems (e.g., GKE containers) where the default JSONL store can't write.
-        let temp_dir = if scratch_dir.is_none() {
-            Some(tempfile::tempdir().expect("create temp dir for agent working space"))
-        } else {
-            None
-        };
-        let agent_workspace = scratch_dir
-            .as_deref()
-            .or_else(|| temp_dir.as_ref().map(|dir| dir.path()))
-            .expect("scratch dir or temp dir");
-        if let Err(err) = std::fs::create_dir_all(agent_workspace) {
-            fail_init(
-                &request_id,
-                -32603,
-                format!("failed to create scratch directory: {err}"),
-            );
-        }
-        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
-        let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            Arc::clone(&runtime_store),
-            Arc::clone(&blob_store),
-        ));
-        let mut factory = AgentFactory::new(agent_workspace)
-            .builtins(false)
-            .shell(shell)
-            .comms(true)
-            .session_store(Arc::new(meerkat::MemoryStore::new()));
-        if image_generation {
-            factory = factory.with_image_generation_machine(adapter.clone());
-        }
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-        inner_builder.default_blob_store = Some(blob_store.clone());
-        let callback_builder = StdioCallbackAgentBuilder {
-            inner: inner_builder,
-            bridge: bridge.clone(),
-            has_session_builder,
-            session_store: None,
-        };
-        let mut transcript_edit_service: Option<
-            Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
-        > = None;
-        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
-            if let Some(session_adapter) = identity_session_store_adapter.clone() {
-                let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
-                let mut factory = AgentFactory::new(agent_workspace)
-                    .builtins(false)
-                    .shell(shell)
-                    .comms(true)
-                    .session_store(Arc::new(meerkat::MemoryStore::new()));
-                if image_generation {
-                    factory = factory.with_image_generation_machine(adapter.clone());
-                }
-                let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-                inner_builder.default_session_store = Some(Arc::new(
-                    meerkat_store::StoreAdapter::new(session_store.clone()),
-                ));
-                inner_builder.default_blob_store = Some(blob_store.clone());
-                let callback_builder = StdioCallbackAgentBuilder {
-                    inner: inner_builder,
-                    bridge: bridge.clone(),
-                    has_session_builder,
-                    session_store: Some(session_store.clone()),
+            // One admission slot per builder that carries the tool surface;
+            // the bootstrap spec registers them all so every dispatcher gets
+            // the runtime-wide admission (round-3 R1).
+            let mut workgraph_admission_slots = Vec::new();
+            if let Some(service) = workgraph_service.as_ref() {
+                workgraph_admission_slots.push(
+                    meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
+                        &inner_builder,
+                        service,
+                    ),
+                );
+            }
+            let callback_builder = StdioCallbackAgentBuilder {
+                inner: inner_builder,
+                bridge: bridge.clone(),
+                has_session_builder,
+                session_store: None,
+            };
+            let mut transcript_edit_service: Option<
+                Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
+            > = None;
+            let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+                if let Some(session_adapter) = identity_session_store_adapter.clone() {
+                    let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
+                    let mut factory = AgentFactory::new(agent_workspace)
+                        .builtins(false)
+                        .shell(shell)
+                        .comms(true)
+                        .session_store(Arc::new(meerkat::MemoryStore::new()));
+                    if image_generation {
+                        factory = factory.with_image_generation_machine(adapter.clone());
+                    }
+                    let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+                    inner_builder.default_session_store = Some(Arc::new(
+                        meerkat_store::StoreAdapter::new(session_store.clone()),
+                    ));
+                    inner_builder.default_blob_store = Some(blob_store.clone());
+                    if let Some(service) = workgraph_service.as_ref() {
+                        workgraph_admission_slots.push(
+                            meerkat_mobkit::workgraph_wiring::install_workgraph_tools(
+                                &inner_builder,
+                                service,
+                            ),
+                        );
+                    }
+                    let callback_builder = StdioCallbackAgentBuilder {
+                        inner: inner_builder,
+                        bridge: bridge.clone(),
+                        has_session_builder,
+                        session_store: Some(session_store.clone()),
+                    };
+                    let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
+                        callback_builder,
+                        gateway_options.max_sessions,
+                        session_store,
+                        Arc::clone(&runtime_store),
+                        blob_store.clone(),
+                    ));
+                    transcript_edit_service = Some(Arc::clone(&concrete) as _);
+                    concrete
+                } else {
+                    Arc::new(EphemeralSessionService::new(
+                        callback_builder,
+                        gateway_options.max_sessions,
+                    ))
                 };
-                let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
-                    callback_builder,
-                    gateway_options.max_sessions,
-                    session_store,
-                    Arc::clone(&runtime_store),
-                    blob_store.clone(),
-                ));
-                transcript_edit_service = Some(Arc::clone(&concrete) as _);
-                concrete
-            } else {
-                Arc::new(EphemeralSessionService::new(
-                    callback_builder,
-                    gateway_options.max_sessions,
-                ))
-            };
 
-        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-            .with_session_runtime_adapter(adapter.clone())
-            .with_options(MobBootstrapOptions {
-                allow_ephemeral_sessions: true,
-                notify_orchestrator_on_resume: true,
-                default_llm_client: default_llm_client.clone(),
-            });
-        spec.runtime_adapter = Some(adapter);
-        spec.binary_blob_store = Some(binary_blob_store);
-        // Ephemeral sessions have no persistent service; firing is persistent-only.
-        (spec, temp_dir, None, transcript_edit_service)
-    };
+            let mut spec =
+                MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                    .with_session_runtime_adapter(adapter.clone())
+                    .with_workgraph_service(workgraph_service.clone())
+                    .with_options(MobBootstrapOptions {
+                        allow_ephemeral_sessions: true,
+                        notify_orchestrator_on_resume: true,
+                        default_llm_client: default_llm_client.clone(),
+                    });
+            for slot in workgraph_admission_slots {
+                spec = spec.with_workgraph_admission_slot(slot);
+            }
+            if let Some(dir) = workgraph_sidecar_dir.as_deref() {
+                spec = spec.with_workgraph_admission_sidecar(dir);
+            }
+            spec.runtime_adapter = Some(adapter);
+            spec.binary_blob_store = Some(binary_blob_store);
+            // Ephemeral sessions have no persistent service; firing is persistent-only.
+            (
+                spec,
+                temp_dir,
+                None,
+                transcript_edit_service,
+                workgraph_service,
+            )
+        };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
     // Uses notify_reliable to avoid silent drops under backpressure.
@@ -4592,6 +4795,7 @@ external_addressable = true
                 mob_state,
                 runtime.mob_handle(),
                 runnable_host,
+                workgraph_service.clone(),
                 schedule_owner_id.clone(),
             ),
             Some(watchdog),

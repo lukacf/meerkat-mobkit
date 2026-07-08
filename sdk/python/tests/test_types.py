@@ -56,6 +56,14 @@ from meerkat_mobkit.types import (
     SubscribeResult,
     UnifiedAgentEvent,
     UnifiedModuleEvent,
+    WorkGraphAttentionBinding,
+    WorkGraphAttentionReassignResult,
+    WorkGraphEdge,
+    WorkGraphEventEntry,
+    WorkGraphGoalResult,
+    WorkGraphItem,
+    WorkGraphItemsResult,
+    WorkGraphSnapshotResult,
 )
 
 
@@ -78,6 +86,18 @@ class TestCapabilitiesResult:
         assert r.methods == ["status"]
         assert r.loaded_modules == ["x"]
         assert r.runtime_capabilities is None
+        assert r.workgraph is False
+
+    def test_from_dict_with_workgraph_true(self):
+        r = CapabilitiesResult.from_dict(
+            {
+                "contract_version": "2.0",
+                "methods": ["status"],
+                "loaded_modules": ["x"],
+                "workgraph": True,
+            }
+        )
+        assert r.workgraph is True
 
     def test_from_dict_with_runtime_capabilities(self):
         r = CapabilitiesResult.from_dict(
@@ -1186,3 +1206,270 @@ class TestIdentityResolvedToolsResult:
         assert result.identity == "domain:security"
         assert result.session_id == "sid-1"
         assert result.tools == ["shell", "send_message"]
+
+
+def _workgraph_item_payload(**overrides):
+    payload = {
+        "id": "item-1",
+        "realm_id": "realm-1",
+        "namespace": "default",
+        "title": "Ship the feature",
+        "description": "Land the WorkGraph SDK",
+        "status": "open",
+        "completion_policy": {"kind": "self_attest"},
+        "priority": "high",
+        "labels": ["backend"],
+        "owner": {"key": {"kind": "agent", "id": "worker-1"}, "display_name": "Worker One"},
+        "claim": {"owner": {"key": {"kind": "agent", "id": "worker-1"}}, "claimed_at": "2026-07-08T00:00:00Z"},
+        "machine_state": {"lifecycle_phase": "open", "revision": 3},
+        "revision": 3,
+        "due_at": None,
+        "not_before": None,
+        "snoozed_until": None,
+        "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-02T00:00:00Z",
+        "terminal_at": None,
+        "external_refs": [{"kind": "github", "id": "123"}],
+        "evidence_refs": [{"kind": "self_attest", "id": "e1"}],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _workgraph_attention_binding_payload(**overrides):
+    payload = {
+        "binding_id": "binding-1",
+        "work_ref": {"item_id": "item-1", "realm_id": "realm-1", "namespace": "default"},
+        "target": {"kind": "session", "session_id": "sess-1"},
+        "mode": "pursue",
+        "status": {"state": "active"},
+        "machine_state": {"lifecycle_phase": "active", "revision": 1},
+        "delegated_authority": "add_evidence",
+        "projection_policy": {"max_text_chars": 4096, "include_parent_context": True},
+        "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestWorkGraphItem:
+    def test_from_dict(self):
+        item = WorkGraphItem.from_dict(_workgraph_item_payload())
+        assert item.id == "item-1"
+        assert item.realm_id == "realm-1"
+        assert item.namespace == "default"
+        assert item.title == "Ship the feature"
+        assert item.description == "Land the WorkGraph SDK"
+        assert item.status == "open"
+        assert item.completion_policy == {"kind": "self_attest"}
+        assert item.priority == "high"
+        assert item.labels == ["backend"]
+        assert item.owner == {
+            "key": {"kind": "agent", "id": "worker-1"},
+            "display_name": "Worker One",
+        }
+        assert item.claim["owner"]["key"]["id"] == "worker-1"
+        assert item.machine_state == {"lifecycle_phase": "open", "revision": 3}
+        assert item.revision == 3
+        assert item.created_at == "2026-07-01T00:00:00Z"
+        assert item.updated_at == "2026-07-02T00:00:00Z"
+        assert item.terminal_at is None
+        assert item.external_refs == [{"kind": "github", "id": "123"}]
+        assert item.evidence_refs == [{"kind": "self_attest", "id": "e1"}]
+
+    def test_from_dict_defaults_missing_keys(self):
+        item = WorkGraphItem.from_dict({})
+        assert item.id == ""
+        assert item.title == ""
+        assert item.description is None
+        assert item.status == ""
+        assert item.completion_policy == {}
+        assert item.priority == ""
+        assert item.labels == []
+        assert item.owner is None
+        assert item.claim is None
+        assert item.machine_state == {}
+        assert item.revision == 0
+        assert item.due_at is None
+        assert item.external_refs == []
+        assert item.evidence_refs == []
+
+
+class TestWorkGraphEdge:
+    def test_from_dict(self):
+        edge = WorkGraphEdge.from_dict({
+            "realm_id": "realm-1",
+            "namespace": "default",
+            "kind": "blocks",
+            "from_id": "item-1",
+            "to_id": "item-2",
+            "created_at": "2026-07-01T00:00:00Z",
+        })
+        assert edge.realm_id == "realm-1"
+        assert edge.kind == "blocks"
+        assert edge.from_id == "item-1"
+        assert edge.to_id == "item-2"
+        assert edge.created_at == "2026-07-01T00:00:00Z"
+
+    def test_from_dict_defaults_missing_keys(self):
+        edge = WorkGraphEdge.from_dict({})
+        assert edge.realm_id == ""
+        assert edge.kind == ""
+        assert edge.from_id == ""
+        assert edge.to_id == ""
+
+
+class TestWorkGraphAttentionBinding:
+    def test_from_dict(self):
+        binding = WorkGraphAttentionBinding.from_dict(_workgraph_attention_binding_payload())
+        assert binding.binding_id == "binding-1"
+        assert binding.work_ref == {
+            "item_id": "item-1",
+            "realm_id": "realm-1",
+            "namespace": "default",
+        }
+        assert binding.target == {"kind": "session", "session_id": "sess-1"}
+        assert binding.mode == "pursue"
+        assert binding.status == {"state": "active"}
+        assert binding.machine_state == {"lifecycle_phase": "active", "revision": 1}
+        assert binding.delegated_authority == "add_evidence"
+        assert binding.projection_policy == {
+            "max_text_chars": 4096,
+            "include_parent_context": True,
+        }
+
+    def test_from_dict_defaults_missing_keys(self):
+        binding = WorkGraphAttentionBinding.from_dict({})
+        assert binding.binding_id == ""
+        assert binding.work_ref == {}
+        assert binding.target == {}
+        assert binding.mode == ""
+        assert binding.status == {}
+        assert binding.machine_state == {}
+        assert binding.delegated_authority is None
+        assert binding.projection_policy == {}
+
+
+class TestWorkGraphSnapshotResult:
+    def test_from_dict(self):
+        snapshot = WorkGraphSnapshotResult.from_dict({
+            "realm_id": "realm-1",
+            "namespace": "default",
+            "all_namespaces": False,
+            "captured_at": "2026-07-08T00:00:00Z",
+            "event_high_water_mark": 42,
+            "items": [_workgraph_item_payload()],
+            "edges": [{
+                "realm_id": "realm-1",
+                "namespace": "default",
+                "kind": "parent",
+                "from_id": "item-0",
+                "to_id": "item-1",
+                "created_at": "2026-07-01T00:00:00Z",
+            }],
+            "attention": [_workgraph_attention_binding_payload()],
+            "ready_item_ids": ["item-1"],
+        })
+        assert snapshot.realm_id == "realm-1"
+        assert snapshot.all_namespaces is False
+        assert snapshot.event_high_water_mark == 42
+        assert len(snapshot.items) == 1
+        assert snapshot.items[0].id == "item-1"
+        assert len(snapshot.edges) == 1
+        assert snapshot.edges[0].kind == "parent"
+        assert len(snapshot.attention) == 1
+        assert snapshot.attention[0].binding_id == "binding-1"
+        assert snapshot.ready_item_ids == ["item-1"]
+
+    def test_from_dict_defaults_missing_keys(self):
+        snapshot = WorkGraphSnapshotResult.from_dict({})
+        assert snapshot.realm_id == ""
+        assert snapshot.namespace is None
+        assert snapshot.all_namespaces is False
+        assert snapshot.event_high_water_mark is None
+        assert snapshot.items == []
+        assert snapshot.edges == []
+        assert snapshot.attention == []
+        assert snapshot.ready_item_ids == []
+
+
+class TestWorkGraphItemsResult:
+    def test_from_dict(self):
+        result = WorkGraphItemsResult.from_dict({"items": [_workgraph_item_payload()]})
+        assert len(result.items) == 1
+        assert result.items[0].id == "item-1"
+
+    def test_from_dict_defaults_missing_keys(self):
+        result = WorkGraphItemsResult.from_dict({})
+        assert result.items == []
+
+
+class TestWorkGraphGoalResult:
+    def test_from_dict(self):
+        result = WorkGraphGoalResult.from_dict({
+            "item": _workgraph_item_payload(),
+            "attention": _workgraph_attention_binding_payload(),
+        })
+        assert result.item.id == "item-1"
+        assert result.attention.binding_id == "binding-1"
+
+    def test_from_dict_defaults_missing_keys(self):
+        result = WorkGraphGoalResult.from_dict({})
+        assert result.item.id == ""
+        assert result.attention.binding_id == ""
+
+
+class TestWorkGraphAttentionReassignResult:
+    def test_from_dict(self):
+        result = WorkGraphAttentionReassignResult.from_dict({
+            "previous": _workgraph_attention_binding_payload(binding_id="binding-old"),
+            "attention": _workgraph_attention_binding_payload(binding_id="binding-new"),
+        })
+        assert result.previous.binding_id == "binding-old"
+        assert result.attention.binding_id == "binding-new"
+
+    def test_from_dict_defaults_missing_keys(self):
+        result = WorkGraphAttentionReassignResult.from_dict({})
+        assert result.previous.binding_id == ""
+        assert result.attention.binding_id == ""
+
+
+class TestWorkGraphEventEntry:
+    def test_from_dict(self):
+        entry = WorkGraphEventEntry.from_dict({
+            "seq": 7,
+            "realm_id": "realm-1",
+            "namespace": "default",
+            "item_id": "item-1",
+            "kind": "created",
+            "at": "2026-07-01T00:00:00Z",
+            "payload": {"title": "Ship the feature"},
+        })
+        assert entry.seq == 7
+        assert entry.realm_id == "realm-1"
+        assert entry.item_id == "item-1"
+        assert entry.kind == "created"
+        assert entry.payload == {"title": "Ship the feature"}
+
+    def test_from_dict_defaults_missing_keys(self):
+        entry = WorkGraphEventEntry.from_dict({})
+        assert entry.seq is None
+        assert entry.realm_id == ""
+        assert entry.namespace == ""
+        assert entry.item_id is None
+        assert entry.kind == ""
+        assert entry.at == ""
+        assert entry.payload is None
+
+    def test_graph_level_event_has_no_item_id(self):
+        """Graph-level events (e.g. `linked`) carry no `item_id`."""
+        entry = WorkGraphEventEntry.from_dict({
+            "realm_id": "realm-1",
+            "namespace": "default",
+            "kind": "linked",
+            "at": "2026-07-01T00:00:00Z",
+            "payload": {},
+        })
+        assert entry.item_id is None
+        assert entry.kind == "linked"

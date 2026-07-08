@@ -191,6 +191,19 @@ describe("MobKitBuilder chainable methods", () => {
     ]);
   });
 
+  it("workgraph() defaults to enabled=true and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.workgraph();
+    assert.equal(result, builder);
+    assert.equal(builder._config.workgraphEnabled, true);
+  });
+
+  it("workgraph(false) disables WorkGraph construction", () => {
+    const builder = MobKit.builder();
+    builder.workgraph(false);
+    assert.equal(builder._config.workgraphEnabled, false);
+  });
+
   it("memory() sets memoryConfig with config object and returns this", () => {
     const builder = MobKit.builder();
     const cfg = { engine: "elephant" };
@@ -267,6 +280,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.gatingConfigPath, null);
     assert.equal(cfg.routingConfigPath, null);
     assert.deepEqual(cfg.schedulingFiles, []);
+    assert.equal(cfg.workgraphEnabled, null);
     assert.equal(cfg.memoryConfig, null);
     assert.equal(cfg.authConfig, null);
     assert.equal(cfg.implicitDelegateIdleRetireSecs, undefined);
@@ -322,6 +336,7 @@ describe("MobKitBuilder method chaining", () => {
       .gating("gating.toml")
       .routing("routing.toml")
       .scheduling("s1.toml")
+      .workgraph(false)
       .auth({ provider: "jwt" })
       .maxSessions(320)
       .gatewayTimeoutMs(300_000)
@@ -335,6 +350,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
     assert.equal(builder._config.demoLlm, true);
     assert.equal(builder._config.gatingConfigPath, "gating.toml");
+    assert.equal(builder._config.workgraphEnabled, false);
     assert.equal(builder._config.routingConfigPath, "routing.toml");
     assert.deepEqual(builder._config.schedulingFiles, ["s1.toml"]);
     assert.deepEqual(builder._config.authConfig, { provider: "jwt" });

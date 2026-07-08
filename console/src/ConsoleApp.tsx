@@ -10,6 +10,7 @@ import {
   ConsoleWorkbench,
   useConsoleDockController,
 } from "@console-components";
+import type { WorkGraphCardActions } from "@console-components";
 import type {
   ConsoleDockState,
   ConsoleWorkbenchTarget,
@@ -33,8 +34,11 @@ import {
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
+  buildWorkGraphOperatorResultFrame,
   createUserEntry,
+  createWorkGraphHydrationGate,
   appendOptimisticConversationEntry,
+  framesContainWorkGraphCards,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   optimisticUserMessageForPanel,
@@ -49,9 +53,19 @@ import {
 } from "./lib/network";
 import {
   CONSOLE_COMMAND_NAMES,
+  consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
 } from "./lib/headless";
+import {
+  WORKGRAPH_CONFLICT_CODE,
+  resolveWorkGraphBindingRevision,
+  resolveWorkGraphGoalItemRevision,
+  resolveWorkGraphItemRevision,
+  workGraphClaimOwnerId,
+  workGraphConflictRefreshRequest,
+  type WorkGraphCommandRunner,
+} from "./lib/workgraph-actions";
 import { createConsoleId } from "./lib/id";
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
@@ -87,6 +101,9 @@ import type {
   MemoryPanelRecordsResult,
   MemoryPendingPromotion,
   MemoryProposalEntry,
+  WorkGraphEventsResult,
+  WorkGraphSnapshotResult,
+  WorkGraphWireEvent,
 } from "./types";
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
@@ -99,6 +116,13 @@ import {
   type MemoryRecordDetail,
 } from "./panels/MemoryPanel";
 import { RosterPanel } from "./panels/RosterPanel";
+import {
+  WorkGraphPanel,
+  createWorkGraphRefreshSequencer,
+  workGraphEventsNewestFirst,
+  workGraphEventsParams,
+  type WorkGraphPanelData,
+} from "./panels/WorkGraphPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
@@ -312,6 +336,24 @@ function normalizeConsoleInspectResult(
 }
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
+
+/// Live signals that should freshen a docked WorkGraph panel: dedicated
+/// workgraph.* timeline frames or workgraph_* tool completions in any turn.
+function isWorkGraphSignalFrame(frame: ConsoleFrame): boolean {
+  if (frame.event.startsWith("workgraph.")) return true;
+  if (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received") {
+    return false;
+  }
+  const data = frame.data && typeof frame.data === "object"
+    ? (frame.data as Record<string, unknown>)
+    : null;
+  const name = typeof data?.name === "string"
+    ? data.name
+    : typeof data?.tool_name === "string"
+      ? data.tool_name
+      : "";
+  return name.startsWith("workgraph_");
+}
 const DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
 
 function createIdempotencyKey(): string {
@@ -624,6 +666,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     auditVerdicts: [],
     auditVerdictsDenied: false,
   });
+  const [workGraphData, setWorkGraphData] = React.useState<WorkGraphPanelData>({
+    items: [],
+    edges: [],
+    attention: [],
+    events: [],
+    capturedAt: null,
+    unavailable: false,
+    denied: false,
+    error: null,
+  });
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] =
@@ -800,7 +852,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function controlWorkbenchTarget(kind: "routing" | "gating" | "access" | "memory"): ConsoleWorkbenchTarget {
+  function controlWorkbenchTarget(kind: "routing" | "gating" | "access" | "memory" | "workgraph"): ConsoleWorkbenchTarget {
     return requireWorkbenchTarget(buildControlTarget(kind));
   }
 
@@ -1335,6 +1387,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         limit: 200,
       });
       reconcileServerLog(normalized, page.frames, page.available);
+      // Older frames just folded in may be the first page to contain a
+      // workgraph card for this identity; re-run the (idempotent) hydration
+      // check so that case doesn't stay permanently un-hydrated.
+      void hydrateWorkGraphCardsForIdentity(normalized);
     } catch {
       // The current view remains usable; a later scroll can retry.
     } finally {
@@ -1976,6 +2032,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // The Memory panel is gated server-side per principal, never by view
       // config: `can_read` alone decides whether the nav entry appears.
       if (experience?.memory?.can_read === true) extra.push("memory");
+      // WorkGraph is likewise server-gated: configured service + view grant.
+      if (experience?.workgraph?.available === true && experience?.workgraph?.can_view === true) {
+        extra.push("workgraph");
+      }
       return extra.length > 0 ? [...configuredVisible, ...extra] : configuredVisible;
     }
     const hidden = new Set(
@@ -1989,11 +2049,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (experience?.access?.can_administer === true) controls.push("access");
     // Same for the Memory panel: server-side `can_read` gates the entry.
     if (experience?.memory?.can_read === true) controls.push("memory");
+    // Same for WorkGraph: configured service + per-caller view grant.
+    if (experience?.workgraph?.available === true && experience?.workgraph?.can_view === true) {
+      controls.push("workgraph");
+    }
     return controls;
   }, [
     experience?.console_config?.sidebar,
     experience?.access?.can_administer,
     experience?.memory?.can_read,
+    experience?.workgraph?.available,
+    experience?.workgraph?.can_view,
     hasMobControlSurface,
   ]);
 
@@ -2252,6 +2318,71 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, experience?.memory?.can_review_quarantine]);
 
+  // Overlapping refreshes (debounced live signals, manual refresh, post-
+  // mutation re-reads) can resolve out of order — sequence them so a stale
+  // snapshot never overwrites a fresher one.
+  const workGraphRefreshSequencerRef = React.useRef(createWorkGraphRefreshSequencer());
+  const refreshWorkGraphData = React.useCallback(async () => {
+    const workGraphTarget = controlWorkbenchTarget("workgraph");
+    const isCurrent = workGraphRefreshSequencerRef.current.begin();
+    try {
+      let snapshot: WorkGraphSnapshotResult | null = null;
+      let denied = false;
+      try {
+        snapshot = (await executeHeadlessCommand(
+          CONSOLE_COMMAND_NAMES.workgraphSnapshot,
+          workGraphTarget,
+        )) as WorkGraphSnapshotResult | null;
+      } catch (err) {
+        // Access denied renders as "no grant", never an empty graph.
+        if (jsonRpcErrorCode(err) !== -32030) throw err;
+        denied = true;
+      }
+      let events: WorkGraphWireEvent[] = [];
+      if (!denied) {
+        try {
+          // Page the tail from the snapshot's high-water mark: upstream
+          // returns events ASCENDING truncated to limit, so a bare {limit}
+          // query would freeze on the oldest window forever.
+          const eventsResult = (await executeHeadlessCommand(
+            CONSOLE_COMMAND_NAMES.workgraphEvents,
+            workGraphTarget,
+            workGraphEventsParams(snapshot?.event_high_water_mark, 50),
+          )) as WorkGraphEventsResult | null;
+          events = workGraphEventsNewestFirst(eventsResult?.events || []);
+        } catch (err) {
+          // The events tail is optional; a denied ledger leaves it empty.
+          if (jsonRpcErrorCode(err) !== -32030) throw err;
+        }
+      }
+      if (!isCurrent()) return;
+      setWorkGraphData({
+        items: snapshot?.items || [],
+        edges: snapshot?.edges || [],
+        attention: snapshot?.attention || [],
+        events,
+        capturedAt: snapshot?.captured_at || null,
+        unavailable: false,
+        denied,
+        error: null,
+      });
+    } catch (err) {
+      if (!isCurrent()) return;
+      // -32601 (method absent) and -32041 (workgraph_unavailable) both mean
+      // no WorkGraph service on this runtime; so does a missing capability
+      // advertisement (the headless layer throws before dispatch).
+      const code = jsonRpcErrorCode(err);
+      const capabilityMissing =
+        err instanceof Error && err.message.startsWith("MobKit capability missing");
+      if (code === -32601 || code === -32041 || capabilityMissing) {
+        setWorkGraphData((current) => ({ ...current, unavailable: true, error: null }));
+        return;
+      }
+      setWorkGraphData((current) => ({ ...current, error: errorMessage(err) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl]);
+
   /// Filtered/paged panel/records query for the Records filter bar, the
   /// keyset load-more, and the lattice page-walk. Resolves null STRICTLY on
   /// -32030 (denied — consumers render "no grant", never an empty store);
@@ -2398,6 +2529,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (openPanels.some((t) => t.kind === "memory")) {
       await refreshMemoryData();
     }
+    if (openPanels.some((t) => t.kind === "workgraph")) {
+      await refreshWorkGraphData();
+    }
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
@@ -2414,7 +2548,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshWorkGraphData]);
 
   React.useEffect(() => {
     void refreshPanelData().catch(() => {});
@@ -2460,6 +2594,46 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // PANEL OPEN / SWITCH — fetch history for new identities
   // =========================================================================
 
+  // Operator workgraph mutations live only as client-local echo frames, so a
+  // page reload silently reverts the inline cards to agent-observed state
+  // until an agent next touches the graph. Once per identity per mount, after
+  // a page of history folds in, a pane whose restored transcript contains a
+  // workgraph card fetches ONE snapshot and folds it through the refresh-echo
+  // path (`refresh: true` — a read, never an action outcome) so the cards
+  // re-hydrate to live status/revisions. See `createWorkGraphHydrationGate`
+  // for the once-per-identity decision: a scroll-up fold that first
+  // introduces cards (loadOlderIdentityTimeline) can still trigger the fetch.
+  const workGraphHydrationGateRef = React.useRef(createWorkGraphHydrationGate());
+  async function hydrateWorkGraphCardsForIdentity(identity: string): Promise<void> {
+    const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
+      workgraphAvailable: experience?.workgraph?.available === true,
+      hasCards: framesContainWorkGraphCards(getSortedFrames(identity)),
+    });
+    if (!shouldFetch) return;
+    try {
+      const snapshot = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.workgraphSnapshot,
+        controlWorkbenchTarget("workgraph"),
+      );
+      appendFrame(
+        identity,
+        buildWorkGraphOperatorResultFrame({
+          method: consoleCommandMethod(CONSOLE_COMMAND_NAMES.workgraphSnapshot),
+          params: {},
+          // The RPC returns the WorkGraphSnapshot verbatim; the fold expects
+          // the tool-result wrapper shape.
+          result: { snapshot },
+          identity,
+          refresh: true,
+        }),
+      );
+      forceRender();
+    } catch {
+      // Best-effort hydration: the card keeps its restored state and the
+      // next operator action heals revisions through the conflict path.
+    }
+  }
+
   React.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
@@ -2469,11 +2643,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Only fetch backfill once per identity — when we don't yet
       // know whether the runtime has an event log. Subsequent panel
       // re-opens reuse the existing log; we never wipe it.
-      if (log.hasServerLog !== null) continue;
-      void refreshIdentityTimelineNow(identity).catch(() => {});
+      if (log.hasServerLog !== null) {
+        void hydrateWorkGraphCardsForIdentity(identity);
+        continue;
+      }
+      void refreshIdentityTimelineNow(identity)
+        .then(() => hydrateWorkGraphCardsForIdentity(identity))
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, dock.viewState.panels, forceRender]);
+  }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
 
   React.useEffect(() => {
     const refreshOpenChatPanels = async () => {
@@ -2557,6 +2736,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     (panel) => (panel.target as MobKitDockTarget | null)?.kind === "memory",
   );
   const memoryRefreshTimerRef = React.useRef<number | null>(null);
+  // WorkGraph panel mirrors the memory freshness pattern: live workgraph
+  // signals (workgraph.* frames or workgraph_* tool completions) trigger one
+  // debounced snapshot re-read, only while a WorkGraph panel is docked.
+  const refreshWorkGraphDataRef = React.useRef(refreshWorkGraphData);
+  refreshWorkGraphDataRef.current = refreshWorkGraphData;
+  const workGraphPanelDockedRef = React.useRef(false);
+  workGraphPanelDockedRef.current = dock.viewState.panels.some(
+    (panel) => (panel.target as MobKitDockTarget | null)?.kind === "workgraph",
+  );
+  const workGraphRefreshTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     // Seed activity with recent history (only on mount) — apply same
@@ -2620,6 +2809,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           void refreshMemoryDataRef.current().catch(() => {});
         }, 250);
       }
+      if (
+        isWorkGraphSignalFrame(frame) &&
+        workGraphPanelDockedRef.current &&
+        workGraphRefreshTimerRef.current === null
+      ) {
+        workGraphRefreshTimerRef.current = window.setTimeout(() => {
+          workGraphRefreshTimerRef.current = null;
+          void refreshWorkGraphDataRef.current().catch(() => {});
+        }, 250);
+      }
     };
 
     let stopped = false;
@@ -2657,6 +2856,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         window.clearTimeout(experienceTimerRef.current);
       if (memoryRefreshTimerRef.current !== null)
         window.clearTimeout(memoryRefreshTimerRef.current);
+      if (workGraphRefreshTimerRef.current !== null)
+        window.clearTimeout(workGraphRefreshTimerRef.current);
     };
   }, []);
 
@@ -3161,6 +3362,221 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   // =========================================================================
+  // WORKGRAPH OPERATOR ACTIONS (inline card + panel)
+  // =========================================================================
+
+  const canManageWorkGraph =
+    experience?.workgraph?.can_manage === true && !consoleReadOnly;
+
+  const runWorkGraphCommand = React.useCallback(
+    async (
+      command:
+        | typeof CONSOLE_COMMAND_NAMES.workgraphClaim
+        | typeof CONSOLE_COMMAND_NAMES.workgraphRelease
+        | typeof CONSOLE_COMMAND_NAMES.workgraphClose
+        | typeof CONSOLE_COMMAND_NAMES.workgraphGoalConfirm
+        | typeof CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose
+        | typeof CONSOLE_COMMAND_NAMES.workgraphAttentionPause
+        | typeof CONSOLE_COMMAND_NAMES.workgraphAttentionResume
+        | typeof CONSOLE_COMMAND_NAMES.workgraphAttentionReassign,
+      params: Record<string, unknown>,
+      cardIdentity?: string,
+    ) => {
+      if (consoleReadOnlyRef.current) return;
+      // Operator RPCs run outside any agent turn, so the server emits no
+      // console frames for them. Echo the RPC outcome into the identity log
+      // as a client-local synthetic frame: the inline card folds the fresh
+      // item/binding revisions (or the failure note) immediately, so
+      // consecutive card actions CAS against the updated state instead of
+      // conflicting on a stale one.
+      const echoResultToCard = (result?: unknown, failureMessage?: string) => {
+        if (!cardIdentity) return;
+        appendFrame(
+          cardIdentity,
+          buildWorkGraphOperatorResultFrame({
+            method: consoleCommandMethod(command),
+            params,
+            ...(failureMessage !== undefined
+              ? { errorMessage: failureMessage }
+              : { result }),
+            identity: cardIdentity,
+          }),
+        );
+        forceRender();
+      };
+      try {
+        const result = await executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params);
+        setActionError("");
+        echoResultToCard(result);
+      } catch (err) {
+        // CAS conflicts and grant gates land in the action-error banner and,
+        // through the same synthetic frame, as a failure note on the card.
+        const message = errorMessage(err);
+        setActionError(message);
+        echoResultToCard(undefined, message);
+        // A -32042 conflict proves the revision the card folded is stale;
+        // without a fresh sighting every next click would resend it forever.
+        // Re-read the entity and fold the live state through the same echo
+        // path (marked `refresh` so the failure flag survives): the NEXT
+        // action CASes against the live revision. Best-effort — the banner
+        // and failure note above already surfaced the conflict.
+        if (cardIdentity && jsonRpcErrorCode(err) === WORKGRAPH_CONFLICT_CODE) {
+          const refresh = workGraphConflictRefreshRequest(params);
+          if (refresh) {
+            try {
+              const fresh = await executeHeadlessCommand(
+                refresh.command,
+                controlWorkbenchTarget("workgraph"),
+                refresh.params,
+              );
+              appendFrame(
+                cardIdentity,
+                buildWorkGraphOperatorResultFrame({
+                  method: consoleCommandMethod(refresh.command),
+                  params: refresh.params,
+                  result: fresh,
+                  identity: cardIdentity,
+                  refresh: true,
+                }),
+              );
+              forceRender();
+            } catch {
+              // The stale card stays; the conflict is already visible.
+            }
+          }
+        }
+      }
+      if (workGraphPanelDockedRef.current) {
+        await refreshWorkGraphData().catch(() => {});
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl, refreshWorkGraphData],
+  );
+
+  const runWorkGraphQuery = React.useCallback<WorkGraphCommandRunner>(
+    (command, params) =>
+      executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl],
+  );
+
+  // Operator handlers shared by the inline card and the docked panel.
+  // `cardIdentity` scopes the synthetic result echo to that identity's chat
+  // log; the panel passes none (it re-reads the snapshot instead). A payload
+  // without a revision means the UI never observed the CAS token — resolve
+  // the live one first and, if that fails, surface the banner without
+  // sending (a guessed 0 is a guaranteed conflict).
+  const makeWorkGraphOperatorHandlers = React.useCallback(
+    (cardIdentity?: string) => {
+      const dispatch = (
+        resolveRevision: () => Promise<number>,
+        send: (expectedRevision: number) => Promise<void>,
+      ) => {
+        void (async () => {
+          let expectedRevision: number;
+          try {
+            expectedRevision = await resolveRevision();
+          } catch (err) {
+            setActionError(errorMessage(err));
+            return;
+          }
+          await send(expectedRevision);
+        })();
+      };
+      const revisionOr = (
+        revision: number | undefined,
+        resolve: () => Promise<number>,
+      ) => (revision !== undefined ? () => Promise.resolve(revision) : resolve);
+      return {
+        onClaim: ({ itemId, revision }: { itemId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClaim, {
+                id: itemId,
+                expected_revision: expectedRevision,
+                owner: {
+                  kind: "principal",
+                  id: workGraphClaimOwnerId(experience?.access?.subject, DEFAULT_APPROVER_ID),
+                },
+              }, cardIdentity),
+          ),
+        onClose: ({ itemId, revision }: { itemId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClose, {
+                id: itemId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onGoalConfirm: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalConfirm, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onGoalRequestClose: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionPause: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionPause, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionResume: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionResume, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionReassign: ({ bindingId, revision, identity }: { bindingId: string; revision?: number; identity: string }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionReassign, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+                target: { kind: "identity", identity },
+              }, cardIdentity),
+          ),
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject],
+  );
+
+  // Inline-card affordances: undefined when the caller lacks the manage
+  // grant (or the console is read-only) — the card then renders no buttons.
+  // Reassign needs a typed-in target identity, so only the panel offers it.
+  const workGraphCardActions = React.useCallback(
+    (cardIdentity: string): WorkGraphCardActions | undefined => {
+      if (!canManageWorkGraph) return undefined;
+      const { onAttentionReassign: _panelOnly, ...cardHandlers } =
+        makeWorkGraphOperatorHandlers(cardIdentity);
+      return cardHandlers;
+    },
+    [canManageWorkGraph, makeWorkGraphOperatorHandlers],
+  );
+
+  // =========================================================================
   // RESIZE HANDLERS (unchanged)
   // =========================================================================
 
@@ -3460,6 +3876,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         loadingOlderHistory={identityLog.olderHistoryLoading === true}
         onLoadOlder={() => void loadOlderIdentityTimeline(identity)}
         stackSlot={stackSlot}
+        workGraphActions={workGraphCardActions(identity)}
       />
     );
   }
@@ -3641,7 +4058,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (
       (target.kind === "routing" ||
         target.kind === "gating" ||
-        target.kind === "gates") &&
+        target.kind === "gates" ||
+        target.kind === "workgraph") &&
       !hasMobControlSurface
     ) {
       return (
@@ -3804,6 +4222,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
         />
       );
+    if (target.kind === "workgraph") {
+      const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
+      return (
+        <WorkGraphPanel
+          data={workGraphData}
+          canManage={canManageWorkGraph}
+          onRefresh={() => void refreshWorkGraphData()}
+          onClaim={workGraphPanelHandlers.onClaim}
+          onClose={workGraphPanelHandlers.onClose}
+          onGoalConfirm={workGraphPanelHandlers.onGoalConfirm}
+          onGoalRequestClose={workGraphPanelHandlers.onGoalRequestClose}
+          onAttentionPause={workGraphPanelHandlers.onAttentionPause}
+          onAttentionResume={workGraphPanelHandlers.onAttentionResume}
+          onAttentionReassign={workGraphPanelHandlers.onAttentionReassign}
+        />
+      );
+    }
     return <div className="console-panel">Unsupported panel</div>;
   }
 

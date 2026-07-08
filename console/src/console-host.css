@@ -2710,6 +2710,17 @@ svg[data-svg="fit"],
   font-size: 10px; font-weight: 700;
 }
 
+/* Inline WorkGraph card rides the message lane full-width; the card brings
+   its own chrome (cc-work-graph), so the bubble stays transparent. */
+.msg--workgraph .msg__bubble {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.msg--workgraph .cc-work-graph {
+  width: 100%;
+}
+
 /* ── Typing / "agent is working" indicator ──────────────────── */
 @keyframes chat-typing-bounce {
   0%, 60%, 100% { transform: translateY(0);   opacity: 0.45; }
@@ -3599,6 +3610,177 @@ svg[data-svg="fit"],
   font-size: 10px;
   color: var(--ink-faint);
   padding: 6px 0 2px;
+}
+
+/* === WorkGraph panel (goals, work items, attention) === */
+.workgraph {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+.workgraph__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.workgraph__head h3 { margin: 0; font-size: 13px; }
+.workgraph__captured {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.workgraph__spacer { flex: 1 1 auto; }
+.workgraph__error {
+  padding: 6px 10px;
+  border: 1px solid var(--err, #d4564e);
+  border-radius: var(--r-sm);
+  color: var(--err, #d4564e);
+  font-size: 11.5px;
+}
+.workgraph__section {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elev-1);
+  padding: 8px 10px;
+}
+.workgraph__sec-label {
+  font-family: var(--disp);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  padding-bottom: 6px;
+}
+.workgraph__empty {
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  padding: 4px 0;
+}
+.workgraph__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  min-width: 0;
+}
+.workgraph__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ink-faint);
+}
+.workgraph__dot.is-in_progress { background: var(--accent); }
+.workgraph__dot.is-completed { background: var(--ok); }
+.workgraph__dot.is-failed { background: var(--bad, var(--err, #d4564e)); }
+.workgraph__dot.is-blocked { background: var(--warn); }
+.workgraph__item-title {
+  font-size: 12px;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workgraph__item-status {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  flex: none;
+}
+.workgraph__chip {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workgraph__chip.is-priority-high { color: var(--bad, var(--err, #d4564e)); border-color: currentColor; }
+.workgraph__action {
+  flex: none;
+  font: inherit;
+  font-size: 10.5px;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.workgraph__action:hover:not(:disabled) { color: var(--ink); border-color: var(--line-strong); }
+.workgraph__action:disabled { opacity: 0.5; cursor: default; }
+.workgraph__binding { padding: 3px 0; }
+.workgraph__binding-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.workgraph__mode {
+  flex: none;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-muted);
+}
+.workgraph__mode.is-pursue { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
+.workgraph__mode.is-review { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, var(--line)); }
+.workgraph__mode.is-falsify { color: var(--bad, var(--err, #d4564e)); border-color: currentColor; }
+.workgraph__mode.is-judge { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--line)); }
+.workgraph__binding-status {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  flex: none;
+}
+.workgraph__binding-target {
+  font-size: 11px;
+  color: var(--ink-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workgraph__reassign {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 2px 8px;
+}
+.workgraph__reassign input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--ink);
+}
+.workgraph__events { display: flex; flex-direction: column; }
+.workgraph__event {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* === Recoverable action errors (e.g. access-denied send) === */

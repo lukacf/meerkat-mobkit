@@ -11,8 +11,12 @@ import type {
   ConversationRichToolCallBlock,
   ConversationTimelineEntry,
   ConversationViewState,
+  ConversationWorkGraphAttentionRow,
+  ConversationWorkGraphEntry,
+  ConversationWorkGraphItemRow,
   ResponsePhase,
   RoutingSectionView,
+  WorkGraphCardStatus,
 } from "@console-core";
 import {
   groupConversationTimelineEntries,
@@ -22,6 +26,7 @@ import {
   parseStreamingConversationRichBlocks,
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
+import { createConsoleId } from "./id";
 
 export type MobKitDockTarget =
   | AgentChatTarget
@@ -35,7 +40,8 @@ export type MobKitDockTarget =
   | GatesPanelTarget
   | LogsPanelTarget
   | AccessPanelTarget
-  | MemoryPanelTarget;
+  | MemoryPanelTarget
+  | WorkGraphPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -88,6 +94,10 @@ export interface AccessPanelTarget extends ConsoleDockTarget {
 
 export interface MemoryPanelTarget extends ConsoleDockTarget {
   kind: "memory";
+}
+
+export interface WorkGraphPanelTarget extends ConsoleDockTarget {
+  kind: "workgraph";
 }
 
 export function buildPanelConversationKey(
@@ -158,7 +168,7 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
 
 export type ControlTargetKind =
   | "routing" | "gating" | "topology" | "health"
-  | "timeline" | "roster" | "gates" | "logs" | "access" | "memory";
+  | "timeline" | "roster" | "gates" | "logs" | "access" | "memory" | "workgraph";
 
 export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
   switch (kind) {
@@ -182,6 +192,8 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
       return { id: "access", kind, title: "Access", subtitle: "Who can see and do what", iconName: "i-gear" };
     case "memory":
       return { id: "memory", kind, title: "Memory", subtitle: "Records, quarantine, dreams", iconName: "i-archive" };
+    case "workgraph":
+      return { id: "workgraph", kind, title: "WorkGraph", subtitle: "Goals, work items, and attention", iconName: "i-cube" };
     default:
       return { id: "health", kind: "health", title: "Health" };
   }
@@ -1090,7 +1102,10 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
   };
 }
 
-function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichToolCallBlock> {
+function buildToolBlocks(
+  frames: ConsoleFrame[],
+  workGraphNamesByCallId?: Map<string, string>,
+): Map<string, ConversationRichToolCallBlock> {
   const toolCalls = new Map<string, ConversationRichToolCallBlock>();
   const pendingResults = new Map<string, { result?: string; status: "success" | "error" }>();
   // Peer registry built from `peers` tool results: peer_id (uuid) -> name.
@@ -1103,6 +1118,9 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
+    // WorkGraph tool calls fold into the inline workgraph card instead of
+    // generic tool rows.
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
     if (frame.event === "server_tool_content") {
       const toolCallId = parseToolCallId(frame);
       const parsed = serverToolContentSummary(frame);
@@ -1215,6 +1233,1027 @@ function buildPeerRegistry(frames: ConsoleFrame[]): Map<string, string> {
     capturePeersResult(peerRegistry, data.result);
   }
   return peerRegistry;
+}
+
+// ── WorkGraph inline card aggregation ───────────────────────────────────────
+//
+// WorkGraph tool calls never render as generic cc-tool-call rows. All frames
+// of a turn's workgraph activity fold into one evolving card per goal/root
+// work item (kind "workgraph"), positioned at the first contributing frame.
+// The fold is a single O(frames) pass rebuilt per render, same cost class as
+// buildToolBlocks. Per-item/binding `revision` is retained verbatim: it is
+// the CAS token operator actions must echo or the mutation conflicts.
+
+export const WORKGRAPH_TOOL_NAMES = new Set([
+  "workgraph_create",
+  "workgraph_get",
+  "workgraph_list",
+  "workgraph_ready",
+  "workgraph_snapshot",
+  "workgraph_events",
+  "workgraph_claim",
+  "workgraph_release",
+  "workgraph_update",
+  "workgraph_policy_escalate",
+  "workgraph_block",
+  "workgraph_close",
+  "workgraph_link",
+  "workgraph_add_evidence",
+  "workgraph_attention_reassign",
+]);
+
+const WORKGRAPH_TOOL_EVENTS = new Set([
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
+]);
+
+/// Client-local synthetic frame carrying the RESULT of a console operator
+/// RPC mutation (claim/close/confirm/…). Operator actions run outside any
+/// agent turn, so the server emits no console frames for them — without this
+/// echo the inline card would keep stale status/revisions and consecutive
+/// actions would CAS-conflict. The fold treats these exactly like a
+/// successful (or failed) workgraph tool result.
+export const WORKGRAPH_OPERATOR_RESULT_EVENT = "workgraph_operator_result";
+
+/// `sourceKind` marker for frames minted client-side. They never round-trip
+/// through the server: dedupe keys on the locally minted frame id and server
+/// reconciliation is append-only, so they simply coexist with wire frames.
+export const WORKGRAPH_LOCAL_SOURCE_KIND = "console-local";
+
+export function buildWorkGraphOperatorResultFrame(input: {
+  method: string;
+  params: Record<string, unknown>;
+  result?: unknown;
+  errorMessage?: string;
+  identity?: string;
+  timestampMs?: number;
+  frameId?: string;
+  // Marks a post-conflict re-read: the frame folds fresh entity state but is
+  // not an operator action, so it must never set (or clear) the card's
+  // latest-action outcome.
+  refresh?: boolean;
+}): ConsoleFrame {
+  return {
+    id: input.frameId || createConsoleId("local-workgraph"),
+    event: WORKGRAPH_OPERATOR_RESULT_EVENT,
+    ...(input.identity ? { identity: input.identity } : {}),
+    timestampMs: input.timestampMs ?? Date.now(),
+    sourceKind: WORKGRAPH_LOCAL_SOURCE_KIND,
+    data: {
+      method: input.method,
+      // The sent params double as routing args (id / binding_id) so failed
+      // mutations still land on the right card.
+      args: input.params,
+      ...(input.refresh ? { refresh: true } : {}),
+      ...(input.errorMessage !== undefined
+        ? { is_error: true, result: input.errorMessage }
+        : { result: input.result ?? null }),
+    },
+  };
+}
+
+/// Failure-line label for an operator mutation, in the same underscored
+/// vocabulary as tool names: "mobkit/workgraph/goal/confirm" →
+/// "workgraph_goal_confirm".
+function workGraphOperatorDisplayName(method: unknown): string {
+  const raw = typeof method === "string" && method.trim() ? method.trim() : "workgraph";
+  return raw.replace(/^mobkit\//, "").replace(/\//g, "_");
+}
+
+/// Backfilled result frames (tool_execution_completed / tool_result_received
+/// replayed from session history) carry no `name` field. Resolve names through
+/// the tool_call_id pairing — the requested frame carries the name, exactly
+/// like buildToolBlocks pairs frames — so the card fold and the generic-row
+/// exclusion share one resolution and can never disagree.
+function workGraphToolNamesByCallId(frames: ConsoleFrame[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const frame of frames) {
+    if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) continue;
+    const name = parseToolName(frame);
+    if (!WORKGRAPH_TOOL_NAMES.has(name)) continue;
+    const toolCallId = parseToolCallId(frame);
+    if (toolCallId) names.set(toolCallId, name);
+  }
+  return names;
+}
+
+function isWorkGraphToolFrame(
+  frame: ConsoleFrame,
+  namesByCallId?: Map<string, string>,
+): boolean {
+  if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT) return true;
+  if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) return false;
+  if (WORKGRAPH_TOOL_NAMES.has(parseToolName(frame))) return true;
+  if (!namesByCallId || namesByCallId.size === 0) return false;
+  const toolCallId = parseToolCallId(frame);
+  return toolCallId !== null && namesByCallId.has(toolCallId);
+}
+
+function workGraphToolNameOf(
+  frame: ConsoleFrame,
+  namesByCallId?: Map<string, string>,
+): string {
+  const name = parseToolName(frame);
+  if (WORKGRAPH_TOOL_NAMES.has(name)) return name;
+  const toolCallId = parseToolCallId(frame);
+  return (toolCallId && namesByCallId?.get(toolCallId)) || name;
+}
+
+interface WorkGraphItemDraft {
+  itemId: string;
+  title: string;
+  status: string;
+  priority?: string;
+  ownerLabel?: string;
+  revision?: number;
+  dueAt?: string;
+  description?: string;
+  labels?: string[];
+  evidence?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+  lastEventAt?: string;
+}
+
+interface WorkGraphBindingDraft {
+  bindingId: string;
+  mode: string;
+  statusLabel: string;
+  active: boolean;
+  targetLabel?: string;
+  revision?: number;
+  itemId?: string;
+  updatedAt?: string;
+}
+
+interface WorkGraphEventDraft {
+  at?: string;
+  itemId?: string;
+  // Set on failure notes only: lets a failure that never routed to a known
+  // item still surface on its interaction's catch-all card.
+  interactionId?: string;
+  text: string;
+}
+
+interface WorkGraphFoldState {
+  items: Map<string, WorkGraphItemDraft>;
+  // Item ids observed through a TARGETED result (create/get/claim/… `item`,
+  // operator echoes) as opposed to bulk snapshot/list folds. Bulk-only trees
+  // never earn their own card — a full-store snapshot would otherwise mint a
+  // card per loose root — while trees actually worked in this window keep
+  // theirs (see ownCardRoots).
+  directItemIds: Set<string>;
+  // child item id -> FIRST observed parent item id (WorkEdge kind "parent"
+  // runs child→parent). Upstream allows multiple parents per child; card
+  // placement is first-parent-wins so a later edge never silently re-homes
+  // the child's subtree to another card.
+  parents: Map<string, string>;
+  // child item id -> parents beyond the first, surfaced as an
+  // "also under …" note in the row detail instead of moving the row.
+  extraParents: Map<string, Set<string>>;
+  bindings: Map<string, WorkGraphBindingDraft>;
+  events: WorkGraphEventDraft[];
+  // Dedupe keys for folded WorkGraphEvents (seq, or content for seq-less
+  // local echoes): overlapping poll windows replay the same events and would
+  // otherwise crowd the recent-events window with duplicates.
+  seenEventKeys: Set<string>;
+  // Raw per-frame touch lists; resolved to roots only after the whole pass,
+  // when the parent map is complete. `outcome` is set on result frames so the
+  // card can surface whether its latest action failed.
+  contributions: Array<{
+    frameIndex: number;
+    interactionId: string;
+    itemIds: string[];
+    bindingIds: string[];
+    outcome?: "ok" | "error";
+  }>;
+}
+
+function workGraphString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function workGraphOwnerLabel(record: Record<string, unknown>): string | undefined {
+  const fromOwner = (value: unknown): string | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const owner = value as Record<string, unknown>;
+    const display = workGraphString(owner.display_name);
+    if (display) return display;
+    const key = owner.key && typeof owner.key === "object" ? owner.key as Record<string, unknown> : null;
+    return workGraphString(key?.id);
+  };
+  const direct = fromOwner(record.owner);
+  if (direct) return direct;
+  const claim = record.claim && typeof record.claim === "object" ? record.claim as Record<string, unknown> : null;
+  return fromOwner(claim?.owner);
+}
+
+function workGraphEvidenceLines(record: Record<string, unknown>): string[] | undefined {
+  if (!Array.isArray(record.evidence_refs) || record.evidence_refs.length === 0) return undefined;
+  const lines = record.evidence_refs
+    .map((value) => {
+      if (!value || typeof value !== "object") return "";
+      const evidence = value as Record<string, unknown>;
+      const label = workGraphString(evidence.label) || workGraphString(evidence.summary);
+      const kind = workGraphString(evidence.kind);
+      const id = workGraphString(evidence.id);
+      if (label) return kind ? `${kind}: ${label}` : label;
+      return [kind, id].filter(Boolean).join(" ");
+    })
+    .filter(Boolean);
+  return lines.length > 0 ? lines : undefined;
+}
+
+function foldWorkGraphItem(
+  state: WorkGraphFoldState,
+  value: unknown,
+  frameIso: string | undefined,
+): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const itemId = workGraphString(record.id);
+  if (!itemId) return null;
+  const revision = typeof record.revision === "number" ? record.revision : undefined;
+  const existing = state.items.get(itemId);
+  // A record without a revision is a non-authoritative sighting: it never
+  // displaces a draft whose revision is known, and a stale revision never
+  // rolls a fresher one back. Equal revisions keep frame order (last wins).
+  if (
+    existing &&
+    existing.revision !== undefined &&
+    (revision === undefined || existing.revision > revision)
+  ) {
+    if (frameIso) existing.lastEventAt = frameIso;
+    return itemId;
+  }
+  state.items.set(itemId, {
+    itemId,
+    title: workGraphString(record.title) || itemId,
+    status: workGraphString(record.status) || "open",
+    priority: workGraphString(record.priority),
+    ownerLabel: workGraphOwnerLabel(record),
+    revision,
+    dueAt: workGraphString(record.due_at),
+    description: workGraphString(record.description),
+    labels: Array.isArray(record.labels)
+      ? record.labels.filter((label): label is string => typeof label === "string")
+      : undefined,
+    evidence: workGraphEvidenceLines(record),
+    createdAt: workGraphString(record.created_at),
+    updatedAt: workGraphString(record.updated_at),
+    lastEventAt: frameIso || existing?.lastEventAt,
+  });
+  return itemId;
+}
+
+function workGraphBindingStatus(value: unknown): { label: string; active: boolean } {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const state = workGraphString(record?.state) || "active";
+  if (state === "paused") {
+    const until = workGraphString(record?.until);
+    return {
+      label: until ? `paused until ${until.slice(0, 16).replace("T", " ")}` : "paused",
+      active: false,
+    };
+  }
+  return { label: state, active: state === "active" };
+}
+
+function workGraphTargetLabel(value: unknown): string | undefined {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (!record) return undefined;
+  const sessionId = workGraphString(record.session_id);
+  if (sessionId) return sessionId;
+  const ownerKey = record.owner_key && typeof record.owner_key === "object"
+    ? record.owner_key as Record<string, unknown>
+    : null;
+  if (ownerKey) {
+    const kind = workGraphString(ownerKey.kind);
+    const id = workGraphString(ownerKey.id);
+    return [kind, id].filter(Boolean).join(":") || undefined;
+  }
+  return undefined;
+}
+
+function foldWorkGraphBinding(
+  state: WorkGraphFoldState,
+  value: unknown,
+  frameIso: string | undefined,
+): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const bindingId = workGraphString(record.binding_id);
+  if (!bindingId) return null;
+  const machineState = record.machine_state && typeof record.machine_state === "object"
+    ? record.machine_state as Record<string, unknown>
+    : null;
+  const revision = typeof machineState?.revision === "number" ? machineState.revision : undefined;
+  const existing = state.bindings.get(bindingId);
+  // Same merge rule as items: an absent revision never overwrites a present
+  // one, and a stale revision never rolls a fresher one back.
+  if (
+    existing &&
+    existing.revision !== undefined &&
+    (revision === undefined || existing.revision > revision)
+  ) {
+    return bindingId;
+  }
+  const workRef = record.work_ref && typeof record.work_ref === "object"
+    ? record.work_ref as Record<string, unknown>
+    : null;
+  const status = workGraphBindingStatus(record.status);
+  state.bindings.set(bindingId, {
+    bindingId,
+    mode: workGraphString(record.mode) || "pursue",
+    statusLabel: status.label,
+    active: status.active,
+    targetLabel: workGraphTargetLabel(record.target),
+    revision,
+    itemId: workGraphString(workRef?.item_id) || existing?.itemId,
+    updatedAt: workGraphString(record.updated_at) || frameIso,
+  });
+  return bindingId;
+}
+
+function foldWorkGraphEdge(state: WorkGraphFoldState, value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  if (workGraphString(record.kind) !== "parent") return;
+  const child = workGraphString(record.from_id);
+  const parent = workGraphString(record.to_id);
+  if (!child || !parent || child === parent) return;
+  const first = state.parents.get(child);
+  if (first === undefined) {
+    state.parents.set(child, parent);
+    return;
+  }
+  if (first === parent) return;
+  const extras = state.extraParents.get(child) || new Set<string>();
+  extras.add(parent);
+  state.extraParents.set(child, extras);
+}
+
+function foldWorkGraphEvent(state: WorkGraphFoldState, value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const kind = workGraphString(record.kind);
+  if (!kind) return;
+  // WorkGraphEvent.seq is the ledger's dedupe key; local echoes may carry
+  // none, so they fall back to the full event content.
+  let dedupeKey = typeof record.seq === "number" ? `seq:${record.seq}` : "";
+  if (!dedupeKey) {
+    try {
+      dedupeKey = `content:${JSON.stringify(record)}`;
+    } catch {
+      dedupeKey = "";
+    }
+  }
+  if (dedupeKey) {
+    if (state.seenEventKeys.has(dedupeKey)) return;
+    state.seenEventKeys.add(dedupeKey);
+  }
+  const at = workGraphString(record.at);
+  const clock = at ? `${at.slice(11, 16)}` : "";
+  state.events.push({
+    at,
+    itemId: workGraphString(record.item_id),
+    text: [kind.replace(/_/g, " "), clock].filter(Boolean).join(" · "),
+  });
+}
+
+const WORKGRAPH_FAILURE_MESSAGE_LIMIT = 80;
+
+/// Compact one-line note for a failed workgraph call — folded into the card's
+/// recent events so failures stay visible without generic tool rows.
+function workGraphFailureLine(name: string, raw: unknown): string {
+  let message = "";
+  if (typeof raw === "string") {
+    message = raw.trim();
+  } else if (raw && typeof raw === "object") {
+    const record = raw as Record<string, unknown>;
+    message = workGraphString(record.message)
+      || workGraphString(record.detail)
+      || workGraphString(record.error)
+      || "";
+    if (!message) {
+      try {
+        message = JSON.stringify(raw);
+      } catch {
+        message = "";
+      }
+    }
+  }
+  if (message.length > WORKGRAPH_FAILURE_MESSAGE_LIMIT) {
+    message = `${message.slice(0, WORKGRAPH_FAILURE_MESSAGE_LIMIT - 1)}…`;
+  }
+  return message ? `✗ ${name} failed: ${message}` : `✗ ${name} failed`;
+}
+
+// A workgraph_snapshot/list result can be a very large JSON string, and the
+// fold re-runs on every render pass — memoize the parsed result per frame so
+// re-renders never re-JSON.parse it. `frameVersion` participates in the key
+// because reconciliation can rewrite a frame's payload in place under the
+// same frame id. The fold only reads the cached object, never mutates it.
+const parsedWorkGraphResultCache = new Map<string, Record<string, unknown> | null>();
+const PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4000;
+
+function parseWorkGraphResult(frame: ConsoleFrame): Record<string, unknown> | null {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (!record || record.is_error === true) return null;
+  const raw = record.result;
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
+  const cached = parsedWorkGraphResultCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const parsed = parseJsonPayload(raw);
+  const result = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  if (parsedWorkGraphResultCache.size >= PARSED_WORKGRAPH_RESULT_CACHE_LIMIT) {
+    parsedWorkGraphResultCache.clear();
+  }
+  parsedWorkGraphResultCache.set(cacheKey, result);
+  return result;
+}
+
+function resolveWorkGraphRoot(itemId: string, parents: Map<string, string>): string {
+  let current = itemId;
+  const seen = new Set<string>();
+  while (parents.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = parents.get(current)!;
+  }
+  return current;
+}
+
+function deriveWorkGraphStatus(items: ConversationWorkGraphItemRow[]): WorkGraphCardStatus {
+  if (items.length === 0) return "active";
+  let open = 0;
+  let inProgress = 0;
+  let blocked = 0;
+  let completed = 0;
+  let cancelled = 0;
+  let failed = 0;
+  for (const item of items) {
+    if (item.status === "open") open += 1;
+    else if (item.status === "in_progress") inProgress += 1;
+    else if (item.status === "blocked") blocked += 1;
+    else if (item.status === "completed") completed += 1;
+    else if (item.status === "cancelled") cancelled += 1;
+    else if (item.status === "failed") failed += 1;
+    else open += 1;
+  }
+  const nonTerminal = open + inProgress + blocked;
+  if (nonTerminal === 0) {
+    if (failed > 0) return "failed";
+    if (cancelled > 0) return "mixed";
+    return "completed";
+  }
+  if (open + inProgress > 0) return "active";
+  return "blocked";
+}
+
+function workGraphItemRows(
+  rootId: string,
+  memberIds: string[],
+  state: WorkGraphFoldState,
+): ConversationWorkGraphItemRow[] {
+  const memberSet = new Set(memberIds);
+  const childrenOf = new Map<string, string[]>();
+  for (const id of memberIds) {
+    const parent = state.parents.get(id);
+    if (parent === undefined) continue;
+    const children = childrenOf.get(parent) || [];
+    children.push(id);
+    childrenOf.set(parent, children);
+  }
+  const sortIds = (ids: string[]): string[] => (
+    [...ids].sort((left, right) => {
+      const leftItem = state.items.get(left);
+      const rightItem = state.items.get(right);
+      const leftKey = leftItem?.createdAt || "";
+      const rightKey = rightItem?.createdAt || "";
+      if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
+      return left < right ? -1 : left === right ? 0 : 1;
+    })
+  );
+
+  const rows: ConversationWorkGraphItemRow[] = [];
+  const visited = new Set<string>();
+  const visit = (itemId: string, depth: number) => {
+    if (visited.has(itemId)) return;
+    visited.add(itemId);
+    const draft = state.items.get(itemId);
+    let childDepth = depth;
+    if (draft && memberSet.has(itemId)) {
+      const extraParents = state.extraParents.get(itemId);
+      rows.push({
+        itemId: draft.itemId,
+        title: draft.title,
+        status: draft.status,
+        priority: draft.priority ?? null,
+        ownerLabel: draft.ownerLabel ?? null,
+        ...(draft.revision !== undefined ? { revision: draft.revision } : {}),
+        depth,
+        parentId: state.parents.get(itemId) ?? null,
+        // Parents beyond the placement one (first-parent-wins), labeled by
+        // title when the parent item was observed in this window.
+        ...(extraParents && extraParents.size > 0
+          ? { alsoUnder: [...extraParents].map((parent) => state.items.get(parent)?.title || parent) }
+          : {}),
+        blocked: draft.status === "blocked",
+        dueAt: draft.dueAt ?? null,
+        lastEventAt: draft.lastEventAt ?? null,
+        description: draft.description ?? null,
+        ...(draft.labels && draft.labels.length > 0 ? { labels: draft.labels } : {}),
+        ...(draft.evidence && draft.evidence.length > 0 ? { evidence: draft.evidence } : {}),
+        createdAt: draft.createdAt ?? null,
+        updatedAt: draft.updatedAt ?? null,
+      });
+      childDepth = depth + 1;
+    }
+    for (const child of sortIds(childrenOf.get(itemId) || [])) {
+      visit(child, childDepth);
+    }
+  };
+  visit(rootId, 0);
+  // Anything unreachable from the root (defensive: partial parent data)
+  // still renders, flat, after the tree walk.
+  for (const id of sortIds(memberIds)) {
+    visit(id, 0);
+  }
+  return rows;
+}
+
+function workGraphAttentionRows(bindings: WorkGraphBindingDraft[]): ConversationWorkGraphAttentionRow[] {
+  return [...bindings]
+    .sort((left, right) => {
+      if (left.active !== right.active) return left.active ? -1 : 1;
+      return left.bindingId < right.bindingId ? -1 : left.bindingId === right.bindingId ? 0 : 1;
+    })
+    .map((binding) => ({
+      bindingId: binding.bindingId,
+      mode: binding.mode,
+      statusLabel: binding.statusLabel,
+      targetLabel: binding.targetLabel ?? null,
+      ...(binding.revision !== undefined ? { revision: binding.revision } : {}),
+      itemId: binding.itemId ?? null,
+    }));
+}
+
+const WORKGRAPH_RECENT_EVENT_LIMIT = 5;
+
+/// Rendered-row cap per card: a snapshot of a large store must not fold
+/// hundreds of rows into the transcript. Exported for the fixtures.
+export const WORKGRAPH_CARD_ITEM_ROW_LIMIT = 30;
+
+/// Keep the most recently active rows (lastEventAt, falling back to
+/// updatedAt/createdAt; frame order breaks ties) visible in their original
+/// tree order; everything else collapses into one "+N more items" overflow
+/// row. Progress, status, and title derivation always run on the FULL row
+/// set before this cap is applied.
+function capWorkGraphItemRows(rows: ConversationWorkGraphItemRow[]): {
+  rows: ConversationWorkGraphItemRow[];
+  overflow: number;
+} {
+  if (rows.length <= WORKGRAPH_CARD_ITEM_ROW_LIMIT) return { rows, overflow: 0 };
+  const recency = (row: ConversationWorkGraphItemRow): string =>
+    row.lastEventAt || row.updatedAt || row.createdAt || "";
+  const ranked = rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const leftKey = recency(left.row);
+      const rightKey = recency(right.row);
+      if (leftKey !== rightKey) return leftKey > rightKey ? -1 : 1;
+      return left.index - right.index;
+    });
+  const keep = new Set(
+    ranked.slice(0, WORKGRAPH_CARD_ITEM_ROW_LIMIT).map((entry) => entry.index),
+  );
+  return {
+    rows: rows.filter((_, index) => keep.has(index)),
+    overflow: rows.length - keep.size,
+  };
+}
+
+/**
+ * Fold every workgraph tool frame into per-root conversation entries.
+ * Returns the entries keyed by the index of their first contributing frame
+ * (where `mapFramesToTimelineEntries` emits them) — entry ids stay stable
+ * (`workgraph:{rootId}`) so live re-renders update the card in place.
+ */
+function buildWorkGraphEntries(
+  agent: ConsoleAgent | null,
+  frames: ConsoleFrame[],
+  namesByCallId?: Map<string, string>,
+): Map<number, ConversationWorkGraphEntry[]> {
+  const state: WorkGraphFoldState = {
+    items: new Map(),
+    directItemIds: new Set(),
+    parents: new Map(),
+    extraParents: new Map(),
+    bindings: new Map(),
+    events: [],
+    seenEventKeys: new Set(),
+    contributions: [],
+  };
+  let sawWorkGraphFrame = false;
+  // Result frames carry neither args nor (on backfill) a name — remember the
+  // requested frame's args per tool_call_id so results and failures still
+  // route to the right card.
+  const argIdsByCallId = new Map<string, { itemId?: string; bindingId?: string }>();
+  // One failure note per tool call: a live frame and its session-history
+  // backfill twin share a tool_call_id and must not double-report.
+  const failureNotedCallIds = new Set<string>();
+
+  for (let index = 0; index < frames.length; index++) {
+    const frame = frames[index];
+    if (!isWorkGraphToolFrame(frame, namesByCallId)) continue;
+    sawWorkGraphFrame = true;
+    const frameIso = isoFromTimestampMs(frame.timestampMs);
+    const contribution = {
+      frameIndex: index,
+      interactionId: frame.interactionId?.trim() || "",
+      itemIds: [] as string[],
+      bindingIds: [] as string[],
+      outcome: undefined as "ok" | "error" | undefined,
+    };
+
+    const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+    const args = record?.args && typeof record.args === "object" ? record.args as Record<string, unknown> : null;
+    const toolCallId = parseToolCallId(frame);
+    let argItemId = workGraphString(args?.id);
+    let argBindingId = workGraphString(args?.binding_id);
+    if (args && toolCallId) {
+      argIdsByCallId.set(toolCallId, { itemId: argItemId, bindingId: argBindingId });
+    } else if (!args && toolCallId) {
+      const paired = argIdsByCallId.get(toolCallId);
+      argItemId = argItemId || paired?.itemId;
+      argBindingId = argBindingId || paired?.bindingId;
+    }
+    if (argItemId) contribution.itemIds.push(argItemId);
+    if (argBindingId) contribution.bindingIds.push(argBindingId);
+
+    const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
+    if (
+      frame.event === "tool_result_received" ||
+      frame.event === "tool_execution_completed" ||
+      isOperatorResult
+    ) {
+      const failed = record?.is_error === true;
+      const isRefresh = record?.refresh === true;
+      // A refresh echo (post-conflict re-read or post-reload re-hydration,
+      // `data.refresh`) folds entity state without being an operator action:
+      // it never sets — or clears — the card's latest-action outcome.
+      if (!isRefresh) {
+        contribution.outcome = failed ? "error" : "ok";
+      }
+      if (failed && (!toolCallId || !failureNotedCallIds.has(toolCallId))) {
+        if (toolCallId) failureNotedCallIds.add(toolCallId);
+        state.events.push({
+          at: frameIso,
+          itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : undefined),
+          interactionId: contribution.interactionId,
+          text: workGraphFailureLine(
+            isOperatorResult
+              ? workGraphOperatorDisplayName(record?.method)
+              : workGraphToolNameOf(frame, namesByCallId),
+            record?.result ?? record?.content,
+          ),
+        });
+      }
+      const result = parseWorkGraphResult(frame);
+      if (result) {
+        // Refresh echoes are pure re-reads: they may heal entities the card
+        // already shows but never introduce new ones — a full-store snapshot
+        // re-hydration would otherwise mint cards for unrelated work.
+        const knownItem = (value: unknown): boolean => {
+          const id = value && typeof value === "object"
+            ? workGraphString((value as Record<string, unknown>).id)
+            : undefined;
+          return Boolean(id && state.items.has(id));
+        };
+        const knownBinding = (value: unknown): boolean => {
+          const id = value && typeof value === "object"
+            ? workGraphString((value as Record<string, unknown>).binding_id)
+            : undefined;
+          return Boolean(id && state.bindings.has(id));
+        };
+        // `bulk` marks snapshot/list observations — they fold state but
+        // never mark a tree as directly worked (see directItemIds).
+        const foldItem = (value: unknown, bulk = false) => {
+          if (isRefresh && !knownItem(value)) return;
+          const itemId = foldWorkGraphItem(state, value, frameIso);
+          if (itemId) {
+            contribution.itemIds.push(itemId);
+            if (!bulk && !isRefresh) state.directItemIds.add(itemId);
+          }
+        };
+        const foldBinding = (value: unknown) => {
+          if (isRefresh && !knownBinding(value)) return;
+          const bindingId = foldWorkGraphBinding(state, value, frameIso);
+          if (bindingId) contribution.bindingIds.push(bindingId);
+        };
+        foldItem(result.item);
+        if (Array.isArray(result.items)) {
+          for (const value of result.items) foldItem(value, true);
+        }
+        foldBinding(result.attention);
+        foldBinding(result.previous);
+        if (!isRefresh) foldWorkGraphEdge(state, result.edge);
+        if (Array.isArray(result.events)) {
+          for (const event of result.events) foldWorkGraphEvent(state, event);
+        }
+        const snapshot = result.snapshot && typeof result.snapshot === "object"
+          ? result.snapshot as Record<string, unknown>
+          : null;
+        if (snapshot) {
+          if (Array.isArray(snapshot.items)) {
+            for (const value of snapshot.items) foldItem(value, true);
+          }
+          if (!isRefresh && Array.isArray(snapshot.edges)) {
+            for (const edge of snapshot.edges) foldWorkGraphEdge(state, edge);
+          }
+          if (Array.isArray(snapshot.attention)) snapshot.attention.forEach(foldBinding);
+        }
+      }
+    }
+
+    state.contributions.push(contribution);
+  }
+
+  const byAnchor = new Map<number, ConversationWorkGraphEntry[]>();
+  if (!sawWorkGraphFrame) return byAnchor;
+
+  // Group known items by resolved root; attach bindings via their item root.
+  const rootMembers = new Map<string, string[]>();
+  for (const itemId of state.items.keys()) {
+    const root = resolveWorkGraphRoot(itemId, state.parents);
+    const members = rootMembers.get(root) || [];
+    members.push(itemId);
+    rootMembers.set(root, members);
+  }
+  const rootBindings = new Map<string, WorkGraphBindingDraft[]>();
+  for (const binding of state.bindings.values()) {
+    if (!binding.itemId) continue;
+    const root = resolveWorkGraphRoot(binding.itemId, state.parents);
+    const bindings = rootBindings.get(root) || [];
+    bindings.push(binding);
+    rootBindings.set(root, bindings);
+    if (!rootMembers.has(root)) rootMembers.set(root, []);
+  }
+
+  // A root keeps its own card when it is an attention-bound goal, or when it
+  // is a real hierarchy (children) that was directly worked in this window (a
+  // targeted result touched one of its members). Bulk snapshot/list folds
+  // alone never mint per-root cards: a full-store snapshot would otherwise
+  // produce a card per loose tree. Everything else folds into one bounded
+  // catch-all card per interaction.
+  const rootForItem = (itemId: string) => resolveWorkGraphRoot(itemId, state.parents);
+  const ownCardRoots = new Set<string>();
+  for (const [root, members] of rootMembers) {
+    const hasHierarchy = members.length > 1 || members.some((id) => id !== root);
+    const attentionBound = (rootBindings.get(root)?.length || 0) > 0;
+    const directlyWorked = state.directItemIds.has(root)
+      || members.some((id) => state.directItemIds.has(id));
+    if (attentionBound || (hasHierarchy && directlyWorked)) {
+      ownCardRoots.add(root);
+    }
+  }
+
+  // Anchors + catch-all grouping keys, resolved from raw contributions now
+  // that the parent map is complete. Contributions run in frame order, so the
+  // last recorded outcome per card is the outcome of its latest action.
+  const anchorByCard = new Map<string, { frameIndex: number; createdAt?: string; interactionId: string }>();
+  const lastOutcomeByCard = new Map<string, "ok" | "error">();
+  // Per-card UI-state anchor: the first item id ever contributed to that
+  // card, in frame order. It is stable from the first create result and, for
+  // a graph that later grows a hierarchy, the same item routes to the rooted
+  // card from the same first frame — so the anchor survives the
+  // catch-all→rooted rekey.
+  const firstItemByCard = new Map<string, string>();
+  const catchAllMembers = new Map<string, Set<string>>();
+  const catchAllForItem = new Map<string, string>();
+  const bindingRoot = (bindingId: string): string | null => {
+    const binding = state.bindings.get(bindingId);
+    return binding?.itemId ? rootForItem(binding.itemId) : null;
+  };
+  for (const contribution of state.contributions) {
+    const cardKeys = new Set<string>();
+    const recordFirstItem = (cardKey: string, itemId: string) => {
+      if (!firstItemByCard.has(cardKey)) firstItemByCard.set(cardKey, itemId);
+    };
+    for (const itemId of contribution.itemIds) {
+      const root = rootForItem(itemId);
+      if (ownCardRoots.has(root)) {
+        const cardKey = `workgraph:${root}`;
+        cardKeys.add(cardKey);
+        recordFirstItem(cardKey, itemId);
+      } else if (state.items.has(itemId) || state.items.has(root)) {
+        const interactionKey = catchAllForItem.get(root)
+          || `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+        catchAllForItem.set(root, interactionKey);
+        const members = catchAllMembers.get(interactionKey) || new Set<string>();
+        members.add(root);
+        catchAllMembers.set(interactionKey, members);
+        cardKeys.add(interactionKey);
+        recordFirstItem(interactionKey, itemId);
+      }
+    }
+    for (const bindingId of contribution.bindingIds) {
+      const root = bindingRoot(bindingId);
+      if (root && ownCardRoots.has(root)) cardKeys.add(`workgraph:${root}`);
+    }
+    // A failure that routed nowhere (its ids were never observed as items or
+    // bindings) must not vanish: home it on the interaction's catch-all
+    // card, creating that card if none exists.
+    if (contribution.outcome === "error" && cardKeys.size === 0) {
+      const interactionKey = `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+      if (!catchAllMembers.has(interactionKey)) {
+        catchAllMembers.set(interactionKey, new Set<string>());
+      }
+      cardKeys.add(interactionKey);
+    }
+    for (const key of cardKeys) {
+      if (!anchorByCard.has(key)) {
+        anchorByCard.set(key, {
+          frameIndex: contribution.frameIndex,
+          createdAt: isoFromTimestampMs(frames[contribution.frameIndex]?.timestampMs),
+          interactionId: contribution.interactionId,
+        });
+      }
+      if (contribution.outcome) {
+        lastOutcomeByCard.set(key, contribution.outcome);
+      }
+    }
+  }
+
+  // `catchAllInteractionId` (catch-all cards only, "" = unscoped) also
+  // matches failure notes that never routed to a known item: they carry the
+  // interaction instead of a resolvable item id.
+  const eventsForMembers = (
+    memberSet: Set<string>,
+    catchAllInteractionId?: string,
+  ): string[] | undefined => {
+    const matched = state.events.filter((event) => {
+      if (event.itemId && (memberSet.has(rootForItem(event.itemId)) || memberSet.has(event.itemId))) {
+        return true;
+      }
+      if (catchAllInteractionId === undefined || event.interactionId !== catchAllInteractionId) {
+        return false;
+      }
+      const routable = Boolean(
+        event.itemId && (state.items.has(event.itemId) || state.items.has(rootForItem(event.itemId))),
+      );
+      return !routable;
+    });
+    if (matched.length === 0) return undefined;
+    return matched.slice(-WORKGRAPH_RECENT_EVENT_LIMIT).map((event) => event.text);
+  };
+
+  const pushEntry = (entry: ConversationWorkGraphEntry, anchorIndex: number) => {
+    const list = byAnchor.get(anchorIndex) || [];
+    list.push(entry);
+    byAnchor.set(anchorIndex, list);
+  };
+
+  const latestIso = (values: Array<string | null | undefined>): string | undefined => {
+    let latest: string | undefined;
+    for (const value of values) {
+      if (value && (!latest || value > latest)) latest = value;
+    }
+    return latest;
+  };
+
+  // UI-state anchor: interaction of the first contributing frame plus the
+  // first item id folded into this specific card. The pair survives the
+  // catch-all→rooted rekey (both halves come from that same first frame) yet
+  // stays distinct between cards born in the same interaction and between
+  // operator-echo-only cards for different targets. A card that never folded
+  // an item (a host for unroutable failure notes) anchors on "unrooted".
+  const uiStateKeyForCard = (entryId: string, anchorInteractionId: string): string =>
+    `workgraph:interaction:${anchorInteractionId || "unscoped"}:${firstItemByCard.get(entryId) || "unrooted"}`;
+
+  for (const root of ownCardRoots) {
+    const entryId = `workgraph:${root}`;
+    const anchor = anchorByCard.get(entryId);
+    if (!anchor) continue;
+    const items = workGraphItemRows(root, rootMembers.get(root) || [], state);
+    const attention = workGraphAttentionRows(rootBindings.get(root) || []);
+    const rootItem = state.items.get(root);
+    const completed = items.filter((item) => item.status === "completed").length;
+    const memberSet = new Set([root, ...(rootMembers.get(root) || [])]);
+    const recentEvents = eventsForMembers(memberSet);
+    const lastUpdatedAt = latestIso(items.flatMap((item) => [item.updatedAt, item.lastEventAt]));
+    // A root referenced only through parent edges (created in an earlier
+    // conversation or trimmed from history) has no folded draft — render a
+    // friendly title, never the bare ULID.
+    const title = rootItem ? rootItem.title : "Goal from an earlier conversation";
+    const objective = rootItem
+      ? rootItem.description ?? null
+      : `Goal …${root.slice(-6)}`;
+    const capped = capWorkGraphItemRows(items);
+    pushEntry({
+      kind: "workgraph",
+      id: entryId,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
+      identity: agentIdentity(agent),
+      ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
+      rootId: root,
+      title,
+      objective,
+      status: deriveWorkGraphStatus(items),
+      progress: { completed, total: items.length },
+      items: capped.rows,
+      ...(capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {}),
+      attention,
+      ...(recentEvents ? { recentEvents } : {}),
+      ...(lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {}),
+      ...(lastUpdatedAt ? { lastUpdatedAt } : {}),
+    }, anchor.frameIndex);
+  }
+
+  for (const [entryId, members] of catchAllMembers) {
+    const anchor = anchorByCard.get(entryId);
+    if (!anchor) continue;
+    // Members are root ids; a member renders its whole known tree (bulk
+    // snapshot folds can park multi-item non-goal trees here).
+    const memberIds = [...members].filter((id) => (rootMembers.get(id)?.length || 0) > 0);
+    const recentEvents = eventsForMembers(members, anchor.interactionId);
+    // A memberless catch-all exists only to host unroutable failure notes;
+    // with nothing to show it is skipped entirely.
+    if (memberIds.length === 0 && !recentEvents) continue;
+    const rows = memberIds
+      .flatMap((id) => workGraphItemRows(id, rootMembers.get(id) || [id], state));
+    const completed = rows.filter((item) => item.status === "completed").length;
+    const lastUpdatedAt = latestIso(rows.flatMap((item) => [item.updatedAt, item.lastEventAt]));
+    const capped = capWorkGraphItemRows(rows);
+    pushEntry({
+      kind: "workgraph",
+      id: entryId,
+      uiStateKey: uiStateKeyForCard(entryId, anchor.interactionId),
+      identity: agentIdentity(agent),
+      ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
+      rootId: entryId.replace(/^workgraph:/, ""),
+      title: rows.length === 1
+        ? rows[0].title
+        : rows.length === 0
+          ? "WorkGraph activity"
+          : "Work items",
+      objective: rows.length === 1 ? rows[0].description ?? null : null,
+      status: deriveWorkGraphStatus(rows),
+      progress: { completed, total: rows.length },
+      items: capped.rows,
+      ...(capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {}),
+      attention: [],
+      ...(recentEvents ? { recentEvents } : {}),
+      ...(lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {}),
+      ...(lastUpdatedAt ? { lastUpdatedAt } : {}),
+    }, anchor.frameIndex);
+  }
+
+  return byAnchor;
+}
+
+/// True when folding `frames` yields at least one workgraph card. The reload
+/// re-hydration path fetches a snapshot only for panes that actually show
+/// one; it runs once per identity, so the extra fold pass is bounded.
+export function framesContainWorkGraphCards(frames: ConsoleFrame[]): boolean {
+  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  for (const cards of entries.values()) {
+    if (cards.length > 0) return true;
+  }
+  return false;
+}
+
+/// Per-identity gate for the reload work-graph re-hydration flow. Each
+/// identity gets at most one snapshot fetch per mount, but only the call
+/// that actually observes cards may consume it: a call made before the
+/// workgraph experience is available, or before any page of history has
+/// folded in a card, leaves the identity unmarked so a later call (e.g.
+/// after `loadOlderIdentityTimeline` folds in an older page) can still
+/// trigger the fetch.
+export interface WorkGraphHydrationGate {
+  shouldFetch(
+    identity: string,
+    state: { workgraphAvailable: boolean; hasCards: boolean },
+  ): boolean;
+}
+
+export function createWorkGraphHydrationGate(): WorkGraphHydrationGate {
+  const done = new Set<string>();
+  return {
+    shouldFetch(identity, { workgraphAvailable, hasCards }) {
+      if (done.has(identity)) return false;
+      if (!workgraphAvailable || !hasCards) return false;
+      done.add(identity);
+      return true;
+    },
+  };
 }
 
 function parsePeerSummary(text: string): { verb: string; summary: string } | null {
@@ -1972,7 +3011,10 @@ function toolResultTextFromContent(content: unknown): string {
     .join("");
 }
 
-function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResult> {
+function historyToolResults(
+  frames: ConsoleFrame[],
+  workGraphNamesByCallId?: Map<string, string>,
+): Map<string, HistoryToolResult> {
   const results = new Map<string, HistoryToolResult>();
   for (const frame of frames) {
     if (
@@ -1984,6 +3026,16 @@ function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResu
     const data = frame.data && typeof frame.data === "object"
       ? frame.data as Record<string, unknown>
       : null;
+    const historyToolName = typeof data?.name === "string"
+      ? data.name
+      : typeof data?.tool_name === "string"
+        ? data.tool_name
+        : "";
+    // WorkGraph results never hydrate history tool rows — the card owns them.
+    // Backfill result frames carry no name, so also match through the
+    // tool_call_id pairing (same resolution as the card fold).
+    if (WORKGRAPH_TOOL_NAMES.has(historyToolName)) continue;
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) continue;
     const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim()
       ? data.tool_call_id.trim()
       : typeof data?.id === "string" && data.id.trim()
@@ -3189,9 +4241,11 @@ export function mapFramesToTimelineEntries(
     ? sortFramesForTranscript(frames)
     : frames;
   const entries: ConversationTimelineEntry[] = [];
-  const toolBlocks = buildToolBlocks(orderedFrames);
+  const workGraphNamesByCallId = workGraphToolNamesByCallId(orderedFrames);
+  const toolBlocks = buildToolBlocks(orderedFrames, workGraphNamesByCallId);
+  const workGraphEntriesByAnchor = buildWorkGraphEntries(agent, orderedFrames, workGraphNamesByCallId);
   const peerRegistry = buildPeerRegistry(orderedFrames);
-  const sessionToolResults = historyToolResults(orderedFrames);
+  const sessionToolResults = historyToolResults(orderedFrames, workGraphNamesByCallId);
   const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
   const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
     orderedFrames,
@@ -3402,6 +4456,20 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    // WorkGraph tool frames render as one evolving inline card per goal/root
+    // (anchored at the first contributing frame) — never as generic tool rows.
+    if (isWorkGraphToolFrame(frame, workGraphNamesByCallId)) {
+      const workGraphCards = workGraphEntriesByAnchor.get(i);
+      if (workGraphCards && workGraphCards.length > 0) {
+        flushPendingReasoning(true);
+        flushPendingText();
+        for (const card of workGraphCards) {
+          entries.push(card);
+        }
+      }
+      continue;
+    }
+
     const toolCallId = parseToolCallId(frame);
     if (
       toolCallId
@@ -3534,7 +4602,8 @@ export function mapFramesToTimelineEntries(
           return false;
         },
         consumeDuplicateToolBlock: (block) => (
-          liveToolCallIds.has(block.toolCallId)
+          WORKGRAPH_TOOL_NAMES.has(block.name)
+          || liveToolCallIds.has(block.toolCallId)
           || consumeToolSignatureCount(liveToolSignatureCounts, block)
         ),
       });
@@ -3594,7 +4663,8 @@ export function mapFramesToTimelineEntries(
             return false;
           },
           consumeDuplicateToolBlock: (block) => (
-            liveToolCallIds.has(block.toolCallId)
+            WORKGRAPH_TOOL_NAMES.has(block.name)
+            || liveToolCallIds.has(block.toolCallId)
             || consumeToolSignatureCount(liveToolSignatureCounts, block)
           ),
         });
@@ -3638,7 +4708,8 @@ export function mapFramesToTimelineEntries(
             return false;
           },
           consumeDuplicateToolBlock: (block) => (
-            liveToolCallIds.has(block.toolCallId)
+            WORKGRAPH_TOOL_NAMES.has(block.name)
+            || liveToolCallIds.has(block.toolCallId)
             || consumeToolSignatureCount(liveToolSignatureCounts, block)
           ),
         });

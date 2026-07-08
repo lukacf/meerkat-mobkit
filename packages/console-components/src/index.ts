@@ -5,6 +5,8 @@ export { ConsoleConversationPanel } from "./conversation/console-conversation-pa
 export { ConversationPane } from "./conversation/conversation-pane";
 export { ConversationRichContent } from "./conversation/conversation-rich-content";
 export { ConversationTranscript } from "./conversation/conversation-transcript";
+export { WorkGraphCard, __workGraphCardUiState } from "./conversation/work-graph-card";
+export type { WorkGraphCardActions } from "./conversation/work-graph-card";
 export { ConsoleDock } from "./dock/console-dock";
 export { ConsolePendingStack } from "./pending/console-pending-stack";
 export { useConsoleDockController } from "./dock/use-console-dock-controller";

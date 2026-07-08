@@ -116,6 +116,18 @@ export const CONSOLE_COMMAND_NAMES = {
   listMemoryHarvests: "listMemoryHarvests",
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
+  workgraphSnapshot: "workgraphSnapshot",
+  workgraphGet: "workgraphGet",
+  workgraphEvents: "workgraphEvents",
+  workgraphGoalStatus: "workgraphGoalStatus",
+  workgraphClaim: "workgraphClaim",
+  workgraphRelease: "workgraphRelease",
+  workgraphClose: "workgraphClose",
+  workgraphGoalConfirm: "workgraphGoalConfirm",
+  workgraphGoalRequestClose: "workgraphGoalRequestClose",
+  workgraphAttentionPause: "workgraphAttentionPause",
+  workgraphAttentionResume: "workgraphAttentionResume",
+  workgraphAttentionReassign: "workgraphAttentionReassign",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -252,6 +264,54 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.listMemoryAuditVerdicts]: {
     method: CONSOLE_RPC_METHODS.memoryPanelAuditVerdicts,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/memory"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {
+    method: CONSOLE_RPC_METHODS.workgraphSnapshot,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGet]: {
+    method: CONSOLE_RPC_METHODS.workgraphGet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphEvents]: {
+    method: CONSOLE_RPC_METHODS.workgraphEvents,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGoalStatus]: {
+    method: CONSOLE_RPC_METHODS.workgraphGoalStatus,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphClaim]: {
+    method: CONSOLE_RPC_METHODS.workgraphClaim,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphRelease]: {
+    method: CONSOLE_RPC_METHODS.workgraphRelease,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphClose]: {
+    method: CONSOLE_RPC_METHODS.workgraphClose,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGoalConfirm]: {
+    method: CONSOLE_RPC_METHODS.workgraphGoalConfirm,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose]: {
+    method: CONSOLE_RPC_METHODS.workgraphGoalRequestClose,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphAttentionPause]: {
+    method: CONSOLE_RPC_METHODS.workgraphAttentionPause,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphAttentionResume]: {
+    method: CONSOLE_RPC_METHODS.workgraphAttentionResume,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphAttentionReassign]: {
+    method: CONSOLE_RPC_METHODS.workgraphAttentionReassign,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
   },
 };
 

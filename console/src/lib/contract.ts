@@ -49,6 +49,18 @@ export const CONSOLE_RPC_METHODS = {
   memoryPanelHarvests: "mobkit/memory/panel/harvests",
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
+  workgraphSnapshot: "mobkit/workgraph/snapshot",
+  workgraphEvents: "mobkit/workgraph/events",
+  workgraphGet: "mobkit/workgraph/get",
+  workgraphGoalStatus: "mobkit/workgraph/goal/status",
+  workgraphClaim: "mobkit/workgraph/claim",
+  workgraphRelease: "mobkit/workgraph/release",
+  workgraphClose: "mobkit/workgraph/close",
+  workgraphGoalConfirm: "mobkit/workgraph/goal/confirm",
+  workgraphGoalRequestClose: "mobkit/workgraph/goal/request_close",
+  workgraphAttentionPause: "mobkit/workgraph/attention/pause",
+  workgraphAttentionResume: "mobkit/workgraph/attention/resume",
+  workgraphAttentionReassign: "mobkit/workgraph/attention/reassign",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

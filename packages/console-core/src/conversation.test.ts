@@ -1,4 +1,5 @@
 import {
+  conversationEntryText,
   conversationIdentityGroupKey,
   groupConversationTimelineEntries,
   type ConversationTimelineEntry,
@@ -77,5 +78,54 @@ describe("conversation grouping", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0]?.identity.presentation).toBe("assistant");
     expect(groups[1]?.identity.presentation).toBe("system");
+  });
+});
+
+describe("workgraph entry text", () => {
+  test("projects the goal, indented item tree, and attention rows for copy surfaces", () => {
+    const entry: ConversationTimelineEntry = {
+      kind: "workgraph",
+      id: "workgraph:goal-1",
+      identity: { id: "planner", label: "Planner", role: "assistant" },
+      rootId: "goal-1",
+      title: "Release 0.7.30",
+      objective: "Ship WorkGraph end to end",
+      status: "active",
+      progress: { completed: 1, total: 2 },
+      items: [
+        {
+          itemId: "goal-1",
+          title: "Release 0.7.30",
+          status: "in_progress",
+          revision: 4,
+          depth: 0,
+        },
+        {
+          itemId: "child-1",
+          title: "Console card",
+          status: "completed",
+          revision: 2,
+          depth: 1,
+          parentId: "goal-1",
+        },
+      ],
+      attention: [
+        {
+          bindingId: "attention-1",
+          mode: "pursue",
+          statusLabel: "active",
+          targetLabel: "sess-42",
+          revision: 7,
+        },
+      ],
+    };
+
+    expect(conversationEntryText(entry)).toBe([
+      "Release 0.7.30 (1/2)",
+      "Ship WorkGraph end to end",
+      "Release 0.7.30 — in progress",
+      "  Console card — completed",
+      "pursue: active → sess-42",
+    ].join("\n"));
   });
 });

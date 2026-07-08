@@ -38,8 +38,9 @@ use crate::access::{
     ACTION_AGENT_MEMORY_WRITE, ACTION_AGENT_RESET, ACTION_AGENT_RESPAWN, ACTION_AGENT_RETIRE,
     ACTION_AGENT_SEND, ACTION_AGENT_SPAWN, ACTION_AGENT_VIEW, ACTION_GATING_DECIDE,
     ACTION_GATING_VIEW, ACTION_MEMORY_QUARANTINE_REVIEW, ACTION_MOB_MEMORY_READ,
-    ACTION_MOB_OBSERVE, ACTION_OPERATOR_MEMORY_READ, ACTION_RUNTIME_ADMIN, AccessController,
-    AccessGroup, AccessResource, AccessRule, AccessView, AgentResourceAttributes,
+    ACTION_MOB_OBSERVE, ACTION_OPERATOR_MEMORY_READ, ACTION_RUNTIME_ADMIN, ACTION_WORKGRAPH_MANAGE,
+    ACTION_WORKGRAPH_VIEW, AccessController, AccessGroup, AccessResource, AccessRule, AccessView,
+    AgentResourceAttributes,
 };
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
@@ -65,7 +66,7 @@ use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
     RuntimeDecisionState, extract_bearer_token_from_header,
-    handle_console_rest_json_route_with_snapshot_access_and_memory,
+    handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph,
     resolve_authorized_console_auth_from_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
@@ -109,6 +110,14 @@ pub struct ConsoleJsonState {
     /// `mobkit/ensure_member` extends (ask K0). `None` on session-owned
     /// deployments.
     pub(crate) identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
+    /// Realm-scoped WorkGraph service backing the console
+    /// `mobkit/workgraph/*` RPCs and the experience `workgraph` section.
+    /// `None` leaves the group unadvertised. The admission authority for the
+    /// duplicate-binding guards is NOT captured here: the dispatch arm takes
+    /// it from the mob runtime, so the console and the unified stdin surface
+    /// always serialize their check-then-act windows against the SAME
+    /// instance whatever constructed the service.
+    pub(crate) workgraph: Option<meerkat::WorkGraphService>,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +263,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         memory_panel: None,
         operator_resolver: None,
         identity_roster: None,
+        workgraph: None,
     })
 }
 
@@ -287,6 +297,7 @@ pub fn console_json_router_with_aggregator_and_access(
         memory_panel: None,
         operator_resolver: None,
         identity_roster: None,
+        workgraph: None,
     })
 }
 
@@ -342,6 +353,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -363,6 +375,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
     operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
+    workgraph: Option<meerkat::WorkGraphService>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -391,6 +404,9 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     });
     let snapshot_read_model = ConsoleSnapshotReadModel::default();
     snapshot_read_model.refresh_soon(runtime.clone());
+    // Fall back to the mob runtime's bootstrap-time service so routers built
+    // through the thinner constructors still expose workgraph.
+    let workgraph = workgraph.or_else(|| runtime.workgraph_service());
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
@@ -409,6 +425,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         memory_panel,
         operator_resolver,
         identity_roster,
+        workgraph,
     })
 }
 
@@ -524,7 +541,7 @@ pub async fn console_json_handler(
         snapshot
     });
 
-    let response = handle_console_rest_json_route_with_snapshot_access_and_memory(
+    let response = handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph(
         &state.decisions,
         &ConsoleRestJsonRequest {
             method: "GET".to_string(),
@@ -534,6 +551,7 @@ pub async fn console_json_handler(
         live_snapshot.as_ref(),
         state.access.as_ref(),
         state.memory_panel.is_some(),
+        state.workgraph.is_some(),
     );
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json::<Value>(response.body))
@@ -619,6 +637,7 @@ pub async fn console_rpc_handler(
         auth_context.access_view.as_ref(),
         state.memory_panel.as_ref(),
         state.identity_roster.clone(),
+        state.workgraph.as_ref(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -1375,6 +1394,9 @@ fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::r
 }
 
 fn is_console_mutating_rpc_method(method: &str) -> bool {
+    if crate::rpc::workgraph_methods::is_workgraph_mutating_method(method) {
+        return true;
+    }
     matches!(
         method,
         "mobkit/retire"
@@ -1708,6 +1730,14 @@ fn console_rpc_access_requirements(
         | "mobkit/inspect_identity"
         | "mobkit/status_identity"
         | "mobkit/console/inspect_identity" => one(ACTION_AGENT_VIEW, target),
+        // WorkGraph spans the whole mob, so both actions are resource-less:
+        // reads need the view grant, every mutation the manage grant.
+        method if crate::rpc::workgraph_methods::is_workgraph_mutating_method(method) => {
+            one(ACTION_WORKGRAPH_MANAGE, None)
+        }
+        method if crate::rpc::workgraph_methods::is_workgraph_read_method(method) => {
+            one(ACTION_WORKGRAPH_VIEW, None)
+        }
         _ => None,
     }
 }
@@ -3088,6 +3118,7 @@ pub async fn console_rpc_multipart_handler(
                 auth_context.access_view.as_ref(),
                 state.memory_panel.as_ref(),
                 state.identity_roster.clone(),
+                state.workgraph.as_ref(),
             ))
             .await
         };
@@ -4957,6 +4988,7 @@ async fn handle_console_runtime_rpc(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -4981,6 +5013,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     access_view: Option<&AccessView>,
     memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
+    workgraph: Option<&meerkat::WorkGraphService>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
@@ -5123,6 +5156,13 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/memory/panel/quarantine",
                 ]);
             }
+            if workgraph.is_some() {
+                methods.extend_from_slice(crate::rpc::workgraph_methods::WORKGRAPH_READ_METHODS);
+                if can_mutate {
+                    methods
+                        .extend_from_slice(crate::rpc::workgraph_methods::WORKGRAPH_MUTATE_METHODS);
+                }
+            }
             if access.is_some() {
                 methods.push("mobkit/access/status");
                 if access_view.is_some_and(AccessView::can_administer) {
@@ -5176,6 +5216,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     // up durable identities (pass plane:"worker" to opt a
                     // spawn onto the ephemeral mob plane).
                     "identity_first": identity_runtime.is_some(),
+                    // True when a WorkGraph service is wired into this
+                    // console runtime and the mobkit/workgraph/* group is live.
+                    "workgraph": workgraph.is_some(),
                     "read_only": read_only,
                     // The console routes to MobRuntime directly and has no
                     // access to the module runtime, so loaded_modules is always [].
@@ -7800,6 +7843,30 @@ async fn handle_console_runtime_rpc_with_visibility(
             )
             .await
         }
+        method if crate::rpc::workgraph_methods::is_workgraph_method(method) => {
+            // The read-only gate and the workgraph.view/manage ABAC checks
+            // already ran above; goal/confirm promotes the authenticated
+            // console principal into the trusted confirmation seam. The
+            // admission always comes from the runtime (never a parameter):
+            // whatever constructed the service, the unified stdin surface
+            // acquires the runtime's admission, so the console must acquire
+            // that same one.
+            let trusted_principal =
+                crate::rpc::workgraph_methods::console_trusted_principal(authenticated_principal);
+            let admission = runtime.workgraph_admission();
+            match crate::rpc::workgraph_methods::handle_workgraph_method(
+                workgraph,
+                &admission,
+                trusted_principal,
+                method,
+                &request.params,
+            )
+            .await
+            {
+                Ok(result) => response_value(response_id, Some(result), None),
+                Err(error) => response_value(response_id, None, Some(error)),
+            }
+        }
         _ => response_value(
             response_id,
             None,
@@ -10390,6 +10457,7 @@ comms = true
                 None,
                 None,
                 None,
+                None,
             ))
             .await;
             assert_ne!(
@@ -10500,6 +10568,7 @@ comms = true
                     None,
                     None,
                     None,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -10570,6 +10639,7 @@ comms = true
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -10842,6 +10912,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -10937,6 +11008,7 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -11057,6 +11129,7 @@ comms = true
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -11420,6 +11493,7 @@ comms = true
             Some(&denied_view),
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11474,6 +11548,7 @@ comms = true
             Some(&send_only_view),
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11510,6 +11585,7 @@ comms = true
             None,
             Some(&send_only_controller),
             Some(&send_only_view),
+            None,
             None,
             None,
         ))
@@ -11585,6 +11661,7 @@ comms = true
             Some(&wildcard_allow_exact_deny_view),
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11621,6 +11698,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
             None,
         ))
@@ -11661,6 +11739,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
             None,
         ))

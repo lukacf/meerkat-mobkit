@@ -32,6 +32,7 @@ mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
 mod subscribe_methods;
+pub(crate) mod workgraph_methods;
 
 pub use console_ingress::handle_console_ingress_json;
 
@@ -368,6 +369,22 @@ pub const MEMORY_BACKEND_UNAVAILABLE_CODE: i64 = -32012;
 /// timeline. Distinct from [`MOB_EVENTS_STALE_CURSOR_CODE`] because SDKs
 /// reify `-32010` specifically as a mob-events ledger error.
 pub const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: i64 = -32013;
+
+/// JSON-RPC error code returned by every `mobkit/workgraph/*` method when
+/// the runtime has no WorkGraph service configured
+/// (`data.kind = "workgraph_unavailable"`). Single source of truth — keep
+/// in sync with the Python and TypeScript SDKs.
+pub const WORKGRAPH_UNAVAILABLE_CODE: i64 = -32041;
+
+/// JSON-RPC error code for WorkGraph CAS/revision conflicts (upstream
+/// `StaleRevision`/`Conflict`), `data.kind = "workgraph_conflict"` with the
+/// upstream message in `data.detail`. SDKs and the console retry by
+/// refetching the current revision.
+pub const WORKGRAPH_CONFLICT_CODE: i64 = -32042;
+
+/// JSON-RPC error code for all other WorkGraph domain failures
+/// (`data.kind = "workgraph_error"`, full detail — K2 disclosure posture).
+pub const WORKGRAPH_ERROR_CODE: i64 = -32000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -1377,6 +1394,14 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/run_labels/delete",
             ];
             methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
+            // Workgraph methods are advertised only when the service is
+            // configured (`runtime_options.workgraph = false` or a failed
+            // store open leave them off).
+            let workgraph_configured = runtime.workgraph_service().is_some();
+            if workgraph_configured {
+                methods.extend_from_slice(workgraph_methods::WORKGRAPH_READ_METHODS);
+                methods.extend_from_slice(workgraph_methods::WORKGRAPH_MUTATE_METHODS);
+            }
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
                     "mobkit/send",
@@ -1447,6 +1472,9 @@ async fn handle_unified_rpc_json_inner(
                     // and member RPCs route durable targets through the
                     // identity authority.
                     "identity_first": identity_ctx.is_some(),
+                    // True when a WorkGraph service is configured and the
+                    // mobkit/workgraph/* group is live.
+                    "workgraph": workgraph_configured,
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
                         "can_spawn_members": true,
@@ -3843,6 +3871,34 @@ async fn handle_unified_rpc_json_inner(
                         message: format!("Module route failed: {err:?}"),
                         data: None,
                     }),
+                },
+            }
+        }
+        method if workgraph_methods::is_workgraph_method(method) => {
+            let service = runtime.workgraph_service();
+            let admission = runtime.workgraph_admission();
+            // The stdin surface is host-trusted; no wire principal exists to
+            // promote into goal/confirm.
+            match workgraph_methods::handle_workgraph_method(
+                service.as_ref(),
+                &admission,
+                None,
+                method,
+                &request.params,
+            )
+            .await
+            {
+                Ok(result) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(error),
                 },
             }
         }

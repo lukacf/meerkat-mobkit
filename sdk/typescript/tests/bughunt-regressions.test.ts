@@ -5,6 +5,7 @@ import {
   RpcError,
   MobEventsStaleError,
   ConsoleTimelineReplayUnavailableError,
+  WorkGraphUnavailableError,
   isRpcError,
   isMobEventsStaleError,
   MOB_EVENTS_STALE_CURSOR_CODE,
@@ -129,6 +130,16 @@ describe("isRpcError / isMobEventsStaleError (bug-hunt regression)", () => {
     );
     assert.ok(isRpcError(err));
     assert.equal(err.code, -32013);
+  });
+
+  it("recognizes a workgraph-unavailable error", () => {
+    const err = new WorkGraphUnavailableError(
+      "workgraph service not configured",
+      "rid",
+      "mobkit/workgraph/snapshot",
+    );
+    assert.ok(isRpcError(err));
+    assert.equal(err.code, -32041);
   });
 });
 

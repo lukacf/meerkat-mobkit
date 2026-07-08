@@ -5,9 +5,14 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
-import { ConsoleActivityRail } from "@console-components";
+import type { ConversationWorkGraphEntry } from "@console-core";
+import { ConsoleActivityRail, WorkGraphCard, __workGraphCardUiState } from "@console-components";
+import { buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
+import { CONSOLE_COMMAND_NAMES } from "./headless";
+import { resolveWorkGraphGoalItemRevision, type WorkGraphCommandRunner } from "./workgraph-actions";
 import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
+import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
 test("ConsoleActivityRail wires roster panel actions to host callbacks", async () => {
@@ -283,6 +288,506 @@ test("MemoryLiveStrip pause-on-scroll freezes, jump-to-live resumes, top auto-un
     render([frame("f-4"), ...second]);
     assert.ok(query("[data-testid='memory-live-row:f-4']"), "auto-unfrozen at top");
     assert.equal(query("[data-testid='memory-live-jump']"), null);
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard actions carry the right CAS token per class: goal actions the item revision, attention actions the binding revision", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:goal-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "goal-1",
+    title: "Release 0.7.30",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [
+      { itemId: "goal-1", title: "Release 0.7.30", status: "in_progress", revision: 4, depth: 0 },
+    ],
+    attention: [
+      // Binding machine revision 7 vs bound goal item revision 4 — the two
+      // CAS classes must not leak into each other.
+      { bindingId: "b-coord", mode: "coordinate", statusLabel: "active", revision: 7, itemId: "goal-1" },
+      { bindingId: "b-pursue", mode: "pursue", statusLabel: "active", revision: 9, itemId: "goal-1" },
+    ],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphCard
+          entry={entry}
+          actions={{
+            onGoalConfirm: record("confirm"),
+            onGoalRequestClose: record("request-close"),
+            onAttentionPause: record("pause"),
+            onAttentionResume: record("resume"),
+            onAttentionReassign: record("reassign"),
+          }}
+        />,
+      );
+    });
+
+    const click = (testId: string) => {
+      const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+      assert.ok(button, `expected button ${testId}`);
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    };
+    click("workgraph-attention:b-coord:confirm");
+    click("workgraph-attention:b-coord:request-close");
+    click("workgraph-attention:b-coord:pause");
+    click("workgraph-attention:b-coord:reassign");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "request-close", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "pause", input: { bindingId: "b-coord", revision: 7 } },
+      { action: "reassign", input: { bindingId: "b-coord", revision: 7 } },
+    ]);
+
+    // Reassign is coordinate-only (upstream derives the authority from the
+    // binding mode); pursue bindings render no reassign affordance.
+    assert.equal(
+      dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:reassign']"),
+      null,
+    );
+    assert.ok(dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:pause']"));
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard goal actions on an unfolded goal item carry NO revision so the live-resolution path runs", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: { bindingId: string; revision?: number } }> = [];
+  const record = (action: string) => (input: { bindingId: string; revision?: number }) =>
+    calls.push({ action, input });
+  // The binding names a goal item the fold never observed; the card root has
+  // a revision of its own which must NOT be substituted for it.
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:root-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "root-1",
+    title: "Root card",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [
+      { itemId: "root-1", title: "Root card", status: "in_progress", revision: 4, depth: 0 },
+    ],
+    attention: [
+      { bindingId: "b-unfolded", mode: "pursue", statusLabel: "active", revision: 7, itemId: "goal-unfolded" },
+    ],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphCard
+          entry={entry}
+          actions={{ onGoalConfirm: record("confirm"), onGoalRequestClose: record("request-close") }}
+        />,
+      );
+    });
+    const click = (testId: string) => {
+      const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+      assert.ok(button, `expected button ${testId}`);
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    };
+    click("workgraph-attention:b-unfolded:confirm");
+    click("workgraph-attention:b-unfolded:request-close");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-unfolded", revision: undefined } },
+      { action: "request-close", input: { bindingId: "b-unfolded", revision: undefined } },
+    ], "neither the root's revision 4 nor the binding's machine revision 7 leaks into the goal payload");
+
+    // The revision-less payload is exactly what drives the host's live
+    // resolution (revisionOr → resolveWorkGraphGoalItemRevision): the same
+    // dispatch the app performs resolves the goal item via goal/status.
+    const queries: Array<{ command: string; params: Record<string, unknown> }> = [];
+    const runner: WorkGraphCommandRunner = async (command, params) => {
+      queries.push({ command, params });
+      return { item: { id: "goal-unfolded", revision: 12 } };
+    };
+    const payload = calls[0].input;
+    const expectedRevision = payload.revision !== undefined
+      ? payload.revision
+      : await resolveWorkGraphGoalItemRevision(runner, payload.bindingId);
+    assert.equal(expectedRevision, 12, "the CAS token comes from the live read, never another item");
+    assert.deepEqual(queries, [
+      { command: CONSOLE_COMMAND_NAMES.workgraphGoalStatus, params: { binding_id: "b-unfolded" } },
+    ]);
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard expansion and collapse survive the catch-all→rooted entry rekey via the stable uiStateKey anchor", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const uiStateKey = "workgraph:interaction:turn-1";
+  const item = {
+    itemId: "item-mig",
+    title: "Migrating goal",
+    status: "open",
+    revision: 1,
+    depth: 0,
+    description: "Expandable detail",
+  };
+  const catchAllEntry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: uiStateKey,
+    uiStateKey,
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "interaction:turn-1",
+    title: "Migrating goal",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [item],
+    attention: [],
+  };
+  // The same graph after hierarchy formed: new entry id (→ React remounts
+  // the card), same uiStateKey and item ids.
+  const rootedEntry: ConversationWorkGraphEntry = {
+    ...catchAllEntry,
+    id: "workgraph:item-mig",
+    rootId: "item-mig",
+    items: [
+      item,
+      { itemId: "item-mig-child", title: "Child task", status: "open", revision: 1, depth: 1 },
+    ],
+    progress: { completed: 0, total: 2 },
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  const render = (entry: ConversationWorkGraphEntry) => {
+    flushSync(() => {
+      // Keyed by entry id exactly like the transcript renderer, so the id
+      // migration really remounts the subtree.
+      root.render(<WorkGraphCard key={entry.id} entry={entry} />);
+    });
+  };
+  const click = (testId: string) => {
+    const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+    assert.ok(button, `expected button ${testId}`);
+    // flushSync so the expansion state commits before the assertions read
+    // the DOM.
+    flushSync(() => {
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+  };
+  const detailVisible = () =>
+    dom.window.document.querySelector(".cc-work-graph__item-detail") !== null;
+
+  try {
+    render(catchAllEntry);
+    assert.equal(detailVisible(), false);
+    click("workgraph-item:item-mig");
+    assert.equal(detailVisible(), true, "clicking the row expands the item detail");
+
+    render(rootedEntry);
+    assert.equal(
+      detailVisible(),
+      true,
+      "item expansion carries across the catch-all→rooted remount",
+    );
+
+    // Collapse the migrated card, rekey back (e.g. a live refold), and the
+    // collapse must stick too — it is keyed on the uiStateKey anchor.
+    click("workgraph-card:item-mig:toggle");
+    assert.equal(
+      dom.window.document.querySelector(".cc-work-graph__items"),
+      null,
+      "collapsing hides the item list",
+    );
+    render({ ...rootedEntry, id: "workgraph:item-mig-rekeyed" });
+    assert.equal(
+      dom.window.document.querySelector(".cc-work-graph__items"),
+      null,
+      "collapse state carries across a further rekey",
+    );
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard row detail lists additional parents as an also-under note", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:goal-a",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "goal-a",
+    title: "Goal A",
+    status: "active",
+    progress: { completed: 0, total: 2 },
+    items: [
+      { itemId: "goal-a", title: "Goal A", status: "open", revision: 1, depth: 0 },
+      // Placed under its first parent; the second parent surfaces as detail.
+      { itemId: "child-shared", title: "Shared child", status: "open", revision: 1, depth: 1, parentId: "goal-a", alsoUnder: ["Goal B"] },
+    ],
+    attention: [],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(<WorkGraphCard entry={entry} />);
+    });
+    const row = dom.window.document.querySelector("[data-testid='workgraph-item:child-shared']");
+    assert.ok(row, "expected the shared child row");
+    assert.equal(row.getAttribute("aria-expanded"), "false", "the also-under note alone makes the row expandable");
+    flushSync(() => {
+      row.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    const note = dom.window.document.querySelector("[data-testid='workgraph-item:child-shared:also-under']");
+    assert.ok(note, "expected the also-under note in the expanded detail");
+    assert.equal(note.textContent, "also under Goal B");
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard actions after a CAS conflict send the refetched revision, not the wedged one", async () => {
+  // The full heal loop the console runs on a -32042 conflict: the failed
+  // mutation echoes its error, the refetch echoes the live entity (marked
+  // `refresh`), and the refolded card's NEXT action carries the fresh token.
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const agent = { agent_id: "planner", member_id: "planner", label: "Planner", kind: "identity" };
+  const item = (revision: number, status: string) => ({
+    id: "item-cas",
+    realm_id: "realm-1",
+    namespace: "default",
+    title: "Wedged target",
+    status,
+    priority: "medium",
+    revision,
+    created_at: "2026-07-08T09:00:00Z",
+    updated_at: "2026-07-08T09:00:00Z",
+  });
+  const frames = [
+    {
+      id: "wg-cas-call",
+      event: "tool_call_requested",
+      interactionId: "turn-cas",
+      timestampMs: 1_779_405_464_000,
+      data: { id: "wg-cas-tc", name: "workgraph_create", args: { title: "Wedged target" } },
+    },
+    {
+      id: "wg-cas-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-cas",
+      timestampMs: 1_779_405_464_200,
+      data: { id: "wg-cas-tc", name: "workgraph_create", result: JSON.stringify({ item: item(1, "open") }) },
+    },
+    // The claim sent revision 1 while the item had moved to 5: conflict…
+    buildWorkGraphOperatorResultFrame({
+      method: "mobkit/workgraph/claim",
+      params: { id: "item-cas", expected_revision: 1, owner: { kind: "principal", id: "ops@example.com" } },
+      errorMessage: "workgraph conflict: stale revision 1, item is at 5",
+      identity: "planner",
+      timestampMs: 1_779_405_465_000,
+      frameId: "local-wg-cas-fail",
+    }),
+    // …and the automatic post-conflict re-read folds the live state.
+    buildWorkGraphOperatorResultFrame({
+      method: "mobkit/workgraph/get",
+      params: { id: "item-cas" },
+      result: { item: item(5, "in_progress") },
+      identity: "planner",
+      timestampMs: 1_779_405_465_100,
+      frameId: "local-wg-cas-refresh",
+      refresh: true,
+    }),
+  ];
+  const cards = mapFramesToTimelineEntries(agent, frames)
+    .filter((entry): entry is ConversationWorkGraphEntry => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].lastActionFailed, true, "the conflict stays visible on the card");
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(<WorkGraphCard entry={cards[0]} actions={{ onClose: record("close") }} />);
+    });
+    const button = dom.window.document.querySelector("[data-testid='workgraph-action:item-cas:close']");
+    assert.ok(button, "expected the Done affordance");
+    button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    assert.deepEqual(calls, [
+      { action: "close", input: { itemId: "item-cas", revision: 5 } },
+    ], "the subsequent action payload carries the refetched revision");
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphPanel attention actions split CAS tokens the same way and gate reassign to coordinate mode", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+  const record = (action: string) => (input: Record<string, unknown>) => calls.push({ action, input });
+  const data: WorkGraphPanelData = {
+    items: [
+      { id: "goal-1", title: "Release 0.7.30", status: "in_progress", revision: 4, created_at: "2026-07-08T08:00:00Z" },
+    ],
+    edges: [],
+    attention: [
+      {
+        binding_id: "b-coord",
+        work_ref: { item_id: "goal-1" },
+        mode: "coordinate",
+        status: { state: "active" },
+        machine_state: { revision: 7 },
+      },
+      {
+        binding_id: "b-pursue",
+        work_ref: { item_id: "goal-1" },
+        mode: "pursue",
+        status: { state: "active" },
+        machine_state: { revision: 9 },
+      },
+    ],
+    events: [],
+    capturedAt: "2026-07-08T09:00:00Z",
+    unavailable: false,
+    denied: false,
+    error: null,
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphPanel
+          data={data}
+          canManage
+          onRefresh={() => undefined}
+          onGoalConfirm={record("confirm")}
+          onGoalRequestClose={record("request-close")}
+          onAttentionPause={record("pause")}
+          onAttentionResume={record("resume")}
+          onAttentionReassign={record("reassign")}
+        />,
+      );
+    });
+
+    const bindingRow = (bindingId: string) => {
+      const row = dom.window.document.querySelector(`[data-testid='workgraph-panel-binding:${bindingId}']`);
+      assert.ok(row, `expected binding row ${bindingId}`);
+      return row;
+    };
+    const clickByLabel = (row: Element, label: string) => {
+      const button = [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+      assert.ok(button, `expected "${label}" button`);
+      // flushSync so state updates (the reassign popover) commit before the
+      // next query.
+      flushSync(() => {
+        button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      });
+    };
+
+    const coordRow = bindingRow("b-coord");
+    clickByLabel(coordRow, "Confirm");
+    clickByLabel(coordRow, "Request close");
+    clickByLabel(coordRow, "Pause");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "request-close", input: { bindingId: "b-coord", revision: 4 } },
+      { action: "pause", input: { bindingId: "b-coord", revision: 7 } },
+    ]);
+
+    // Reassign renders only on the coordinate binding (upstream derives the
+    // authority from the binding mode).
+    const pursueRow = bindingRow("b-pursue");
+    assert.equal(
+      [...pursueRow.querySelectorAll("button")].some((candidate) => candidate.textContent === "Reassign"),
+      false,
+      "pursue bindings expose no reassign affordance",
+    );
+    clickByLabel(coordRow, "Reassign");
+    const input = dom.window.document.querySelector("[data-testid='workgraph-panel-reassign-input:b-coord']");
+    assert.ok(input, "reassign popover opens for coordinate bindings");
+    const submit = dom.window.document.querySelector(
+      "[data-testid='workgraph-panel-reassign-submit:b-coord']",
+    ) as HTMLButtonElement | null;
+    assert.ok(submit);
+    assert.equal(submit.disabled, true, "submit stays disabled until an identity is typed");
+    // A disabled submit never fires the callback.
+    flushSync(() => {
+      submit.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.equal(calls.some((call) => call.action === "reassign"), false);
   } finally {
     root.unmount();
     globalThis.window = previousWindow;

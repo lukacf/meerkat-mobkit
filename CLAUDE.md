@@ -21,8 +21,8 @@ Public surface — `__init__.py` exports:
 - **Builder/Runtime**: `MobKit`, `MobKitBuilder`, `MobKitRuntime`, `ToolCaller`
 - **Models**: `DiscoverySpec`, `PreSpawnData`, `SessionBuildOptions`, `SessionQuery`
 - **Protocol**: `SessionAgentBuilder`
-- **Errors**: `MobKitError`, `TransportError`, `RpcError`, `NotConnectedError`, `CapabilityUnavailableError`, `ContractMismatchError`
-- **Typed results**: `StatusResult`, `CapabilitiesResult`, `ReconcileResult`, `SpawnResult`, `SpawnMemberResult`, `SendMessageResult`, `SubscribeResult`, `KeepAliveConfig`, `EventEnvelope`, `RoutingResolution`, `DeliveryResult`, `DeliveryHistoryResult`, `MemoryQueryResult`, `MemoryStoreInfo`, `MemoryIndexResult`, `MemberSnapshot`, `RuntimeRouteResult`, `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`, `CallToolResult`
+- **Errors**: `MobKitError`, `TransportError`, `RpcError`, `NotConnectedError`, `CapabilityUnavailableError`, `ContractMismatchError`, `WorkGraphUnavailableError`, `WorkGraphConflictError`
+- **Typed results**: `StatusResult`, `CapabilitiesResult`, `ReconcileResult`, `SpawnResult`, `SpawnMemberResult`, `SendMessageResult`, `SubscribeResult`, `KeepAliveConfig`, `EventEnvelope`, `RoutingResolution`, `DeliveryResult`, `DeliveryHistoryResult`, `MemoryQueryResult`, `MemoryStoreInfo`, `MemoryIndexResult`, `MemberSnapshot`, `RuntimeRouteResult`, `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`, `CallToolResult`, `WorkGraphItem`, `WorkGraphEdge`, `WorkGraphAttentionBinding`, `WorkGraphSnapshotResult`, `WorkGraphItemsResult`, `WorkGraphGoalResult`, `WorkGraphAttentionReassignResult`, `WorkGraphEventEntry`
 - **Events**: `MobEvent`, `AgentEvent`, `EventStream`
 - **Config**: `auth`, `memory`, `session_store`
 - **Constants**: `MEMBER_STATE_ACTIVE`, `MEMBER_STATE_RETIRING`

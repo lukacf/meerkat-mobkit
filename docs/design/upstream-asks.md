@@ -1117,3 +1117,79 @@ known retiring-retry state), identity-first DURABLE members are unaffected
 (tolerant disposal on the identity plane), and the classic chain is fixed.
 Affects mob-plane worker churn under identity-first gateways (HomeCore
 agent-tool workers, OB3 worker plane after migration).
+
+## Ask 23 — break-glass host reassignment for stuck bindings — P3 (reframed 2026-07-08)
+
+meerkat 0.7.23's `reassign_attention` requires the witness's
+`can_link_derived_from`, which the machine derives ONLY for
+coordinate-mode bindings (`tool_surface.rs` pins: coordinate=true,
+pursue=false). That is the right model for AGENT-driven reassignment,
+but it also binds the HOST: an operator console cannot move a
+pursue/review/falsify/judge/observe binding to another member at all —
+there is no host-authenticated reassign that bypasses the mode-derived
+authority, and hosts must not forge projections. mobkit 0.7.30 surfaces
+a precise error and hides the affordance for non-coordinate bindings;
+the workaround (goal_request_close + create a new goal on the new
+target) loses binding history/evidence continuity.
+
+REFRAMED per doctrine (Luka, 2026-07-08): WorkGraphs are AGENT-operated;
+humans debug. The mode-derived restriction is the design, not a gap — the
+agent-native transfer is a COORDINATE-mode agent executing the move at a
+human's conversational request (pursuers can only request, which is the
+right shape: transfers are coordination acts). The one genuinely stuck
+case is a binding on a wedged/retired agent with NO coordinator holding
+authority over it — the graph cannot heal agent-natively.
+
+Ask (narrowed): a BREAK-GLASS host reassign — explicitly attributed to an
+authenticated principal, audit-logged, intended for debug/recovery only
+(`with_trusted_principal`-style promotion on `AttentionReassignRequest`).
+Not an operating path; the agent tool surface's mode-derived restriction
+stays untouched.
+
+## Ask 24 — filtered attention queries + terminal-binding GC — P2
+
+`SqliteWorkGraphStore::list_sqlite_attention` (0.7.23 store.rs:1576) runs
+`SELECT attention_json FROM workgraph_attention` with no WHERE clause and
+JSON-decodes EVERY row — all realms, all statuses — before Rust-side
+filtering; and every `reassign_attention` keeps the superseded row forever,
+so the table grows monotonically with binding churn. Any host that must
+read binding state on a hot path (mobkit's one-binding-per-target
+admission guard runs under a runtime-wide gate and, on shared stores, a
+cross-process lock) pays an unbounded scan while serializing all binding
+mutations behind it; at OB3-style eternal-fleet churn this walks into
+lock-timeout territory.
+
+Ask: (1) push `realm_id`/`namespace`/`status`/`target` filters into the
+SQL (indexed columns or generated columns over the JSON); (2) a GC/prune
+facility for terminal (Superseded/Stopped) bindings, mirroring the ask-2
+memory-store lifecycle shape. mobkit interim: realm+status-filtered list
+calls (upstream still decodes every row) and an actionable lock-timeout
+error; the guard's session→member resolution memoizes per session id, but
+each FIRST resolution still pays `load_persisted_session`'s full-session
+deserialization — `MobSessionService` has no metadata-only read seam (its
+own ask candidate).
+
+## Ask 25 — attention-binding uniqueness belongs in the service/store (or arbitrate like sessions) — P1
+
+`MultipleActiveBindings` is a HARD per-turn error (0.7.23
+meerkat/src/surface.rs:209): two active bindings matching one member's
+turns brick that member until an operator intervenes. But nothing upstream
+prevents the state: no store-level uniqueness constraint, and
+`create_goal` / `reassign_attention` / `resume_attention` all mint
+duplicates freely. mobkit 0.7.30 compensates with a host-layer admission
+guard (occupancy check + per-runtime gate + cross-process SQLite sidecar +
+write-time target normalization + session-metadata fallback) — five
+review rounds of hardening for an invariant that can only be enforced
+race-free next to the data. Residual holes remain by construction
+(meerkat-CLI writes to a shared store bypass any host guard).
+
+Ask, either (both is best):
+1. Service/store-level uniqueness — active-binding-per-target enforced
+   transactionally at create/reassign/resume (typed conflict naming the
+   occupant), so hosts get the invariant instead of building it.
+2. Degrade the overlay failure the way 0.7.23 degraded session
+   arbitration (newest-session-wins): MultipleActiveBindings resolves
+   deterministically (e.g. newest-binding-wins) with a loud diagnostic,
+   instead of hard-failing every turn.
+
+When either lands, mobkit's admission layer demotes to defense-in-depth.

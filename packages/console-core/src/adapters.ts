@@ -45,7 +45,8 @@ export type MobKitDockTarget =
   | RosterPanelTarget
   | GatesPanelTarget
   | LogsPanelTarget
-  | MemoryPanelTarget;
+  | MemoryPanelTarget
+  | WorkGraphPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -94,6 +95,10 @@ export interface LogsPanelTarget extends ConsoleDockTarget {
 
 export interface MemoryPanelTarget extends ConsoleDockTarget {
   kind: "memory";
+}
+
+export interface WorkGraphPanelTarget extends ConsoleDockTarget {
+  kind: "workgraph";
 }
 
 export function buildPanelConversationKey(
@@ -164,7 +169,7 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
 
 export type ControlTargetKind =
   | "routing" | "gating" | "topology" | "health"
-  | "timeline" | "roster" | "gates" | "logs" | "memory";
+  | "timeline" | "roster" | "gates" | "logs" | "memory" | "workgraph";
 
 export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
   switch (kind) {
@@ -186,6 +191,8 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
       return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
     case "memory":
       return { id: "memory", kind, title: "Memory", subtitle: "Records, quarantine, dreams", iconName: "i-archive" };
+    case "workgraph":
+      return { id: "workgraph", kind, title: "WorkGraph", subtitle: "Goals, work items, and attention", iconName: "i-cube" };
     default:
       return { id: "health", kind: "health", title: "Health" };
   }

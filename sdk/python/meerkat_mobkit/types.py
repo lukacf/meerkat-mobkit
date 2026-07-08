@@ -101,6 +101,7 @@ class CapabilitiesResult:
     methods: list[str]
     loaded_modules: list[str]
     runtime_capabilities: RuntimeCapabilities | None = None
+    workgraph: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilitiesResult:
@@ -110,6 +111,7 @@ class CapabilitiesResult:
             methods=list(data.get("methods", [])),
             loaded_modules=list(data.get("loaded_modules", [])),
             runtime_capabilities=RuntimeCapabilities.from_dict(rc_raw) if rc_raw else None,
+            workgraph=bool(data.get("workgraph", False)),
         )
 
 
@@ -1809,3 +1811,216 @@ class ErrorEvent:
         else:
             message = str(data)
         return cls(category=category, message=message, context=context)
+
+
+# -----------------------------------------------------------------
+# WorkGraph — collaborative work-item graph
+# -----------------------------------------------------------------
+#
+# Wire fields are a verbatim serde of meerkat-workgraph's `WorkItem`,
+# `WorkEdge`, `WorkAttentionBinding`, `WorkGraphSnapshot`, etc. Nested
+# substructures with no dedicated wrapper type on this SDK surface
+# (`completion_policy`, `owner`, `claim`, `machine_state`, `work_ref`,
+# `target`, `status`, `projection_policy`, `payload`, ...) pass through as
+# raw dicts/lists rather than being re-modeled here.
+
+
+@dataclass(frozen=True)
+class WorkGraphItem:
+    """A WorkGraph work item (verbatim serde of upstream `WorkItem`)."""
+    id: str
+    realm_id: str
+    namespace: str
+    title: str
+    description: str | None
+    status: str
+    completion_policy: dict[str, Any]
+    priority: str
+    labels: list[str]
+    owner: dict[str, Any] | None
+    claim: dict[str, Any] | None
+    machine_state: dict[str, Any]
+    revision: int
+    due_at: str | None
+    not_before: str | None
+    snoozed_until: str | None
+    created_at: str
+    updated_at: str
+    terminal_at: str | None
+    external_refs: list[Any]
+    evidence_refs: list[Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphItem:
+        return cls(
+            id=str(data.get("id", "")),
+            realm_id=str(data.get("realm_id", "")),
+            namespace=str(data.get("namespace", "")),
+            title=str(data.get("title", "")),
+            description=data.get("description"),
+            status=str(data.get("status", "")),
+            completion_policy=dict(data.get("completion_policy") or {}),
+            priority=str(data.get("priority", "")),
+            labels=list(data.get("labels", [])),
+            owner=data.get("owner"),
+            claim=data.get("claim"),
+            machine_state=dict(data.get("machine_state") or {}),
+            revision=_coerce_int(data.get("revision")),
+            due_at=data.get("due_at"),
+            not_before=data.get("not_before"),
+            snoozed_until=data.get("snoozed_until"),
+            created_at=str(data.get("created_at", "")),
+            updated_at=str(data.get("updated_at", "")),
+            terminal_at=data.get("terminal_at"),
+            external_refs=list(data.get("external_refs", [])),
+            evidence_refs=list(data.get("evidence_refs", [])),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphEdge:
+    """A directed edge between two WorkGraph items (verbatim `WorkEdge`)."""
+    realm_id: str
+    namespace: str
+    kind: str
+    from_id: str
+    to_id: str
+    created_at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphEdge:
+        return cls(
+            realm_id=str(data.get("realm_id", "")),
+            namespace=str(data.get("namespace", "")),
+            kind=str(data.get("kind", "")),
+            from_id=str(data.get("from_id", "")),
+            to_id=str(data.get("to_id", "")),
+            created_at=str(data.get("created_at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphAttentionBinding:
+    """An attention binding wiring a work item to a goal target (verbatim
+    `WorkAttentionBinding`)."""
+    binding_id: str
+    work_ref: dict[str, Any]
+    target: dict[str, Any]
+    mode: str
+    status: dict[str, Any]
+    machine_state: dict[str, Any]
+    delegated_authority: str | None
+    projection_policy: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphAttentionBinding:
+        return cls(
+            binding_id=str(data.get("binding_id", "")),
+            work_ref=dict(data.get("work_ref") or {}),
+            target=dict(data.get("target") or {}),
+            mode=str(data.get("mode", "")),
+            status=dict(data.get("status") or {}),
+            machine_state=dict(data.get("machine_state") or {}),
+            delegated_authority=data.get("delegated_authority"),
+            projection_policy=dict(data.get("projection_policy") or {}),
+            created_at=str(data.get("created_at", "")),
+            updated_at=str(data.get("updated_at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphSnapshotResult:
+    """Result of `workgraph_snapshot` — the richest WorkGraph payload."""
+    realm_id: str
+    namespace: str | None
+    all_namespaces: bool
+    captured_at: str
+    event_high_water_mark: int | None
+    items: list[WorkGraphItem]
+    edges: list[WorkGraphEdge]
+    attention: list[WorkGraphAttentionBinding]
+    ready_item_ids: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphSnapshotResult:
+        hwm = data.get("event_high_water_mark")
+        return cls(
+            realm_id=str(data.get("realm_id", "")),
+            namespace=data.get("namespace"),
+            all_namespaces=bool(data.get("all_namespaces", False)),
+            captured_at=str(data.get("captured_at", "")),
+            event_high_water_mark=_coerce_int(hwm) if hwm is not None else None,
+            items=[WorkGraphItem.from_dict(i) for i in data.get("items", [])],
+            edges=[WorkGraphEdge.from_dict(e) for e in data.get("edges", [])],
+            attention=[
+                WorkGraphAttentionBinding.from_dict(a) for a in data.get("attention", [])
+            ],
+            ready_item_ids=list(data.get("ready_item_ids", [])),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphItemsResult:
+    """Result envelope for `workgraph_list` / `workgraph_ready`."""
+    items: list[WorkGraphItem]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphItemsResult:
+        raw_items = data.get("items", []) if isinstance(data, dict) else []
+        return cls(items=[WorkGraphItem.from_dict(i) for i in raw_items])
+
+
+@dataclass(frozen=True)
+class WorkGraphGoalResult:
+    """Result of a goal mutation: the goal work item + its attention binding."""
+    item: WorkGraphItem
+    attention: WorkGraphAttentionBinding
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphGoalResult:
+        return cls(
+            item=WorkGraphItem.from_dict(data.get("item") or {}),
+            attention=WorkGraphAttentionBinding.from_dict(data.get("attention") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphAttentionReassignResult:
+    """Result of `workgraph_attention_reassign`: the superseded and new
+    bindings."""
+    previous: WorkGraphAttentionBinding
+    attention: WorkGraphAttentionBinding
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphAttentionReassignResult:
+        return cls(
+            previous=WorkGraphAttentionBinding.from_dict(data.get("previous") or {}),
+            attention=WorkGraphAttentionBinding.from_dict(data.get("attention") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class WorkGraphEventEntry:
+    """A single entry from the WorkGraph event log (verbatim `WorkGraphEvent`)."""
+    seq: int | None
+    realm_id: str
+    namespace: str
+    item_id: str | None
+    kind: str
+    at: str
+    payload: Any
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkGraphEventEntry:
+        seq = data.get("seq")
+        return cls(
+            seq=_coerce_int(seq) if seq is not None else None,
+            realm_id=str(data.get("realm_id", "")),
+            namespace=str(data.get("namespace", "")),
+            item_id=data.get("item_id"),
+            kind=str(data.get("kind", "")),
+            at=str(data.get("at", "")),
+            payload=data.get("payload"),
+        )

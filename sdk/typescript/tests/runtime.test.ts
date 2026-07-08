@@ -46,6 +46,7 @@ function createMockRuntime(): {
     gatingConfigPath: null,
     routingConfigPath: null,
     schedulingFiles: [],
+    workgraphEnabled: null,
     memoryConfig: null,
     agentMemoryConfig: null,
     authConfig: null,
@@ -159,6 +160,32 @@ describe("MobKitRuntime", () => {
       recall_timeout_ms: 1200,
       recall_failure_policy: "fail",
     });
+  });
+
+  it("builds workgraph runtime option when explicitly set", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.workgraphEnabled = false;
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.workgraph, false);
+  });
+
+  it("passes a workgraph durable-store directory string through", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.workgraphEnabled = "/var/lib/mob/workgraph";
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.workgraph, "/var/lib/mob/workgraph");
+  });
+
+  it("omits workgraph runtime option when unset", () => {
+    const { rt } = createMockRuntime();
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal("workgraph" in params.runtime_options, false);
   });
 });
 
@@ -1950,5 +1977,511 @@ describe("MobHandle.queryEvents()", () => {
 
     const result = await handle.queryEvents();
     assert.deepEqual(result, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkGraph
+// ---------------------------------------------------------------------------
+
+const WG_ITEM_WIRE = {
+  id: "work_1",
+  realm_id: "realm-1",
+  namespace: "default",
+  title: "Ship the thing",
+  status: "open",
+  completion_policy: { kind: "self_attest" },
+  priority: "medium",
+  labels: ["a"],
+  machine_state: { lifecycle_phase: "open", revision: 1 },
+  revision: 1,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+const WG_EDGE_WIRE = {
+  realm_id: "realm-1",
+  namespace: "default",
+  kind: "blocks",
+  from_id: "work_1",
+  to_id: "work_2",
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+const WG_ATTENTION_WIRE = {
+  binding_id: "attention_1",
+  work_ref: { item_id: "work_1", realm_id: "realm-1", namespace: "default" },
+  target: { kind: "session", session_id: "sess-1" },
+  mode: "pursue",
+  status: { state: "active" },
+  delegated_authority: "add_evidence",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+describe("MobHandle.workgraphSnapshot()", () => {
+  it("sends mobkit/workgraph/snapshot with converted filter params", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      realm_id: "realm-1",
+      namespace: "default",
+      all_namespaces: false,
+      captured_at: "2026-01-01T00:00:00Z",
+      items: [WG_ITEM_WIRE],
+      edges: [WG_EDGE_WIRE],
+      attention: [WG_ATTENTION_WIRE],
+      ready_item_ids: ["work_1"],
+    }));
+
+    const result = await handle.workgraphSnapshot({
+      namespace: "default",
+      allNamespaces: false,
+      statuses: ["open"],
+      includeTerminal: true,
+      limit: 50,
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/snapshot");
+    assert.deepEqual(calls[0].params, {
+      namespace: "default",
+      all_namespaces: false,
+      statuses: ["open"],
+      include_terminal: true,
+      limit: 50,
+    });
+    assert.equal(result.realmId, "realm-1");
+    assert.equal(result.items.length, 1);
+    assert.equal(result.edges.length, 1);
+    assert.equal(result.attention.length, 1);
+    assert.deepEqual(result.readyItemIds, ["work_1"]);
+  });
+
+  it("sends empty params when no options given", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ realm_id: "r", all_namespaces: true, captured_at: "t" }));
+    await handle.workgraphSnapshot();
+    assert.deepEqual(calls[0].params, {});
+  });
+});
+
+describe("MobHandle.workgraphList()", () => {
+  it("sends mobkit/workgraph/list and returns unwrapped items", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ items: [WG_ITEM_WIRE] }));
+
+    const result = await handle.workgraphList({ labels: ["a"] });
+    assert.equal(calls[0].method, "mobkit/workgraph/list");
+    assert.deepEqual(calls[0].params, { labels: ["a"] });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].id, "work_1");
+  });
+});
+
+describe("MobHandle.workgraphGet()", () => {
+  it("sends id/namespace and unwraps item", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    const result = await handle.workgraphGet("work_1", { namespace: "default" });
+    assert.equal(calls[0].method, "mobkit/workgraph/get");
+    assert.deepEqual(calls[0].params, { id: "work_1", namespace: "default" });
+    assert.equal(result.id, "work_1");
+  });
+});
+
+describe("MobHandle.workgraphReady()", () => {
+  it("sends mobkit/workgraph/ready with converted options", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ items: [WG_ITEM_WIRE] }));
+
+    const result = await handle.workgraphReady({ labels: ["urgent"], limit: 5 });
+    assert.equal(calls[0].method, "mobkit/workgraph/ready");
+    assert.deepEqual(calls[0].params, { labels: ["urgent"], limit: 5 });
+    assert.equal(result.length, 1);
+  });
+});
+
+describe("MobHandle.workgraphEvents()", () => {
+  it("sends mobkit/workgraph/events and unwraps events array", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      events: [
+        {
+          seq: 1,
+          realm_id: "realm-1",
+          namespace: "default",
+          item_id: "work_1",
+          kind: "created",
+          at: "2026-01-01T00:00:00Z",
+          payload: {},
+        },
+      ],
+    }));
+
+    const result = await handle.workgraphEvents({ afterSeq: 0, limit: 20 });
+    assert.equal(calls[0].method, "mobkit/workgraph/events");
+    assert.deepEqual(calls[0].params, { after_seq: 0, limit: 20 });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].kind, "created");
+  });
+});
+
+describe("MobHandle.workgraphAttentionList()", () => {
+  it("sends mobkit/workgraph/attention/list and unwraps attention array", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ attention: [WG_ATTENTION_WIRE] }));
+
+    const result = await handle.workgraphAttentionList({ status: "active" });
+    assert.equal(calls[0].method, "mobkit/workgraph/attention/list");
+    assert.deepEqual(calls[0].params, { status: "active" });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].bindingId, "attention_1");
+  });
+});
+
+describe("MobHandle.workgraphGoalStatus()", () => {
+  it("sends binding_id/namespace and parses item+attention", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphGoalStatus("attention_1", {
+      namespace: "default",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/goal/status");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      namespace: "default",
+    });
+    assert.equal(result.item.id, "work_1");
+    assert.equal(result.attention.bindingId, "attention_1");
+  });
+});
+
+describe("MobHandle.workgraphCreate()", () => {
+  it("sends title plus converted options", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    const result = await handle.workgraphCreate("Ship the thing", {
+      priority: "high",
+      labels: ["backend"],
+      status: "blocked",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/create");
+    assert.deepEqual(calls[0].params, {
+      title: "Ship the thing",
+      priority: "high",
+      labels: ["backend"],
+      status: "blocked",
+    });
+    assert.equal(result.id, "work_1");
+  });
+
+  it("sends bare title when no options given", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+    await handle.workgraphCreate("Minimal");
+    assert.deepEqual(calls[0].params, { title: "Minimal" });
+  });
+});
+
+describe("MobHandle.workgraphUpdate()", () => {
+  it("sends id/expected_revision plus converted options", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    const result = await handle.workgraphUpdate("work_1", 3, {
+      title: "New title",
+      labels: [],
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/update");
+    assert.deepEqual(calls[0].params, {
+      id: "work_1",
+      expected_revision: 3,
+      title: "New title",
+      labels: [],
+    });
+    assert.equal(result.id, "work_1");
+  });
+});
+
+describe("MobHandle.workgraphClaim()", () => {
+  it("sends id/expected_revision/owner plus options", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    const result = await handle.workgraphClaim(
+      "work_1",
+      1,
+      { kind: "agent", id: "agent-1", displayName: "Agent One" },
+      { leaseSeconds: 60 },
+    );
+    assert.equal(calls[0].method, "mobkit/workgraph/claim");
+    assert.deepEqual(calls[0].params, {
+      id: "work_1",
+      expected_revision: 1,
+      owner: { kind: "agent", id: "agent-1", display_name: "Agent One" },
+      lease_seconds: 60,
+    });
+    assert.equal(result.id, "work_1");
+  });
+});
+
+describe("MobHandle.workgraphRelease()", () => {
+  it("sends id/expected_revision/namespace", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    await handle.workgraphRelease("work_1", 2, { namespace: "default" });
+    assert.equal(calls[0].method, "mobkit/workgraph/release");
+    assert.deepEqual(calls[0].params, {
+      id: "work_1",
+      expected_revision: 2,
+      namespace: "default",
+    });
+  });
+});
+
+describe("MobHandle.workgraphClose()", () => {
+  it("sends id/expected_revision plus status option", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    await handle.workgraphClose("work_1", 4, { status: "cancelled" });
+    assert.equal(calls[0].method, "mobkit/workgraph/close");
+    assert.deepEqual(calls[0].params, {
+      id: "work_1",
+      expected_revision: 4,
+      status: "cancelled",
+    });
+  });
+
+  it("omits status when not given (server defaults to completed)", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+    await handle.workgraphClose("work_1", 4);
+    assert.deepEqual(calls[0].params, { id: "work_1", expected_revision: 4 });
+  });
+});
+
+describe("MobHandle.workgraphBlock()", () => {
+  it("sends id/expected_revision/namespace", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    await handle.workgraphBlock("work_1", 1);
+    assert.equal(calls[0].method, "mobkit/workgraph/block");
+    assert.deepEqual(calls[0].params, { id: "work_1", expected_revision: 1 });
+  });
+});
+
+describe("MobHandle.workgraphLink()", () => {
+  it("sends kind/from_id/to_id and parses the {edge} wrapped result", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ edge: WG_EDGE_WIRE }));
+
+    const result = await handle.workgraphLink("blocks", "work_1", "work_2");
+    assert.equal(calls[0].method, "mobkit/workgraph/link");
+    assert.deepEqual(calls[0].params, {
+      kind: "blocks",
+      from_id: "work_1",
+      to_id: "work_2",
+    });
+    assert.equal(result.kind, "blocks");
+    assert.equal(result.fromId, "work_1");
+    assert.equal(result.toId, "work_2");
+  });
+
+  it("sends namespace when given", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ edge: WG_EDGE_WIRE }));
+
+    await handle.workgraphLink("parent", "work_0", "work_1", {
+      namespace: "default",
+    });
+    assert.deepEqual(calls[0].params, {
+      kind: "parent",
+      from_id: "work_0",
+      to_id: "work_1",
+      namespace: "default",
+    });
+  });
+});
+
+describe("MobHandle.workgraphAddEvidence()", () => {
+  it("sends id/expected_revision/evidence", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    await handle.workgraphAddEvidence("work_1", 2, {
+      kind: "self_attest",
+      id: "ev-1",
+      summary: "done",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/evidence/add");
+    assert.deepEqual(calls[0].params, {
+      id: "work_1",
+      expected_revision: 2,
+      evidence: { kind: "self_attest", id: "ev-1", summary: "done" },
+    });
+  });
+});
+
+describe("MobHandle.workgraphEscalatePolicy()", () => {
+  it("sends binding_id/id/expected_revision/completion_policy", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE }));
+
+    await handle.workgraphEscalatePolicy("attention_1", "work_1", 1, {
+      kind: "host_confirmed",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/policy/escalate");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      id: "work_1",
+      expected_revision: 1,
+      completion_policy: { kind: "host_confirmed" },
+    });
+  });
+});
+
+describe("MobHandle.workgraphGoalCreate()", () => {
+  it("sends title/target plus options (session target)", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphGoalCreate(
+      "Track the migration",
+      { kind: "session", sessionId: "sess-1" },
+      { mode: "review" },
+    );
+    assert.equal(calls[0].method, "mobkit/workgraph/goal/create");
+    assert.deepEqual(calls[0].params, {
+      title: "Track the migration",
+      target: { kind: "session", session_id: "sess-1" },
+      mode: "review",
+    });
+    assert.equal(result.item.id, "work_1");
+    assert.equal(result.attention.bindingId, "attention_1");
+  });
+
+  it("sends an identity target", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    await handle.workgraphGoalCreate("Track it", {
+      kind: "identity",
+      identity: "identity:luka",
+    });
+    assert.deepEqual(calls[0].params!.target, {
+      kind: "identity",
+      identity: "identity:luka",
+    });
+  });
+
+  it("sends an owner target", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    await handle.workgraphGoalCreate("Track it", {
+      kind: "owner",
+      ownerKey: { kind: "mob", id: "mob-1" },
+    });
+    assert.deepEqual(calls[0].params!.target, {
+      kind: "owner",
+      owner_key: { kind: "mob", id: "mob-1" },
+    });
+  });
+});
+
+describe("MobHandle.workgraphGoalConfirm()", () => {
+  it("sends binding_id/expected_revision/evidence", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphGoalConfirm("attention_1", 2, {
+      evidence: { kind: "self_attest", id: "ev-1" },
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/goal/confirm");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      expected_revision: 2,
+      evidence: { kind: "self_attest", id: "ev-1" },
+    });
+    assert.equal(result.item.id, "work_1");
+  });
+});
+
+describe("MobHandle.workgraphGoalRequestClose()", () => {
+  it("sends binding_id/expected_revision plus status option", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ item: WG_ITEM_WIRE, attention: WG_ATTENTION_WIRE }));
+
+    await handle.workgraphGoalRequestClose("attention_1", 3, {
+      status: "failed",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/goal/request_close");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      expected_revision: 3,
+      status: "failed",
+    });
+  });
+});
+
+describe("MobHandle.workgraphAttentionPause()", () => {
+  it("sends binding_id/expected_revision plus until option", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphAttentionPause("attention_1", 1, {
+      until: "2026-03-01T00:00:00Z",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/attention/pause");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      expected_revision: 1,
+      until: "2026-03-01T00:00:00Z",
+    });
+    assert.equal(result.bindingId, "attention_1");
+  });
+});
+
+describe("MobHandle.workgraphAttentionResume()", () => {
+  it("sends binding_id/expected_revision/namespace", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphAttentionResume("attention_1", 2, {
+      namespace: "default",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/attention/resume");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      expected_revision: 2,
+      namespace: "default",
+    });
+    assert.equal(result.bindingId, "attention_1");
+  });
+});
+
+describe("MobHandle.workgraphAttentionReassign()", () => {
+  it("sends binding_id/expected_revision/target and parses previous+attention", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    const previous = { ...WG_ATTENTION_WIRE, binding_id: "attention_0" };
+    setResponse(() => ({ previous, attention: WG_ATTENTION_WIRE }));
+
+    const result = await handle.workgraphAttentionReassign(
+      "attention_1",
+      3,
+      { kind: "session", sessionId: "sess-2" },
+    );
+    assert.equal(calls[0].method, "mobkit/workgraph/attention/reassign");
+    assert.deepEqual(calls[0].params, {
+      binding_id: "attention_1",
+      expected_revision: 3,
+      target: { kind: "session", session_id: "sess-2" },
+    });
+    assert.equal(result.previous.bindingId, "attention_0");
+    assert.equal(result.attention.bindingId, "attention_1");
   });
 });

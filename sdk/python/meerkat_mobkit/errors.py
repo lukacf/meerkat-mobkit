@@ -14,6 +14,10 @@ CAPABILITY_UNAVAILABLE_CODE: int = -32004
 LEASE_LOST_CODE: int = -32005
 MEMORY_BACKEND_UNAVAILABLE_CODE: int = -32012
 CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
+# WorkGraph service not configured on the runtime.
+WORKGRAPH_UNAVAILABLE_CODE: int = -32041
+# WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
+WORKGRAPH_CONFLICT_CODE: int = -32042
 
 
 class MobKitError(Exception):
@@ -171,6 +175,65 @@ class ConsoleTimelineReplayUnavailableError(RpcError):
             request_id=request_id,
             method=method,
             data=data,
+        )
+
+
+class WorkGraphUnavailableError(RpcError):
+    """Raised when the WorkGraph service is not configured on the runtime."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            WORKGRAPH_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class WorkGraphConflictError(RpcError):
+    """Raised on a WorkGraph CAS/revision conflict.
+
+    The server's structured ``data`` payload carries ``detail`` (the
+    upstream WorkGraph error message). Callers should refetch the item's or
+    binding's current ``revision`` and retry.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        detail: str | None = None,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            WORKGRAPH_CONFLICT_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+        self.detail = detail
+
+    @classmethod
+    def from_rpc_error(cls, err: RpcError) -> WorkGraphConflictError:
+        """Reify a generic ``RpcError`` with code ``-32042`` into the typed form."""
+        payload = err.data if isinstance(err.data, dict) else {}
+        return cls(
+            str(err),
+            detail=payload.get("detail"),
+            request_id=err.request_id,
+            method=err.method,
+            data=err.data,
         )
 
 

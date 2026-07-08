@@ -182,6 +182,28 @@ pub fn handle_console_rest_json_route_with_snapshot_access_and_memory(
     access: Option<&AccessController>,
     memory_panel_available: bool,
 ) -> ConsoleRestJsonResponse {
+    handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph(
+        decisions,
+        request,
+        live_snapshot,
+        access,
+        memory_panel_available,
+        false,
+    )
+}
+
+/// Workgraph-aware variant: `workgraph_available` reports whether the runtime
+/// wired a WorkGraph service, so the experience can project the `workgraph`
+/// affordance section the console consumes (`available` + ABAC-intersected
+/// `can_view`/`can_manage`).
+pub fn handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph(
+    decisions: &RuntimeDecisionState,
+    request: &ConsoleRestJsonRequest,
+    live_snapshot: Option<&ConsoleLiveSnapshot>,
+    access: Option<&AccessController>,
+    memory_panel_available: bool,
+    workgraph_available: bool,
+) -> ConsoleRestJsonResponse {
     let (base_path, query_params) = split_path_and_query(&request.path);
     if request.method != "GET"
         || (base_path != CONSOLE_MODULES_ROUTE && base_path != CONSOLE_EXPERIENCE_ROUTE)
@@ -277,8 +299,37 @@ pub fn handle_console_rest_json_route_with_snapshot_access_and_memory(
     }
     if base_path == CONSOLE_EXPERIENCE_ROUTE {
         apply_memory_to_experience(&mut body, access_view.as_ref(), memory_panel_available);
+        apply_workgraph_to_experience(&mut body, access_view.as_ref(), workgraph_available);
     }
     ConsoleRestJsonResponse { status: 200, body }
+}
+
+/// Append the `workgraph` affordance section. `can_view`/`can_manage` are
+/// intersected with the caller's grants when access control is enforced and
+/// mirror availability otherwise; per-method enforcement still applies to
+/// every `mobkit/workgraph/*` RPC.
+fn apply_workgraph_to_experience(
+    body: &mut Value,
+    view: Option<&AccessView>,
+    workgraph_available: bool,
+) {
+    let (can_view, can_manage) = match view.filter(|view| view.enforced()) {
+        Some(view) => (
+            workgraph_available && view.allows(crate::access::ACTION_WORKGRAPH_VIEW),
+            workgraph_available && view.allows(crate::access::ACTION_WORKGRAPH_MANAGE),
+        ),
+        None => (workgraph_available, workgraph_available),
+    };
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "workgraph".to_string(),
+            serde_json::json!({
+                "available": workgraph_available,
+                "can_view": can_view,
+                "can_manage": can_manage,
+            }),
+        );
+    }
 }
 
 /// Append the `memory` affordance section (§9.3) the console nav gate

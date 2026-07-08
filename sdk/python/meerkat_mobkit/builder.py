@@ -20,6 +20,7 @@ class MobKitBuilderConfig:
     console_fetch_timeout_ms: int | None = None
     gating_config_path: str | None = None
     access_config_path: str | None = None
+    workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
     memory_config: Any | None = None
@@ -120,6 +121,18 @@ class MobKitBuilder:
         ``config/access.toml``) access control is off entirely.
         """
         self._config.access_config_path = config_path
+        return self
+
+    def workgraph(self, enabled: bool | str = True) -> MobKitBuilder:
+        """Enable or disable the WorkGraph subsystem (default: enabled).
+
+        Wired into ``runtime_options.workgraph``. Omitted entirely when never
+        called, so a gateway with its own default is left alone. A string is
+        an explicit durable-store DIRECTORY (``workgraph.sqlite3`` created
+        inside) — for launches without a state dir that would otherwise be
+        memory-backed.
+        """
+        self._config.workgraph_enabled = enabled if isinstance(enabled, str) else bool(enabled)
         return self
 
     def routing(self, config_path: str) -> MobKitBuilder:

@@ -929,6 +929,7 @@ fn install_agent_mob_tools(
     definition: &MobDefinition,
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
     session_service: Arc<dyn MobSessionService>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
@@ -937,7 +938,10 @@ fn install_agent_mob_tools(
 ) {
     let default_llm_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
     let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
-    let mut state = meerkat_mob_mcp::MobMcpState::new(session_service);
+    // Forward the workgraph service so agent-spawned child mobs
+    // (delegate / mob_spawn_member) inherit apply-time attention overlays.
+    let mut state = meerkat_mob_mcp::MobMcpState::new(session_service)
+        .with_workgraph_service(workgraph_service);
     if let Some(base_store) = state.realm_profile_store().cloned()
         && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
     {
@@ -2290,6 +2294,23 @@ pub struct MobBootstrapSpec {
     /// gates what this provider exposes to that member, and an EMPTY allowlist
     /// means the full surface, not none.
     pub(crate) default_external_tools_provider: Option<meerkat_mob::ExternalToolsProvider>,
+    /// Realm-scoped WorkGraph service, forwarded to
+    /// `MobBuilder::with_workgraph_service` so every mob-executor turn gets
+    /// apply-time attention overlay injection, and to the agent mob-tool
+    /// state so child mobs inherit it. Set via
+    /// [`with_workgraph_service`](Self::with_workgraph_service).
+    pub(crate) workgraph_service: Option<meerkat::WorkGraphService>,
+    /// Tool-plane admission slots (one per `install_workgraph_tools` call on
+    /// a builder feeding this runtime). `MobRuntime::bootstrap` fills each
+    /// with the runtime-wide [`WorkGraphAdmission`] so the agent tool plane's
+    /// `workgraph_attention_reassign` runs the same duplicate-binding guard
+    /// (and holds the same gate) as the RPC surfaces.
+    pub(crate) workgraph_admission_slots: Vec<crate::workgraph_admission::WorkGraphAdmissionSlot>,
+    /// Cross-process admission sidecar path — set when the workgraph store is
+    /// SQLite-backed (shareable by a gateway + library-mode runtime on one
+    /// state dir), `None` for memory-backed runtimes (single-process by
+    /// construction).
+    pub(crate) workgraph_admission_sidecar: Option<PathBuf>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -2324,6 +2345,9 @@ impl MobBootstrapSpec {
             runtime_adapter: None,
             spawn_member_customizer: None,
             default_external_tools_provider: None,
+            workgraph_service: None,
+            workgraph_admission_slots: Vec::new(),
+            workgraph_admission_sidecar: None,
             _ephemeral_dir: None,
         }
     }
@@ -2348,8 +2372,10 @@ impl MobBootstrapSpec {
     /// the HomeCore 0.7.26 last-link failure).
     ///
     /// Call AFTER any session-service wrapping (`with_session_runtime_adapter`)
-    /// so the installed tools hold the final wrapped service. `mob_tools_slot`
-    /// is the agent factory builder's `default_mob_tools` slot.
+    /// so the installed tools hold the final wrapped service, and AFTER
+    /// [`with_workgraph_service`](Self::with_workgraph_service) so child mobs
+    /// inherit the workgraph authority. `mob_tools_slot` is the agent factory
+    /// builder's `default_mob_tools` slot.
     pub fn with_agent_mob_tools(
         mut self,
         mob_tools_slot: Arc<
@@ -2365,11 +2391,56 @@ impl MobBootstrapSpec {
             &self.definition,
             mob_tools_slot,
             Arc::clone(&self.session_service),
+            self.workgraph_service.clone(),
         );
         self.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        self
+    }
+
+    /// Thread a realm-scoped WorkGraph service into the mob runtime.
+    ///
+    /// `MobRuntime::bootstrap` forwards it to
+    /// `MobBuilder::with_workgraph_service`, which turns on apply-time
+    /// attention overlay injection for every mob-executor turn. Call BEFORE
+    /// [`with_agent_mob_tools`](Self::with_agent_mob_tools) — the agent mob
+    /// state snapshots the service at install time so agent-spawned child
+    /// mobs inherit it.
+    #[must_use]
+    pub fn with_workgraph_service(mut self, service: Option<meerkat::WorkGraphService>) -> Self {
+        self.workgraph_service = service;
+        self
+    }
+
+    /// Register a tool-plane admission slot (returned by
+    /// `workgraph_wiring::install_workgraph_tools` /
+    /// `attach_workgraph_tools*`) to be filled at bootstrap with the
+    /// runtime-wide [`WorkGraphAdmission`](crate::workgraph_admission::WorkGraphAdmission).
+    /// Every builder whose members can call `workgraph_attention_reassign`
+    /// must have its slot registered here, or those members bypass the
+    /// duplicate-binding admission guard the RPC surfaces enforce.
+    #[must_use]
+    pub fn with_workgraph_admission_slot(
+        mut self,
+        slot: crate::workgraph_admission::WorkGraphAdmissionSlot,
+    ) -> Self {
+        self.workgraph_admission_slots.push(slot);
+        self
+    }
+
+    /// Serialize admissions cross-process through the sidecar lock database
+    /// under `state_dir` (see
+    /// [`workgraph_admission_sidecar_path`](crate::workgraph_admission::workgraph_admission_sidecar_path)).
+    /// Call for SQLite-backed workgraph stores — the store file is shareable
+    /// by a gateway and a library-mode runtime on one state dir, and each
+    /// process's in-process gate cannot see the other. Memory-backed
+    /// runtimes must not set this.
+    #[must_use]
+    pub fn with_workgraph_admission_sidecar(mut self, state_dir: &Path) -> Self {
+        self.workgraph_admission_sidecar =
+            Some(crate::workgraph_admission::workgraph_admission_sidecar_path(state_dir));
         self
     }
 
@@ -2516,6 +2587,14 @@ impl MobBootstrapSpec {
             builder.default_session_store = Some(store);
         }
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+        // Ephemeral specs carry a memory-backed workgraph so profiles with
+        // `tools.workgraph = true` build (the factory fails closed on an
+        // enabled category with an empty dispatcher slot).
+        let (workgraph_service, workgraph_admission_slot) =
+            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                &builder,
+                definition.id.as_str(),
+            );
         let session_service: Arc<dyn MobSessionService> = Arc::new(
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
@@ -2560,7 +2639,12 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
-        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        ) = install_agent_mob_tools(
+            &definition,
+            mob_tools_slot,
+            Arc::clone(&session_service),
+            Some(workgraph_service.clone()),
+        );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
@@ -2568,6 +2652,9 @@ impl MobBootstrapSpec {
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
+        spec.workgraph_service = Some(workgraph_service);
+        spec.workgraph_admission_slots
+            .push(workgraph_admission_slot);
         spec
     }
 
@@ -2697,6 +2784,17 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+        // Durable workgraph store beside runtime.sqlite (boot-without on
+        // open failure, matching the schedule-tools posture).
+        let (workgraph_service, workgraph_admission_slot) =
+            match crate::workgraph_wiring::attach_workgraph_tools(
+                &builder,
+                &store_path,
+                definition.id.as_str(),
+            ) {
+                Some((service, slot)) => (Some(service), Some(slot)),
+                None => (None, None),
+            };
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -2717,7 +2815,12 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
-        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        ) = install_agent_mob_tools(
+            &definition,
+            mob_tools_slot,
+            Arc::clone(&session_service),
+            workgraph_service.clone(),
+        );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
@@ -2725,6 +2828,14 @@ impl MobBootstrapSpec {
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        spec.workgraph_service = workgraph_service;
+        if let Some(slot) = workgraph_admission_slot {
+            // SQLite-backed store: the file is shareable across processes,
+            // so admissions additionally serialize through the sidecar lock.
+            spec.workgraph_admission_slots.push(slot);
+            spec.workgraph_admission_sidecar =
+                Some(crate::workgraph_admission::workgraph_admission_sidecar_path(&store_path));
+        }
         spec
     }
 
@@ -2796,6 +2907,11 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+        let (workgraph_service, workgraph_admission_slot) =
+            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                &builder,
+                definition.id.as_str(),
+            );
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
                 Arc::new(meerkat_session::PersistentSessionService::new(
@@ -2843,7 +2959,12 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
-        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        ) = install_agent_mob_tools(
+            &definition,
+            mob_tools_slot,
+            Arc::clone(&session_service),
+            Some(workgraph_service.clone()),
+        );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
@@ -2851,6 +2972,9 @@ impl MobBootstrapSpec {
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        spec.workgraph_service = Some(workgraph_service);
+        spec.workgraph_admission_slots
+            .push(workgraph_admission_slot);
         spec
     }
 }
@@ -2960,6 +3084,18 @@ pub struct MobRuntime {
     /// Slot shared with the agent mob-tool dispatchers. A console-bearing
     /// runtime fills it so agent-tool spawns project into the console.
     console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
+    /// Realm-scoped WorkGraph service carried over from the bootstrap spec
+    /// so `UnifiedRuntime` can expose it to the RPC/console surfaces.
+    workgraph_service: Option<meerkat::WorkGraphService>,
+    /// Admission authority for the workgraph duplicate-binding guards
+    /// (goal/create, attention/resume, attention/reassign — RPC arms AND the
+    /// agent tool plane's `workgraph_attention_reassign`). ONE per runtime:
+    /// every surface built from this runtime must acquire this same
+    /// admission, or concurrent creates race past the check and brick the
+    /// member with upstream `MultipleActiveBindings`. Non-admitting
+    /// consumers (MobBuilder overlays, the schedule host) use the bare
+    /// service and are intentionally not serialized here.
+    workgraph_admission: Arc<crate::workgraph_admission::WorkGraphAdmission>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -3015,6 +3151,12 @@ impl MobRuntime {
             builder = builder.with_default_external_tools_provider(Some(provider));
         }
 
+        // Apply-time WorkGraph attention overlays: the provisioner's
+        // MobSessionRuntimeExecutor injects the scoped tool overlay before
+        // apply_runtime_turn for every mob-executor turn iff the builder
+        // carries the service.
+        builder = builder.with_workgraph_service(spec.workgraph_service.clone());
+
         if let Some(client) = default_llm_client {
             builder = builder.with_default_llm_client(client);
         }
@@ -3022,6 +3164,24 @@ impl MobRuntime {
         let handle = builder.create().await?;
         if let Some(state) = agent_mob_mcp_state.as_ref() {
             state.mob_insert_handle(mob_id, handle.clone()).await;
+        }
+        // One admission per runtime; the tool-plane dispatchers were built
+        // before the mob (and thus the roster) existed, so their late-bound
+        // slots are filled here with the same instance the RPC surfaces use.
+        // The session service rides along as the admission's session→member
+        // resolution fallback: member sessions carry their identity on
+        // `session_metadata.mob_member_binding`, which co-processes sharing
+        // the state dir can read even when their roster is blind.
+        let workgraph_admission = Arc::new(crate::workgraph_admission::WorkGraphAdmission::new(
+            handle.clone(),
+            Some(Arc::clone(&session_service)),
+            spec.workgraph_admission_sidecar,
+        ));
+        for slot in &spec.workgraph_admission_slots {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Arc::clone(&workgraph_admission));
         }
         Ok(Self {
             handle,
@@ -3031,11 +3191,18 @@ impl MobRuntime {
             binary_blob_store,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot,
+            workgraph_service: spec.workgraph_service,
+            workgraph_admission,
             _ephemeral_dir: ephemeral_dir,
         })
     }
 
     pub fn from_handle(handle: MobHandle) -> Self {
+        let workgraph_admission = Arc::new(crate::workgraph_admission::WorkGraphAdmission::new(
+            handle.clone(),
+            None,
+            None,
+        ));
         Self {
             handle,
             session_service: None,
@@ -3044,6 +3211,8 @@ impl MobRuntime {
             binary_blob_store: None,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot: None,
+            workgraph_service: None,
+            workgraph_admission,
             _ephemeral_dir: None,
         }
     }
@@ -3054,6 +3223,22 @@ impl MobRuntime {
 
     pub fn agent_mob_mcp_state(&self) -> Option<Arc<meerkat_mob_mcp::MobMcpState>> {
         self.agent_mob_mcp_state.clone()
+    }
+
+    /// The realm-scoped WorkGraph service the runtime was bootstrapped with.
+    pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
+        self.workgraph_service.clone()
+    }
+
+    /// The runtime-wide admission authority for the workgraph
+    /// duplicate-binding guards. Clones share the underlying instance, so
+    /// every surface built from (a clone of) this runtime serializes against
+    /// the same gate (and, for SQLite-backed stores, the same cross-process
+    /// sidecar).
+    pub(crate) fn workgraph_admission(
+        &self,
+    ) -> Arc<crate::workgraph_admission::WorkGraphAdmission> {
+        Arc::clone(&self.workgraph_admission)
     }
 
     /// Install the console sink that agent-tool spawns project into. A no-op

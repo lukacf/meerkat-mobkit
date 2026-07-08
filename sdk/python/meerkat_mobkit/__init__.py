@@ -32,6 +32,8 @@ from .errors import (
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
+    WORKGRAPH_CONFLICT_CODE,
+    WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
     ConsoleTimelineReplayUnavailableError,
     ContractMismatchError,
@@ -42,6 +44,8 @@ from .errors import (
     NotConnectedError,
     RpcError,
     TransportError,
+    WorkGraphConflictError,
+    WorkGraphUnavailableError,
 )
 
 # Typed return models
@@ -129,6 +133,14 @@ from .types import (
     SubscribeResult,
     UnifiedAgentEvent,
     UnifiedModuleEvent,
+    WorkGraphAttentionBinding,
+    WorkGraphAttentionReassignResult,
+    WorkGraphEdge,
+    WorkGraphEventEntry,
+    WorkGraphGoalResult,
+    WorkGraphItem,
+    WorkGraphItemsResult,
+    WorkGraphSnapshotResult,
 )
 
 # Typed events
@@ -192,10 +204,14 @@ __all__ = [
     "CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE",
     "LEASE_LOST_CODE",
     "MEMORY_BACKEND_UNAVAILABLE_CODE",
+    "WORKGRAPH_CONFLICT_CODE",
+    "WORKGRAPH_UNAVAILABLE_CODE",
     "CapabilityUnavailableError",
     "ConsoleTimelineReplayUnavailableError",
     "LeaseLostError",
     "MemoryBackendUnavailableError",
+    "WorkGraphConflictError",
+    "WorkGraphUnavailableError",
     "ContractMismatchError",
     "NotConnectedError",
     # Typed return models
@@ -283,6 +299,14 @@ __all__ = [
     "ReconcileEdgesReport",
     "RediscoverReport",
     "ToolCaller",
+    "WorkGraphItem",
+    "WorkGraphEdge",
+    "WorkGraphAttentionBinding",
+    "WorkGraphSnapshotResult",
+    "WorkGraphItemsResult",
+    "WorkGraphGoalResult",
+    "WorkGraphAttentionReassignResult",
+    "WorkGraphEventEntry",
     # Typed events
     "Event",
     "MobEvent",

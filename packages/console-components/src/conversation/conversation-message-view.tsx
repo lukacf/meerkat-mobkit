@@ -10,6 +10,7 @@ import {
 import { ConversationRichContent } from "./conversation-rich-content";
 import { FlowRunCard } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
+import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
 
@@ -28,6 +29,7 @@ type ConversationMessageViewProps = {
   Icon?: IconRenderer | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: (() => void) | null;
+  workGraphActions?: WorkGraphCardActions | null;
 };
 
 export function ConversationMessageView({
@@ -36,6 +38,7 @@ export function ConversationMessageView({
   Icon,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
+  workGraphActions = null,
 }: ConversationMessageViewProps) {
   const presentation = conversationIdentityPresentation(entry.identity);
   const assistantClassName = [
@@ -52,6 +55,16 @@ export function ConversationMessageView({
         Icon={Icon}
         onMessageMember={onFlowRunMessageMember}
         onRestore={onFlowRunRestore}
+      />
+    );
+  }
+
+  if (entry.kind === "workgraph") {
+    return (
+      <WorkGraphCard
+        entry={entry}
+        Icon={Icon}
+        actions={workGraphActions}
       />
     );
   }

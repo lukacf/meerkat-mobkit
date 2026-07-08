@@ -309,6 +309,17 @@ export interface ConsoleExperience {
   }>;
   access?: ConsoleAccessSection;
   memory?: ConsoleMemorySection;
+  workgraph?: ConsoleWorkGraphSection;
+}
+
+/// Per-caller WorkGraph standing, projected by `/console/experience` when a
+/// WorkGraph service is wired on the runtime. `available && can_view` gates
+/// the WorkGraph nav entry; `can_manage` gates operator actions (claim/close/
+/// confirm/attention mutations) on the inline card and the panel.
+export interface ConsoleWorkGraphSection {
+  available?: boolean;
+  can_view?: boolean;
+  can_manage?: boolean;
 }
 
 /// Per-caller memory-panel standing, projected by `/console/experience` when a
@@ -616,6 +627,82 @@ export interface MemoryAuditVerdictEntry {
 export interface MemoryPanelAuditVerdictsResult {
   verdicts: MemoryAuditVerdictEntry[];
   realms: string[];
+}
+
+// ── WorkGraph panel (read + gated operator actions) ───────────────────────
+// Tolerant mirrors of meerkat-workgraph's typed results, serialized verbatim
+// by the `mobkit/workgraph/*` JSON-RPC methods. All fields optional on the
+// client so the panel degrades gracefully across runtime versions.
+
+export interface WorkGraphWireOwnerKey {
+  kind?: string;
+  id?: string;
+}
+
+export interface WorkGraphWireOwner {
+  key?: WorkGraphWireOwnerKey;
+  display_name?: string;
+}
+
+export interface WorkGraphWireItem {
+  id?: string;
+  realm_id?: string;
+  namespace?: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  labels?: string[];
+  owner?: WorkGraphWireOwner;
+  claim?: { owner?: WorkGraphWireOwner; claimed_at?: string; lease_expires_at?: string };
+  revision?: number;
+  due_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  terminal_at?: string;
+  evidence_refs?: Array<{ kind?: string; id?: string; label?: string; summary?: string }>;
+}
+
+export interface WorkGraphWireEdge {
+  kind?: string;
+  from_id?: string;
+  to_id?: string;
+}
+
+export interface WorkGraphWireBinding {
+  binding_id?: string;
+  work_ref?: { realm_id?: string; namespace?: string; item_id?: string };
+  target?: { kind?: string; session_id?: string; owner_key?: WorkGraphWireOwnerKey };
+  mode?: string;
+  status?: { state?: string; until?: string };
+  machine_state?: { revision?: number };
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WorkGraphWireEvent {
+  seq?: number;
+  item_id?: string;
+  kind?: string;
+  at?: string;
+  payload?: unknown;
+}
+
+/// `mobkit/workgraph/snapshot` result (WorkGraphSnapshot verbatim).
+export interface WorkGraphSnapshotResult {
+  realm_id?: string;
+  namespace?: string;
+  all_namespaces?: boolean;
+  captured_at?: string;
+  event_high_water_mark?: number;
+  items?: WorkGraphWireItem[];
+  edges?: WorkGraphWireEdge[];
+  attention?: WorkGraphWireBinding[];
+  ready_item_ids?: string[];
+}
+
+export interface WorkGraphEventsResult {
+  events?: WorkGraphWireEvent[];
 }
 
 export interface ConsoleModulesResponse {

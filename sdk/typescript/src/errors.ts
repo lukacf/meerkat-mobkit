@@ -67,6 +67,10 @@ export const CAPABILITY_UNAVAILABLE_CODE = -32004 as const;
 export const LEASE_LOST_CODE = -32005 as const;
 export const MEMORY_BACKEND_UNAVAILABLE_CODE = -32012 as const;
 export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
+/** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
+export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
+/** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
+export const WORKGRAPH_CONFLICT_CODE = -32042 as const;
 
 /**
  * Raised when the caller passes an `after_seq` past the current ledger
@@ -166,6 +170,36 @@ export class ConsoleTimelineReplayUnavailableError extends RpcError {
   }
 }
 
+/** Raised when a `mobkit/workgraph/*` call is made but no WorkGraph service is configured. */
+export class WorkGraphUnavailableError extends RpcError {
+  constructor(
+    message: string,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(WORKGRAPH_UNAVAILABLE_CODE, message, requestId, method, data);
+    this.name = "WorkGraphUnavailableError";
+  }
+}
+
+/**
+ * Raised on a WorkGraph CAS/revision conflict (the caller's `expected_revision`
+ * is stale). `data.detail` carries the upstream message. Refetch the item or
+ * attention binding's current revision and retry.
+ */
+export class WorkGraphConflictError extends RpcError {
+  constructor(
+    message: string,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(WORKGRAPH_CONFLICT_CODE, message, requestId, method, data);
+    this.name = "WorkGraphConflictError";
+  }
+}
+
 // -- Contract errors ------------------------------------------------------
 
 /** Raised when the SDK and runtime contract versions are incompatible. */
@@ -209,7 +243,9 @@ export function isRpcError(err: unknown): err is RpcError {
     candidate.name === "MobEventsStaleError" ||
     candidate.name === "CapabilityUnavailableError" ||
     candidate.name === "MemoryBackendUnavailableError" ||
-    candidate.name === "ConsoleTimelineReplayUnavailableError"
+    candidate.name === "ConsoleTimelineReplayUnavailableError" ||
+    candidate.name === "WorkGraphUnavailableError" ||
+    candidate.name === "WorkGraphConflictError"
   ) && typeof candidate.code === "number";
 }
 
