@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
 import type { ConversationWorkGraphEntry } from "@console-core";
-import { ConsoleActivityRail, WorkGraphCard } from "@console-components";
+import { ConsoleActivityRail, WorkGraphCard, __workGraphCardUiState } from "@console-components";
 import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
 import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
@@ -365,6 +365,106 @@ test("WorkGraphCard actions carry the right CAS token per class: goal actions th
     assert.ok(dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:pause']"));
   } finally {
     root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard expansion and collapse survive the catch-all→rooted entry rekey via the stable uiStateKey anchor", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  __workGraphCardUiState.reset();
+
+  const uiStateKey = "workgraph:interaction:turn-1";
+  const item = {
+    itemId: "item-mig",
+    title: "Migrating goal",
+    status: "open",
+    revision: 1,
+    depth: 0,
+    description: "Expandable detail",
+  };
+  const catchAllEntry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: uiStateKey,
+    uiStateKey,
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "interaction:turn-1",
+    title: "Migrating goal",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [item],
+    attention: [],
+  };
+  // The same graph after hierarchy formed: new entry id (→ React remounts
+  // the card), same uiStateKey and item ids.
+  const rootedEntry: ConversationWorkGraphEntry = {
+    ...catchAllEntry,
+    id: "workgraph:item-mig",
+    rootId: "item-mig",
+    items: [
+      item,
+      { itemId: "item-mig-child", title: "Child task", status: "open", revision: 1, depth: 1 },
+    ],
+    progress: { completed: 0, total: 2 },
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  const render = (entry: ConversationWorkGraphEntry) => {
+    flushSync(() => {
+      // Keyed by entry id exactly like the transcript renderer, so the id
+      // migration really remounts the subtree.
+      root.render(<WorkGraphCard key={entry.id} entry={entry} />);
+    });
+  };
+  const click = (testId: string) => {
+    const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+    assert.ok(button, `expected button ${testId}`);
+    // flushSync so the expansion state commits before the assertions read
+    // the DOM.
+    flushSync(() => {
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+  };
+  const detailVisible = () =>
+    dom.window.document.querySelector(".cc-work-graph__item-detail") !== null;
+
+  try {
+    render(catchAllEntry);
+    assert.equal(detailVisible(), false);
+    click("workgraph-item:item-mig");
+    assert.equal(detailVisible(), true, "clicking the row expands the item detail");
+
+    render(rootedEntry);
+    assert.equal(
+      detailVisible(),
+      true,
+      "item expansion carries across the catch-all→rooted remount",
+    );
+
+    // Collapse the migrated card, rekey back (e.g. a live refold), and the
+    // collapse must stick too — it is keyed on the uiStateKey anchor.
+    click("workgraph-card:item-mig:toggle");
+    assert.equal(
+      dom.window.document.querySelector(".cc-work-graph__items"),
+      null,
+      "collapsing hides the item list",
+    );
+    render({ ...rootedEntry, id: "workgraph:item-mig-rekeyed" });
+    assert.equal(
+      dom.window.document.querySelector(".cc-work-graph__items"),
+      null,
+      "collapse state carries across a further rekey",
+    );
+  } finally {
+    root.unmount();
+    __workGraphCardUiState.reset();
     globalThis.window = previousWindow;
     globalThis.document = previousDocument;
     dom.window.close();

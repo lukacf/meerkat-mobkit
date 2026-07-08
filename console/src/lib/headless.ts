@@ -118,6 +118,7 @@ export const CONSOLE_COMMAND_NAMES = {
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphEvents: "workgraphEvents",
+  workgraphGet: "workgraphGet",
   workgraphGoalStatus: "workgraphGoalStatus",
   workgraphClaim: "workgraphClaim",
   workgraphRelease: "workgraphRelease",
@@ -272,6 +273,10 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
     method: CONSOLE_RPC_METHODS.workgraphEvents,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
   },
+  [CONSOLE_COMMAND_NAMES.workgraphGet]: {
+    method: CONSOLE_RPC_METHODS.workgraphGet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
   [CONSOLE_COMMAND_NAMES.workgraphGoalStatus]: {
     method: CONSOLE_RPC_METHODS.workgraphGoalStatus,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
@@ -309,6 +314,13 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
   },
 };
+
+/// The RPC method a console command dispatches to. Client-local frames
+/// synthesized from operator RPC results stamp this so downstream folds can
+/// label the action without re-deriving the mapping.
+export function consoleCommandMethod(command: ConsoleCommandName): string {
+  return CONSOLE_COMMAND_SPECS[command].method;
+}
 
 export interface ConsoleCommandRequest {
   command: ConsoleCommandName;

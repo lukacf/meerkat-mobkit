@@ -86,6 +86,18 @@ class TestCapabilitiesResult:
         assert r.methods == ["status"]
         assert r.loaded_modules == ["x"]
         assert r.runtime_capabilities is None
+        assert r.workgraph is False
+
+    def test_from_dict_with_workgraph_true(self):
+        r = CapabilitiesResult.from_dict(
+            {
+                "contract_version": "2.0",
+                "methods": ["status"],
+                "loaded_modules": ["x"],
+                "workgraph": True,
+            }
+        )
+        assert r.workgraph is True
 
     def test_from_dict_with_runtime_capabilities(self):
         r = CapabilitiesResult.from_dict(

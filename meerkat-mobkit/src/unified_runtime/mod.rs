@@ -661,6 +661,15 @@ impl UnifiedRuntime {
             .clone()
     }
 
+    /// The runtime-wide admission gate serializing the workgraph RPC
+    /// duplicate-binding guards' check-then-act windows. Lives on the mob
+    /// runtime so console routers (which capture the mob runtime by value)
+    /// and the unified stdin dispatch reach the SAME mutex; a late
+    /// `set_workgraph_service` never changes the gate.
+    pub(crate) fn workgraph_rpc_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.mob_runtime.workgraph_rpc_gate()
+    }
+
     /// Wire the §16 Q1 console-principal operator resolver (set by the
     /// gateway's memory wiring when `operator_scope = "provisional"`); the
     /// console send path notes authenticated interactions through it.

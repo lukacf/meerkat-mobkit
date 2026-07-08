@@ -1136,6 +1136,32 @@
             }
           ]
         },
+        "mobkit/workgraph/get": {
+          "request": {
+            "required_fields": [
+              "id"
+            ],
+            "optional_fields": [
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
         "mobkit/workgraph/goal/status": {
           "request": {
             "required_fields": [

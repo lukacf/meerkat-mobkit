@@ -2,7 +2,7 @@
 //! the console RPC surfaces (docs/design/workgraph-wire-contract.md).
 //!
 //! Params deserialize into meerkat's typed requests and results serialize the
-//! typed results verbatim, with three mobkit-side rules:
+//! typed results verbatim, with these mobkit-side rules:
 //! - `realm_id` is never accepted over the wire — the service is scoped to
 //!   this runtime's realm (the mob definition id) at construction.
 //! - The authority witness (`authority_projection`) for `policy/escalate`
@@ -11,6 +11,18 @@
 //! - Attention targets accept an additional `{kind:"identity", identity}`
 //!   form, lowered through `meerkat_mob::lower_agent_identity_attention_target`
 //!   with this runtime's mob id.
+//! - `goal/create`, `attention/resume` and `attention/reassign` refuse to
+//!   give a target a second Active-or-Paused binding (upstream would brick
+//!   the member with `MultipleActiveBindings` on every scoped turn); target
+//!   equivalence resolves session↔identity aliases through the mob roster,
+//!   and the check-then-act window is serialized by a runtime-wide
+//!   admission gate shared across the stdin and console surfaces.
+//! - Goal/attention methods only accept the service's default namespace —
+//!   upstream turn overlays resolve nowhere else.
+//! - The `attention/list` `status` filter accepts the SDKs' bare-string
+//!   spelling beside upstream's internally-tagged object form.
+
+use std::collections::BTreeSet;
 
 use meerkat::{
     AddEvidenceRequest, AttentionListRequest, AttentionPauseRequest, AttentionProjectionRequest,
@@ -18,8 +30,9 @@ use meerkat::{
     CreateWorkItemRequest, GoalAttentionTarget, GoalConfirmRequest, GoalCreateRequest,
     GoalRequestCloseRequest, GoalStatusRequest, LinkWorkItemsRequest, PolicyEscalateRequest,
     ReadyWorkFilter, ReleaseWorkItemRequest, UpdateWorkItemRequest, WorkAttentionBindingId,
-    WorkGraphError, WorkGraphEventFilter, WorkGraphIdParams, WorkGraphService,
-    WorkGraphSnapshotFilter, WorkItemFilter, WorkItemId, WorkNamespace, WorkOwnerKey, WorkStatus,
+    WorkAttentionStatus, WorkAttentionTarget, WorkGraphError, WorkGraphEventFilter,
+    WorkGraphIdParams, WorkGraphService, WorkGraphSnapshotFilter, WorkItemFilter, WorkItemId,
+    WorkNamespace, WorkOwnerKey, WorkOwnerKind, WorkStatus,
 };
 use serde_json::Map;
 
@@ -186,6 +199,56 @@ fn parse_namespace(object: &Map<String, Value>) -> Result<Option<WorkNamespace>,
     }
 }
 
+/// Both SDKs write the attention-list `status` filter as a bare string
+/// ("active"), but upstream `WorkAttentionStatus` is internally tagged
+/// (`#[serde(tag = "state")]`) and rejects plain strings — the filter could
+/// never match anything. Map the four bare spellings onto the tagged form
+/// ("paused" carries no `until`); tagged objects pass through verbatim.
+fn normalize_attention_status_param(object: &mut Map<String, Value>) -> Result<(), JsonRpcError> {
+    let Some(value) = object.get("status") else {
+        return Ok(());
+    };
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    match text {
+        "active" | "paused" | "superseded" | "stopped" => {
+            let tagged = serde_json::json!({ "state": text });
+            object.insert("status".to_string(), tagged);
+            Ok(())
+        }
+        other => Err(invalid_params(format!(
+            "status '{other}' is unknown (allowed: active, paused, superseded, stopped)"
+        ))),
+    }
+}
+
+/// Goal/attention methods must stay in the service's default namespace:
+/// upstream turn-overlay resolution lists attention with `namespace: None`
+/// — the default only (meerkat 0.7.23, meerkat/src/surface.rs,
+/// `resolve_workgraph_attention_projection_for_session`) — so a goal or
+/// binding filed anywhere else is silently inert: it never reaches its
+/// member. Reject rather than accept-and-strand. Item-level methods keep
+/// namespace passthrough (items don't ride the overlay).
+fn reject_non_default_namespace(
+    service: &WorkGraphService,
+    object: &Map<String, Value>,
+) -> Result<(), JsonRpcError> {
+    let Some(namespace) = parse_namespace(object)? else {
+        return Ok(());
+    };
+    if namespace == *service.default_namespace() {
+        return Ok(());
+    }
+    Err(invalid_params(format!(
+        "namespace '{}' is not accepted on goal/attention methods: turn attention overlays \
+         resolve only in the default namespace '{}', so a goal filed elsewhere would never \
+         reach its member",
+        namespace.as_str(),
+        service.default_namespace().as_str(),
+    )))
+}
+
 /// Resolve a goal/attention target, accepting the mobkit-only
 /// `{kind:"identity", identity}` form beside upstream `session`/`owner`.
 fn resolve_goal_target(
@@ -347,44 +410,190 @@ fn reassign_error_to_rpc(
     }
 }
 
-/// Reject a `goal/create` whose lowered target already has an ACTIVE
-/// attention binding. Upstream happily creates the second binding, but then
-/// every scoped turn of that member is a hard `MultipleActiveBindings` error
+/// Mirror of upstream `mob_agent_owner_key_parts` (meerkat 0.7.23,
+/// meerkat/src/surface.rs — private there): split a lowered
+/// `mob/<mob>/agent/<identity>` owner id into its parts.
+fn mob_agent_owner_key_parts(owner_id: &str) -> Option<(&str, &str)> {
+    let rest = owner_id.strip_prefix("mob/")?;
+    let (mob_id, agent_identity) = rest.split_once("/agent/")?;
+    if mob_id.is_empty()
+        || agent_identity.is_empty()
+        || mob_id.contains('/')
+        || agent_identity.contains('/')
+    {
+        return None;
+    }
+    Some((mob_id, agent_identity))
+}
+
+/// Every canonical owner-key spelling that addresses the same member as
+/// `target`. Upstream `attention_target_matches_session` (meerkat 0.7.23,
+/// meerkat/src/surface.rs) matches BOTH a member's bridge session id and its
+/// lowered `mob/<mob>/agent/<identity>` owner key to the same member's
+/// turns, so a session-form binding and an identity-form binding on one
+/// member are still two bindings on one member. The primary key is always
+/// present; the other spelling is added when the target resolves through
+/// this runtime's roster (an unresolvable target simply has one spelling).
+async fn attention_target_alias_keys(
+    mob_handle: &meerkat_mob::MobHandle,
+    target: &WorkAttentionTarget,
+) -> Result<BTreeSet<String>, JsonRpcError> {
+    let primary = target.owner_key().map_err(workgraph_error_to_rpc)?;
+    let mut keys = BTreeSet::from([primary.canonical()]);
+    match primary.kind {
+        // session → identity: the roster member owning this bridge session.
+        WorkOwnerKind::Session => {
+            if let Ok(session_id) = meerkat::SessionId::parse(&primary.id)
+                && let Some(entry) = mob_handle
+                    .roster()
+                    .await
+                    .find_by_bridge_session_id(&session_id)
+                && let Ok(key) = meerkat_mob::lower_agent_identity_owner_key(
+                    &mob_handle.definition().id,
+                    &entry.agent_identity,
+                )
+            {
+                keys.insert(key.canonical());
+            }
+        }
+        // identity → session: only for THIS mob's lowered agent keys.
+        WorkOwnerKind::Agent => {
+            if let Some((mob_id, identity)) = mob_agent_owner_key_parts(&primary.id)
+                && mob_id == mob_handle.definition().id.as_str()
+                && let Some(session_id) = mob_handle
+                    .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
+                        identity,
+                    ))
+                    .await
+                && let Ok(key) = WorkOwnerKey::session(session_id.to_string())
+            {
+                keys.insert(key.canonical());
+            }
+        }
+        _ => {}
+    }
+    Ok(keys)
+}
+
+/// Whether `status` occupies its target: Active now, or Paused — a pause
+/// auto-reactivates at expiry, and upstream's Active listing is
+/// eligibility-at-now, so a paused binding is a scheduled second Active.
+fn binding_occupies_target(status: &WorkAttentionStatus) -> bool {
+    matches!(
+        status,
+        WorkAttentionStatus::Active | WorkAttentionStatus::Paused { .. }
+    )
+}
+
+/// Reject a `goal/create`/`attention/reassign` whose target already carries
+/// an Active or Paused attention binding (by alias set, not literal target
+/// spelling). Upstream happily creates the second binding, but then every
+/// scoped turn of that member is a hard `MultipleActiveBindings` error
 /// (meerkat 0.7.23, meerkat/src/surface.rs) until an operator intervenes —
-/// a bricked member. Surface the conflict at creation time instead.
-async fn reject_duplicate_active_binding(
+/// a bricked member. Surface the conflict at admission time instead.
+/// `exclude` names the binding a reassign is superseding, which cannot
+/// conflict with its own move.
+async fn reject_occupied_attention_target(
     service: &WorkGraphService,
-    request: &GoalCreateRequest,
+    mob_handle: &meerkat_mob::MobHandle,
+    namespace: Option<WorkNamespace>,
+    target: &WorkAttentionTarget,
+    exclude: Option<&WorkAttentionBindingId>,
+    action: &str,
 ) -> Result<(), JsonRpcError> {
-    // Compare lowered owner keys, not raw target forms: a session target and
-    // its lowered-owner spelling address the same member.
-    let desired_key = request
-        .target
-        .to_attention_target()
-        .owner_key()
-        .map_err(workgraph_error_to_rpc)?;
-    let active = service
+    let aliases = attention_target_alias_keys(mob_handle, target).await?;
+    let bindings = service
         .list_attention(AttentionListRequest {
             realm_id: None,
-            namespace: request.namespace.clone(),
+            namespace,
             target: None,
-            status: Some(meerkat::WorkAttentionStatus::Active),
+            status: None,
         })
         .await
         .map_err(workgraph_error_to_rpc)?;
-    let Some(existing) = active.attention.iter().find(|binding| {
-        binding
-            .target
-            .owner_key()
-            .is_ok_and(|key| key == desired_key)
+    let Some(existing) = bindings.attention.iter().find(|binding| {
+        exclude != Some(&binding.binding_id)
+            && binding_occupies_target(&binding.status)
+            && binding
+                .target
+                .owner_key()
+                .is_ok_and(|key| aliases.contains(&key.canonical()))
     }) else {
         return Ok(());
     };
+    let target_key = target.owner_key().map_err(workgraph_error_to_rpc)?;
+    Err(workgraph_conflict(match existing.status {
+        WorkAttentionStatus::Paused { .. } => format!(
+            "target '{}' already has a paused attention binding {} that will reactivate when \
+             its pause expires; resume it or close its goal instead of {action}",
+            target_key.canonical(),
+            existing.binding_id,
+        ),
+        _ => format!(
+            "target '{}' already has an active attention binding {}; reassign it or close its \
+             goal before {action}",
+            target_key.canonical(),
+            existing.binding_id,
+        ),
+    }))
+}
+
+/// Resume-side twin of [`reject_occupied_attention_target`]: pause A, create
+/// B on the same member, resume A = two Active bindings. Reject a resume
+/// whose binding's target (by alias set) has ANOTHER binding that is Active
+/// at now — the upstream Active filter already counts expired pauses. An
+/// unknown `binding_id` falls through so the service reports its canonical
+/// not-found error.
+async fn reject_resume_into_occupied_target(
+    service: &WorkGraphService,
+    mob_handle: &meerkat_mob::MobHandle,
+    namespace: Option<WorkNamespace>,
+    binding_id: &WorkAttentionBindingId,
+) -> Result<(), JsonRpcError> {
+    let all = service
+        .list_attention(AttentionListRequest {
+            realm_id: None,
+            namespace: namespace.clone(),
+            target: None,
+            status: None,
+        })
+        .await
+        .map_err(workgraph_error_to_rpc)?;
+    let Some(resumed) = all
+        .attention
+        .iter()
+        .find(|binding| binding.binding_id == *binding_id)
+    else {
+        return Ok(());
+    };
+    let aliases = attention_target_alias_keys(mob_handle, &resumed.target).await?;
+    let active = service
+        .list_attention(AttentionListRequest {
+            realm_id: None,
+            namespace,
+            target: None,
+            status: Some(WorkAttentionStatus::Active),
+        })
+        .await
+        .map_err(workgraph_error_to_rpc)?;
+    let Some(other) = active.attention.iter().find(|binding| {
+        binding.binding_id != *binding_id
+            && binding
+                .target
+                .owner_key()
+                .is_ok_and(|key| aliases.contains(&key.canonical()))
+    }) else {
+        return Ok(());
+    };
+    let target_key = resumed
+        .target
+        .owner_key()
+        .map(|key| key.canonical())
+        .unwrap_or_default();
     Err(workgraph_conflict(format!(
-        "target '{}' already has an active attention binding {}; pause or reassign it before \
-         creating another goal for the same target",
-        desired_key.canonical(),
-        existing.binding_id,
+        "resuming attention binding {binding_id} would give target '{target_key}' a second \
+         active binding ({} is already active); pause it or close its goal first",
+        other.binding_id,
     )))
 }
 
@@ -394,9 +603,16 @@ async fn reject_duplicate_active_binding(
 /// promoted into `goal/confirm` via `with_trusted_principal`; the unified
 /// stdin surface passes `None` (the host process itself is the trusted
 /// party there).
+///
+/// `mob_handle` backs identity-target lowering and the session↔identity
+/// alias resolution the duplicate-binding guards need. `admission_gate` is
+/// the runtime-wide mutex serializing those guards' check-then-act windows
+/// — both RPC surfaces (unified stdin + console) must pass the SAME gate or
+/// concurrent creates race past the check.
 pub(crate) async fn handle_workgraph_method(
     service: Option<&WorkGraphService>,
-    mob_id: &meerkat_mob::MobId,
+    mob_handle: &meerkat_mob::MobHandle,
+    admission_gate: &tokio::sync::Mutex<()>,
     trusted_principal: Option<WorkOwnerKey>,
     method: &str,
     params: &Value,
@@ -407,6 +623,7 @@ pub(crate) async fn handle_workgraph_method(
     let Some(service) = service else {
         return Err(workgraph_unavailable_error());
     };
+    let mob_id = &mob_handle.definition().id;
     let object = params_object(params)?;
     // The service is realm-scoped at construction; a caller-supplied realm
     // would silently address foreign realm rows in the shared store file.
@@ -454,6 +671,9 @@ pub(crate) async fn handle_workgraph_method(
             Ok(serde_json::json!({ "events": events }))
         }
         "mobkit/workgraph/attention/list" => {
+            reject_non_default_namespace(service, &object)?;
+            let mut object = object;
+            normalize_attention_status_param(&mut object)?;
             let request: AttentionListRequest = parse_request(object)?;
             let result = service
                 .list_attention(request)
@@ -574,6 +794,7 @@ pub(crate) async fn handle_workgraph_method(
             Ok(serde_json::json!({ "item": item }))
         }
         "mobkit/workgraph/policy/escalate" => {
+            reject_non_default_namespace(service, &object)?;
             if object.contains_key("authority_projection") {
                 return Err(invalid_params(
                     "authority_projection is not accepted; the authority witness is fetched \
@@ -608,6 +829,7 @@ pub(crate) async fn handle_workgraph_method(
             Ok(serde_json::json!({ "item": item }))
         }
         "mobkit/workgraph/goal/create" => {
+            reject_non_default_namespace(service, &object)?;
             let mut object = object;
             let target_value = object
                 .remove("target")
@@ -615,7 +837,16 @@ pub(crate) async fn handle_workgraph_method(
             let target = resolve_goal_target(mob_id, &target_value)?;
             object.insert("target".to_string(), to_result_value(&target));
             let request: GoalCreateRequest = parse_request(object)?;
-            reject_duplicate_active_binding(service, &request).await?;
+            let _admission = admission_gate.lock().await;
+            reject_occupied_attention_target(
+                service,
+                mob_handle,
+                request.namespace.clone(),
+                &request.target.to_attention_target(),
+                None,
+                "creating another goal for the same target",
+            )
+            .await?;
             let result = service
                 .create_goal(request)
                 .await
@@ -667,6 +898,7 @@ pub(crate) async fn handle_workgraph_method(
             Ok(to_result_value(&result))
         }
         "mobkit/workgraph/attention/pause" => {
+            reject_non_default_namespace(service, &object)?;
             let request: AttentionPauseRequest = parse_request(object)?;
             let result = service
                 .pause_attention(request)
@@ -675,7 +907,16 @@ pub(crate) async fn handle_workgraph_method(
             Ok(to_result_value(&result))
         }
         "mobkit/workgraph/attention/resume" => {
+            reject_non_default_namespace(service, &object)?;
             let request: AttentionResumeRequest = parse_request(object)?;
+            let _admission = admission_gate.lock().await;
+            reject_resume_into_occupied_target(
+                service,
+                mob_handle,
+                request.namespace.clone(),
+                &request.binding_id,
+            )
+            .await?;
             let result = service
                 .resume_attention(request)
                 .await
@@ -683,6 +924,7 @@ pub(crate) async fn handle_workgraph_method(
             Ok(to_result_value(&result))
         }
         "mobkit/workgraph/attention/reassign" => {
+            reject_non_default_namespace(service, &object)?;
             if object.contains_key("authority_projection") {
                 return Err(invalid_params(
                     "authority_projection is not accepted; the authority witness is fetched \
@@ -696,6 +938,16 @@ pub(crate) async fn handle_workgraph_method(
                 .get("target")
                 .ok_or_else(|| invalid_params("target is required"))?;
             let target = resolve_goal_target(mob_id, target_value)?;
+            let _admission = admission_gate.lock().await;
+            reject_occupied_attention_target(
+                service,
+                mob_handle,
+                namespace.clone(),
+                &target.to_attention_target(),
+                Some(&binding_id),
+                "reassigning this binding onto the same target",
+            )
+            .await?;
             let projection =
                 fetch_authority_projection(service, binding_id.clone(), namespace.clone()).await?;
             let binding_mode = projection.mode;
@@ -805,6 +1057,41 @@ mod tests {
         assert!(console_trusted_principal(Some("   ")).is_none());
         let key = console_trusted_principal(Some("alice@example.test")).expect("principal key");
         assert_eq!(key.canonical(), "principal:alice@example.test");
+    }
+
+    /// Round-2 finding B: SDKs send the attention-list `status` filter as a
+    /// bare string, upstream `WorkAttentionStatus` is internally tagged.
+    /// Both spellings must parse; unknown strings are a params error.
+    #[test]
+    fn attention_status_param_accepts_both_wire_spellings() {
+        for state in ["active", "paused", "superseded", "stopped"] {
+            let mut object = Map::new();
+            object.insert("status".to_string(), Value::String(state.to_string()));
+            normalize_attention_status_param(&mut object).expect("bare string accepted");
+            assert_eq!(object["status"], serde_json::json!({ "state": state }));
+            let request: AttentionListRequest =
+                parse_request(object).expect("normalized status parses upstream");
+            assert!(request.status.is_some(), "{state}");
+        }
+
+        let mut object = Map::new();
+        object.insert(
+            "status".to_string(),
+            serde_json::json!({ "state": "paused" }),
+        );
+        normalize_attention_status_param(&mut object).expect("tagged form passes through");
+        let request: AttentionListRequest = parse_request(object).expect("tagged form parses");
+        assert!(matches!(
+            request.status,
+            Some(WorkAttentionStatus::Paused { until: None })
+        ));
+
+        let mut object = Map::new();
+        object.insert("status".to_string(), Value::String("bogus".to_string()));
+        let error =
+            normalize_attention_status_param(&mut object).expect_err("unknown string rejected");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("active"), "{}", error.message);
     }
 
     /// Adversarial finding F12: a witness that goes stale between fetch and

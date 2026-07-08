@@ -111,7 +111,9 @@ export interface ConversationWorkGraphItemRow {
   priority?: string | null;
   ownerLabel?: string | null;
   // CAS token — operator actions must send the latest observed revision.
-  revision: number;
+  // Absent means no frame ever carried one: actions must resolve it from the
+  // service before mutating (never guess 0).
+  revision?: number;
   depth: number;
   parentId?: string | null;
   blocked?: boolean;
@@ -143,6 +145,12 @@ export interface ConversationWorkGraphAttentionRow {
 export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBase {
   kind: "workgraph";
   rootId: string;
+  // Stable UI-state anchor. The entry `id` migrates when a loose item grows
+  // a hierarchy (catch-all `workgraph:interaction:{id}` → rooted
+  // `workgraph:{rootId}`), remounting the card; this key stays pinned to the
+  // first contributing interaction so collapse/expansion state can survive
+  // the rekey moment.
+  uiStateKey?: string;
   title: string;
   objective?: string | null;
   status: WorkGraphCardStatus;

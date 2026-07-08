@@ -32,16 +32,40 @@ const ITEM_STATUS_LABEL: Record<string, string> = {
 // latest observed revision: mutations are CAS-guarded upstream. Two CAS
 // classes: goal actions (confirm / request-close) CAS against the goal WORK
 // ITEM's revision; attention actions (pause / resume / reassign) CAS against
-// the binding's machine revision.
+// the binding's machine revision. An absent revision means the card never
+// observed one — the handler must resolve the live revision before sending
+// (never substitute 0).
 export interface WorkGraphCardActions {
-  onClaim?: (input: { itemId: string; revision: number }) => void;
-  onClose?: (input: { itemId: string; revision: number }) => void;
+  onClaim?: (input: { itemId: string; revision?: number }) => void;
+  onClose?: (input: { itemId: string; revision?: number }) => void;
   onGoalConfirm?: (input: { bindingId: string; revision?: number }) => void;
   onGoalRequestClose?: (input: { bindingId: string; revision?: number }) => void;
   onAttentionPause?: (input: { bindingId: string; revision?: number }) => void;
   onAttentionResume?: (input: { bindingId: string; revision?: number }) => void;
   onAttentionReassign?: (input: { bindingId: string; revision?: number }) => void;
 }
+
+// UI state (item detail expansion, card collapse) must survive the card's
+// entry-id migration: when a loose item grows a hierarchy the timeline entry
+// rekeys (catch-all → rooted) and React remounts the subtree, resetting
+// component-local state. Item ids are stable ULIDs and the entry carries a
+// stable `uiStateKey`, so a module-level registry keyed by them carries the
+// state across the remount. Only `true` values are stored, so the maps stay
+// tiny and self-pruning.
+const expandedWorkGraphItems = new Set<string>();
+const collapsedWorkGraphCards = new Set<string>();
+
+function rememberFlag(registry: Set<string>, key: string, value: boolean): void {
+  if (value) registry.add(key);
+  else registry.delete(key);
+}
+
+export const __workGraphCardUiState = {
+  reset(): void {
+    expandedWorkGraphItems.clear();
+    collapsedWorkGraphCards.clear();
+  },
+};
 
 function itemStatusLabel(status: string): string {
   return ITEM_STATUS_LABEL[status] || status.replace(/_/g, " ");
@@ -77,7 +101,14 @@ function ItemRow({
   row: ConversationWorkGraphItemRow;
   actions?: WorkGraphCardActions | null;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpandedState] = useState(() => expandedWorkGraphItems.has(row.itemId));
+  const setExpanded = (update: (value: boolean) => boolean) => {
+    setExpandedState((value) => {
+      const next = update(value);
+      rememberFlag(expandedWorkGraphItems, row.itemId, next);
+      return next;
+    });
+  };
   const hasDetail = itemRowHasDetail(row);
   const terminal = row.status === "completed" || row.status === "cancelled" || row.status === "failed";
   const canClaim = Boolean(actions?.onClaim) && row.status === "open" && !row.ownerLabel;
@@ -164,7 +195,7 @@ function ItemRow({
           ) : null}
           <div className="cc-work-graph__item-meta">
             <span>{itemStatusLabel(row.status)}</span>
-            <span>rev {row.revision}</span>
+            {typeof row.revision === "number" ? <span>rev {row.revision}</span> : null}
             {row.updatedAt ? <span>updated {formatDay(row.updatedAt)} {formatClock(row.updatedAt)}</span> : null}
           </div>
         </div>
@@ -278,18 +309,30 @@ export function WorkGraphCard({
   Icon?: IconRenderer | null;
   actions?: WorkGraphCardActions | null;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const uiStateKey = entry.uiStateKey || entry.id;
+  const [collapsed, setCollapsedState] = useState(() => collapsedWorkGraphCards.has(uiStateKey));
+  const setCollapsed = (update: (value: boolean) => boolean) => {
+    setCollapsedState((value) => {
+      const next = update(value);
+      rememberFlag(collapsedWorkGraphCards, uiStateKey, next);
+      return next;
+    });
+  };
   const { completed, total } = entry.progress;
   const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
   const hasBody = entry.items.length > 0
     || entry.attention.length > 0
     || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
   // Goal actions CAS against the goal work item, not the binding: resolve
-  // each binding's bound item revision (falling back to the card root).
+  // each binding's bound item revision (falling back to the card root only
+  // when the binding names no item — a known item with an unknown revision
+  // must stay unknown so the handler resolves it instead of CASing against
+  // the wrong item).
   const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
   const goalRevisionFor = (row: ConversationWorkGraphAttentionRow): number | undefined => (
-    (row.itemId != null ? revisionByItemId.get(row.itemId) : undefined)
-      ?? revisionByItemId.get(entry.rootId)
+    row.itemId != null && revisionByItemId.has(row.itemId)
+      ? revisionByItemId.get(row.itemId)
+      : revisionByItemId.get(entry.rootId)
   );
 
   return (

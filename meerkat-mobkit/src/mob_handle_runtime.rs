@@ -3027,6 +3027,15 @@ pub struct MobRuntime {
     /// Realm-scoped WorkGraph service carried over from the bootstrap spec
     /// so `UnifiedRuntime` can expose it to the RPC/console surfaces.
     workgraph_service: Option<meerkat::WorkGraphService>,
+    /// Serializes the check-then-act windows of the workgraph RPC
+    /// duplicate-binding guards (goal/create, attention/resume,
+    /// attention/reassign). ONE gate per runtime: every RPC surface built
+    /// from this runtime (unified stdin dispatch + console routers) must
+    /// lock this same mutex, or concurrent creates race past the guard and
+    /// brick the member with upstream `MultipleActiveBindings`. Non-RPC
+    /// consumers (MobBuilder overlays, the schedule host) use the bare
+    /// service and are intentionally not serialized here.
+    workgraph_rpc_gate: Arc<tokio::sync::Mutex<()>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -3105,6 +3114,7 @@ impl MobRuntime {
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot,
             workgraph_service: spec.workgraph_service,
+            workgraph_rpc_gate: Arc::new(tokio::sync::Mutex::new(())),
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -3119,6 +3129,7 @@ impl MobRuntime {
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot: None,
             workgraph_service: None,
+            workgraph_rpc_gate: Arc::new(tokio::sync::Mutex::new(())),
             _ephemeral_dir: None,
         }
     }
@@ -3134,6 +3145,14 @@ impl MobRuntime {
     /// The realm-scoped WorkGraph service the runtime was bootstrapped with.
     pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
         self.workgraph_service.clone()
+    }
+
+    /// The runtime-wide admission gate for the workgraph RPC
+    /// duplicate-binding guards. Clones share the underlying mutex, so every
+    /// surface built from (a clone of) this runtime serializes against the
+    /// same gate.
+    pub(crate) fn workgraph_rpc_gate(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.workgraph_rpc_gate)
     }
 
     /// Install the console sink that agent-tool spawns project into. A no-op

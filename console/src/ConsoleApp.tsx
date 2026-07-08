@@ -34,6 +34,7 @@ import {
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
+  buildWorkGraphOperatorResultFrame,
   createUserEntry,
   appendOptimisticConversationEntry,
   inferResponsePhaseFromFrames,
@@ -50,9 +51,17 @@ import {
 } from "./lib/network";
 import {
   CONSOLE_COMMAND_NAMES,
+  consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
 } from "./lib/headless";
+import {
+  resolveWorkGraphBindingRevision,
+  resolveWorkGraphGoalItemRevision,
+  resolveWorkGraphItemRevision,
+  workGraphClaimOwnerId,
+  type WorkGraphCommandRunner,
+} from "./lib/workgraph-actions";
 import { createConsoleId } from "./lib/id";
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
@@ -3318,15 +3327,40 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         | typeof CONSOLE_COMMAND_NAMES.workgraphAttentionResume
         | typeof CONSOLE_COMMAND_NAMES.workgraphAttentionReassign,
       params: Record<string, unknown>,
+      cardIdentity?: string,
     ) => {
       if (consoleReadOnlyRef.current) return;
+      // Operator RPCs run outside any agent turn, so the server emits no
+      // console frames for them. Echo the RPC outcome into the identity log
+      // as a client-local synthetic frame: the inline card folds the fresh
+      // item/binding revisions (or the failure note) immediately, so
+      // consecutive card actions CAS against the updated state instead of
+      // conflicting on a stale one.
+      const echoResultToCard = (result?: unknown, failureMessage?: string) => {
+        if (!cardIdentity) return;
+        appendFrame(
+          cardIdentity,
+          buildWorkGraphOperatorResultFrame({
+            method: consoleCommandMethod(command),
+            params,
+            ...(failureMessage !== undefined
+              ? { errorMessage: failureMessage }
+              : { result }),
+            identity: cardIdentity,
+          }),
+        );
+        forceRender();
+      };
       try {
-        await executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params);
+        const result = await executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params);
         setActionError("");
+        echoResultToCard(result);
       } catch (err) {
-        // CAS conflicts and grant gates land in the action-error banner; the
-        // card refreshes with the authoritative revision on the next frames.
-        setActionError(errorMessage(err));
+        // CAS conflicts and grant gates land in the action-error banner and,
+        // through the same synthetic frame, as a failure note on the card.
+        const message = errorMessage(err);
+        setActionError(message);
+        echoResultToCard(undefined, message);
       }
       if (workGraphPanelDockedRef.current) {
         await refreshWorkGraphData().catch(() => {});
@@ -3336,44 +3370,127 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     [baseUrl, refreshWorkGraphData],
   );
 
+  const runWorkGraphQuery = React.useCallback<WorkGraphCommandRunner>(
+    (command, params) =>
+      executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl],
+  );
+
+  // Operator handlers shared by the inline card and the docked panel.
+  // `cardIdentity` scopes the synthetic result echo to that identity's chat
+  // log; the panel passes none (it re-reads the snapshot instead). A payload
+  // without a revision means the UI never observed the CAS token — resolve
+  // the live one first and, if that fails, surface the banner without
+  // sending (a guessed 0 is a guaranteed conflict).
+  const makeWorkGraphOperatorHandlers = React.useCallback(
+    (cardIdentity?: string) => {
+      const dispatch = (
+        resolveRevision: () => Promise<number>,
+        send: (expectedRevision: number) => Promise<void>,
+      ) => {
+        void (async () => {
+          let expectedRevision: number;
+          try {
+            expectedRevision = await resolveRevision();
+          } catch (err) {
+            setActionError(errorMessage(err));
+            return;
+          }
+          await send(expectedRevision);
+        })();
+      };
+      const revisionOr = (
+        revision: number | undefined,
+        resolve: () => Promise<number>,
+      ) => (revision !== undefined ? () => Promise.resolve(revision) : resolve);
+      return {
+        onClaim: ({ itemId, revision }: { itemId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClaim, {
+                id: itemId,
+                expected_revision: expectedRevision,
+                owner: {
+                  kind: "principal",
+                  id: workGraphClaimOwnerId(experience?.access?.subject, DEFAULT_APPROVER_ID),
+                },
+              }, cardIdentity),
+          ),
+        onClose: ({ itemId, revision }: { itemId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClose, {
+                id: itemId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onGoalConfirm: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalConfirm, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onGoalRequestClose: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionPause: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionPause, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionResume: ({ bindingId, revision }: { bindingId: string; revision?: number }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionResume, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+              }, cardIdentity),
+          ),
+        onAttentionReassign: ({ bindingId, revision, identity }: { bindingId: string; revision?: number; identity: string }) =>
+          dispatch(
+            revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+            (expectedRevision) =>
+              runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionReassign, {
+                binding_id: bindingId,
+                expected_revision: expectedRevision,
+                target: { kind: "identity", identity },
+              }, cardIdentity),
+          ),
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject],
+  );
+
   // Inline-card affordances: undefined when the caller lacks the manage
   // grant (or the console is read-only) — the card then renders no buttons.
-  const workGraphActions = React.useMemo<WorkGraphCardActions | undefined>(() => {
-    if (!canManageWorkGraph) return undefined;
-    return {
-      onClaim: ({ itemId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClaim, {
-          id: itemId,
-          expected_revision: revision,
-          owner: { kind: "principal", id: DEFAULT_APPROVER_ID },
-        }),
-      onClose: ({ itemId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClose, {
-          id: itemId,
-          expected_revision: revision,
-        }),
-      onGoalConfirm: ({ bindingId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalConfirm, {
-          binding_id: bindingId,
-          expected_revision: revision ?? 0,
-        }),
-      onGoalRequestClose: ({ bindingId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose, {
-          binding_id: bindingId,
-          expected_revision: revision ?? 0,
-        }),
-      onAttentionPause: ({ bindingId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionPause, {
-          binding_id: bindingId,
-          expected_revision: revision ?? 0,
-        }),
-      onAttentionResume: ({ bindingId, revision }) =>
-        void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionResume, {
-          binding_id: bindingId,
-          expected_revision: revision ?? 0,
-        }),
-    };
-  }, [canManageWorkGraph, runWorkGraphCommand]);
+  // Reassign needs a typed-in target identity, so only the panel offers it.
+  const workGraphCardActions = React.useCallback(
+    (cardIdentity: string): WorkGraphCardActions | undefined => {
+      if (!canManageWorkGraph) return undefined;
+      const { onAttentionReassign: _panelOnly, ...cardHandlers } =
+        makeWorkGraphOperatorHandlers(cardIdentity);
+      return cardHandlers;
+    },
+    [canManageWorkGraph, makeWorkGraphOperatorHandlers],
+  );
 
   // =========================================================================
   // RESIZE HANDLERS (unchanged)
@@ -3675,7 +3792,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         loadingOlderHistory={identityLog.olderHistoryLoading === true}
         onLoadOlder={() => void loadOlderIdentityTimeline(identity)}
         stackSlot={stackSlot}
-        workGraphActions={workGraphActions}
+        workGraphActions={workGraphCardActions(identity)}
       />
     );
   }
@@ -4021,58 +4138,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
         />
       );
-    if (target.kind === "workgraph")
+    if (target.kind === "workgraph") {
+      const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
       return (
         <WorkGraphPanel
           data={workGraphData}
           canManage={canManageWorkGraph}
           onRefresh={() => void refreshWorkGraphData()}
-          onClaim={({ itemId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClaim, {
-              id: itemId,
-              expected_revision: revision,
-              owner: { kind: "principal", id: DEFAULT_APPROVER_ID },
-            })
-          }
-          onClose={({ itemId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphClose, {
-              id: itemId,
-              expected_revision: revision,
-            })
-          }
-          onGoalConfirm={({ bindingId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalConfirm, {
-              binding_id: bindingId,
-              expected_revision: revision ?? 0,
-            })
-          }
-          onGoalRequestClose={({ bindingId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphGoalRequestClose, {
-              binding_id: bindingId,
-              expected_revision: revision ?? 0,
-            })
-          }
-          onAttentionPause={({ bindingId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionPause, {
-              binding_id: bindingId,
-              expected_revision: revision ?? 0,
-            })
-          }
-          onAttentionResume={({ bindingId, revision }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionResume, {
-              binding_id: bindingId,
-              expected_revision: revision ?? 0,
-            })
-          }
-          onAttentionReassign={({ bindingId, revision, identity }) =>
-            void runWorkGraphCommand(CONSOLE_COMMAND_NAMES.workgraphAttentionReassign, {
-              binding_id: bindingId,
-              expected_revision: revision ?? 0,
-              target: { kind: "identity", identity },
-            })
-          }
+          onClaim={workGraphPanelHandlers.onClaim}
+          onClose={workGraphPanelHandlers.onClose}
+          onGoalConfirm={workGraphPanelHandlers.onGoalConfirm}
+          onGoalRequestClose={workGraphPanelHandlers.onGoalRequestClose}
+          onAttentionPause={workGraphPanelHandlers.onAttentionPause}
+          onAttentionResume={workGraphPanelHandlers.onAttentionResume}
+          onAttentionReassign={workGraphPanelHandlers.onAttentionReassign}
         />
       );
+    }
     return <div className="console-panel">Unsupported panel</div>;
   }
 

@@ -3112,6 +3112,12 @@ var ITEM_STATUS_LABEL = {
   cancelled: "Cancelled",
   failed: "Failed"
 };
+var expandedWorkGraphItems = /* @__PURE__ */ new Set();
+var collapsedWorkGraphCards = /* @__PURE__ */ new Set();
+function rememberFlag(registry, key, value) {
+  if (value) registry.add(key);
+  else registry.delete(key);
+}
 function itemStatusLabel(status) {
   return ITEM_STATUS_LABEL[status] || status.replace(/_/g, " ");
 }
@@ -3135,7 +3141,14 @@ function ItemRow({
   row,
   actions
 }) {
-  const [expanded, setExpanded] = (0, import_react4.useState)(false);
+  const [expanded, setExpandedState] = (0, import_react4.useState)(() => expandedWorkGraphItems.has(row.itemId));
+  const setExpanded = (update) => {
+    setExpandedState((value) => {
+      const next = update(value);
+      rememberFlag(expandedWorkGraphItems, row.itemId, next);
+      return next;
+    });
+  };
   const hasDetail = itemRowHasDetail(row);
   const terminal = row.status === "completed" || row.status === "cancelled" || row.status === "failed";
   const canClaim = Boolean(actions?.onClaim) && row.status === "open" && !row.ownerLabel;
@@ -3205,10 +3218,10 @@ function ItemRow({
           row.evidence && row.evidence.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__evidence", children: row.evidence.map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("li", { children: line }, `${line}-${index}`)) }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "cc-work-graph__item-meta", children: [
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { children: itemStatusLabel(row.status) }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { children: [
+            typeof row.revision === "number" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { children: [
               "rev ",
               row.revision
-            ] }),
+            ] }) : null,
             row.updatedAt ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { children: [
               "updated ",
               formatDay(row.updatedAt),
@@ -3310,12 +3323,20 @@ function WorkGraphCard({
   Icon: Icon3,
   actions = null
 }) {
-  const [collapsed, setCollapsed] = (0, import_react4.useState)(false);
+  const uiStateKey = entry.uiStateKey || entry.id;
+  const [collapsed, setCollapsedState] = (0, import_react4.useState)(() => collapsedWorkGraphCards.has(uiStateKey));
+  const setCollapsed = (update) => {
+    setCollapsedState((value) => {
+      const next = update(value);
+      rememberFlag(collapsedWorkGraphCards, uiStateKey, next);
+      return next;
+    });
+  };
   const { completed, total } = entry.progress;
   const percent = total > 0 ? Math.round(completed / total * 100) : 0;
   const hasBody = entry.items.length > 0 || entry.attention.length > 0 || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
   const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
-  const goalRevisionFor = (row) => (row.itemId != null ? revisionByItemId.get(row.itemId) : void 0) ?? revisionByItemId.get(entry.rootId);
+  const goalRevisionFor = (row) => row.itemId != null && revisionByItemId.has(row.itemId) ? revisionByItemId.get(row.itemId) : revisionByItemId.get(entry.rootId);
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
     "section",
     {
@@ -3660,6 +3681,41 @@ function normalizeAgents(experience, modules) {
     }));
   }
   return [];
+}
+
+// src/lib/id.ts
+function randomUuidFromValues(cryptoSource) {
+  if (typeof cryptoSource.getRandomValues !== "function") {
+    return null;
+  }
+  try {
+    const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+    bytes[6] = bytes[6] & 15 | 64;
+    bytes[8] = bytes[8] & 63 | 128;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return [
+      hex.slice(0, 4).join(""),
+      hex.slice(4, 6).join(""),
+      hex.slice(6, 8).join(""),
+      hex.slice(8, 10).join(""),
+      hex.slice(10, 16).join("")
+    ].join("-");
+  } catch {
+    return null;
+  }
+}
+function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.crypto !== "undefined" ? globalThis.crypto : void 0) {
+  if (cryptoSource && typeof cryptoSource.randomUUID === "function") {
+    try {
+      return `${prefix}-${cryptoSource.randomUUID()}`;
+    } catch {
+    }
+  }
+  const generated = cryptoSource ? randomUuidFromValues(cryptoSource) : null;
+  if (generated) {
+    return `${prefix}-${generated}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 // src/lib/adapters.ts
@@ -4534,6 +4590,28 @@ var WORKGRAPH_TOOL_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+var WORKGRAPH_OPERATOR_RESULT_EVENT = "workgraph_operator_result";
+var WORKGRAPH_LOCAL_SOURCE_KIND = "console-local";
+function buildWorkGraphOperatorResultFrame(input) {
+  return {
+    id: input.frameId || createConsoleId("local-workgraph"),
+    event: WORKGRAPH_OPERATOR_RESULT_EVENT,
+    ...input.identity ? { identity: input.identity } : {},
+    timestampMs: input.timestampMs ?? Date.now(),
+    sourceKind: WORKGRAPH_LOCAL_SOURCE_KIND,
+    data: {
+      method: input.method,
+      // The sent params double as routing args (id / binding_id) so failed
+      // mutations still land on the right card.
+      args: input.params,
+      ...input.errorMessage !== void 0 ? { is_error: true, result: input.errorMessage } : { result: input.result ?? null }
+    }
+  };
+}
+function workGraphOperatorDisplayName(method) {
+  const raw = typeof method === "string" && method.trim() ? method.trim() : "workgraph";
+  return raw.replace(/^mobkit\//, "").replace(/\//g, "_");
+}
 function workGraphToolNamesByCallId(frames) {
   const names = /* @__PURE__ */ new Map();
   for (const frame of frames) {
@@ -4546,6 +4624,7 @@ function workGraphToolNamesByCallId(frames) {
   return names;
 }
 function isWorkGraphToolFrame(frame, namesByCallId) {
+  if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT) return true;
   if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) return false;
   if (WORKGRAPH_TOOL_NAMES.has(parseToolName(frame))) return true;
   if (!namesByCallId || namesByCallId.size === 0) return false;
@@ -4593,9 +4672,9 @@ function foldWorkGraphItem(state, value, frameIso) {
   const record = value;
   const itemId = workGraphString(record.id);
   if (!itemId) return null;
-  const revision = typeof record.revision === "number" ? record.revision : 0;
+  const revision = typeof record.revision === "number" ? record.revision : void 0;
   const existing = state.items.get(itemId);
-  if (existing && existing.revision > revision) {
+  if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     if (frameIso) existing.lastEventAt = frameIso;
     return itemId;
   }
@@ -4649,7 +4728,7 @@ function foldWorkGraphBinding(state, value, frameIso) {
   const machineState = record.machine_state && typeof record.machine_state === "object" ? record.machine_state : null;
   const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
   const existing = state.bindings.get(bindingId);
-  if (existing && existing.revision !== void 0 && revision !== void 0 && existing.revision > revision) {
+  if (existing && existing.revision !== void 0 && (revision === void 0 || existing.revision > revision)) {
     return bindingId;
   }
   const workRef = record.work_ref && typeof record.work_ref === "object" ? record.work_ref : null;
@@ -4790,7 +4869,7 @@ function workGraphItemRows(rootId, memberIds, state) {
         status: draft.status,
         priority: draft.priority ?? null,
         ownerLabel: draft.ownerLabel ?? null,
-        revision: draft.revision,
+        ...draft.revision !== void 0 ? { revision: draft.revision } : {},
         depth,
         parentId: state.parents.get(itemId) ?? null,
         blocked: draft.status === "blocked",
@@ -4864,15 +4943,17 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }
     if (argItemId) contribution.itemIds.push(argItemId);
     if (argBindingId) contribution.bindingIds.push(argBindingId);
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
       const failed = record?.is_error === true;
       contribution.outcome = failed ? "error" : "ok";
       if (failed) {
         state.events.push({
           at: frameIso,
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
+          interactionId: contribution.interactionId,
           text: workGraphFailureLine(
-            workGraphToolNameOf(frame, namesByCallId),
+            isOperatorResult ? workGraphOperatorDisplayName(record?.method) : workGraphToolNameOf(frame, namesByCallId),
             record?.result ?? record?.content
           )
         });
@@ -4960,6 +5041,13 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       const root = bindingRoot(bindingId);
       if (root && ownCardRoots.has(root)) cardKeys.add(`workgraph:${root}`);
     }
+    if (contribution.outcome === "error" && cardKeys.size === 0) {
+      const interactionKey = `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+      if (!catchAllMembers.has(interactionKey)) {
+        catchAllMembers.set(interactionKey, /* @__PURE__ */ new Set());
+      }
+      cardKeys.add(interactionKey);
+    }
     for (const key of cardKeys) {
       if (!anchorByCard.has(key)) {
         anchorByCard.set(key, {
@@ -4973,8 +5061,19 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       }
     }
   }
-  const eventsForMembers = (memberSet) => {
-    const matched = state.events.filter((event) => event.itemId ? memberSet.has(rootForItem(event.itemId)) || memberSet.has(event.itemId) : false);
+  const eventsForMembers = (memberSet, catchAllInteractionId) => {
+    const matched = state.events.filter((event) => {
+      if (event.itemId && (memberSet.has(rootForItem(event.itemId)) || memberSet.has(event.itemId))) {
+        return true;
+      }
+      if (catchAllInteractionId === void 0 || event.interactionId !== catchAllInteractionId) {
+        return false;
+      }
+      const routable = Boolean(
+        event.itemId && (state.items.has(event.itemId) || state.items.has(rootForItem(event.itemId)))
+      );
+      return !routable;
+    });
     if (matched.length === 0) return void 0;
     return matched.slice(-WORKGRAPH_RECENT_EVENT_LIMIT).map((event) => event.text);
   };
@@ -5006,6 +5105,10 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     pushEntry({
       kind: "workgraph",
       id: entryId,
+      // The anchor interaction is stable across the catch-all→rooted id
+      // migration (it is the first frame that ever touched this graph), so
+      // card UI state keyed on it survives the rekey remount.
+      uiStateKey: `workgraph:interaction:${anchor.interactionId || "unscoped"}`,
       identity: agentIdentity(agent),
       ...anchor.createdAt ? { createdAt: anchor.createdAt } : {},
       rootId: root,
@@ -5024,18 +5127,19 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const anchor = anchorByCard.get(entryId);
     if (!anchor) continue;
     const memberIds = [...members].filter((id) => state.items.has(id));
-    if (memberIds.length === 0) continue;
+    const recentEvents = eventsForMembers(members, anchor.interactionId);
+    if (memberIds.length === 0 && !recentEvents) continue;
     const rows = memberIds.flatMap((id) => workGraphItemRows(id, [id], state));
     const completed = rows.filter((item) => item.status === "completed").length;
-    const recentEvents = eventsForMembers(members);
     const lastUpdatedAt = latestIso(rows.flatMap((item) => [item.updatedAt, item.lastEventAt]));
     pushEntry({
       kind: "workgraph",
       id: entryId,
+      uiStateKey: entryId,
       identity: agentIdentity(agent),
       ...anchor.createdAt ? { createdAt: anchor.createdAt } : {},
       rootId: entryId.replace(/^workgraph:/, ""),
-      title: rows.length === 1 ? rows[0].title : "Work items",
+      title: rows.length === 1 ? rows[0].title : rows.length === 0 ? "WorkGraph activity" : "Work items",
       objective: rows.length === 1 ? rows[0].description ?? null : null,
       status: deriveWorkGraphStatus(rows),
       progress: { completed, total: rows.length },
@@ -7186,6 +7290,7 @@ var CONSOLE_RPC_METHODS2 = {
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
   workgraphEvents: "mobkit/workgraph/events",
+  workgraphGet: "mobkit/workgraph/get",
   workgraphGoalStatus: "mobkit/workgraph/goal/status",
   workgraphClaim: "mobkit/workgraph/claim",
   workgraphRelease: "mobkit/workgraph/release",
@@ -7874,6 +7979,7 @@ var CONSOLE_COMMAND_NAMES2 = {
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
   workgraphSnapshot: "workgraphSnapshot",
   workgraphEvents: "workgraphEvents",
+  workgraphGet: "workgraphGet",
   workgraphGoalStatus: "workgraphGoalStatus",
   workgraphClaim: "workgraphClaim",
   workgraphRelease: "workgraphRelease",
@@ -8019,6 +8125,10 @@ var CONSOLE_COMMAND_SPECS2 = {
     method: CONSOLE_RPC_METHODS2.workgraphEvents,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
   },
+  [CONSOLE_COMMAND_NAMES2.workgraphGet]: {
+    method: CONSOLE_RPC_METHODS2.workgraphGet,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
+  },
   [CONSOLE_COMMAND_NAMES2.workgraphGoalStatus]: {
     method: CONSOLE_RPC_METHODS2.workgraphGoalStatus,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
@@ -8056,6 +8166,9 @@ var CONSOLE_COMMAND_SPECS2 = {
     targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
   }
 };
+function consoleCommandMethod(command) {
+  return CONSOLE_COMMAND_SPECS2[command].method;
+}
 function createHttpConsoleTransport2({
   baseUrl,
   fetchTimeoutMs
@@ -8361,39 +8474,42 @@ function isMobKitTarget(target) {
   return target.kind.startsWith("mobkit/");
 }
 
-// src/lib/id.ts
-function randomUuidFromValues(cryptoSource) {
-  if (typeof cryptoSource.getRandomValues !== "function") {
-    return null;
-  }
-  try {
-    const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
-    bytes[6] = bytes[6] & 15 | 64;
-    bytes[8] = bytes[8] & 63 | 128;
-    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
-    return [
-      hex.slice(0, 4).join(""),
-      hex.slice(4, 6).join(""),
-      hex.slice(6, 8).join(""),
-      hex.slice(8, 10).join(""),
-      hex.slice(10, 16).join("")
-    ].join("-");
-  } catch {
-    return null;
-  }
+// src/lib/workgraph-actions.ts
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.crypto !== "undefined" ? globalThis.crypto : void 0) {
-  if (cryptoSource && typeof cryptoSource.randomUUID === "function") {
-    try {
-      return `${prefix}-${cryptoSource.randomUUID()}`;
-    } catch {
-    }
+function revisionOfItem(result) {
+  const item = asRecord(asRecord(result)?.item);
+  return typeof item?.revision === "number" ? item.revision : void 0;
+}
+async function resolveWorkGraphItemRevision(run, itemId) {
+  const result = await run(CONSOLE_COMMAND_NAMES2.workgraphGet, { id: itemId });
+  const revision = revisionOfItem(result);
+  if (revision === void 0) {
+    throw new Error(`could not resolve the current revision of work item ${itemId}`);
   }
-  const generated = cryptoSource ? randomUuidFromValues(cryptoSource) : null;
-  if (generated) {
-    return `${prefix}-${generated}`;
+  return revision;
+}
+async function resolveWorkGraphGoalItemRevision(run, bindingId) {
+  const result = await run(CONSOLE_COMMAND_NAMES2.workgraphGoalStatus, { binding_id: bindingId });
+  const revision = revisionOfItem(result);
+  if (revision === void 0) {
+    throw new Error(`could not resolve the goal item revision for binding ${bindingId}`);
   }
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return revision;
+}
+async function resolveWorkGraphBindingRevision(run, bindingId) {
+  const result = await run(CONSOLE_COMMAND_NAMES2.workgraphGoalStatus, { binding_id: bindingId });
+  const machineState = asRecord(asRecord(asRecord(result)?.attention)?.machine_state);
+  const revision = typeof machineState?.revision === "number" ? machineState.revision : void 0;
+  if (revision === void 0) {
+    throw new Error(`could not resolve the machine revision of attention binding ${bindingId}`);
+  }
+  return revision;
+}
+function workGraphClaimOwnerId(subject, fallback) {
+  const trimmed = typeof subject === "string" ? subject.trim() : "";
+  return trimmed || fallback;
 }
 
 // src/lib/pane-resize.ts
@@ -13030,7 +13146,7 @@ function ItemRow2({
 }) {
   const { item, itemId, depth } = row;
   const status = item.status || "open";
-  const revision = typeof item.revision === "number" ? item.revision : 0;
+  const revision = typeof item.revision === "number" ? item.revision : void 0;
   const terminal = status === "completed" || status === "cancelled" || status === "failed";
   const owner = workGraphOwnerLabelOf(item);
   return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)(
@@ -19559,13 +19675,29 @@ function ConsoleApp({ baseUrl }) {
   }
   const canManageWorkGraph = experience?.workgraph?.can_manage === true && !consoleReadOnly;
   const runWorkGraphCommand = import_react34.default.useCallback(
-    async (command, params) => {
+    async (command, params, cardIdentity) => {
       if (consoleReadOnlyRef.current) return;
+      const echoResultToCard = (result, failureMessage) => {
+        if (!cardIdentity) return;
+        appendFrame(
+          cardIdentity,
+          buildWorkGraphOperatorResultFrame({
+            method: consoleCommandMethod(command),
+            params,
+            ...failureMessage !== void 0 ? { errorMessage: failureMessage } : { result },
+            identity: cardIdentity
+          })
+        );
+        forceRender();
+      };
       try {
-        await executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params);
+        const result = await executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params);
         setActionError("");
+        echoResultToCard(result);
       } catch (err) {
-        setActionError(errorMessage(err));
+        const message = errorMessage(err);
+        setActionError(message);
+        echoResultToCard(void 0, message);
       }
       if (workGraphPanelDockedRef.current) {
         await refreshWorkGraphData().catch(() => {
@@ -19575,36 +19707,94 @@ function ConsoleApp({ baseUrl }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseUrl, refreshWorkGraphData]
   );
-  const workGraphActions = import_react34.default.useMemo(() => {
-    if (!canManageWorkGraph) return void 0;
-    return {
-      onClaim: ({ itemId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClaim, {
-        id: itemId,
-        expected_revision: revision,
-        owner: { kind: "principal", id: DEFAULT_APPROVER_ID }
-      }),
-      onClose: ({ itemId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClose, {
-        id: itemId,
-        expected_revision: revision
-      }),
-      onGoalConfirm: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalConfirm, {
-        binding_id: bindingId,
-        expected_revision: revision ?? 0
-      }),
-      onGoalRequestClose: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalRequestClose, {
-        binding_id: bindingId,
-        expected_revision: revision ?? 0
-      }),
-      onAttentionPause: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionPause, {
-        binding_id: bindingId,
-        expected_revision: revision ?? 0
-      }),
-      onAttentionResume: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionResume, {
-        binding_id: bindingId,
-        expected_revision: revision ?? 0
-      })
-    };
-  }, [canManageWorkGraph, runWorkGraphCommand]);
+  const runWorkGraphQuery = import_react34.default.useCallback(
+    (command, params) => executeHeadlessCommand(command, controlWorkbenchTarget("workgraph"), params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseUrl]
+  );
+  const makeWorkGraphOperatorHandlers = import_react34.default.useCallback(
+    (cardIdentity) => {
+      const dispatch = (resolveRevision, send) => {
+        void (async () => {
+          let expectedRevision;
+          try {
+            expectedRevision = await resolveRevision();
+          } catch (err) {
+            setActionError(errorMessage(err));
+            return;
+          }
+          await send(expectedRevision);
+        })();
+      };
+      const revisionOr = (revision, resolve) => revision !== void 0 ? () => Promise.resolve(revision) : resolve;
+      return {
+        onClaim: ({ itemId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClaim, {
+            id: itemId,
+            expected_revision: expectedRevision,
+            owner: {
+              kind: "principal",
+              id: workGraphClaimOwnerId(experience?.access?.subject, DEFAULT_APPROVER_ID)
+            }
+          }, cardIdentity)
+        ),
+        onClose: ({ itemId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphItemRevision(runWorkGraphQuery, itemId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClose, {
+            id: itemId,
+            expected_revision: expectedRevision
+          }, cardIdentity)
+        ),
+        onGoalConfirm: ({ bindingId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalConfirm, {
+            binding_id: bindingId,
+            expected_revision: expectedRevision
+          }, cardIdentity)
+        ),
+        onGoalRequestClose: ({ bindingId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphGoalItemRevision(runWorkGraphQuery, bindingId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalRequestClose, {
+            binding_id: bindingId,
+            expected_revision: expectedRevision
+          }, cardIdentity)
+        ),
+        onAttentionPause: ({ bindingId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionPause, {
+            binding_id: bindingId,
+            expected_revision: expectedRevision
+          }, cardIdentity)
+        ),
+        onAttentionResume: ({ bindingId, revision }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionResume, {
+            binding_id: bindingId,
+            expected_revision: expectedRevision
+          }, cardIdentity)
+        ),
+        onAttentionReassign: ({ bindingId, revision, identity }) => dispatch(
+          revisionOr(revision, () => resolveWorkGraphBindingRevision(runWorkGraphQuery, bindingId)),
+          (expectedRevision) => runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionReassign, {
+            binding_id: bindingId,
+            expected_revision: expectedRevision,
+            target: { kind: "identity", identity }
+          }, cardIdentity)
+        )
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runWorkGraphCommand, runWorkGraphQuery, experience?.access?.subject]
+  );
+  const workGraphCardActions = import_react34.default.useCallback(
+    (cardIdentity) => {
+      if (!canManageWorkGraph) return void 0;
+      const { onAttentionReassign: _panelOnly, ...cardHandlers } = makeWorkGraphOperatorHandlers(cardIdentity);
+      return cardHandlers;
+    },
+    [canManageWorkGraph, makeWorkGraphOperatorHandlers]
+  );
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
   function handleSidebarResize(event) {
     event.preventDefault();
@@ -19825,7 +20015,7 @@ function ConsoleApp({ baseUrl }) {
         loadingOlderHistory: identityLog.olderHistoryLoading === true,
         onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot,
-        workGraphActions
+        workGraphActions: workGraphCardActions(identity)
       }
     );
   }
@@ -20094,45 +20284,24 @@ function ConsoleApp({ baseUrl }) {
           )
         }
       );
-    if (target.kind === "workgraph")
+    if (target.kind === "workgraph") {
+      const workGraphPanelHandlers = makeWorkGraphOperatorHandlers();
       return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)(
         WorkGraphPanel,
         {
           data: workGraphData,
           canManage: canManageWorkGraph,
           onRefresh: () => void refreshWorkGraphData(),
-          onClaim: ({ itemId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClaim, {
-            id: itemId,
-            expected_revision: revision,
-            owner: { kind: "principal", id: DEFAULT_APPROVER_ID }
-          }),
-          onClose: ({ itemId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphClose, {
-            id: itemId,
-            expected_revision: revision
-          }),
-          onGoalConfirm: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalConfirm, {
-            binding_id: bindingId,
-            expected_revision: revision ?? 0
-          }),
-          onGoalRequestClose: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphGoalRequestClose, {
-            binding_id: bindingId,
-            expected_revision: revision ?? 0
-          }),
-          onAttentionPause: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionPause, {
-            binding_id: bindingId,
-            expected_revision: revision ?? 0
-          }),
-          onAttentionResume: ({ bindingId, revision }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionResume, {
-            binding_id: bindingId,
-            expected_revision: revision ?? 0
-          }),
-          onAttentionReassign: ({ bindingId, revision, identity }) => void runWorkGraphCommand(CONSOLE_COMMAND_NAMES2.workgraphAttentionReassign, {
-            binding_id: bindingId,
-            expected_revision: revision ?? 0,
-            target: { kind: "identity", identity }
-          })
+          onClaim: workGraphPanelHandlers.onClaim,
+          onClose: workGraphPanelHandlers.onClose,
+          onGoalConfirm: workGraphPanelHandlers.onGoalConfirm,
+          onGoalRequestClose: workGraphPanelHandlers.onGoalRequestClose,
+          onAttentionPause: workGraphPanelHandlers.onAttentionPause,
+          onAttentionResume: workGraphPanelHandlers.onAttentionResume,
+          onAttentionReassign: workGraphPanelHandlers.onAttentionReassign
         }
       );
+    }
     return /* @__PURE__ */ (0, import_jsx_runtime42.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime42.jsxs)(

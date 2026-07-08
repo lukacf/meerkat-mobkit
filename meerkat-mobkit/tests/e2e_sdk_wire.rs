@@ -224,3 +224,298 @@ fn e2e_unknown_method_returns_minus_32601() {
 }
 
 // Note: mobkit/ensure_member is unified-runtime-only (tested in mob_methods).
+
+// ---------------------------------------------------------------------------
+// mobkit/workgraph/* — unified-runtime method group (not served by
+// handle_mobkit_rpc_json). Requests below are the exact JSON the SDKs
+// produce — param shapes mirror the pins in
+// sdk/python/tests/test_rpc_method_names.py and
+// sdk/typescript/tests/runtime.test.ts byte-for-byte — and responses are
+// asserted in the shapes the SDK parsers consume.
+// ---------------------------------------------------------------------------
+
+const WORKGRAPH_WIRE_MOB_TOML: &str = r#"
+[mob]
+id = "e2e-wire-workgraph"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+external_addressable = true
+"#;
+
+/// Builder-constructed runtime: the builder path wires a memory-backed
+/// WorkGraph service automatically.
+async fn workgraph_runtime() -> meerkat_mobkit::UnifiedRuntime {
+    Box::pin(
+        meerkat_mobkit::UnifiedRuntime::builder()
+            .definition(
+                meerkat_mob::MobDefinition::from_toml(WORKGRAPH_WIRE_MOB_TOML)
+                    .expect("parse workgraph wire definition"),
+            )
+            .default_llm_client(std::sync::Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("workgraph wire runtime builds")
+}
+
+/// Counter-fixture on the manual `MobBootstrapSpec::new` path, which wires
+/// no WorkGraph service — the -32041 shape source.
+async fn runtime_without_workgraph() -> (tempfile::TempDir, meerkat_mobkit::UnifiedRuntime) {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let factory = meerkat::AgentFactory::new(temp_dir.path()).comms(true);
+    let session_service = std::sync::Arc::new(meerkat::build_ephemeral_service(
+        factory,
+        meerkat::Config::default(),
+        8,
+    ));
+    let mob_spec = meerkat_mobkit::MobBootstrapSpec::new(
+        meerkat_mob::MobDefinition::from_toml(WORKGRAPH_WIRE_MOB_TOML)
+            .expect("parse workgraph wire definition"),
+        meerkat_mob::MobStorage::in_memory(),
+        session_service,
+    )
+    .with_options(meerkat_mobkit::MobBootstrapOptions {
+        allow_ephemeral_sessions: true,
+        notify_orchestrator_on_resume: true,
+        default_llm_client: Some(std::sync::Arc::new(meerkat_client::TestClient::default())),
+    });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "e2e-wire-workgraph".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime =
+        meerkat_mobkit::UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+            .await
+            .expect("bootstrap runtime without workgraph");
+    (temp_dir, runtime)
+}
+
+async fn unified_rpc(
+    runtime: &meerkat_mobkit::UnifiedRuntime,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> Value {
+    let request = json!({
+        "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+    })
+    .to_string();
+    let response = meerkat_mobkit::handle_unified_rpc_json(
+        runtime,
+        &request,
+        Duration::from_secs(5),
+        None,
+        None,
+    )
+    .await;
+    serde_json::from_str(&response).expect("valid JSON response")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_workgraph_create_snapshot_list_get_roundtrip() {
+    let rt = workgraph_runtime().await;
+
+    // create — Python SDK pin: {"title": "Ship it", "priority": "high"}
+    let resp = unified_rpc(
+        &rt,
+        "wg-create",
+        "mobkit/workgraph/create",
+        json!({ "title": "Ship it", "priority": "high" }),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp:#?}");
+    let item = &resp["result"]["item"];
+    let item_id = item["id"].as_str().expect("item id is a string");
+    assert_eq!(item["title"], json!("Ship it"));
+    assert_eq!(item["priority"], json!("high"));
+    assert_eq!(item["status"], json!("open"));
+    assert!(item["revision"].as_u64().is_some(), "{item:#?}");
+
+    // snapshot — Python SDK pin: {"namespace": "default"}
+    let resp = unified_rpc(
+        &rt,
+        "wg-snap",
+        "mobkit/workgraph/snapshot",
+        json!({ "namespace": "default" }),
+    )
+    .await;
+    let snapshot = &resp["result"];
+    assert_eq!(snapshot["items"].as_array().expect("items array").len(), 1);
+    assert!(snapshot["edges"].is_array(), "{snapshot:#?}");
+    assert!(snapshot["attention"].is_array(), "{snapshot:#?}");
+    assert!(snapshot["realm_id"].is_string(), "{snapshot:#?}");
+
+    // list — Python SDK pin: {"statuses": ["open"]}
+    let resp = unified_rpc(
+        &rt,
+        "wg-list",
+        "mobkit/workgraph/list",
+        json!({ "statuses": ["open"] }),
+    )
+    .await;
+    assert_eq!(
+        resp["result"]["items"].as_array().expect("items").len(),
+        1,
+        "{resp:#?}"
+    );
+
+    // get — Python SDK pin: {"id": <item id>}
+    let resp = unified_rpc(
+        &rt,
+        "wg-get",
+        "mobkit/workgraph/get",
+        json!({ "id": item_id }),
+    )
+    .await;
+    assert_eq!(resp["result"]["item"]["id"], json!(item_id));
+    rt.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_workgraph_claim_accepts_flat_owner_wire_form() {
+    let rt = workgraph_runtime().await;
+    let created = unified_rpc(
+        &rt,
+        "wg-c1",
+        "mobkit/workgraph/create",
+        json!({ "title": "Claim me" }),
+    )
+    .await;
+    let item = &created["result"]["item"];
+
+    // TypeScript SDK pin: flat owner + lease_seconds.
+    let resp = unified_rpc(
+        &rt,
+        "wg-claim",
+        "mobkit/workgraph/claim",
+        json!({
+            "id": item["id"],
+            "expected_revision": item["revision"],
+            "owner": { "kind": "agent", "id": "agent-1", "display_name": "Agent One" },
+            "lease_seconds": 60,
+        }),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp:#?}");
+    let claimed = &resp["result"]["item"];
+    assert_eq!(claimed["status"], json!("in_progress"));
+    assert_eq!(claimed["claim"]["owner"]["key"]["kind"], json!("agent"));
+    assert_eq!(claimed["claim"]["owner"]["key"]["id"], json!("agent-1"));
+    assert_eq!(
+        claimed["claim"]["owner"]["display_name"],
+        json!("Agent One")
+    );
+    rt.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_workgraph_goal_attention_confirm_roundtrip() {
+    let rt = workgraph_runtime().await;
+
+    // goal/create — TypeScript SDK pin, mobkit identity target form.
+    let resp = unified_rpc(
+        &rt,
+        "wg-goal",
+        "mobkit/workgraph/goal/create",
+        json!({ "title": "Track it", "target": { "kind": "identity", "identity": "helper" } }),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp:#?}");
+    let goal = &resp["result"];
+    let binding_id = goal["attention"]["binding_id"]
+        .as_str()
+        .expect("binding id is a string");
+    assert_eq!(goal["attention"]["status"]["state"], json!("active"));
+    assert_eq!(goal["attention"]["target"]["kind"], json!("lowered_owner"));
+    let item_revision = goal["item"]["revision"].as_u64().expect("item revision");
+
+    // attention/list — both SDKs send the status filter as a bare string.
+    let resp = unified_rpc(
+        &rt,
+        "wg-att",
+        "mobkit/workgraph/attention/list",
+        json!({ "status": "active" }),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp:#?}");
+    let attention = resp["result"]["attention"].as_array().expect("attention");
+    assert_eq!(attention.len(), 1, "{resp:#?}");
+    assert_eq!(attention[0]["binding_id"], json!(binding_id));
+
+    // goal/confirm — TypeScript SDK pin: binding_id/expected_revision/evidence.
+    let resp = unified_rpc(
+        &rt,
+        "wg-confirm",
+        "mobkit/workgraph/goal/confirm",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": item_revision,
+            "evidence": { "kind": "self_attest", "id": "ev-1" },
+        }),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp:#?}");
+    let confirmed = &resp["result"];
+    assert_eq!(
+        confirmed["item"]["evidence_refs"][0]["kind"],
+        json!("self_attest")
+    );
+    assert!(
+        confirmed["attention"]["binding_id"].is_string(),
+        "SDK parses item + attention from goal/confirm: {confirmed:#?}"
+    );
+    rt.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_workgraph_stale_revision_returns_typed_conflict_shape() {
+    let rt = workgraph_runtime().await;
+    let created = unified_rpc(
+        &rt,
+        "wg-c2",
+        "mobkit/workgraph/create",
+        json!({ "title": "Ship it" }),
+    )
+    .await;
+    let item = &created["result"]["item"];
+    let stale = item["revision"].as_u64().expect("revision") + 41;
+
+    // update — Python SDK pin: {"id", "expected_revision", "title"}.
+    let resp = unified_rpc(
+        &rt,
+        "wg-stale",
+        "mobkit/workgraph/update",
+        json!({ "id": item["id"], "expected_revision": stale, "title": "Ship it faster" }),
+    )
+    .await;
+    assert_eq!(resp["error"]["code"], json!(-32042), "{resp:#?}");
+    assert_eq!(
+        resp["error"]["data"]["kind"],
+        json!("workgraph_conflict"),
+        "SDKs reify the conflict on data.kind: {resp:#?}"
+    );
+    assert!(
+        resp["error"]["data"]["detail"].is_string(),
+        "detail carries the upstream message: {resp:#?}"
+    );
+    rt.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_workgraph_unavailable_returns_minus_32041_shape() {
+    let (_dir, rt) = runtime_without_workgraph().await;
+    let resp = unified_rpc(&rt, "wg-un", "mobkit/workgraph/snapshot", json!({})).await;
+    assert_eq!(resp["error"]["code"], json!(-32041), "{resp:#?}");
+    assert_eq!(
+        resp["error"]["data"]["kind"],
+        json!("workgraph_unavailable"),
+        "SDKs reify unavailability on data.kind: {resp:#?}"
+    );
+    rt.mob_handle().stop().await.expect("stop");
+}

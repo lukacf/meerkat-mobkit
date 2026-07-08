@@ -101,6 +101,7 @@ class CapabilitiesResult:
     methods: list[str]
     loaded_modules: list[str]
     runtime_capabilities: RuntimeCapabilities | None = None
+    workgraph: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilitiesResult:
@@ -110,6 +111,7 @@ class CapabilitiesResult:
             methods=list(data.get("methods", [])),
             loaded_modules=list(data.get("loaded_modules", [])),
             runtime_capabilities=RuntimeCapabilities.from_dict(rc_raw) if rc_raw else None,
+            workgraph=bool(data.get("workgraph", False)),
         )
 
 

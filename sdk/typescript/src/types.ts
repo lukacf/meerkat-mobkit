@@ -173,6 +173,7 @@ export interface CapabilitiesResult {
   readonly methods: readonly string[];
   readonly loadedModules: readonly string[];
   readonly runtimeCapabilities?: RuntimeCapabilities;
+  readonly workgraph: boolean;
 }
 
 export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
@@ -182,6 +183,7 @@ export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
     methods: asStringArray(d.methods),
     loadedModules: asStringArray(d.loaded_modules),
     runtimeCapabilities: parseRuntimeCapabilities(d.runtime_capabilities),
+    workgraph: Boolean(d.workgraph ?? false),
   };
 }
 

@@ -27,8 +27,10 @@ interface WorkGraphPanelProps {
   data: WorkGraphPanelData;
   canManage: boolean;
   onRefresh: () => void;
-  onClaim?: (input: { itemId: string; revision: number }) => void;
-  onClose?: (input: { itemId: string; revision: number }) => void;
+  // An absent revision means the snapshot never carried one: handlers must
+  // resolve the live revision before mutating (never substitute 0).
+  onClaim?: (input: { itemId: string; revision?: number }) => void;
+  onClose?: (input: { itemId: string; revision?: number }) => void;
   onGoalConfirm?: (input: { bindingId: string; revision?: number }) => void;
   onGoalRequestClose?: (input: { bindingId: string; revision?: number }) => void;
   onAttentionPause?: (input: { bindingId: string; revision?: number }) => void;
@@ -213,7 +215,7 @@ function ItemRow({
 }) {
   const { item, itemId, depth } = row;
   const status = item.status || "open";
-  const revision = typeof item.revision === "number" ? item.revision : 0;
+  const revision = typeof item.revision === "number" ? item.revision : undefined;
   const terminal = status === "completed" || status === "cancelled" || status === "failed";
   const owner = workGraphOwnerLabelOf(item);
   return (

@@ -80,7 +80,22 @@ struct GatewayRuntimeOptions {
     agent_memory: Option<GatewayAgentMemoryOptions>,
     /// WorkGraph service construction switch (default on). `false` disables
     /// the store, member tools, overlays, and the mobkit/workgraph/* RPCs.
-    workgraph: bool,
+    workgraph: GatewayWorkgraphOption,
+}
+
+/// `runtime_options.workgraph` wire forms. Booleans keep the original
+/// semantics (on with defaulted store placement / off). A string is an
+/// explicit DIRECTORY for the durable store — `workgraph.sqlite3` is created
+/// inside it. The explicit form exists for identity-first launches that
+/// persist through an SDK-hosted continuity store (`has_continuity_store`
+/// without `persistent_state`): those have no state dir to default to, so a
+/// bare `true` silently rides a memory store.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum GatewayWorkgraphOption {
+    #[default]
+    Enabled,
+    Disabled,
+    DurableDir(std::path::PathBuf),
 }
 
 struct GatewayAgentMemoryOptions {
@@ -146,7 +161,7 @@ impl Default for GatewayRuntimeOptions {
             access: None,
             demo_llm: false,
             agent_memory: None,
-            workgraph: true,
+            workgraph: GatewayWorkgraphOption::Enabled,
         }
     }
 }
@@ -1635,25 +1650,50 @@ actions = ["agent.view"]
     }
 
     #[test]
-    fn gateway_runtime_options_workgraph_defaults_on_and_parses_bool() {
+    fn gateway_runtime_options_workgraph_parses_bool_and_path_forms() {
         let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults parse");
-        assert!(defaults.workgraph, "workgraph defaults on");
+        assert_eq!(
+            defaults.workgraph,
+            GatewayWorkgraphOption::Enabled,
+            "workgraph defaults on"
+        );
+
+        let enabled = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "workgraph": true } }),
+            None,
+        )
+        .expect("explicit true parses");
+        assert_eq!(enabled.workgraph, GatewayWorkgraphOption::Enabled);
 
         let disabled = parse_gateway_runtime_options(
             &json!({ "runtime_options": { "workgraph": false } }),
             None,
         )
         .expect("explicit false parses");
-        assert!(!disabled.workgraph);
+        assert_eq!(disabled.workgraph, GatewayWorkgraphOption::Disabled);
 
-        let err = match parse_gateway_runtime_options(
-            &json!({ "runtime_options": { "workgraph": "yes" } }),
+        // A string is an explicit durable store directory — the escape hatch
+        // for SDK-hosted-continuity launches that have no persistent_state.
+        let durable = parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "workgraph": "/var/lib/mobkit/workgraph" } }),
             None,
-        ) {
-            Ok(_) => panic!("non-boolean should fail"),
-            Err(err) => err,
-        };
-        assert!(err.contains("runtime_options.workgraph"));
+        )
+        .expect("string path parses");
+        assert_eq!(
+            durable.workgraph,
+            GatewayWorkgraphOption::DurableDir("/var/lib/mobkit/workgraph".into())
+        );
+
+        for invalid in [json!(42), json!(""), json!("   "), json!({ "dir": "x" })] {
+            let err = match parse_gateway_runtime_options(
+                &json!({ "runtime_options": { "workgraph": invalid } }),
+                None,
+            ) {
+                Ok(_) => panic!("invalid workgraph value should fail: {invalid}"),
+                Err(err) => err,
+            };
+            assert!(err.contains("runtime_options.workgraph"), "{err}");
+        }
     }
 }
 
@@ -1769,9 +1809,20 @@ fn parse_gateway_runtime_options(
         }
     }
     if let Some(value) = runtime_options.get("workgraph") {
-        parsed.workgraph = value
-            .as_bool()
-            .ok_or_else(|| "runtime_options.workgraph must be a boolean".to_string())?;
+        parsed.workgraph = match value {
+            Value::Bool(true) => GatewayWorkgraphOption::Enabled,
+            Value::Bool(false) => GatewayWorkgraphOption::Disabled,
+            Value::String(path) if !path.trim().is_empty() => {
+                GatewayWorkgraphOption::DurableDir(std::path::PathBuf::from(path))
+            }
+            _ => {
+                return Err(
+                    "runtime_options.workgraph must be a boolean or a non-empty string \
+                     (the directory for the durable workgraph store)"
+                        .to_string(),
+                );
+            }
+        };
     }
     if let Some(value) = runtime_options.get("demo_llm") {
         parsed.demo_llm = value
@@ -3715,18 +3766,31 @@ external_addressable = true
                     &inner_builder,
                     state_path,
                 );
-            // WorkGraph: durable store beside the schedule store, realm scoped to
-            // the mob definition id. Fills the member tool slot, threads to the
+            // WorkGraph: durable store beside the schedule store (or in the
+            // explicitly configured directory), realm scoped to the mob
+            // definition id. Fills the member tool slot, threads to the
             // bootstrap spec (mob-executor attention overlays + child-mob
             // inheritance), the schedule host, and the RPC surface.
-            let workgraph_service = if gateway_options.workgraph {
-                meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
-                    &inner_builder,
-                    state_path,
-                    &schedule_owner_id,
-                )
-            } else {
-                None
+            let workgraph_service = match &gateway_options.workgraph {
+                GatewayWorkgraphOption::Disabled => None,
+                GatewayWorkgraphOption::Enabled => {
+                    meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                        &inner_builder,
+                        state_path,
+                        &schedule_owner_id,
+                    )
+                }
+                GatewayWorkgraphOption::DurableDir(dir) => {
+                    // An explicit directory overrides the state-dir default.
+                    // Open failure keeps the boot-without-workgraph posture
+                    // (attach_workgraph_tools warns with the path).
+                    let _ = std::fs::create_dir_all(dir);
+                    meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                        &inner_builder,
+                        dir,
+                        &schedule_owner_id,
+                    )
+                }
             };
             let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
             let callback_builder = StdioCallbackAgentBuilder {
@@ -3825,11 +3889,43 @@ external_addressable = true
             }
             let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
             inner_builder.default_blob_store = Some(blob_store.clone());
-            // Ephemeral launches get a memory-backed workgraph (tools stay
-            // profile-gated, so nothing changes for members that do not opt in).
-            let workgraph_service = gateway_options.workgraph.then(|| {
-                meerkat_mobkit::workgraph_wiring::ephemeral_workgraph_service(&schedule_owner_id)
-            });
+            // No-persistent_state launches default to a memory-backed
+            // workgraph (tools stay profile-gated, so nothing changes for
+            // members that do not opt in); an explicit directory gets the
+            // durable store instead.
+            let workgraph_service = match &gateway_options.workgraph {
+                GatewayWorkgraphOption::Disabled => None,
+                GatewayWorkgraphOption::DurableDir(dir) => {
+                    let _ = std::fs::create_dir_all(dir);
+                    meerkat_mobkit::workgraph_wiring::open_workgraph_service(
+                        dir,
+                        &schedule_owner_id,
+                    )
+                }
+                GatewayWorkgraphOption::Enabled => {
+                    if has_continuity_store {
+                        // Identity-first launch persisting through the
+                        // SDK-hosted continuity store: everything else about
+                        // it is durable, but the continuity store is a stdio
+                        // callback (no local db path to co-locate a default
+                        // workgraph.sqlite3 with), so the workgraph silently
+                        // rides memory unless a path is configured.
+                        tracing::warn!(
+                            "workgraph is MEMORY-BACKED for this launch: the continuity store \
+                             is SDK-hosted (no local path) and no persistent_state dir is set, \
+                             so goals, work items and attention bindings will NOT survive a \
+                             gateway restart. Set runtime_options.workgraph to a directory \
+                             path (or provide persistent_state) to place a durable \
+                             workgraph.sqlite3.",
+                        );
+                    }
+                    Some(
+                        meerkat_mobkit::workgraph_wiring::ephemeral_workgraph_service(
+                            &schedule_owner_id,
+                        ),
+                    )
+                }
+            };
             if let Some(service) = workgraph_service.as_ref() {
                 meerkat_mobkit::workgraph_wiring::install_workgraph_tools(&inner_builder, service);
             }

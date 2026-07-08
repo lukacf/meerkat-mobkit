@@ -26,6 +26,7 @@ import {
   parseStreamingConversationRichBlocks,
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
+import { createConsoleId } from "./id";
 
 export type MobKitDockTarget =
   | AgentChatTarget
@@ -1269,6 +1270,54 @@ const WORKGRAPH_TOOL_EVENTS = new Set([
   "tool_execution_completed",
 ]);
 
+/// Client-local synthetic frame carrying the RESULT of a console operator
+/// RPC mutation (claim/close/confirm/…). Operator actions run outside any
+/// agent turn, so the server emits no console frames for them — without this
+/// echo the inline card would keep stale status/revisions and consecutive
+/// actions would CAS-conflict. The fold treats these exactly like a
+/// successful (or failed) workgraph tool result.
+export const WORKGRAPH_OPERATOR_RESULT_EVENT = "workgraph_operator_result";
+
+/// `sourceKind` marker for frames minted client-side. They never round-trip
+/// through the server: dedupe keys on the locally minted frame id and server
+/// reconciliation is append-only, so they simply coexist with wire frames.
+export const WORKGRAPH_LOCAL_SOURCE_KIND = "console-local";
+
+export function buildWorkGraphOperatorResultFrame(input: {
+  method: string;
+  params: Record<string, unknown>;
+  result?: unknown;
+  errorMessage?: string;
+  identity?: string;
+  timestampMs?: number;
+  frameId?: string;
+}): ConsoleFrame {
+  return {
+    id: input.frameId || createConsoleId("local-workgraph"),
+    event: WORKGRAPH_OPERATOR_RESULT_EVENT,
+    ...(input.identity ? { identity: input.identity } : {}),
+    timestampMs: input.timestampMs ?? Date.now(),
+    sourceKind: WORKGRAPH_LOCAL_SOURCE_KIND,
+    data: {
+      method: input.method,
+      // The sent params double as routing args (id / binding_id) so failed
+      // mutations still land on the right card.
+      args: input.params,
+      ...(input.errorMessage !== undefined
+        ? { is_error: true, result: input.errorMessage }
+        : { result: input.result ?? null }),
+    },
+  };
+}
+
+/// Failure-line label for an operator mutation, in the same underscored
+/// vocabulary as tool names: "mobkit/workgraph/goal/confirm" →
+/// "workgraph_goal_confirm".
+function workGraphOperatorDisplayName(method: unknown): string {
+  const raw = typeof method === "string" && method.trim() ? method.trim() : "workgraph";
+  return raw.replace(/^mobkit\//, "").replace(/\//g, "_");
+}
+
 /// Backfilled result frames (tool_execution_completed / tool_result_received
 /// replayed from session history) carry no `name` field. Resolve names through
 /// the tool_call_id pairing — the requested frame carries the name, exactly
@@ -1290,6 +1339,7 @@ function isWorkGraphToolFrame(
   frame: ConsoleFrame,
   namesByCallId?: Map<string, string>,
 ): boolean {
+  if (frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT) return true;
   if (!WORKGRAPH_TOOL_EVENTS.has(frame.event)) return false;
   if (WORKGRAPH_TOOL_NAMES.has(parseToolName(frame))) return true;
   if (!namesByCallId || namesByCallId.size === 0) return false;
@@ -1313,7 +1363,7 @@ interface WorkGraphItemDraft {
   status: string;
   priority?: string;
   ownerLabel?: string;
-  revision: number;
+  revision?: number;
   dueAt?: string;
   description?: string;
   labels?: string[];
@@ -1337,6 +1387,9 @@ interface WorkGraphBindingDraft {
 interface WorkGraphEventDraft {
   at?: string;
   itemId?: string;
+  // Set on failure notes only: lets a failure that never routed to a known
+  // item still surface on its interaction's catch-all card.
+  interactionId?: string;
   text: string;
 }
 
@@ -1402,9 +1455,16 @@ function foldWorkGraphItem(
   const record = value as Record<string, unknown>;
   const itemId = workGraphString(record.id);
   if (!itemId) return null;
-  const revision = typeof record.revision === "number" ? record.revision : 0;
+  const revision = typeof record.revision === "number" ? record.revision : undefined;
   const existing = state.items.get(itemId);
-  if (existing && existing.revision > revision) {
+  // A record without a revision is a non-authoritative sighting: it never
+  // displaces a draft whose revision is known, and a stale revision never
+  // rolls a fresher one back. Equal revisions keep frame order (last wins).
+  if (
+    existing &&
+    existing.revision !== undefined &&
+    (revision === undefined || existing.revision > revision)
+  ) {
     if (frameIso) existing.lastEventAt = frameIso;
     return itemId;
   }
@@ -1471,7 +1531,13 @@ function foldWorkGraphBinding(
     : null;
   const revision = typeof machineState?.revision === "number" ? machineState.revision : undefined;
   const existing = state.bindings.get(bindingId);
-  if (existing && existing.revision !== undefined && revision !== undefined && existing.revision > revision) {
+  // Same merge rule as items: an absent revision never overwrites a present
+  // one, and a stale revision never rolls a fresher one back.
+  if (
+    existing &&
+    existing.revision !== undefined &&
+    (revision === undefined || existing.revision > revision)
+  ) {
     return bindingId;
   }
   const workRef = record.work_ref && typeof record.work_ref === "object"
@@ -1634,7 +1700,7 @@ function workGraphItemRows(
         status: draft.status,
         priority: draft.priority ?? null,
         ownerLabel: draft.ownerLabel ?? null,
-        revision: draft.revision,
+        ...(draft.revision !== undefined ? { revision: draft.revision } : {}),
         depth,
         parentId: state.parents.get(itemId) ?? null,
         blocked: draft.status === "blocked",
@@ -1731,15 +1797,23 @@ function buildWorkGraphEntries(
     if (argItemId) contribution.itemIds.push(argItemId);
     if (argBindingId) contribution.bindingIds.push(argBindingId);
 
-    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+    const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
+    if (
+      frame.event === "tool_result_received" ||
+      frame.event === "tool_execution_completed" ||
+      isOperatorResult
+    ) {
       const failed = record?.is_error === true;
       contribution.outcome = failed ? "error" : "ok";
       if (failed) {
         state.events.push({
           at: frameIso,
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : undefined),
+          interactionId: contribution.interactionId,
           text: workGraphFailureLine(
-            workGraphToolNameOf(frame, namesByCallId),
+            isOperatorResult
+              ? workGraphOperatorDisplayName(record?.method)
+              : workGraphToolNameOf(frame, namesByCallId),
             record?.result ?? record?.content,
           ),
         });
@@ -1842,6 +1916,16 @@ function buildWorkGraphEntries(
       const root = bindingRoot(bindingId);
       if (root && ownCardRoots.has(root)) cardKeys.add(`workgraph:${root}`);
     }
+    // A failure that routed nowhere (its ids were never observed as items or
+    // bindings) must not vanish: home it on the interaction's catch-all
+    // card, creating that card if none exists.
+    if (contribution.outcome === "error" && cardKeys.size === 0) {
+      const interactionKey = `workgraph:interaction:${contribution.interactionId || "unscoped"}`;
+      if (!catchAllMembers.has(interactionKey)) {
+        catchAllMembers.set(interactionKey, new Set<string>());
+      }
+      cardKeys.add(interactionKey);
+    }
     for (const key of cardKeys) {
       if (!anchorByCard.has(key)) {
         anchorByCard.set(key, {
@@ -1856,10 +1940,25 @@ function buildWorkGraphEntries(
     }
   }
 
-  const eventsForMembers = (memberSet: Set<string>): string[] | undefined => {
-    const matched = state.events.filter((event) => (
-      event.itemId ? memberSet.has(rootForItem(event.itemId)) || memberSet.has(event.itemId) : false
-    ));
+  // `catchAllInteractionId` (catch-all cards only, "" = unscoped) also
+  // matches failure notes that never routed to a known item: they carry the
+  // interaction instead of a resolvable item id.
+  const eventsForMembers = (
+    memberSet: Set<string>,
+    catchAllInteractionId?: string,
+  ): string[] | undefined => {
+    const matched = state.events.filter((event) => {
+      if (event.itemId && (memberSet.has(rootForItem(event.itemId)) || memberSet.has(event.itemId))) {
+        return true;
+      }
+      if (catchAllInteractionId === undefined || event.interactionId !== catchAllInteractionId) {
+        return false;
+      }
+      const routable = Boolean(
+        event.itemId && (state.items.has(event.itemId) || state.items.has(rootForItem(event.itemId))),
+      );
+      return !routable;
+    });
     if (matched.length === 0) return undefined;
     return matched.slice(-WORKGRAPH_RECENT_EVENT_LIMIT).map((event) => event.text);
   };
@@ -1899,6 +1998,10 @@ function buildWorkGraphEntries(
     pushEntry({
       kind: "workgraph",
       id: entryId,
+      // The anchor interaction is stable across the catch-all→rooted id
+      // migration (it is the first frame that ever touched this graph), so
+      // card UI state keyed on it survives the rekey remount.
+      uiStateKey: `workgraph:interaction:${anchor.interactionId || "unscoped"}`,
       identity: agentIdentity(agent),
       ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
       rootId: root,
@@ -1918,19 +2021,26 @@ function buildWorkGraphEntries(
     const anchor = anchorByCard.get(entryId);
     if (!anchor) continue;
     const memberIds = [...members].filter((id) => state.items.has(id));
-    if (memberIds.length === 0) continue;
+    const recentEvents = eventsForMembers(members, anchor.interactionId);
+    // A memberless catch-all exists only to host unroutable failure notes;
+    // with nothing to show it is skipped entirely.
+    if (memberIds.length === 0 && !recentEvents) continue;
     const rows = memberIds
       .flatMap((id) => workGraphItemRows(id, [id], state));
     const completed = rows.filter((item) => item.status === "completed").length;
-    const recentEvents = eventsForMembers(members);
     const lastUpdatedAt = latestIso(rows.flatMap((item) => [item.updatedAt, item.lastEventAt]));
     pushEntry({
       kind: "workgraph",
       id: entryId,
+      uiStateKey: entryId,
       identity: agentIdentity(agent),
       ...(anchor.createdAt ? { createdAt: anchor.createdAt } : {}),
       rootId: entryId.replace(/^workgraph:/, ""),
-      title: rows.length === 1 ? rows[0].title : "Work items",
+      title: rows.length === 1
+        ? rows[0].title
+        : rows.length === 0
+          ? "WorkGraph activity"
+          : "Work items",
       objective: rows.length === 1 ? rows[0].description ?? null : null,
       status: deriveWorkGraphStatus(rows),
       progress: { completed, total: rows.length },

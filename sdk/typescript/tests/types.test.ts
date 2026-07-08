@@ -236,6 +236,7 @@ describe("parseCapabilitiesResult", () => {
     assert.equal(result.contractVersion, "0.4.0");
     assert.deepEqual(result.methods, ["status", "spawn"]);
     assert.deepEqual(result.loadedModules, ["core"]);
+    assert.equal(result.workgraph, false);
   });
 
   it("defaults missing fields", () => {
@@ -243,6 +244,17 @@ describe("parseCapabilitiesResult", () => {
     assert.equal(result.contractVersion, "");
     assert.deepEqual(result.methods, []);
     assert.deepEqual(result.loadedModules, []);
+    assert.equal(result.workgraph, false);
+  });
+
+  it("parses workgraph: true", () => {
+    const result = parseCapabilitiesResult({
+      contract_version: "0.7.30",
+      methods: ["status"],
+      loaded_modules: ["core"],
+      workgraph: true,
+    });
+    assert.equal(result.workgraph, true);
   });
 });
 

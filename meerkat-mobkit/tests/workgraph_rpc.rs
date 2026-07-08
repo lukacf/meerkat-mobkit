@@ -699,7 +699,7 @@ async fn duplicate_active_binding_for_same_target_is_conflict() {
         "conflict must name the existing binding: {detail}"
     );
     assert!(
-        detail.contains("pause") && detail.contains("reassign"),
+        detail.contains("reassign") && detail.contains("close its goal"),
         "detail must hint the way out: {detail}"
     );
 
@@ -715,7 +715,10 @@ async fn duplicate_active_binding_for_same_target_is_conflict() {
     .await;
     assert!(response["error"].is_null(), "{response:#?}");
 
-    // Pausing the existing binding frees the target — the hinted way out.
+    // Round-2 hole 4: pausing the existing binding does NOT free the target
+    // — the pause auto-reactivates at expiry, so a goal created "into" the
+    // pause becomes the second Active binding the moment it expires. The
+    // conflict must name the paused binding and hint resume-or-close.
     let binding_revision = first["attention"]["machine_state"]["revision"]
         .as_u64()
         .unwrap();
@@ -730,12 +733,541 @@ async fn duplicate_active_binding_for_same_target_is_conflict() {
         &runtime,
         "mobkit/workgraph/goal/create",
         json!({
-            "title": "after pause",
+            "title": "into the pause",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("paused") && detail.contains(&first_binding) && detail.contains("resume"),
+        "paused conflict must name the binding and hint resume-or-close: {detail}"
+    );
+
+    // Closing the goal (confirm + request_close stops its binding) genuinely
+    // frees the target.
+    let item_revision = first["item"]["revision"].as_u64().unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/confirm",
+        json!({ "binding_id": first_binding, "expected_revision": item_revision }),
+    )
+    .await;
+    let item_revision = result(&response)["item"]["revision"].as_u64().unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/request_close",
+        json!({ "binding_id": first_binding, "expected_revision": item_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "after close",
             "target": { "kind": "identity", "identity": "helper" },
         }),
     )
     .await;
     assert!(response["error"].is_null(), "{response:#?}");
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 hole 1: `attention/reassign` creates an Active binding on the
+/// NEW target, so reassigning onto a member that already has one re-creates
+/// the `MultipleActiveBindings` bricked state `goal/create` guards against.
+/// The reassign target must pass the same occupancy guard (excluding the
+/// binding being superseded, which never conflicts with its own move).
+#[tokio::test(flavor = "multi_thread")]
+async fn reassign_onto_occupied_target_is_conflict() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "already watching",
+            "target": { "kind": "identity", "identity": "occupied" },
+            "mode": "coordinate",
+        }),
+    )
+    .await;
+    let occupied_binding = result(&response)["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "about to move",
+            "target": { "kind": "identity", "identity": "mover" },
+            "mode": "coordinate",
+        }),
+    )
+    .await;
+    let mover = result(&response).clone();
+    let mover_binding = mover["attention"]["binding_id"].as_str().unwrap();
+    let mover_revision = mover["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": mover_binding,
+            "expected_revision": mover_revision,
+            "target": { "kind": "identity", "identity": "occupied" },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    assert_eq!(
+        response["error"]["data"]["kind"],
+        json!("workgraph_conflict")
+    );
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&occupied_binding),
+        "conflict must name the occupying binding: {detail}"
+    );
+
+    // A free target reassigns normally — the guard does not over-block.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": mover_binding,
+            "expected_revision": mover_revision,
+            "target": { "kind": "identity", "identity": "free" },
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 hole 2: pause A, get a second binding onto the same member, then
+/// resume A = two Active bindings. The second binding here is created
+/// directly on the service (the member tool surface and pre-guard data can
+/// both do that), so only the resume guard stands between the operator and
+/// the bricked member.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_with_another_active_binding_on_the_target_is_conflict() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "first watch",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let first = result(&response).clone();
+    let first_binding = first["attention"]["binding_id"].as_str().unwrap();
+    let first_revision = first["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/pause",
+        json!({ "binding_id": first_binding, "expected_revision": first_revision }),
+    )
+    .await;
+    let paused_revision = result(&response)["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+
+    // Second binding for the SAME lowered owner, created past the RPC guard.
+    let service = runtime.workgraph_service().expect("workgraph service");
+    let second = service
+        .create_goal(meerkat::GoalCreateRequest {
+            realm_id: None,
+            namespace: None,
+            title: "second watch".to_string(),
+            description: None,
+            target: meerkat::GoalAttentionTarget::Owner {
+                owner_key: meerkat_mob::lower_agent_identity_owner_key(
+                    &definition().id,
+                    &AgentIdentity::from("helper"),
+                )
+                .expect("lower owner key"),
+            },
+            mode: Default::default(),
+            completion_policy: Default::default(),
+            delegated_authority: Default::default(),
+            projection_policy: Default::default(),
+        })
+        .await
+        .expect("service-side goal create");
+    let second_binding = second.attention.binding_id.to_string();
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/resume",
+        json!({ "binding_id": first_binding, "expected_revision": paused_revision }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    let detail = response["error"]["data"]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&second_binding),
+        "conflict must name the active binding: {detail}"
+    );
+
+    // Pausing the other binding clears the way — resume only conflicts with
+    // bindings that are Active at now.
+    let second_revision = second.attention.machine_state.revision;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/pause",
+        json!({ "binding_id": second_binding, "expected_revision": second_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/resume",
+        json!({ "binding_id": first_binding, "expected_revision": paused_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 hole 3 (aliasing): upstream `attention_target_matches_session`
+/// matches BOTH a `Session{session_id}` target and the lowered
+/// `mob/<mob>/agent/<identity>` owner target to the same member's turns, so
+/// one member with a session-form binding and an identity-form binding is
+/// still bricked. The guard must resolve session↔identity through the
+/// roster, in both directions.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_and_identity_goal_targets_conflict_as_the_same_member() {
+    let runtime = build_runtime().await;
+    runtime
+        .spawn_many(vec![SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "helper".to_string(),
+            None,
+            None,
+            None,
+        )])
+        .await
+        .expect("spawn member");
+    let session_id = runtime
+        .mob_handle()
+        .resolve_bridge_session_id_observation(&AgentIdentity::from("helper"))
+        .await
+        .expect("member session id")
+        .to_string();
+
+    // identity first, session second: the session spelling must conflict.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "identity-form goal",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let identity_goal = result(&response).clone();
+    let identity_binding = identity_goal["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "session-form goal for the same member",
+            "target": { "kind": "session", "session_id": session_id },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    assert!(
+        response["error"]["data"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&identity_binding),
+        "{response:#?}"
+    );
+
+    // Free the member (confirm + request_close stops the binding), then the
+    // reverse direction: session first, identity second.
+    let item_revision = identity_goal["item"]["revision"].as_u64().unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/confirm",
+        json!({ "binding_id": identity_binding, "expected_revision": item_revision }),
+    )
+    .await;
+    let item_revision = result(&response)["item"]["revision"].as_u64().unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/request_close",
+        json!({ "binding_id": identity_binding, "expected_revision": item_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "session-form goal",
+            "target": { "kind": "session", "session_id": session_id },
+        }),
+    )
+    .await;
+    let session_binding = result(&response)["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "identity-form goal for the same member",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32042, "{response:#?}");
+    assert!(
+        response["error"]["data"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&session_binding),
+        "{response:#?}"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 hole 5 (TOCTOU): two concurrent `goal/create` calls for the same
+/// target must admit exactly one — the admission gate serializes the
+/// check-then-act window shared by the stdin and console surfaces.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_goal_creates_for_same_target_admit_exactly_one() {
+    let runtime = Arc::new(build_runtime().await);
+    let call = |title: &str| {
+        let runtime = Arc::clone(&runtime);
+        let title = title.to_string();
+        tokio::spawn(async move {
+            rpc(
+                &runtime,
+                "mobkit/workgraph/goal/create",
+                json!({
+                    "title": title,
+                    "target": { "kind": "identity", "identity": "racer" },
+                }),
+            )
+            .await
+        })
+    };
+    let (left, right) = tokio::join!(call("left lane"), call("right lane"));
+    let (left, right) = (left.expect("join"), right.expect("join"));
+
+    let successes = [&left, &right]
+        .iter()
+        .filter(|response| response["error"].is_null())
+        .count();
+    let conflicts = [&left, &right]
+        .iter()
+        .filter(|response| response["error"]["code"] == json!(-32042))
+        .count();
+    assert_eq!(
+        (successes, conflicts),
+        (1, 1),
+        "exactly one create wins the race: left={left:#?} right={right:#?}"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 finding B: SDKs send the attention-list `status` filter as a
+/// bare string, which upstream's internally-tagged enum rejects — the
+/// filter never worked over the wire. Both spellings must filter, and
+/// unknown strings are a typed params error.
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_list_status_filter_accepts_sdk_strings() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "filter me",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let binding_id = goal["attention"]["binding_id"].as_str().unwrap();
+    let binding_revision = goal["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+
+    // Bare-string form (what both SDKs send).
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/list",
+        json!({ "status": "active" }),
+    )
+    .await;
+    assert_eq!(
+        result(&response)["attention"].as_array().unwrap().len(),
+        1,
+        "{response:#?}"
+    );
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/list",
+        json!({ "status": "stopped" }),
+    )
+    .await;
+    assert!(
+        result(&response)["attention"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{response:#?}"
+    );
+
+    // Tagged-object form passes through verbatim.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/pause",
+        json!({ "binding_id": binding_id, "expected_revision": binding_revision }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/list",
+        json!({ "status": "paused" }),
+    )
+    .await;
+    assert_eq!(
+        result(&response)["attention"].as_array().unwrap().len(),
+        1,
+        "{response:#?}"
+    );
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/list",
+        json!({ "status": { "state": "paused" } }),
+    )
+    .await;
+    assert_eq!(
+        result(&response)["attention"].as_array().unwrap().len(),
+        1,
+        "{response:#?}"
+    );
+
+    // Unknown strings are a params error naming the vocabulary.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/list",
+        json!({ "status": "everything" }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32602, "{response:#?}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("active"),
+        "{response:#?}"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Round-2 finding K: upstream turn-overlay resolution lists attention only
+/// in the default namespace, so goals/bindings filed anywhere else are
+/// silently inert. Goal/attention methods must reject a non-default
+/// namespace; item-level methods keep passthrough.
+#[tokio::test(flavor = "multi_thread")]
+async fn non_default_namespace_is_rejected_on_goal_and_attention_methods() {
+    let runtime = build_runtime().await;
+    let cases: &[(&str, Value)] = &[
+        (
+            "mobkit/workgraph/goal/create",
+            json!({
+                "title": "stranded goal",
+                "target": { "kind": "identity", "identity": "helper" },
+                "namespace": "sidecar",
+            }),
+        ),
+        (
+            "mobkit/workgraph/attention/list",
+            json!({ "namespace": "sidecar" }),
+        ),
+        (
+            "mobkit/workgraph/attention/pause",
+            json!({ "binding_id": "b-1", "expected_revision": 0, "namespace": "sidecar" }),
+        ),
+        (
+            "mobkit/workgraph/attention/resume",
+            json!({ "binding_id": "b-1", "expected_revision": 0, "namespace": "sidecar" }),
+        ),
+        (
+            "mobkit/workgraph/attention/reassign",
+            json!({
+                "binding_id": "b-1",
+                "expected_revision": 0,
+                "target": { "kind": "identity", "identity": "helper" },
+                "namespace": "sidecar",
+            }),
+        ),
+        (
+            "mobkit/workgraph/policy/escalate",
+            json!({
+                "binding_id": "b-1",
+                "id": "work_1",
+                "expected_revision": 0,
+                "completion_policy": { "kind": "host_confirmed" },
+                "namespace": "sidecar",
+            }),
+        ),
+    ];
+    for (method, params) in cases {
+        let response = rpc(&runtime, method, params.clone()).await;
+        assert_eq!(error_code(&response), -32602, "{method}: {response:#?}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("default namespace"),
+            "{method} must explain the overlay restriction: {response:#?}"
+        );
+    }
+
+    // Spelling the default namespace explicitly stays accepted.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "explicit default",
+            "target": { "kind": "identity", "identity": "helper" },
+            "namespace": "default",
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+
+    // Item-level methods keep namespace passthrough.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/create",
+        json!({ "title": "namespaced item", "namespace": "sidecar" }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    assert_eq!(result(&response)["item"]["namespace"], json!("sidecar"));
     runtime.mob_handle().stop().await.expect("stop");
 }
 
