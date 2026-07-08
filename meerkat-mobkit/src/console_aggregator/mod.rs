@@ -5728,12 +5728,22 @@ comms = true
             "identity-scoped live stream must not starve on a read-model miss"
         );
         // A differently-scoped subscriber does not inherit the allowance.
-        assert!(
-            !aggregator
-                .timeline_event_visible_for_subscriber(&event, Some("someone-else"))
-                .await,
-            "the allowance is strictly own-identity"
-        );
+        // Race note (CI): the spawn's own projections can converge the read
+        // model before this line, after which the frame is legitimately
+        // visible to everyone because the identity is KNOWN — that is not an
+        // allowance leak. The leak we guard against is other-visibility
+        // WHILE the unscoped gate still hides the frame (identity unknown).
+        let visible_to_other = aggregator
+            .timeline_event_visible_for_subscriber(&event, Some("someone-else"))
+            .await;
+        if visible_to_other {
+            assert!(
+                aggregator.timeline_event_visible(&event).await,
+                "the allowance is strictly own-identity: someone-else saw the \
+                 frame while the read model still treats the identity as \
+                 unknown (unscoped gate hides it)"
+            );
+        }
 
         // The miss triggered refresh_soon: the read model converges, after
         // which even the UNSCOPED gate passes the frame.
