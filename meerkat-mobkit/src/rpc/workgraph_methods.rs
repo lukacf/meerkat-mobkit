@@ -1,0 +1,709 @@
+//! `mobkit/workgraph/*` method dispatch, shared by the unified stdin RPC and
+//! the console RPC surfaces (docs/design/workgraph-wire-contract.md).
+//!
+//! Params deserialize into meerkat's typed requests and results serialize the
+//! typed results verbatim, with three mobkit-side rules:
+//! - `realm_id` is never accepted over the wire — the service is scoped to
+//!   this runtime's realm (the mob definition id) at construction.
+//! - The authority witness (`authority_projection`) for `policy/escalate`
+//!   and `attention/reassign` is fetched server-side from `binding_id`;
+//!   wire-supplied witnesses are rejected (they are unforgeable by design).
+//! - Attention targets accept an additional `{kind:"identity", identity}`
+//!   form, lowered through `meerkat_mob::lower_agent_identity_attention_target`
+//!   with this runtime's mob id.
+
+use meerkat::{
+    AddEvidenceRequest, AttentionListRequest, AttentionPauseRequest, AttentionProjectionRequest,
+    AttentionReassignRequest, AttentionResumeRequest, ClaimWorkItemRequest, CloseWorkItemRequest,
+    CreateWorkItemRequest, GoalAttentionTarget, GoalConfirmRequest, GoalCreateRequest,
+    GoalRequestCloseRequest, GoalStatusRequest, LinkWorkItemsRequest, PolicyEscalateRequest,
+    ReadyWorkFilter, ReleaseWorkItemRequest, UpdateWorkItemRequest, WorkAttentionBindingId,
+    WorkGraphError, WorkGraphEventFilter, WorkGraphIdParams, WorkGraphService,
+    WorkGraphSnapshotFilter, WorkItemFilter, WorkItemId, WorkNamespace, WorkOwnerKey, WorkStatus,
+};
+use serde_json::Map;
+
+use super::*;
+
+/// Read methods (console ABAC action `workgraph.view`).
+pub(crate) const WORKGRAPH_READ_METHODS: &[&str] = &[
+    "mobkit/workgraph/snapshot",
+    "mobkit/workgraph/list",
+    "mobkit/workgraph/get",
+    "mobkit/workgraph/ready",
+    "mobkit/workgraph/events",
+    "mobkit/workgraph/attention/list",
+    "mobkit/workgraph/goal/status",
+];
+
+/// Mutating methods (console ABAC action `workgraph.manage`; additionally
+/// gated by the console read-only switch).
+pub(crate) const WORKGRAPH_MUTATE_METHODS: &[&str] = &[
+    "mobkit/workgraph/create",
+    "mobkit/workgraph/update",
+    "mobkit/workgraph/claim",
+    "mobkit/workgraph/release",
+    "mobkit/workgraph/close",
+    "mobkit/workgraph/block",
+    "mobkit/workgraph/link",
+    "mobkit/workgraph/evidence/add",
+    "mobkit/workgraph/policy/escalate",
+    "mobkit/workgraph/goal/create",
+    "mobkit/workgraph/goal/confirm",
+    "mobkit/workgraph/goal/request_close",
+    "mobkit/workgraph/attention/pause",
+    "mobkit/workgraph/attention/resume",
+    "mobkit/workgraph/attention/reassign",
+];
+
+/// Whether `method` belongs to the workgraph RPC namespace (known or not).
+pub(crate) fn is_workgraph_method(method: &str) -> bool {
+    method.starts_with("mobkit/workgraph/")
+}
+
+pub(crate) fn is_workgraph_read_method(method: &str) -> bool {
+    WORKGRAPH_READ_METHODS.contains(&method)
+}
+
+pub(crate) fn is_workgraph_mutating_method(method: &str) -> bool {
+    WORKGRAPH_MUTATE_METHODS.contains(&method)
+}
+
+fn invalid_params(message: impl std::fmt::Display) -> JsonRpcError {
+    JsonRpcError {
+        code: -32602,
+        message: format!("Invalid params: {message}"),
+        data: None,
+    }
+}
+
+fn method_not_found() -> JsonRpcError {
+    JsonRpcError {
+        code: -32601,
+        message: "Method not found".to_string(),
+        data: None,
+    }
+}
+
+pub(crate) fn workgraph_unavailable_error() -> JsonRpcError {
+    JsonRpcError {
+        code: WORKGRAPH_UNAVAILABLE_CODE,
+        message: "workgraph is not configured on this runtime".to_string(),
+        data: Some(serde_json::json!({ "kind": "workgraph_unavailable" })),
+    }
+}
+
+/// Map a WorkGraph domain error onto the wire taxonomy: CAS conflicts get
+/// the typed conflict code, domain-level input rejections read as invalid
+/// params, everything else is a workgraph error with full detail.
+fn workgraph_error_to_rpc(error: WorkGraphError) -> JsonRpcError {
+    let detail = error.to_string();
+    match error {
+        WorkGraphError::StaleRevision { .. } | WorkGraphError::Conflict(_) => JsonRpcError {
+            code: WORKGRAPH_CONFLICT_CODE,
+            message: format!("workgraph conflict: {detail}"),
+            data: Some(serde_json::json!({
+                "kind": "workgraph_conflict",
+                "detail": detail,
+            })),
+        },
+        WorkGraphError::InvalidInput(_) => invalid_params(detail),
+        _ => JsonRpcError {
+            code: WORKGRAPH_ERROR_CODE,
+            message: detail.clone(),
+            data: Some(serde_json::json!({
+                "kind": "workgraph_error",
+                "detail": detail,
+            })),
+        },
+    }
+}
+
+fn to_result_value<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// Clone the request params as an object map. `null`/absent params are an
+/// empty object (every read filter is fully optional); anything else is a
+/// params error.
+fn params_object(params: &Value) -> Result<Map<String, Value>, JsonRpcError> {
+    match params {
+        Value::Null => Ok(Map::new()),
+        Value::Object(map) => Ok(map.clone()),
+        _ => Err(invalid_params("params must be a JSON object")),
+    }
+}
+
+fn parse_request<T: serde::de::DeserializeOwned>(
+    object: Map<String, Value>,
+) -> Result<T, JsonRpcError> {
+    serde_json::from_value(Value::Object(object)).map_err(invalid_params)
+}
+
+fn parse_binding_id(object: &Map<String, Value>) -> Result<WorkAttentionBindingId, JsonRpcError> {
+    let raw = object
+        .get("binding_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_params("binding_id must be a non-empty string"))?;
+    WorkAttentionBindingId::new(raw).map_err(invalid_params)
+}
+
+fn parse_expected_revision(object: &Map<String, Value>) -> Result<u64, JsonRpcError> {
+    object
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_params("expected_revision must be a non-negative integer"))
+}
+
+fn parse_namespace(object: &Map<String, Value>) -> Result<Option<WorkNamespace>, JsonRpcError> {
+    match object.get("namespace") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| invalid_params(format!("namespace is invalid: {error}"))),
+    }
+}
+
+/// Resolve a goal/attention target, accepting the mobkit-only
+/// `{kind:"identity", identity}` form beside upstream `session`/`owner`.
+fn resolve_goal_target(
+    mob_id: &meerkat_mob::MobId,
+    value: &Value,
+) -> Result<GoalAttentionTarget, JsonRpcError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_params("target must be a JSON object"))?;
+    let kind = object
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "identity" => {
+            let identity = object
+                .get("identity")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| invalid_params("target.identity must be a non-empty string"))?;
+            meerkat_mob::lower_agent_identity_attention_target(
+                mob_id,
+                &meerkat_mob::AgentIdentity::from(identity),
+            )
+            .map_err(invalid_params)
+        }
+        "session" | "owner" => serde_json::from_value(value.clone())
+            .map_err(|error| invalid_params(format!("target is invalid: {error}"))),
+        other => Err(invalid_params(format!(
+            "target.kind '{other}' is unsupported (allowed: session, owner, identity)"
+        ))),
+    }
+}
+
+/// Synthesize the confirm evidence for an evidence-less wire call: the kind
+/// literal the goal's completion policy admits (mirrors the machine's
+/// `required_confirmation_evidence_kind` vocabulary), keyed on the binding.
+/// The service still validates the confirming principal and stamps the
+/// canonical confirmation classification.
+fn default_confirm_evidence(
+    policy: &meerkat::WorkCompletionPolicy,
+    binding_id: &WorkAttentionBindingId,
+) -> meerkat::WorkEvidenceRef {
+    let kind = match policy {
+        meerkat::WorkCompletionPolicy::SelfAttest => "self_attest",
+        meerkat::WorkCompletionPolicy::HostConfirmed => "host_confirmation",
+        meerkat::WorkCompletionPolicy::PrincipalConfirmed => "principal_confirmation",
+        meerkat::WorkCompletionPolicy::Supervisor { .. } => "supervisor_confirmation",
+        meerkat::WorkCompletionPolicy::ReviewerQuorum { .. } => "reviewer_confirmation",
+    };
+    meerkat::WorkEvidenceRef {
+        kind: kind.to_string(),
+        id: binding_id.as_str().to_string(),
+        label: None,
+        summary: None,
+        confirmation_kind: None,
+        confirming_owner_key: None,
+    }
+}
+
+/// Parse wire-supplied `goal/confirm` evidence. Only provenance fields are
+/// accepted — the canonical confirmation classification
+/// (`confirmation_kind`/`confirming_owner_key`) is stamped by the service
+/// from the completion policy + trusted principal, so wire callers cannot
+/// mint it directly.
+fn parse_confirm_evidence(value: &Value) -> Result<meerkat::WorkEvidenceRef, JsonRpcError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_params("evidence must be a JSON object"))?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "kind" | "id" | "label" | "summary") {
+            return Err(invalid_params(format!(
+                "evidence.{key} is not accepted (allowed: kind, id, label, summary; \
+                 confirmation classification is stamped server-side)"
+            )));
+        }
+    }
+    let field = |name: &str| -> Result<String, JsonRpcError> {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| invalid_params(format!("evidence.{name} must be a non-empty string")))
+    };
+    let optional = |name: &str| -> Result<Option<String>, JsonRpcError> {
+        match object.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|value| Some(value.to_string()))
+                .ok_or_else(|| invalid_params(format!("evidence.{name} must be a string"))),
+        }
+    };
+    Ok(meerkat::WorkEvidenceRef {
+        kind: field("kind")?,
+        id: field("id")?,
+        label: optional("label")?,
+        summary: optional("summary")?,
+        confirmation_kind: None,
+        confirming_owner_key: None,
+    })
+}
+
+/// Fetch the live attention projection for `binding_id` — the server-side
+/// authority witness `policy/escalate` and `attention/reassign` require.
+async fn fetch_authority_projection(
+    service: &WorkGraphService,
+    binding_id: WorkAttentionBindingId,
+    namespace: Option<WorkNamespace>,
+) -> Result<meerkat::AttentionContextProjection, JsonRpcError> {
+    let result = service
+        .attention_projection(AttentionProjectionRequest {
+            binding_id,
+            realm_id: None,
+            namespace,
+        })
+        .await
+        .map_err(workgraph_error_to_rpc)?;
+    Ok(result.projection)
+}
+
+/// Dispatch one `mobkit/workgraph/*` request against `service`.
+///
+/// `trusted_principal` is the console surface's authenticated principal,
+/// promoted into `goal/confirm` via `with_trusted_principal`; the unified
+/// stdin surface passes `None` (the host process itself is the trusted
+/// party there).
+pub(crate) async fn handle_workgraph_method(
+    service: Option<&WorkGraphService>,
+    mob_id: &meerkat_mob::MobId,
+    trusted_principal: Option<WorkOwnerKey>,
+    method: &str,
+    params: &Value,
+) -> Result<Value, JsonRpcError> {
+    if !is_workgraph_read_method(method) && !is_workgraph_mutating_method(method) {
+        return Err(method_not_found());
+    }
+    let Some(service) = service else {
+        return Err(workgraph_unavailable_error());
+    };
+    let object = params_object(params)?;
+    // The service is realm-scoped at construction; a caller-supplied realm
+    // would silently address foreign realm rows in the shared store file.
+    if object.contains_key("realm_id") {
+        return Err(invalid_params(
+            "realm_id is not accepted; workgraph is scoped to this runtime's realm",
+        ));
+    }
+    match method {
+        "mobkit/workgraph/snapshot" => {
+            let filter: WorkGraphSnapshotFilter = parse_request(object)?;
+            let snapshot = service
+                .snapshot(filter)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&snapshot))
+        }
+        "mobkit/workgraph/list" => {
+            let filter: WorkItemFilter = parse_request(object)?;
+            let items = service.list(filter).await.map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "items": items }))
+        }
+        "mobkit/workgraph/get" => {
+            let request: WorkGraphIdParams = parse_request(object)?;
+            let item = service
+                .get(None, request.namespace, request.id)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/ready" => {
+            let filter: ReadyWorkFilter = parse_request(object)?;
+            let items = service
+                .ready(filter)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "items": items }))
+        }
+        "mobkit/workgraph/events" => {
+            let filter: WorkGraphEventFilter = parse_request(object)?;
+            let events = service
+                .events(filter)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "events": events }))
+        }
+        "mobkit/workgraph/attention/list" => {
+            let request: AttentionListRequest = parse_request(object)?;
+            let result = service
+                .list_attention(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/goal/status" => {
+            let request: GoalStatusRequest = parse_request(object)?;
+            let result = service
+                .goal_status(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/create" => {
+            let request: CreateWorkItemRequest = parse_request(object)?;
+            let item = service
+                .create(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/update" => {
+            let request: UpdateWorkItemRequest = parse_request(object)?;
+            let item = service
+                .update(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/claim" => {
+            let mut object = object;
+            // The wire contract writes owner flat ({kind, id, display_name?});
+            // upstream WorkOwner nests the key. Accept both shapes.
+            if let Some(Value::Object(owner)) = object.get("owner")
+                && !owner.contains_key("key")
+                && owner.contains_key("kind")
+            {
+                let mut normalized = Map::new();
+                normalized.insert(
+                    "key".to_string(),
+                    serde_json::json!({
+                        "kind": owner.get("kind"),
+                        "id": owner.get("id"),
+                    }),
+                );
+                if let Some(display_name) = owner.get("display_name") {
+                    normalized.insert("display_name".to_string(), display_name.clone());
+                }
+                object.insert("owner".to_string(), Value::Object(normalized));
+            }
+            let request: ClaimWorkItemRequest = parse_request(object)?;
+            let item = service
+                .claim(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/release" => {
+            let request: ReleaseWorkItemRequest = parse_request(object)?;
+            let item = service
+                .release(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/close" => {
+            let request: CloseWorkItemRequest = parse_request(object)?;
+            if !matches!(
+                request.status,
+                WorkStatus::Completed | WorkStatus::Cancelled | WorkStatus::Failed
+            ) {
+                return Err(invalid_params(
+                    "status must be one of: completed, cancelled, failed",
+                ));
+            }
+            let item = service
+                .close(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/block" => {
+            #[derive(serde::Deserialize)]
+            struct BlockParams {
+                id: WorkItemId,
+                expected_revision: u64,
+                #[serde(default)]
+                namespace: Option<WorkNamespace>,
+            }
+            let request: BlockParams = parse_request(object)?;
+            let item = service
+                .block(
+                    None,
+                    request.namespace,
+                    request.id,
+                    request.expected_revision,
+                )
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/link" => {
+            let request: LinkWorkItemsRequest = parse_request(object)?;
+            let edge = service
+                .link(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "edge": edge }))
+        }
+        "mobkit/workgraph/evidence/add" => {
+            let request: AddEvidenceRequest = parse_request(object)?;
+            let item = service
+                .add_evidence(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/policy/escalate" => {
+            if object.contains_key("authority_projection") {
+                return Err(invalid_params(
+                    "authority_projection is not accepted; the authority witness is fetched \
+                     server-side from binding_id",
+                ));
+            }
+            #[derive(serde::Deserialize)]
+            struct PolicyEscalateParams {
+                id: WorkItemId,
+                expected_revision: u64,
+                completion_policy: meerkat::WorkCompletionPolicy,
+                #[serde(default)]
+                namespace: Option<WorkNamespace>,
+            }
+            let binding_id = parse_binding_id(&object)?;
+            let mut object = object;
+            object.remove("binding_id");
+            let params: PolicyEscalateParams = parse_request(object)?;
+            let projection =
+                fetch_authority_projection(service, binding_id, params.namespace.clone()).await?;
+            let item = service
+                .escalate_policy(PolicyEscalateRequest {
+                    id: params.id,
+                    realm_id: None,
+                    namespace: params.namespace,
+                    expected_revision: params.expected_revision,
+                    authority_projection: projection,
+                    completion_policy: params.completion_policy,
+                })
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(serde_json::json!({ "item": item }))
+        }
+        "mobkit/workgraph/goal/create" => {
+            let mut object = object;
+            let target_value = object
+                .remove("target")
+                .ok_or_else(|| invalid_params("target is required"))?;
+            let target = resolve_goal_target(mob_id, &target_value)?;
+            object.insert("target".to_string(), to_result_value(&target));
+            let request: GoalCreateRequest = parse_request(object)?;
+            let result = service
+                .create_goal(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/goal/confirm" => {
+            let binding_id = parse_binding_id(&object)?;
+            let expected_revision = parse_expected_revision(&object)?;
+            let namespace = parse_namespace(&object)?;
+            let evidence = match object.get("evidence") {
+                None | Some(Value::Null) => {
+                    // Evidence-less confirm: derive the admissible evidence
+                    // kind from the goal's completion policy.
+                    let status = service
+                        .goal_status(GoalStatusRequest {
+                            binding_id: binding_id.clone(),
+                            realm_id: None,
+                            namespace: namespace.clone(),
+                        })
+                        .await
+                        .map_err(workgraph_error_to_rpc)?;
+                    default_confirm_evidence(&status.item.completion_policy, &binding_id)
+                }
+                Some(value) => parse_confirm_evidence(value)?,
+            };
+            let request = GoalConfirmRequest {
+                binding_id,
+                realm_id: None,
+                namespace,
+                expected_revision,
+                evidence,
+                principal: None,
+                trusted_principal: None,
+            }
+            .with_trusted_principal(trusted_principal);
+            let result = service
+                .goal_confirm(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/goal/request_close" => {
+            let request: GoalRequestCloseRequest = parse_request(object)?;
+            let result = service
+                .goal_request_close(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/attention/pause" => {
+            let request: AttentionPauseRequest = parse_request(object)?;
+            let result = service
+                .pause_attention(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/attention/resume" => {
+            let request: AttentionResumeRequest = parse_request(object)?;
+            let result = service
+                .resume_attention(request)
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        "mobkit/workgraph/attention/reassign" => {
+            if object.contains_key("authority_projection") {
+                return Err(invalid_params(
+                    "authority_projection is not accepted; the authority witness is fetched \
+                     server-side from binding_id",
+                ));
+            }
+            let binding_id = parse_binding_id(&object)?;
+            let expected_revision = parse_expected_revision(&object)?;
+            let namespace = parse_namespace(&object)?;
+            let target_value = object
+                .get("target")
+                .ok_or_else(|| invalid_params("target is required"))?;
+            let target = resolve_goal_target(mob_id, target_value)?;
+            let projection =
+                fetch_authority_projection(service, binding_id.clone(), namespace.clone()).await?;
+            let result = service
+                .reassign_attention(AttentionReassignRequest {
+                    binding_id,
+                    realm_id: None,
+                    namespace,
+                    expected_revision,
+                    authority_projection: projection,
+                    target,
+                })
+                .await
+                .map_err(workgraph_error_to_rpc)?;
+            Ok(to_result_value(&result))
+        }
+        _ => Err(method_not_found()),
+    }
+}
+
+/// Resolve the console surface's trusted principal for `goal/confirm`.
+/// Invalid principal tokens degrade to `None` (the confirm then fails loudly
+/// for policies that require a principal) rather than silently minting a
+/// malformed owner key.
+pub(crate) fn console_trusted_principal(
+    authenticated_principal: Option<&str>,
+) -> Option<WorkOwnerKey> {
+    let principal = authenticated_principal
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    match WorkOwnerKey::principal(principal) {
+        Ok(key) => Some(key),
+        Err(error) => {
+            tracing::warn!(
+                target: "mobkit::workgraph",
+                error = %error,
+                "console principal could not be lowered to a workgraph owner key",
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_predicates_partition_the_namespace() {
+        for method in WORKGRAPH_READ_METHODS {
+            assert!(is_workgraph_method(method));
+            assert!(is_workgraph_read_method(method));
+            assert!(!is_workgraph_mutating_method(method));
+        }
+        for method in WORKGRAPH_MUTATE_METHODS {
+            assert!(is_workgraph_method(method));
+            assert!(is_workgraph_mutating_method(method));
+            assert!(!is_workgraph_read_method(method));
+        }
+        assert!(is_workgraph_method("mobkit/workgraph/bogus"));
+        assert!(!is_workgraph_method("mobkit/memory/query"));
+    }
+
+    #[test]
+    fn error_taxonomy_matches_wire_contract() {
+        let conflict = workgraph_error_to_rpc(WorkGraphError::StaleRevision {
+            id: WorkItemId::new("work_1").expect("id"),
+            expected: 1,
+            actual: 2,
+        });
+        assert_eq!(conflict.code, WORKGRAPH_CONFLICT_CODE);
+        assert_eq!(
+            conflict.data.as_ref().unwrap()["kind"],
+            serde_json::json!("workgraph_conflict")
+        );
+
+        let conflict = workgraph_error_to_rpc(WorkGraphError::Conflict("busy".to_string()));
+        assert_eq!(conflict.code, WORKGRAPH_CONFLICT_CODE);
+
+        let params = workgraph_error_to_rpc(WorkGraphError::InvalidInput("bad".to_string()));
+        assert_eq!(params.code, -32602);
+
+        let other = workgraph_error_to_rpc(WorkGraphError::Store("io".to_string()));
+        assert_eq!(other.code, WORKGRAPH_ERROR_CODE);
+        assert_eq!(
+            other.data.as_ref().unwrap()["kind"],
+            serde_json::json!("workgraph_error")
+        );
+        assert!(
+            other.data.as_ref().unwrap()["detail"]
+                .as_str()
+                .unwrap()
+                .contains("io"),
+            "full detail is disclosed (K2 posture)"
+        );
+
+        assert_eq!(
+            workgraph_unavailable_error().code,
+            WORKGRAPH_UNAVAILABLE_CODE
+        );
+    }
+
+    #[test]
+    fn console_principal_lowering_is_tolerant() {
+        assert!(console_trusted_principal(None).is_none());
+        assert!(console_trusted_principal(Some("   ")).is_none());
+        let key = console_trusted_principal(Some("alice@example.test")).expect("principal key");
+        assert_eq!(key.canonical(), "principal:alice@example.test");
+    }
+}

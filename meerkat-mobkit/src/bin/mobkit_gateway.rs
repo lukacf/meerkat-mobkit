@@ -40,6 +40,7 @@ type PersistentSessionServiceParts = (
     Arc<meerkat_runtime::MeerkatMachine>,
     Arc<dyn BinaryBlobStore>,
     Option<ScheduleHostInputs>,
+    Option<meerkat::WorkGraphService>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -394,6 +395,7 @@ fn build_persistent_session_service(
     project_root: PathBuf,
     context_root: Option<PathBuf>,
     image_generation: bool,
+    realm_id: &str,
 ) -> anyhow::Result<PersistentSessionServiceParts> {
     let (store_dir, sqlite_path) = resolve_store_dir(store_path);
     fs::create_dir_all(&store_dir)
@@ -460,6 +462,15 @@ fn build_persistent_session_service(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new(".")),
         );
+    // WorkGraph: durable store beside the schedule store, realm scoped to
+    // the mob definition id (member tools + overlays + console RPCs).
+    let workgraph_service = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+        &builder,
+        runtime_db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+        realm_id,
+    );
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -479,7 +490,13 @@ fn build_persistent_session_service(
             schedule_store_dir.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
         )
     });
-    Ok((service, adapter, binary_blob_store, schedule_host_inputs))
+    Ok((
+        service,
+        adapter,
+        binary_blob_store,
+        schedule_host_inputs,
+        workgraph_service,
+    ))
 }
 
 fn runtime_decision_state(
@@ -731,14 +748,15 @@ async fn run() -> anyhow::Result<()> {
     let runtime_id = definition.id.to_string();
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
-    let (session_spec, schedule_host_inputs) = if persistent_sessions {
-        let (service, adapter, binary_blob_store, schedule_host_inputs) =
+    let (session_spec, schedule_host_inputs, workgraph_service) = if persistent_sessions {
+        let (service, adapter, binary_blob_store, schedule_host_inputs, workgraph_service) =
             build_persistent_session_service(
                 &store_path,
                 runtime_root.clone(),
                 project_root.clone(),
                 context_root.clone(),
                 image_generation,
+                &runtime_id,
             )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
@@ -751,10 +769,11 @@ async fn run() -> anyhow::Result<()> {
         // runtime_store handed to PersistentSessionService, so this is defensive;
         // the default ephemeral branch below is the one that was actually broken.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
-            .with_session_runtime_adapter(adapter.clone());
+            .with_session_runtime_adapter(adapter.clone())
+            .with_workgraph_service(workgraph_service.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        (spec, schedule_host_inputs)
+        (spec, schedule_host_inputs, workgraph_service)
     } else {
         // Build the ephemeral path manually to thread project/context roots
         // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
@@ -784,6 +803,14 @@ async fn run() -> anyhow::Result<()> {
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
+        // The default TUX launch is ephemeral: a memory-backed workgraph
+        // keeps the feature available (tools stay profile-gated).
+        let workgraph_service = Some(
+            meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                &builder,
+                &runtime_id,
+            ),
+        );
         let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
         // THE FIX: share the explicit adapter's persistence authority with the
         // session service. Without this, EphemeralSessionService keeps its own
@@ -793,12 +820,13 @@ async fn run() -> anyhow::Result<()> {
         // first mobkit/init (persistent_sessions defaults off, so this is the path
         // every launch hits). rpc_gateway.rs already had this call.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-            .with_session_runtime_adapter(adapter.clone());
+            .with_session_runtime_adapter(adapter.clone())
+            .with_workgraph_service(workgraph_service.clone());
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         // Ephemeral sessions have no persistent service; the runtime-backed
         // schedule firing host (and thus schedule tools) is persistent-only.
-        (spec, None)
+        (spec, None, workgraph_service)
     };
     let mob_spec = session_spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: !persistent_sessions,
@@ -871,6 +899,7 @@ async fn run() -> anyhow::Result<()> {
                 mob_state,
                 runtime.mob_handle(),
                 None,
+                workgraph_service.clone(),
                 runtime_id.clone(),
             ),
             Some(watchdog),

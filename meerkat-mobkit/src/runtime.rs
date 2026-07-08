@@ -60,6 +60,7 @@ pub use console_ingress::{
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, extract_bearer_token_from_header,
     handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
     handle_console_rest_json_route_with_snapshot_access_and_memory,
+    handle_console_rest_json_route_with_snapshot_access_memory_and_workgraph,
     handle_console_rest_json_route_with_snapshot_and_access, validate_console_token,
 };
 pub use event_transport::normalize_event_line;

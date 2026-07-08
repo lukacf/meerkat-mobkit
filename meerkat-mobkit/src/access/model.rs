@@ -47,6 +47,10 @@ pub const ACTION_AGENT_RESET: &str = "agent.reset";
 pub const ACTION_GATING_VIEW: &str = "gating.view";
 /// Decide pending gating approvals.
 pub const ACTION_GATING_DECIDE: &str = "gating.decide";
+/// Read WorkGraph state: snapshots, items, attention bindings, events.
+pub const ACTION_WORKGRAPH_VIEW: &str = "workgraph.view";
+/// Mutate WorkGraph state: goals, item lifecycle, attention operations.
+pub const ACTION_WORKGRAPH_MANAGE: &str = "workgraph.manage";
 /// Subscribe to whole-mob event surfaces (raw mob/structural event streams).
 pub const ACTION_MOB_OBSERVE: &str = "mob.observe";
 /// Operate runtime plumbing: routing tables, labels, wiring, reconcile.
@@ -78,6 +82,8 @@ pub const ACCESS_ACTIONS: &[&str] = &[
     ACTION_AGENT_RESET,
     ACTION_GATING_VIEW,
     ACTION_GATING_DECIDE,
+    ACTION_WORKGRAPH_VIEW,
+    ACTION_WORKGRAPH_MANAGE,
     ACTION_MOB_OBSERVE,
     ACTION_RUNTIME_ADMIN,
     ACTION_MOBPACK_AUTHOR,

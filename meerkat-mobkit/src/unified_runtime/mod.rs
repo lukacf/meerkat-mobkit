@@ -165,6 +165,11 @@ pub struct UnifiedRuntime {
     // the runtime is shared (`Arc`), wherever the store is constructed.
     memory_panel_store:
         std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+    // Realm-scoped WorkGraph service backing the `mobkit/workgraph/*` RPC
+    // group and the console experience section. Seeded from the bootstrap
+    // spec; interior-mutable (memory-panel pattern) so gateways that
+    // construct the service late can still wire it after Arc-sharing.
+    workgraph_service: std::sync::RwLock<Option<meerkat::WorkGraphService>>,
     /// Identity-first console gateways: the mutable desired-identity roster
     /// that `mobkit/ensure_member` extends at runtime (ask K0). Set by the
     /// host beside `attach_identity_first_context`.
@@ -227,6 +232,7 @@ impl UnifiedRuntime {
         mob_runtime.install_console_spawn_sink(crate::console_spawn::ConsoleSpawnSink::new(
             console_events.clone(),
         ));
+        let workgraph_service = mob_runtime.workgraph_service();
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -255,6 +261,7 @@ impl UnifiedRuntime {
             identity_first_context: None,
             access_controller: None,
             memory_panel_store: std::sync::RwLock::new(None),
+            workgraph_service: std::sync::RwLock::new(workgraph_service),
             console_identity_roster: std::sync::RwLock::new(None),
             console_operator_resolver: std::sync::RwLock::new(None),
             metadata_table,
@@ -627,6 +634,25 @@ impl UnifiedRuntime {
         &self,
     ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
         self.memory_panel_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Wire the realm-scoped WorkGraph service into the `mobkit/workgraph/*`
+    /// RPC group and the console experience section. Usually seeded from the
+    /// bootstrap spec; `&self` deliberately (memory-panel pattern) so a
+    /// gateway that constructs the service late can still wire it after the
+    /// runtime is `Arc`-shared.
+    pub fn set_workgraph_service(&self, service: meerkat::WorkGraphService) {
+        *self
+            .workgraph_service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
+    }
+
+    pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
+        self.workgraph_service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

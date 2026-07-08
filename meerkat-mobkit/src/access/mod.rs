@@ -47,6 +47,7 @@ pub use model::{
     ACTION_GATING_DECIDE, ACTION_GATING_VIEW, ACTION_MEMORY_QUARANTINE_REVIEW,
     ACTION_MOB_MEMORY_COMMIT, ACTION_MOB_MEMORY_PROPOSE, ACTION_MOB_MEMORY_READ,
     ACTION_MOB_OBSERVE, ACTION_MOBPACK_AUTHOR, ACTION_MOBPACK_DEPLOY, ACTION_OPERATOR_MEMORY_READ,
-    ACTION_RUNTIME_ADMIN, AccessConfigError, AccessControlConfig, AccessEffect, AccessGroup,
-    AccessRule, normalize_access_config_for_memory_actions, validate_access_config,
+    ACTION_RUNTIME_ADMIN, ACTION_WORKGRAPH_MANAGE, ACTION_WORKGRAPH_VIEW, AccessConfigError,
+    AccessControlConfig, AccessEffect, AccessGroup, AccessRule,
+    normalize_access_config_for_memory_actions, validate_access_config,
 };

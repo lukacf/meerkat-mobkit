@@ -719,6 +719,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
 }
 
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     service: Arc<PersistentSessionService<B>>,
     adapter: Arc<MeerkatMachine>,
@@ -726,6 +727,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     mob_state: Option<Arc<MobMcpState>>,
     mob_handle: MobHandle,
     runnable_host: Option<Arc<dyn meerkat::ScheduleRunnableHost>>,
+    workgraph_service: Option<meerkat::WorkGraphService>,
     owner_id: impl Into<String>,
 ) -> Option<ScheduleHostHandle> {
     let inner_mob_host: Arc<dyn SurfaceScheduleMobHost> = match mob_state {
@@ -745,8 +747,8 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     // host-registered runnables (e.g. the memory steward's dream) can be
     // driven as schedule occurrences. `None` keeps mob/session targets only.
     // meerkat 0.7.23: the runtime-backed session host injects the WorkGraph
-    // attention projection at apply time when given a WorkGraphService.
-    // MobKit does not wire WorkGraph yet — None keeps prompts un-decorated.
+    // attention projection at apply time when given a WorkGraphService, so
+    // scheduled turns on goal-bound sessions carry the scoped tool overlay.
     spawn_runtime_backed_schedule_host_with_mobs(
         service,
         adapter,
@@ -755,7 +757,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
         SessionBuildOptions::default(),
         mob_host,
         runnable_host,
-        None,
+        workgraph_service,
         owner_id,
     )
 }
@@ -1653,6 +1655,9 @@ schedule = true
         attached
             .mob_target_registry
             .set_mob_state(mob_state.clone());
+        // A workgraph service on the host exercises upstream arg-8
+        // pass-through on every delivery e2e (overlay injection is inert
+        // without attention bindings).
         let _host = spawn_schedule_host(
             concrete,
             adapter,
@@ -1660,6 +1665,9 @@ schedule = true
             mob_state,
             handle.clone(),
             None,
+            Some(crate::workgraph_wiring::ephemeral_workgraph_service(
+                "delivery-e2e",
+            )),
             "delivery-e2e",
         )
         .expect("spawn schedule host");

@@ -60,6 +60,7 @@ impl UnifiedRuntime {
             self.memory_panel_store(),
             self.console_operator_resolver(),
             self.console_identity_roster(),
+            self.workgraph_service(),
         )
     }
 

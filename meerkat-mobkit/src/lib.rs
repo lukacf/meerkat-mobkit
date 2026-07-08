@@ -32,6 +32,7 @@ pub mod runtime;
 pub mod schedule_wiring;
 pub mod types;
 pub mod unified_runtime;
+pub mod workgraph_wiring;
 
 pub use access::{
     ACCESS_ACTIONS, AccessConfigError, AccessControlConfig, AccessController, AccessDecision,
