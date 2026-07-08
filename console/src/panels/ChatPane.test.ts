@@ -4,7 +4,13 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ConversationTimelineEntry } from "@console-core";
-import { ChatPane, __chatPaneTest } from "./ChatPane";
+import {
+  ChatPane,
+  TURN_RAIL_MAX_TICKS,
+  TURN_RAIL_TICK_PX,
+  __chatPaneTest,
+  windowTurnRail,
+} from "./ChatPane";
 
 const USER = { id: "user", label: "You", role: "user" as const };
 const AGENT = { id: "agent", label: "Agent", role: "assistant" as const };
@@ -365,4 +371,101 @@ test("chat pane renders workgraph operator buttons only for provided callbacks",
   // Pause renders on the active binding.
   assert.match(html, /data-testid="workgraph-attention:attention-1:pause"/);
   assert.doesNotMatch(html, /workgraph-attention:attention-1:resume/);
+});
+
+test("windowTurnRail keeps short conversations un-windowed", () => {
+  assert.deepEqual(windowTurnRail(1, 560), { start: 0, overflow: 0 });
+  assert.deepEqual(windowTurnRail(20, 560), { start: 0, overflow: 0 });
+  // Exactly at the height budget: still no windowing.
+  const budget = Math.floor(560 / TURN_RAIL_TICK_PX);
+  assert.deepEqual(windowTurnRail(Math.min(budget, TURN_RAIL_MAX_TICKS), 560), {
+    start: 0,
+    overflow: 0,
+  });
+});
+
+test("windowTurnRail collapses long-running agents to the measured band", () => {
+  // 200 turns in a 560px band: newest turns keep ticks, the rest collapse.
+  const windowed = windowTurnRail(200, 560);
+  assert.ok(windowed.overflow > 0, "long history must window");
+  const visible = 200 - windowed.start;
+  const budget = Math.min(TURN_RAIL_MAX_TICKS, Math.floor(560 / TURN_RAIL_TICK_PX));
+  assert.ok(
+    visible + 1 <= budget,
+    `visible ticks (${visible}) + overflow slot must fit the budget (${budget})`,
+  );
+  assert.equal(windowed.start, windowed.overflow);
+});
+
+test("windowTurnRail respects tiny panes but never drops below the floor", () => {
+  const tiny = windowTurnRail(200, 40); // 4 slots by height -> floor of 6 applies
+  assert.ok(200 - tiny.start >= 5, "at least five recent turns stay railed");
+  assert.ok(200 - tiny.start <= 6, "tiny panes stay tightly bounded");
+});
+
+test("windowTurnRail treats an unmeasured band as the hard ceiling", () => {
+  const unmeasured = windowTurnRail(500, null);
+  const visible = 500 - unmeasured.start;
+  assert.ok(
+    visible + 1 <= TURN_RAIL_MAX_TICKS,
+    "without a measurement the hard ceiling caps the rail",
+  );
+});
+
+test("long histories render a windowed rail with the overflow jump tick", () => {
+  const entries: ConversationTimelineEntry[] = [];
+  for (let index = 0; index < 120; index += 1) {
+    entries.push(
+      message({
+        id: `u-${index}`,
+        role: "user",
+        createdAt: new Date(1720000000000 + index * 60000).toISOString(),
+        text: `question ${index}`,
+      }),
+      message({
+        id: `a-${index}`,
+        role: "assistant",
+        createdAt: new Date(1720000000000 + index * 60000 + 1000).toISOString(),
+        text: `answer ${index}`,
+      }),
+    );
+  }
+  const html = renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      agent: {
+        agent_id: "long-agent",
+        member_id: "long-agent",
+        identity: "long-agent",
+        label: "Long Agent",
+        kind: "mob_agent",
+        role: "worker",
+        state: "active",
+        model_capabilities: { image_input: false },
+      },
+      agentLabel: "Long Agent",
+      identity: "long-agent",
+      entries,
+      phase: null,
+      draft: "",
+      sending: false,
+      readOnly: true,
+      staged: [],
+      onDraftChange: () => undefined,
+      onStagedChange: () => undefined,
+      onSend: () => true,
+    }),
+  );
+  const tickCount = (html.match(/chat-turn-rail:long-agent:\d+/g) ?? []).length;
+  assert.ok(
+    tickCount + 1 <= TURN_RAIL_MAX_TICKS,
+    `rendered ticks (${tickCount}) must fit the ceiling`,
+  );
+  assert.ok(
+    html.includes("chat-turn-rail:long-agent:overflow"),
+    "the collapsed history exposes the overflow jump tick",
+  );
+  assert.ok(
+    html.includes("earlier turns"),
+    "the overflow preview names the collapsed count",
+  );
 });

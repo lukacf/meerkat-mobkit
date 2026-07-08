@@ -16028,6 +16028,16 @@ function buildChatTurns(messages) {
   }
   return turns;
 }
+var TURN_RAIL_TICK_PX = 10;
+var TURN_RAIL_MAX_TICKS = 48;
+function windowTurnRail(turnCount, railHeightPx) {
+  if (turnCount <= 1) return { start: 0, overflow: 0 };
+  const byHeight = railHeightPx === null || !Number.isFinite(railHeightPx) || railHeightPx <= 0 ? TURN_RAIL_MAX_TICKS : Math.floor(railHeightPx / TURN_RAIL_TICK_PX);
+  const budget = Math.max(6, Math.min(TURN_RAIL_MAX_TICKS, byHeight));
+  if (turnCount <= budget) return { start: 0, overflow: 0 };
+  const visible = Math.max(5, budget - 1);
+  return { start: turnCount - visible, overflow: turnCount - visible };
+}
 function chatTurnPreview(turn) {
   let title = "";
   let body = "";
@@ -16490,33 +16500,81 @@ function ChatPane({
   const [dragActive, setDragActive] = import_react31.default.useState(false);
   const [attachmentError, setAttachmentError] = import_react31.default.useState(null);
   const resolvedDraftBlobRefs = import_react31.default.useRef("");
-  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("ol", { className: "conv-turn-rail__list", children: turns.map((turn, turnIndex) => {
-    const preview = chatTurnPreview(turn);
-    const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
-    return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("li", { className: "conv-turn-rail__item", children: [
+  const railRef = import_react31.default.useRef(null);
+  const [railHeight, setRailHeight] = import_react31.default.useState(null);
+  import_react31.default.useEffect(() => {
+    const nav = railRef.current;
+    if (!nav || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries2) => {
+      for (const entry of entries2) {
+        setRailHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, [turns.length > 1]);
+  const railWindow = windowTurnRail(turns.length, railHeight);
+  const turnRail = turns.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("nav", { className: "conv-turn-rail", "aria-label": "Conversation turns", ref: railRef, children: /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("ol", { className: "conv-turn-rail__list", children: [
+    railWindow.overflow > 0 && /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("li", { className: "conv-turn-rail__item", children: [
       /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
         "button",
         {
-          "aria-current": isVisibleTurn ? "true" : void 0,
-          "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
-          className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
-          "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
+          "aria-label": `Jump to the ${railWindow.overflow} earlier turns`,
+          className: "conv-turn-rail__button",
+          "data-testid": `chat-turn-rail:${identity}:overflow`,
           onClick: (event) => {
-            scrollToTurn(turnIndex);
+            scrollToTurn(0);
             if (event.detail > 0) {
               event.currentTarget.blur();
             }
           },
           type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+          children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+            "span",
+            {
+              className: "conv-turn-rail__tick conv-turn-rail__tick--overflow",
+              "aria-hidden": "true"
+            }
+          )
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
-        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview__title", children: [
+          railWindow.overflow,
+          " earlier turns"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__body", children: "Jump to the start of the visible history." })
       ] })
-    ] }, turn.id);
-  }) }) }) : null;
+    ] }, "rail-overflow"),
+    turns.slice(railWindow.start).map((turn, railIndex) => {
+      const turnIndex = railWindow.start + railIndex;
+      const preview = chatTurnPreview(turn);
+      const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
+      return /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("li", { className: "conv-turn-rail__item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime39.jsx)(
+          "button",
+          {
+            "aria-current": isVisibleTurn ? "true" : void 0,
+            "aria-label": `Jump to turn ${turnIndex + 1}: ${preview.title}`,
+            className: `conv-turn-rail__button${isVisibleTurn ? " is-active" : ""}`,
+            "data-testid": `chat-turn-rail:${identity}:${turnIndex}`,
+            onClick: (event) => {
+              scrollToTurn(turnIndex);
+              if (event.detail > 0) {
+                event.currentTarget.blur();
+              }
+            },
+            type: "button",
+            children: /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("span", { className: "conv-turn-rail__tick", "aria-hidden": "true" })
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime39.jsxs)("div", { className: "conv-turn-preview", role: "presentation", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__title", children: preview.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime39.jsx)("div", { className: "conv-turn-preview__body", children: preview.body })
+        ] })
+      ] }, turn.id);
+    })
+  ] }) }) : null;
   function addFiles(fileList) {
     if (readOnly || !canAttachImages) return;
     const files = dedupeComposerImageFiles(Array.from(fileList));
