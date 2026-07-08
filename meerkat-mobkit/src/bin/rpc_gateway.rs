@@ -3276,7 +3276,21 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                                 let build = modified_req.build.get_or_insert_with(|| {
                                     meerkat_core::service::SessionBuildOptions::default()
                                 });
-                                build.external_tools = Some(Arc::new(dispatcher));
+                                // COMPOSE over whatever an earlier installer
+                                // put in the slot (HomeCore Bug D: assigning
+                                // wholesale silently discarded the agent-memory
+                                // recorder's `memory` tool for every
+                                // callback-built agent). Python-registered
+                                // tools win name collisions; everything else
+                                // falls through to the pre-installed
+                                // dispatcher.
+                                let pre_installed = build.external_tools.take();
+                                build.external_tools = Some(
+                                    meerkat_mobkit::tool_compose::ComposedExternalTools::over(
+                                        Arc::new(dispatcher),
+                                        pre_installed,
+                                    ),
+                                );
                             }
                         }
                         None => {
@@ -4881,8 +4895,18 @@ external_addressable = true
         )
         .await;
 
-    // 9. RPC dispatch loop: process queued requests from the stdin reader task
+    // 9. RPC dispatch loop: each request runs on its own task. The loop must
+    // never await a handler inline — a turn-running RPC can block on a
+    // Python/TS callback round-trip, and the host may issue further RPCs
+    // (e.g. mobkit/agent_memory/recall) from INSIDE that callback. With
+    // sequential dispatch those reentrant requests starve behind the turn
+    // until the callback times out (HomeCore recall deadlock). Both SDK
+    // transports match responses by id, and the HTTP surface already serves
+    // the same methods concurrently, so completion order is free.
+    let identity_ctx = identity_ctx.map(Arc::new);
+    let http_base_url_shared: Arc<str> = http_base_url.clone().into();
     {
+        let mut inflight = tokio::task::JoinSet::new();
         loop {
             let request_line = tokio::select! {
                 line = rpc_rx.recv() => match line {
@@ -4896,17 +4920,36 @@ external_addressable = true
                 &gateway_options.schedules,
                 &gateway_options.gating,
             );
-            let response = handle_unified_rpc_json(
-                &runtime,
-                &request_line,
-                timeout,
-                Some(&http_base_url),
-                identity_ctx.as_ref(),
-            )
-            .await;
-            if !response.is_empty() {
-                let _ = stdout_tx.send(response).await;
-            }
+            let runtime = runtime.clone();
+            let stdout_tx = stdout_tx.clone();
+            let identity_ctx = identity_ctx.clone();
+            let http_base_url = http_base_url_shared.clone();
+            inflight.spawn(async move {
+                let response = handle_unified_rpc_json(
+                    &runtime,
+                    &request_line,
+                    timeout,
+                    Some(http_base_url.as_ref()),
+                    identity_ctx.as_deref(),
+                )
+                .await;
+                if !response.is_empty() {
+                    let _ = stdout_tx.send(response).await;
+                }
+            });
+            // Reap completed handlers so the set does not grow unbounded.
+            while inflight.try_join_next().is_some() {}
+        }
+        // stdin is closed: the client that would consume these responses is
+        // gone or leaving. Give in-flight handlers a short grace period,
+        // then abort rather than waiting out callback timeouts against a
+        // departed host; runtime.shutdown() below still runs.
+        let drain = async { while inflight.join_next().await.is_some() {} };
+        if tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .is_err()
+        {
+            inflight.shutdown().await;
         }
     }
 
