@@ -205,24 +205,38 @@ pub struct WorkGraphAdmission {
     /// in-process gates. Memory-backed runtimes are single-process by
     /// construction and keep the in-process gate only.
     sidecar: Option<PathBuf>,
-    /// Memo of session→member resolutions through the session-store fallback
-    /// of [`Self::resolve_member_identity`]. `load_persisted_session` is a
-    /// FULL authoritative session deserialization — multi-GB for long-lived
-    /// members — and resolution runs while the runtime-wide gate (and, on
-    /// shared stores, the sidecar's `BEGIN IMMEDIATE` transaction) is held,
-    /// so paying it on every roster-miss would spike latency/memory and
-    /// starve a co-process into the sidecar's 30s busy timeout. Memoizing is
-    /// sound because the mapping is immutable: `mob_member_binding` is
-    /// stamped into session metadata at build and never rewritten, and a
-    /// non-member session can never BECOME a member session — so negative
-    /// entries are safe too. Bounded by
-    /// [`Self::MEMBER_RESOLUTION_CACHE_MAX`], cleared wholesale on overflow
-    /// (a refill costs one load per session). The FIRST resolution of each
-    /// session still pays the full-session read: the store exposes no
+    /// Memo of POSITIVE session→member resolutions through the session-store
+    /// fallback of [`Self::resolve_member_identity`].
+    /// `load_persisted_session` is a FULL authoritative session
+    /// deserialization — multi-GB for long-lived members — and resolution
+    /// runs while the runtime-wide gate (and, on shared stores, the
+    /// sidecar's `BEGIN IMMEDIATE` transaction) is held, so paying it on
+    /// every roster-miss would spike latency/memory and starve a co-process
+    /// into the sidecar's 30s busy timeout.
+    ///
+    /// The mapping is NOT immutable: session ADOPTION is a legitimate flow
+    /// (a free-floating session — or a member of another mob — resumed into
+    /// a member build via `resume_session`; the factory re-stamps
+    /// `mob_member_binding` and persists it). So:
+    /// - NEGATIVE results are never cached — a stale non-member entry would
+    ///   silently re-open the roster-blind duplicate window when the session
+    ///   is adopted (and negative lookups are the rare path: goals
+    ///   overwhelmingly target members).
+    /// - POSITIVE entries carry a short TTL
+    ///   ([`Self::MEMBER_RESOLUTION_TTL`]) bounding the adoption-away
+    ///   window (a member session re-adopted elsewhere would otherwise
+    ///   lower session targets to the stale identity).
+    ///
+    /// Bounded by [`Self::MEMBER_RESOLUTION_CACHE_MAX`], cleared wholesale
+    /// on overflow. The FIRST resolution of each session (and each negative
+    /// lookup) pays the full-session read: the store exposes no
     /// metadata-only seam (upstream ask candidate, noted on ask 24's
     /// mobkit-interim line in docs/design/upstream-asks.md).
-    member_resolution_cache:
-        std::sync::Mutex<HashMap<meerkat::SessionId, Option<meerkat_mob::ids::AgentIdentity>>>,
+    member_resolution_cache: std::sync::Mutex<
+        HashMap<meerkat::SessionId, (std::time::Instant, meerkat_mob::ids::AgentIdentity)>,
+    >,
+    /// TTL for positive member-resolution entries; overridable in tests.
+    member_resolution_ttl: std::time::Duration,
 }
 
 impl WorkGraphAdmission {
@@ -230,6 +244,12 @@ impl WorkGraphAdmission {
     /// roster (OB3's eternal fleet is ~600 members) while capping worst-case
     /// growth from admissions against arbitrary non-member session ids.
     const MEMBER_RESOLUTION_CACHE_MAX: usize = 4096;
+
+    /// TTL for positive session→member memo entries. Long enough to absorb
+    /// admission bursts against the same eternal member session; short
+    /// enough that an adoption-away (legitimate: sessions can be resumed
+    /// into other members/mobs, re-stamping the binding) converges quickly.
+    const MEMBER_RESOLUTION_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
     pub fn new(
         mob_handle: meerkat_mob::MobHandle,
@@ -242,7 +262,15 @@ impl WorkGraphAdmission {
             gate: Arc::new(tokio::sync::Mutex::new(())),
             sidecar,
             member_resolution_cache: std::sync::Mutex::new(HashMap::new()),
+            member_resolution_ttl: Self::MEMBER_RESOLUTION_TTL,
         }
+    }
+
+    /// Test hook: shrink the positive-entry TTL so expiry is observable.
+    #[cfg(test)]
+    pub(crate) fn with_member_resolution_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.member_resolution_ttl = ttl;
+        self
     }
 
     /// The mob whose roster backs alias resolution (and whose definition id
@@ -263,9 +291,11 @@ impl WorkGraphAdmission {
     /// against THIS mob's id). A session-store read failure fails CLOSED
     /// (surfaced as a store error, never cached): treating it as a miss
     /// would silently re-open the roster-blind aliasing hole this fallback
-    /// exists to plug. Store results are memoized in
-    /// [`Self::member_resolution_cache`] — one full-session read per session
-    /// id, not one per admission.
+    /// exists to plug. POSITIVE results are memoized (with a TTL) in
+    /// [`Self::member_resolution_cache`]; negative results are re-read every
+    /// time — session adoption can turn a non-member session into a member
+    /// session at any moment, and a stale negative would re-open the
+    /// duplicate window.
     async fn resolve_member_identity(
         &self,
         session_id: &meerkat::SessionId,
@@ -278,13 +308,14 @@ impl WorkGraphAdmission {
         {
             return Ok(Some(entry.agent_identity.clone()));
         }
-        if let Some(cached) = self
+        if let Some((stamped_at, identity)) = self
             .member_resolution_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_id)
+            && stamped_at.elapsed() < self.member_resolution_ttl
         {
-            return Ok(cached.clone());
+            return Ok(Some(identity.clone()));
         }
         let Some(service) = self.session_service.as_ref() else {
             return Ok(None);
@@ -303,14 +334,19 @@ impl WorkGraphAdmission {
             .and_then(|metadata| metadata.mob_member_binding)
             .filter(|binding| binding.mob_id == self.mob_handle.definition().id.as_str())
             .map(|binding| meerkat_mob::ids::AgentIdentity::from(binding.member.as_str()));
-        let mut cache = self
-            .member_resolution_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.len() >= Self::MEMBER_RESOLUTION_CACHE_MAX {
-            cache.clear();
+        if let Some(identity) = resolved.as_ref() {
+            let mut cache = self
+                .member_resolution_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.len() >= Self::MEMBER_RESOLUTION_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(
+                session_id.clone(),
+                (std::time::Instant::now(), identity.clone()),
+            );
         }
-        cache.insert(session_id.clone(), resolved.clone());
         Ok(resolved)
     }
 

@@ -1492,6 +1492,128 @@ comms = true
         }
     }
 
+    /// Adoption simulator for the round-7 memo test: routes
+    /// `load_persisted_session` to one of two probes based on a flag, so a
+    /// single session id can flip non-member → member (and back) exactly the
+    /// way `resume_session` adoption re-stamps the binding.
+    struct SwitchableStore {
+        probe_pre: AdmissionStoreProbe,
+        probe_post: AdmissionStoreProbe,
+        adopted: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionService for SwitchableStore {
+        async fn create_session(
+            &self,
+            _req: meerkat_core::service::CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "create_session".to_string(),
+            ))
+        }
+
+        async fn start_turn(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StartTurnRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "start_turn".to_string(),
+            ))
+        }
+
+        async fn interrupt(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::service::SessionView, meerkat_core::service::SessionError>
+        {
+            Err(meerkat_core::service::SessionError::NotFound { id: id.clone() })
+        }
+
+        async fn list(
+            &self,
+            _query: meerkat_core::service::SessionQuery,
+        ) -> Result<Vec<meerkat_core::service::SessionSummary>, meerkat_core::service::SessionError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn archive(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceCommsExt for SwitchableStore {}
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceControlExt for SwitchableStore {
+        async fn append_system_context(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::AppendSystemContextRequest,
+        ) -> Result<
+            meerkat_core::service::AppendSystemContextResult,
+            meerkat_core::service::SessionControlError,
+        > {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "append_system_context".to_string(),
+            )
+            .into())
+        }
+
+        async fn stage_tool_results(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StageToolResultsRequest,
+        ) -> Result<
+            meerkat_core::service::StageToolResultsResult,
+            meerkat_core::service::SessionError,
+        > {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "stage_tool_results".to_string(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceHistoryExt for SwitchableStore {
+        async fn read_history(
+            &self,
+            id: &meerkat_core::types::SessionId,
+            _query: meerkat_core::service::SessionHistoryQuery,
+        ) -> Result<meerkat_core::service::SessionHistoryPage, meerkat_core::service::SessionError>
+        {
+            Err(meerkat_core::service::SessionError::NotFound { id: id.clone() })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_mob::MobSessionService for SwitchableStore {
+        async fn load_persisted_session(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_core::session::Session>, meerkat_core::service::SessionError>
+        {
+            if self.adopted.load(std::sync::atomic::Ordering::SeqCst) {
+                self.probe_post.load_persisted_session(session_id).await
+            } else {
+                self.probe_pre.load_persisted_session(session_id).await
+            }
+        }
+    }
+
     /// Round-6 T1 (RPC write side): a member session spelled as an owner key
     /// must lower to the member's agent-owner form on `goal/create` — stored
     /// verbatim it would be a session-spelled `LoweredOwner` row invisible
@@ -1706,12 +1828,14 @@ comms = true
         runtime.handle().stop().await.expect("stop");
     }
 
-    /// Round-6 T2: `load_persisted_session` deserializes the FULL session —
-    /// multi-GB for OB3-profile eternal members — under the runtime-wide
-    /// gate, so the admission must pay it at most ONCE per session id. The
-    /// binding is stamped at build and immutable, and a non-member session
-    /// can never become a member session, so positive AND negative
-    /// resolutions are both cacheable.
+    /// Round-6 T2 + round-7 correction: `load_persisted_session`
+    /// deserializes the FULL session — multi-GB for OB3-profile eternal
+    /// members — under the runtime-wide gate, so POSITIVE resolutions are
+    /// memoized (TTL-bounded). Session ADOPTION is legitimate (a
+    /// free-floating session, or another mob's member, resumed into a
+    /// member build re-stamps the binding), so NEGATIVE results are never
+    /// cached: each non-member lookup re-reads the store and immediately
+    /// observes an adoption.
     #[tokio::test(flavor = "multi_thread")]
     async fn member_resolution_is_cached_after_the_first_store_read() {
         let (runtime_knows, _service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
@@ -1768,9 +1892,85 @@ comms = true
         }
         assert_eq!(
             loads.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "a negative resolution is cached too"
+            3,
+            "negative resolutions are NEVER cached — adoption can turn a \
+             non-member session into a member session at any moment"
         );
+        runtime_knows.handle().stop().await.expect("stop");
+        runtime_blind.handle().stop().await.expect("stop");
+    }
+
+    /// Round-7 (final gate): the adoption-resume flow is legitimate — a
+    /// plain session (or another mob's member session) can be resumed INTO a
+    /// member build, re-stamping `mob_member_binding`. A stale negative memo
+    /// would pin it as non-member and re-open the roster-blind duplicate
+    /// window; a stale positive would lower to an outdated identity after an
+    /// adoption-away. Negatives are uncached (adoption observed on the very
+    /// next lookup); positives expire after the TTL.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adoption_flips_are_observed_because_negatives_are_uncached_and_positives_expire() {
+        let (runtime_knows, _service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let member_session = spawn_helper_member(&runtime_knows).await;
+        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // Switchable delegate: starts BLANK (session unknown = non-member),
+        // then "adopts" by switching to the member-knowing store — the same
+        // session id transitions non-member → member, as resume_session does.
+        let adopted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let store: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(SwitchableStore {
+            probe_pre: AdmissionStoreProbe {
+                delegate: runtime_blind.session_service().cloned(),
+                loads: Arc::clone(&loads),
+            },
+            probe_post: AdmissionStoreProbe {
+                delegate: runtime_knows.session_service().cloned(),
+                loads: Arc::clone(&loads),
+            },
+            adopted: Arc::clone(&adopted),
+        });
+        let admission = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime_blind.handle(),
+            Some(store),
+            None,
+        )
+        .with_member_resolution_ttl(std::time::Duration::ZERO);
+
+        let target = meerkat::GoalAttentionTarget::Session {
+            session_id: member_session.clone(),
+        };
+        // Pre-adoption: non-member, stays session-form.
+        let kept = admission
+            .lower_member_session_target(target.clone())
+            .await
+            .expect("pre-adoption lookup");
+        assert_eq!(kept, target, "not yet a member of this mob");
+
+        // Adoption happens (same session id now carries the binding).
+        adopted.store(true, std::sync::atomic::Ordering::SeqCst);
+        let lowered = admission
+            .lower_member_session_target(target.clone())
+            .await
+            .expect("post-adoption lookup");
+        assert!(
+            matches!(
+                &lowered,
+                meerkat::GoalAttentionTarget::Owner { owner_key }
+                    if owner_key.id == "mob/wiring-admission-mob/agent/helper"
+            ),
+            "the very next lookup observes the adoption: {lowered:?}"
+        );
+
+        // Adoption-away: with a zero TTL the positive entry expires
+        // immediately, so the reverse flip is observed on the next lookup
+        // too (a real deployment bounds this by MEMBER_RESOLUTION_TTL).
+        adopted.store(false, std::sync::atomic::Ordering::SeqCst);
+        let reverted = admission
+            .lower_member_session_target(target.clone())
+            .await
+            .expect("post-adoption-away lookup");
+        assert_eq!(reverted, target, "expired positive re-reads the store");
+
         runtime_knows.handle().stop().await.expect("stop");
         runtime_blind.handle().stop().await.expect("stop");
     }
