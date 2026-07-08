@@ -26,6 +26,7 @@ export type MobKitControlTargetKind =
   | "mobkit/gating"
   | "mobkit/access"
   | "mobkit/memory"
+  | "mobkit/workgraph"
   | "mobkit/logs";
 
 export interface MobKitControlWorkbenchTarget extends ConsoleDockTarget {
@@ -56,6 +57,7 @@ const LEGACY_CONTROL_TARGETS: Record<string, MobKitControlTargetKind> = {
   gates: "mobkit/gating",
   access: "mobkit/access",
   memory: "mobkit/memory",
+  workgraph: "mobkit/workgraph",
   logs: "mobkit/logs",
 };
 

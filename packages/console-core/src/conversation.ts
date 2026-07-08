@@ -99,10 +99,65 @@ export interface ConversationFlowRunEntry extends ConversationTimelineEntryBase 
   restorable?: boolean;
 }
 
+// Aggregate posture of one goal/root work-item card. "mixed" is a fully
+// terminal graph that ended in a blend of completed/cancelled outcomes.
+export type WorkGraphCardStatus = "active" | "blocked" | "completed" | "failed" | "mixed";
+
+export interface ConversationWorkGraphItemRow {
+  itemId: string;
+  title: string;
+  // Upstream WorkStatus wire value: open|in_progress|blocked|completed|cancelled|failed.
+  status: string;
+  priority?: string | null;
+  ownerLabel?: string | null;
+  // CAS token — operator actions must send the latest observed revision.
+  revision: number;
+  depth: number;
+  parentId?: string | null;
+  blocked?: boolean;
+  dueAt?: string | null;
+  lastEventAt?: string | null;
+  description?: string | null;
+  labels?: string[];
+  evidence?: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ConversationWorkGraphAttentionRow {
+  bindingId: string;
+  // pursue|coordinate|review|falsify|judge|observe
+  mode: string;
+  // Human form of the binding status: "active", "paused until …", …
+  statusLabel: string;
+  targetLabel?: string | null;
+  // Binding machine revision (CAS token for attention mutations).
+  revision?: number;
+  itemId?: string | null;
+}
+
+// One evolving in-conversation card per goal/root work item, aggregated from
+// the turn's workgraph tool-call frames. Rebuilt from scratch on every adapter
+// pass (same posture as tool blocks) with a stable `workgraph:{rootId}` id so
+// live updates land in place.
+export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBase {
+  kind: "workgraph";
+  rootId: string;
+  title: string;
+  objective?: string | null;
+  status: WorkGraphCardStatus;
+  progress: { completed: number; total: number };
+  items: ConversationWorkGraphItemRow[];
+  attention: ConversationWorkGraphAttentionRow[];
+  recentEvents?: string[];
+  lastUpdatedAt?: string;
+}
+
 export type ConversationTimelineEntry =
   | ConversationMessageEntry
   | ConversationSummaryEntry
-  | ConversationFlowRunEntry;
+  | ConversationFlowRunEntry
+  | ConversationWorkGraphEntry;
 
 export interface ConversationTimelineGroup {
   id: string;
@@ -208,6 +263,21 @@ export function conversationEntryText(entry: ConversationTimelineEntry): string 
     return [entry.flowName, entry.objective || "", ...rowLines, entry.outcome || ""]
       .filter(Boolean)
       .join("\n");
+  }
+
+  if (entry.kind === "workgraph") {
+    const itemLines = entry.items.map((item) => (
+      `${"  ".repeat(item.depth)}${item.title} — ${item.status.replace(/_/g, " ")}`
+    ));
+    const attentionLines = entry.attention.map((row) => (
+      `${row.mode}: ${row.statusLabel}${row.targetLabel ? ` → ${row.targetLabel}` : ""}`
+    ));
+    return [
+      `${entry.title} (${entry.progress.completed}/${entry.progress.total})`,
+      entry.objective || "",
+      ...itemLines,
+      ...attentionLines,
+    ].filter(Boolean).join("\n");
   }
 
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();

@@ -1083,6 +1083,319 @@
               ]
             }
           ]
+        },
+        "mobkit/workgraph/snapshot": {
+          "request": {
+            "optional_fields": [
+              "namespace",
+              "all_namespaces",
+              "statuses",
+              "labels",
+              "include_terminal",
+              "limit"
+            ]
+          },
+          "success": {
+            "body": "workgraph_snapshot"
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/events": {
+          "request": {
+            "optional_fields": [
+              "namespace",
+              "all_namespaces",
+              "after_seq",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "events"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/goal/status": {
+          "request": {
+            "required_fields": [
+              "binding_id"
+            ],
+            "optional_fields": [
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item",
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/claim": {
+          "request": {
+            "required_fields": [
+              "id",
+              "expected_revision",
+              "owner"
+            ],
+            "optional_fields": [
+              "lease_seconds",
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/release": {
+          "request": {
+            "required_fields": [
+              "id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/close": {
+          "request": {
+            "required_fields": [
+              "id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "status",
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/goal/confirm": {
+          "request": {
+            "required_fields": [
+              "binding_id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "evidence",
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item",
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/goal/request_close": {
+          "request": {
+            "required_fields": [
+              "binding_id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "status",
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "item",
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/attention/pause": {
+          "request": {
+            "required_fields": [
+              "binding_id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "until",
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/attention/resume": {
+          "request": {
+            "required_fields": [
+              "binding_id",
+              "expected_revision"
+            ],
+            "optional_fields": [
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
+        },
+        "mobkit/workgraph/attention/reassign": {
+          "request": {
+            "required_fields": [
+              "binding_id",
+              "expected_revision",
+              "target"
+            ],
+            "optional_fields": [
+              "namespace"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "previous",
+              "attention"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32041,
+                -32042,
+                -32602,
+                -32000,
+                -32601
+              ]
+            }
+          ]
         }
       }
     },

@@ -12,6 +12,7 @@ import type { ConversationViewState } from "@console-core";
 
 import { ConversationEmptyState } from "./conversation-empty-state";
 import { ConversationTranscript } from "./conversation-transcript";
+import type { WorkGraphCardActions } from "./work-graph-card";
 import {
   conversationTurnPreview,
   groupConversationTranscriptTurns,
@@ -33,6 +34,7 @@ export type ConversationPaneProps = {
   onToggleDiffFile?: ((filePath: string) => void) | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: (() => void) | null;
+  workGraphActions?: WorkGraphCardActions | null;
   // The jump-to-turn rail on the pane's edge. Default true (the MobKit
   // console ships it); meerkat-studio opts out until it adopts the rail
   // deliberately.
@@ -60,6 +62,7 @@ export function ConversationPane({
   onToggleDiffFile = null,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
+  workGraphActions = null,
   showTurnRail: showTurnRailProp = true,
 }: ConversationPaneProps) {
   const scrollRef = useRef<HTMLElement | null>(null);
@@ -271,6 +274,7 @@ export function ConversationPane({
               maxGroups={maxGroups}
               onFlowRunMessageMember={onFlowRunMessageMember}
               onFlowRunRestore={onFlowRunRestore}
+              workGraphActions={workGraphActions}
               onToggleDiffFile={onToggleDiffFile}
               showTurnDiff={showTurnDiff}
               viewState={viewState}

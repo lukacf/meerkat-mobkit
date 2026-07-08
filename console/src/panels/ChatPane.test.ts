@@ -233,3 +233,136 @@ test("chat pane shows a loading indicator while an empty session history is fetc
   assert.match(empty, /No messages yet/);
   assert.doesNotMatch(empty, /Loading conversation/);
 });
+
+// ── WorkGraph inline card ───────────────────────────────────────────────────
+
+const WORKGRAPH_ENTRY: ConversationTimelineEntry = {
+  kind: "workgraph",
+  id: "workgraph:goal-1",
+  identity: AGENT,
+  createdAt: "2026-05-20T06:44:00.000Z",
+  rootId: "goal-1",
+  title: "Release 0.7.30",
+  objective: "Ship WorkGraph end to end",
+  status: "active",
+  progress: { completed: 1, total: 3 },
+  items: [
+    {
+      itemId: "goal-1",
+      title: "Release 0.7.30",
+      status: "in_progress",
+      priority: null,
+      ownerLabel: null,
+      revision: 4,
+      depth: 0,
+      parentId: null,
+      description: "Ship WorkGraph end to end",
+    },
+    {
+      itemId: "child-1",
+      title: "Console card",
+      status: "completed",
+      priority: null,
+      ownerLabel: "Planner",
+      revision: 2,
+      depth: 1,
+      parentId: "goal-1",
+    },
+    {
+      itemId: "child-2",
+      title: "SDK parity",
+      status: "open",
+      priority: "high",
+      ownerLabel: null,
+      revision: 1,
+      depth: 1,
+      parentId: "goal-1",
+    },
+  ],
+  attention: [
+    {
+      bindingId: "attention-1",
+      mode: "pursue",
+      statusLabel: "active",
+      targetLabel: "sess-42",
+      revision: 7,
+    },
+  ],
+};
+
+test("chat pane flattens workgraph entries into a dedicated card message", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Plan the release." }),
+    WORKGRAPH_ENTRY,
+    message({ id: "answer", role: "assistant", createdAt: "2026-05-20T06:45:07.000Z", text: "On it." }),
+  ]);
+
+  const card = messages.find((entry) => entry.kind === "workgraph");
+  assert.ok(card);
+  assert.equal(card?.workGraphEntry?.rootId, "goal-1");
+  // Copy/transcript surfaces get the textual projection.
+  assert.match(card?.text || "", /Release 0\.7\.30 \(1\/3\)/);
+});
+
+test("chat pane renders the workgraph card inline without action buttons when no callbacks are provided", () => {
+  const html = renderChat({
+    entries: [
+      message({ id: "ask", role: "user", createdAt: "2026-05-20T06:43:02.000Z", text: "Plan the release." }),
+      WORKGRAPH_ENTRY,
+    ],
+    phase: null,
+  });
+
+  assert.match(html, /data-work-graph-card/);
+  assert.match(html, /data-root-id="goal-1"/);
+  assert.match(html, /data-status="active"/);
+  assert.match(html, /data-testid="workgraph-card:goal-1"/);
+  assert.match(html, /Release 0\.7\.30/);
+  assert.match(html, /1\/3/);
+  assert.match(html, /Console card/);
+  assert.match(html, /pursue/);
+  // Undefined-handler convention: no callbacks, no operator buttons.
+  assert.doesNotMatch(html, /workgraph-action:/);
+  assert.doesNotMatch(html, /workgraph-attention:/);
+});
+
+test("chat pane renders workgraph operator buttons only for provided callbacks", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ChatPane, {
+      agent: {
+        agent_id: "agent",
+        member_id: "agent",
+        identity: "agent",
+        label: "Agent",
+        kind: "mob_agent",
+        role: "worker",
+        state: "active",
+        model_capabilities: { image_input: true },
+      },
+      agentLabel: "Agent",
+      identity: "agent",
+      entries: [WORKGRAPH_ENTRY],
+      phase: null,
+      draft: "",
+      sending: false,
+      readOnly: false,
+      staged: [],
+      onDraftChange: () => undefined,
+      onStagedChange: () => undefined,
+      onSend: () => true,
+      workGraphActions: {
+        onClaim: () => undefined,
+        onAttentionPause: () => undefined,
+      },
+    }),
+  );
+
+  // Claim renders only on the open, unowned item.
+  assert.match(html, /data-testid="workgraph-action:child-2:claim"/);
+  assert.doesNotMatch(html, /workgraph-action:child-1:claim/);
+  // Close callback was not provided — no Done buttons anywhere.
+  assert.doesNotMatch(html, /:close"/);
+  // Pause renders on the active binding.
+  assert.match(html, /data-testid="workgraph-attention:attention-1:pause"/);
+  assert.doesNotMatch(html, /workgraph-attention:attention-1:resume/);
+});

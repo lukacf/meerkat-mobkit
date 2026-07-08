@@ -2,11 +2,13 @@ import React from "react";
 import type {
   ConversationTimelineEntry,
   ConversationRichBlock,
+  ConversationWorkGraphEntry,
 } from "@console-core";
 import {
+  conversationEntryText,
   conversationRichBlocksToText,
 } from "@console-core";
-import { ConversationRichContent } from "@console-components";
+import { ConversationRichContent, WorkGraphCard, type WorkGraphCardActions } from "@console-components";
 import type { ConsoleAgent } from "../types";
 import {
   composerImageFileKey,
@@ -46,6 +48,10 @@ interface ChatPaneProps {
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
   stackSlot?: React.ReactNode;
+  /// Operator actions for inline WorkGraph cards. ConsoleApp gates these on
+  /// `experience.workgraph.can_manage` and read-only state; omitted callbacks
+  /// render no buttons.
+  workGraphActions?: WorkGraphCardActions | null;
 }
 
 export interface StagedAttachment {
@@ -58,7 +64,7 @@ const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "i
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate";
+type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate" | "workgraph";
 
 interface Msg {
   id: string;
@@ -68,6 +74,7 @@ interface Msg {
   who?: string;
   text?: string;
   blocks?: ConversationRichBlock[];
+  workGraphEntry?: ConversationWorkGraphEntry;
   workedFor?: string;
   workedForCopyText?: string;
 }
@@ -228,6 +235,18 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
       time: formatTime(entry.createdAt),
       createdAt: entry.createdAt,
       text: `${entry.title} (+${entry.plus}/-${entry.minus})`,
+    }];
+  }
+
+  if (entry.kind === "workgraph") {
+    return [{
+      id: entry.id,
+      kind: "workgraph",
+      time: formatTime(entry.createdAt),
+      createdAt: entry.createdAt,
+      // Copy/transcript surfaces read `text`; rendering goes through the card.
+      text: conversationEntryText(entry),
+      workGraphEntry: entry,
     }];
   }
 
@@ -558,6 +577,7 @@ export function ChatPane({
   isLoadingHistory = false,
   onLoadOlder,
   stackSlot,
+  workGraphActions = null,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const preserveOlderHistoryScrollRef = React.useRef(false);
@@ -585,7 +605,9 @@ export function ChatPane({
     const lastTextLength = last?.text?.length ?? 0;
     const lastBlockLength = last?.blocks
       ? JSON.stringify(last.blocks).length
-      : 0;
+      : last?.workGraphEntry
+        ? JSON.stringify(last.workGraphEntry).length
+        : 0;
     return [
       identity,
       messages.length,
@@ -957,7 +979,9 @@ export function ChatPane({
                   {(m.kind === "user" || m.kind === "agent") && (
                     <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
                   )}
-                  {m.blocks && m.blocks.length > 0 ? (
+                  {m.kind === "workgraph" && m.workGraphEntry ? (
+                    <WorkGraphCard entry={m.workGraphEntry} actions={workGraphActions} />
+                  ) : m.blocks && m.blocks.length > 0 ? (
                     <ConversationRichContent blocks={m.blocks} displayNormalization={false} />
                   ) : (
                     m.text && <span className="msg__text">{m.text}</span>

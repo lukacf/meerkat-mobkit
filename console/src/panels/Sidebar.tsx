@@ -44,7 +44,7 @@ export {
   writeSidebarStringSet,
 };
 
-export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health" | "access" | "memory";
+export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health" | "access" | "memory" | "workgraph";
 
 interface SidebarProps {
   agents: ConsoleAgent[];
@@ -69,7 +69,7 @@ interface SidebarProps {
 ///
 /// Embedders can drop the query string into the iframe URL without
 /// touching the React tree. Reads once on mount; reload to change.
-export const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory"];
+export const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "logs", "health", "access", "memory", "workgraph"];
 const NAV_LABEL: Record<NavKind, string> = {
   topology: "Topology",
   timeline: "Today",
@@ -80,6 +80,7 @@ const NAV_LABEL: Record<NavKind, string> = {
   health: "Health",
   access: "Access",
   memory: "Memory",
+  workgraph: "WorkGraph",
 };
 
 export function normalizeNavKind(value: unknown): NavKind | null {

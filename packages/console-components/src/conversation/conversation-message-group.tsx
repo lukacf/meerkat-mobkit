@@ -9,6 +9,7 @@ import {
 } from "@console-core";
 
 import { ConversationMessageView } from "./conversation-message-view";
+import type { WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import { toneStyle, type IconRenderer } from "../shared";
 
@@ -42,6 +43,7 @@ type ConversationMessageGroupProps = {
   Icon?: IconRenderer | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: (() => void) | null;
+  workGraphActions?: WorkGraphCardActions | null;
 };
 
 export function ConversationMessageGroup({
@@ -50,6 +52,7 @@ export function ConversationMessageGroup({
   Icon,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
+  workGraphActions = null,
 }: ConversationMessageGroupProps) {
   const presentation = conversationIdentityPresentation(group.identity);
   const isUserGroup = presentation === "user";
@@ -65,6 +68,7 @@ export function ConversationMessageGroup({
             key={entry.id}
             onFlowRunMessageMember={onFlowRunMessageMember}
             onFlowRunRestore={onFlowRunRestore}
+            workGraphActions={workGraphActions}
           />
         ))}
       </>
@@ -113,6 +117,7 @@ export function ConversationMessageGroup({
             key={entry.id}
             onFlowRunMessageMember={onFlowRunMessageMember}
             onFlowRunRestore={onFlowRunRestore}
+            workGraphActions={workGraphActions}
           />
         ))}
       </div>

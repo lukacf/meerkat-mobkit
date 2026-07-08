@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { ConversationViewState } from "@console-core";
 
 import { ConversationMessageGroup } from "./conversation-message-group";
+import type { WorkGraphCardActions } from "./work-graph-card";
 import { groupConversationTranscriptTurns } from "./conversation-turns";
 import { TurnDiffCard } from "./turn-diff-card";
 import type { IconRenderer } from "../shared";
@@ -18,6 +19,7 @@ export type ConversationTranscriptProps = {
   className?: string;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
   onFlowRunRestore?: (() => void) | null;
+  workGraphActions?: WorkGraphCardActions | null;
 };
 
 export function ConversationTranscript({
@@ -31,6 +33,7 @@ export function ConversationTranscript({
   className,
   onFlowRunMessageMember = null,
   onFlowRunRestore = null,
+  workGraphActions = null,
 }: ConversationTranscriptProps) {
   const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
   const renderableTurnDiff = canRenderTurnDiff ? viewState.turnDiff : null;
@@ -63,6 +66,7 @@ export function ConversationTranscript({
                 key={group.id}
                 onFlowRunMessageMember={onFlowRunMessageMember}
                 onFlowRunRestore={onFlowRunRestore}
+                workGraphActions={workGraphActions}
               />
             ))}
             {isLastTurn && renderableTurnDiff && onToggleDiffFile ? (

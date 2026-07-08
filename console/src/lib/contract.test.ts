@@ -188,6 +188,19 @@ test("console contract route and method names stay synchronized with Rust http c
   const rustSource = readFileSync(resolve(process.cwd(), "../meerkat-mobkit/src/http_console.rs"), "utf8");
   const registeredRoutes = parseAxumRoutes(rustSource);
   const dispatchedRpcMethods = parseJsonRpcDispatchMethods(rustSource);
+  // The mobkit/workgraph/* group dispatches through one guard arm
+  // (`method if workgraph_methods::is_workgraph_method(method)`) whose
+  // authoritative method list lives in rpc/workgraph_methods.rs — union it in
+  // only while http_console.rs actually routes through that guard.
+  if (/workgraph_methods::is_workgraph_method\(method\)/.test(rustSource)) {
+    const workGraphSource = readFileSync(
+      resolve(process.cwd(), "../meerkat-mobkit/src/rpc/workgraph_methods.rs"),
+      "utf8",
+    );
+    for (const method of parseWorkGraphMethodLists(workGraphSource)) {
+      dispatchedRpcMethods.add(method);
+    }
+  }
   const contractedRoutes = contractRoutes(schema);
   const frontendRoutes = new Set([
     "GET /",
@@ -261,6 +274,17 @@ function parseJsonRpcDispatchMethods(source: string): Set<string> {
   const armPattern = /^\s*"([^"]+)"\s*=>/gm;
   for (const match of source.matchAll(armPattern)) {
     methods.add(match[1]!);
+  }
+  return methods;
+}
+
+function parseWorkGraphMethodLists(source: string): Set<string> {
+  const methods = new Set<string>();
+  const listPattern = /const WORKGRAPH_(?:READ|MUTATE)_METHODS: &\[&str\] = &\[([^\]]+)\]/g;
+  for (const list of source.matchAll(listPattern)) {
+    for (const entry of list[1]!.matchAll(/"([^"]+)"/g)) {
+      methods.add(entry[1]!);
+    }
   }
   return methods;
 }

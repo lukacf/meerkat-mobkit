@@ -48,6 +48,8 @@ test("migrateConsoleWorkbenchTarget maps legacy identity-inspect, routing, and g
 
   assert.equal(migrateConsoleWorkbenchTarget({ id: "routing", kind: "routing", title: "Routing" })?.kind, "mobkit/routing");
   assert.equal(migrateConsoleWorkbenchTarget({ id: "gating", kind: "gating", title: "Approvals" })?.kind, "mobkit/gating");
+  assert.equal(migrateConsoleWorkbenchTarget({ id: "workgraph", kind: "workgraph", title: "WorkGraph" })?.kind, "mobkit/workgraph");
+  assert.equal(migrateConsoleWorkbenchTarget({ id: "workgraph", kind: "mobkit/workgraph", title: "WorkGraph" })?.kind, "mobkit/workgraph");
 });
 
 test("migrated legacy targets hydrate through dock normalization", () => {

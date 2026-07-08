@@ -6614,3 +6614,303 @@ test("describeMemoryTimelineEvent stays in sync with the console-core mirror", (
     }
   }
 });
+
+// ── WorkGraph inline card aggregation ───────────────────────────────────────
+
+const WORKGRAPH_AGENT = {
+  agent_id: "planner",
+  member_id: "planner",
+  label: "Planner",
+  kind: "identity",
+};
+
+function workGraphItem(args: {
+  id: string;
+  title?: string;
+  status?: string;
+  revision?: number;
+  priority?: string;
+  description?: string;
+  owner?: { kind: string; id: string; display_name?: string };
+  createdAt?: string;
+}): Record<string, unknown> {
+  return {
+    id: args.id,
+    realm_id: "realm-1",
+    namespace: "default",
+    title: args.title || args.id,
+    ...(args.description ? { description: args.description } : {}),
+    status: args.status || "open",
+    priority: args.priority || "medium",
+    revision: args.revision ?? 1,
+    ...(args.owner
+      ? {
+          owner: {
+            key: { kind: args.owner.kind, id: args.owner.id },
+            ...(args.owner.display_name ? { display_name: args.owner.display_name } : {}),
+          },
+        }
+      : {}),
+    created_at: args.createdAt || "2026-07-08T09:00:00Z",
+    updated_at: "2026-07-08T09:00:00Z",
+  };
+}
+
+function workGraphToolFrames(args: {
+  idPrefix: string;
+  name: string;
+  callArgs: Record<string, unknown>;
+  result: Record<string, unknown>;
+  interactionId?: string;
+  timestampMs?: number;
+}) {
+  const interactionId = args.interactionId || "turn-wg";
+  const timestampMs = args.timestampMs ?? 1_779_405_464_000;
+  return [
+    {
+      id: `${args.idPrefix}-call`,
+      event: "tool_call_requested",
+      interactionId,
+      timestampMs,
+      data: { id: `${args.idPrefix}-tc`, name: args.name, args: args.callArgs },
+    },
+    {
+      id: `${args.idPrefix}-done`,
+      event: "tool_execution_completed",
+      interactionId,
+      timestampMs: timestampMs + 200,
+      data: { id: `${args.idPrefix}-tc`, name: args.name, result: JSON.stringify(args.result) },
+    },
+  ];
+}
+
+test("workgraph create→claim→close folds into one evolving card with correct progress and revisions", () => {
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-1",
+      name: "workgraph_create",
+      callArgs: { title: "Ship the fix" },
+      result: { item: workGraphItem({ id: "item-1", title: "Ship the fix", status: "open", revision: 1 }) },
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-2",
+      name: "workgraph_claim",
+      callArgs: { id: "item-1", expected_revision: 1, owner: { kind: "agent", id: "planner" } },
+      result: {
+        item: workGraphItem({
+          id: "item-1",
+          title: "Ship the fix",
+          status: "in_progress",
+          revision: 2,
+          owner: { kind: "agent", id: "planner", display_name: "Planner" },
+        }),
+      },
+      timestampMs: 1_779_405_465_000,
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-3",
+      name: "workgraph_close",
+      callArgs: { id: "item-1", expected_revision: 2 },
+      result: {
+        item: workGraphItem({
+          id: "item-1",
+          title: "Ship the fix",
+          status: "completed",
+          revision: 3,
+          owner: { kind: "agent", id: "planner", display_name: "Planner" },
+        }),
+      },
+      timestampMs: 1_779_405_466_000,
+    }),
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  assert.equal(card.kind === "workgraph" && card.id, "workgraph:interaction:turn-wg");
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.title, "Ship the fix");
+  assert.equal(card.status, "completed");
+  assert.deepEqual(card.progress, { completed: 1, total: 1 });
+  assert.equal(card.items.length, 1);
+  assert.equal(card.items[0].revision, 3);
+  assert.equal(card.items[0].status, "completed");
+  assert.equal(card.items[0].ownerLabel, "Planner");
+
+  // No generic tool rows for workgraph calls.
+  const toolBlockNames = entries.flatMap((entry) => (
+    entry.kind === "message" && Array.isArray(entry.blocks)
+      ? entry.blocks.filter((block) => block.type === "tool-call").map((block) => block.name)
+      : []
+  ));
+  assert.deepEqual(toolBlockNames.filter((name) => String(name).startsWith("workgraph_")), []);
+});
+
+test("workgraph card id and identity stay stable across live passes so updates land in place", () => {
+  const createFrames = workGraphToolFrames({
+    idPrefix: "wg-1",
+    name: "workgraph_create",
+    callArgs: { title: "Ship the fix" },
+    result: { item: workGraphItem({ id: "item-1", title: "Ship the fix", status: "open", revision: 1 }) },
+  });
+  const claimFrames = workGraphToolFrames({
+    idPrefix: "wg-2",
+    name: "workgraph_claim",
+    callArgs: { id: "item-1", expected_revision: 1 },
+    result: { item: workGraphItem({ id: "item-1", title: "Ship the fix", status: "in_progress", revision: 2 }) },
+    timestampMs: 1_779_405_465_000,
+  });
+
+  const firstPass = mapFramesToTimelineEntries(WORKGRAPH_AGENT, createFrames)
+    .filter((entry) => entry.kind === "workgraph");
+  const secondPass = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...createFrames, ...claimFrames])
+    .filter((entry) => entry.kind === "workgraph");
+
+  assert.equal(firstPass.length, 1);
+  assert.equal(secondPass.length, 1);
+  assert.equal(firstPass[0].id, secondPass[0].id);
+  assert.equal(firstPass[0].kind === "workgraph" ? firstPass[0].status : "", "active");
+  assert.equal(secondPass[0].kind === "workgraph" ? secondPass[0].items[0].revision : 0, 2);
+  assert.equal(secondPass[0].identity.role, "assistant");
+});
+
+test("workgraph snapshot results hydrate the goal tree, parent depths, and attention bindings", () => {
+  const frames = workGraphToolFrames({
+    idPrefix: "wg-snap",
+    name: "workgraph_snapshot",
+    callArgs: {},
+    result: {
+      snapshot: {
+        realm_id: "realm-1",
+        all_namespaces: false,
+        captured_at: "2026-07-08T09:10:00Z",
+        items: [
+          workGraphItem({
+            id: "goal-1",
+            title: "Release 0.7.30",
+            description: "Ship WorkGraph end to end",
+            status: "in_progress",
+            revision: 4,
+            createdAt: "2026-07-08T08:00:00Z",
+          }),
+          workGraphItem({
+            id: "child-1",
+            title: "Console card",
+            status: "completed",
+            revision: 2,
+            createdAt: "2026-07-08T08:10:00Z",
+          }),
+          workGraphItem({
+            id: "child-2",
+            title: "SDK parity",
+            status: "open",
+            revision: 1,
+            priority: "high",
+            createdAt: "2026-07-08T08:20:00Z",
+          }),
+        ],
+        edges: [
+          { realm_id: "realm-1", namespace: "default", kind: "parent", from_id: "child-1", to_id: "goal-1", created_at: "2026-07-08T08:10:00Z" },
+          { realm_id: "realm-1", namespace: "default", kind: "parent", from_id: "child-2", to_id: "goal-1", created_at: "2026-07-08T08:20:00Z" },
+        ],
+        attention: [
+          {
+            binding_id: "attention-1",
+            work_ref: { realm_id: "realm-1", namespace: "default", item_id: "goal-1" },
+            target: { kind: "session", session_id: "sess-42" },
+            mode: "pursue",
+            status: { state: "active" },
+            machine_state: { lifecycle_phase: "active", revision: 7 },
+            created_at: "2026-07-08T08:00:00Z",
+            updated_at: "2026-07-08T09:00:00Z",
+          },
+        ],
+        ready_item_ids: ["child-2"],
+      },
+    },
+  });
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.id, "workgraph:goal-1");
+  assert.equal(card.rootId, "goal-1");
+  assert.equal(card.title, "Release 0.7.30");
+  assert.equal(card.objective, "Ship WorkGraph end to end");
+  assert.equal(card.status, "active");
+  assert.deepEqual(card.progress, { completed: 1, total: 3 });
+  assert.deepEqual(
+    card.items.map((item) => [item.itemId, item.depth]),
+    [["goal-1", 0], ["child-1", 1], ["child-2", 1]],
+  );
+  assert.equal(card.items[2].priority, "high");
+  assert.equal(card.attention.length, 1);
+  assert.equal(card.attention[0].bindingId, "attention-1");
+  assert.equal(card.attention[0].mode, "pursue");
+  assert.equal(card.attention[0].statusLabel, "active");
+  assert.equal(card.attention[0].revision, 7);
+  assert.equal(card.attention[0].targetLabel, "sess-42");
+});
+
+test("workgraph unrooted items in one interaction group into a single catch-all card", () => {
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-a",
+      name: "workgraph_create",
+      callArgs: { title: "Item A" },
+      result: { item: workGraphItem({ id: "item-a", title: "Item A", status: "open", revision: 1 }) },
+    }),
+    ...workGraphToolFrames({
+      idPrefix: "wg-b",
+      name: "workgraph_create",
+      callArgs: { title: "Item B" },
+      result: { item: workGraphItem({ id: "item-b", title: "Item B", status: "blocked", revision: 1 }) },
+      timestampMs: 1_779_405_465_000,
+    }),
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.title, "Work items");
+  assert.equal(card.items.length, 2);
+  assert.equal(card.status, "active");
+});
+
+test("workgraph failed tool results do not poison the card fold", () => {
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-ok",
+      name: "workgraph_create",
+      callArgs: { title: "Item A" },
+      result: { item: workGraphItem({ id: "item-a", title: "Item A", status: "open", revision: 1 }) },
+    }),
+    {
+      id: "wg-err-call",
+      event: "tool_call_requested",
+      interactionId: "turn-wg",
+      timestampMs: 1_779_405_465_000,
+      data: { id: "wg-err-tc", name: "workgraph_claim", args: { id: "item-a", expected_revision: 9 } },
+    },
+    {
+      id: "wg-err-done",
+      event: "tool_execution_completed",
+      interactionId: "turn-wg",
+      timestampMs: 1_779_405_465_200,
+      data: { id: "wg-err-tc", name: "workgraph_claim", is_error: true, result: "revision conflict" },
+    },
+  ];
+
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.items[0].status, "open");
+  assert.equal(card.items[0].revision, 1);
+});

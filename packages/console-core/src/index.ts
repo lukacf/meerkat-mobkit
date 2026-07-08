@@ -42,7 +42,11 @@ export type {
   ConversationTimelineEntry,
   ConversationTimelineGroup,
   ConversationTone,
+  ConversationWorkGraphAttentionRow,
+  ConversationWorkGraphEntry,
+  ConversationWorkGraphItemRow,
   FlowRunStatus,
+  WorkGraphCardStatus,
   ConversationTurnDiff,
   ConversationTurnDiffFile,
   ConversationTurnDiffHunk,
@@ -253,6 +257,7 @@ export type {
   RoutingPanelTarget,
   TimelinePanelTarget,
   TopologyPanelTarget,
+  WorkGraphPanelTarget,
 } from "./adapters";
 export {
   appendOptimisticConversationEntry,
