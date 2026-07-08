@@ -158,6 +158,36 @@ function buildChatTurns(messages: Msg[]): ChatTurn[] {
   return turns;
 }
 
+/** Turn-rail geometry: fixed per-tick footprint (item height + grid gap). */
+export const TURN_RAIL_TICK_PX = 10;
+/** Hard ceiling on rendered rail ticks, independent of viewport height. */
+export const TURN_RAIL_MAX_TICKS = 48;
+
+/**
+ * Window the turn rail to the measured band (issue: long-running agents grew
+ * a tick per turn and the ladder spilled past the pane — the list cannot
+ * clip via overflow because the hover previews render outside it). The
+ * newest turns keep individual ticks; everything older collapses into one
+ * "earlier turns" jump slot. Returns the first railed turn index and the
+ * number of railed turns; `overflow` is how many older turns collapsed.
+ */
+export function windowTurnRail(
+  turnCount: number,
+  railHeightPx: number | null,
+): { start: number; overflow: number } {
+  if (turnCount <= 1) return { start: 0, overflow: 0 };
+  const byHeight =
+    railHeightPx === null || !Number.isFinite(railHeightPx) || railHeightPx <= 0
+      ? TURN_RAIL_MAX_TICKS
+      : Math.floor(railHeightPx / TURN_RAIL_TICK_PX);
+  // Keep at least a handful of ticks so tiny panes still navigate recents.
+  const budget = Math.max(6, Math.min(TURN_RAIL_MAX_TICKS, byHeight));
+  if (turnCount <= budget) return { start: 0, overflow: 0 };
+  // Reserve one slot for the overflow jump tick.
+  const visible = Math.max(5, budget - 1);
+  return { start: turnCount - visible, overflow: turnCount - visible };
+}
+
 function chatTurnPreview(turn: ChatTurn): ChatTurnPreview {
   let title = "";
   let body = "";
@@ -742,10 +772,55 @@ export function ChatPane({
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const resolvedDraftBlobRefs = React.useRef("");
 
+  const railRef = React.useRef<HTMLElement | null>(null);
+  const [railHeight, setRailHeight] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    const nav = railRef.current;
+    if (!nav || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setRailHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, [turns.length > 1]);
+
+  const railWindow = windowTurnRail(turns.length, railHeight);
   const turnRail = turns.length > 1 ? (
-    <nav className="conv-turn-rail" aria-label="Conversation turns">
+    <nav className="conv-turn-rail" aria-label="Conversation turns" ref={railRef}>
       <ol className="conv-turn-rail__list">
-        {turns.map((turn, turnIndex) => {
+        {railWindow.overflow > 0 && (
+          <li className="conv-turn-rail__item" key="rail-overflow">
+            <button
+              aria-label={`Jump to the ${railWindow.overflow} earlier turns`}
+              className="conv-turn-rail__button"
+              data-testid={`chat-turn-rail:${identity}:overflow`}
+              onClick={(event) => {
+                scrollToTurn(0);
+                if (event.detail > 0) {
+                  event.currentTarget.blur();
+                }
+              }}
+              type="button"
+            >
+              <span
+                className="conv-turn-rail__tick conv-turn-rail__tick--overflow"
+                aria-hidden="true"
+              />
+            </button>
+            <div className="conv-turn-preview" role="presentation">
+              <div className="conv-turn-preview__title">
+                {railWindow.overflow} earlier turns
+              </div>
+              <div className="conv-turn-preview__body">
+                Jump to the start of the visible history.
+              </div>
+            </div>
+          </li>
+        )}
+        {turns.slice(railWindow.start).map((turn, railIndex) => {
+          const turnIndex = railWindow.start + railIndex;
           const preview = chatTurnPreview(turn);
           const isVisibleTurn = visibleTurnIndexes.includes(turnIndex);
           return (
