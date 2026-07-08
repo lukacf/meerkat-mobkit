@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.29] - 2026-07-08
+
 ### Changed
 
 - meerkat family pinned to `=0.7.23` (from `=0.7.22`). Ask 21d verified
