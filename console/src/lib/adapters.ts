@@ -2230,6 +2230,32 @@ export function framesContainWorkGraphCards(frames: ConsoleFrame[]): boolean {
   return false;
 }
 
+/// Per-identity gate for the reload work-graph re-hydration flow. Each
+/// identity gets at most one snapshot fetch per mount, but only the call
+/// that actually observes cards may consume it: a call made before the
+/// workgraph experience is available, or before any page of history has
+/// folded in a card, leaves the identity unmarked so a later call (e.g.
+/// after `loadOlderIdentityTimeline` folds in an older page) can still
+/// trigger the fetch.
+export interface WorkGraphHydrationGate {
+  shouldFetch(
+    identity: string,
+    state: { workgraphAvailable: boolean; hasCards: boolean },
+  ): boolean;
+}
+
+export function createWorkGraphHydrationGate(): WorkGraphHydrationGate {
+  const done = new Set<string>();
+  return {
+    shouldFetch(identity, { workgraphAvailable, hasCards }) {
+      if (done.has(identity)) return false;
+      if (!workgraphAvailable || !hasCards) return false;
+      done.add(identity);
+      return true;
+    },
+  };
+}
+
 function parsePeerSummary(text: string): { verb: string; summary: string } | null {
   // Match "Peer response: ..." / "Peer request: ..." / "Peer message: ..." at any position
   const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);

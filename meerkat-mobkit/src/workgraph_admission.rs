@@ -64,6 +64,21 @@
 //! roster misses the member — the store carries no identity→session lookup
 //! short of a full session scan, so that direction stays roster-only.
 //!
+//! Round-6: a session can ALSO be spelled as an owner-form target —
+//! `{kind:"owner"|"lowered_owner", owner_key:{kind:"session", id:<session>}}`
+//! (the store's own `Session`-arm rows canonicalize to exactly that owner
+//! key). Write-side lowering therefore keys on the resolved owner key, not
+//! on the target VARIANT: [`WorkGraphAdmission::lower_member_session_target`]
+//! canonicalizes a session-kind owner key into the same session resolution
+//! path — member sessions lower to owner form, non-member sessions come back
+//! in the canonical `{kind:"session"}` arm (identical occupancy key), an id
+//! that does not parse as a session id is refused, and store-read failures
+//! fail closed exactly as for `{kind:"session"}` targets. A session-kind
+//! owner key never reaches the store verbatim; letting one through would
+//! store a session-spelled `LoweredOwner` row that an identity-form
+//! occupancy check in a roster-blind process cannot see — re-opening the
+//! duplicate window normalization exists to close.
+//!
 //! # Occupancy-scan bounds
 //!
 //! The occupancy check queries `list_attention` once per occupying status
@@ -75,7 +90,7 @@
 //! after a full scan) — that bound is upstream's; an upstream ask is filed
 //! separately.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -190,9 +205,32 @@ pub struct WorkGraphAdmission {
     /// in-process gates. Memory-backed runtimes are single-process by
     /// construction and keep the in-process gate only.
     sidecar: Option<PathBuf>,
+    /// Memo of session→member resolutions through the session-store fallback
+    /// of [`Self::resolve_member_identity`]. `load_persisted_session` is a
+    /// FULL authoritative session deserialization — multi-GB for long-lived
+    /// members — and resolution runs while the runtime-wide gate (and, on
+    /// shared stores, the sidecar's `BEGIN IMMEDIATE` transaction) is held,
+    /// so paying it on every roster-miss would spike latency/memory and
+    /// starve a co-process into the sidecar's 30s busy timeout. Memoizing is
+    /// sound because the mapping is immutable: `mob_member_binding` is
+    /// stamped into session metadata at build and never rewritten, and a
+    /// non-member session can never BECOME a member session — so negative
+    /// entries are safe too. Bounded by
+    /// [`Self::MEMBER_RESOLUTION_CACHE_MAX`], cleared wholesale on overflow
+    /// (a refill costs one load per session). The FIRST resolution of each
+    /// session still pays the full-session read: the store exposes no
+    /// metadata-only seam (upstream ask candidate, noted on ask 24's
+    /// mobkit-interim line in docs/design/upstream-asks.md).
+    member_resolution_cache:
+        std::sync::Mutex<HashMap<meerkat::SessionId, Option<meerkat_mob::ids::AgentIdentity>>>,
 }
 
 impl WorkGraphAdmission {
+    /// Bound on [`Self::member_resolution_cache`]. Sized past any plausible
+    /// roster (OB3's eternal fleet is ~600 members) while capping worst-case
+    /// growth from admissions against arbitrary non-member session ids.
+    const MEMBER_RESOLUTION_CACHE_MAX: usize = 4096;
+
     pub fn new(
         mob_handle: meerkat_mob::MobHandle,
         session_service: Option<Arc<dyn meerkat_mob::MobSessionService>>,
@@ -203,6 +241,7 @@ impl WorkGraphAdmission {
             session_service,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             sidecar,
+            member_resolution_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -222,8 +261,11 @@ impl WorkGraphAdmission {
     /// (mid-respawn). `Ok(None)` means both missed — a genuinely non-member
     /// session, or a member of some OTHER mob (the binding is checked
     /// against THIS mob's id). A session-store read failure fails CLOSED
-    /// (surfaced as a store error): treating it as a miss would silently
-    /// re-open the roster-blind aliasing hole this fallback exists to plug.
+    /// (surfaced as a store error, never cached): treating it as a miss
+    /// would silently re-open the roster-blind aliasing hole this fallback
+    /// exists to plug. Store results are memoized in
+    /// [`Self::member_resolution_cache`] — one full-session read per session
+    /// id, not one per admission.
     async fn resolve_member_identity(
         &self,
         session_id: &meerkat::SessionId,
@@ -235,6 +277,14 @@ impl WorkGraphAdmission {
             .find_by_bridge_session_id(session_id)
         {
             return Ok(Some(entry.agent_identity.clone()));
+        }
+        if let Some(cached) = self
+            .member_resolution_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+        {
+            return Ok(cached.clone());
         }
         let Some(service) = self.session_service.as_ref() else {
             return Ok(None);
@@ -248,38 +298,68 @@ impl WorkGraphAdmission {
                      store while resolving its mob member: {error}"
                 ))
             })?;
-        Ok(session
+        let resolved = session
             .and_then(|session| session.session_metadata())
             .and_then(|metadata| metadata.mob_member_binding)
             .filter(|binding| binding.mob_id == self.mob_handle.definition().id.as_str())
-            .map(|binding| meerkat_mob::ids::AgentIdentity::from(binding.member.as_str())))
+            .map(|binding| meerkat_mob::ids::AgentIdentity::from(binding.member.as_str()));
+        let mut cache = self
+            .member_resolution_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() >= Self::MEMBER_RESOLUTION_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(session_id.clone(), resolved.clone());
+        Ok(resolved)
     }
 
     /// WRITE-side target normalization (see the module docs): lower a
-    /// session target that addresses a member of THIS mob to the member's
-    /// owner form (`mob/<mob>/agent/<identity>`), so the stored binding row
-    /// matches identity-form occupancy checks WITHOUT a roster — in the
-    /// co-process sharing the store, and in this process while the member is
-    /// mid-respawn. Member resolution is roster-first with the shared-store
-    /// session-metadata fallback ([`Self::resolve_member_identity`]), so the
-    /// lowering itself is roster-free for persisted member sessions.
-    /// Non-member sessions keep their session form (their occupancy
-    /// equivalence is raw-session-id equality; no aliasing exists for them),
-    /// as does a member whose identity refuses to lower. A session-store
-    /// read failure refuses the mutation (fail closed).
+    /// session-addressed target that addresses a member of THIS mob to the
+    /// member's owner form (`mob/<mob>/agent/<identity>`), so the stored
+    /// binding row matches identity-form occupancy checks WITHOUT a roster —
+    /// in the co-process sharing the store, and in this process while the
+    /// member is mid-respawn. Member resolution is roster-first with the
+    /// shared-store session-metadata fallback
+    /// ([`Self::resolve_member_identity`]), so the lowering itself is
+    /// roster-free for persisted member sessions.
+    ///
+    /// "Session-addressed" covers BOTH spellings (round-6): the
+    /// `{kind:"session"}` arm and an owner-form target whose owner key has
+    /// kind `session` — the two carry the same canonical occupancy key, so
+    /// both are canonicalized through the same resolution path. Non-member
+    /// sessions come back in the canonical `{kind:"session"}` arm whatever
+    /// spelling they arrived in (their occupancy equivalence is
+    /// raw-session-id equality; no aliasing exists for them), as does a
+    /// member whose identity refuses to lower — a session-kind owner key
+    /// never reaches the store verbatim. A session-kind owner key whose id
+    /// does not parse as a session id is refused, and a session-store read
+    /// failure refuses the mutation (fail closed).
     pub(crate) async fn lower_member_session_target(
         &self,
         target: GoalAttentionTarget,
     ) -> Result<GoalAttentionTarget, WorkGraphAdmissionError> {
-        let GoalAttentionTarget::Session { session_id } = &target else {
-            return Ok(target);
+        let session_id = match &target {
+            GoalAttentionTarget::Session { session_id } => session_id.clone(),
+            GoalAttentionTarget::Owner { owner_key }
+                if owner_key.kind == WorkOwnerKind::Session =>
+            {
+                meerkat::SessionId::parse(&owner_key.id).map_err(|error| {
+                    WorkGraphAdmissionError::Service(WorkGraphError::InvalidInput(format!(
+                        "attention target owner key '{}' has kind 'session' but its id does not \
+                         parse as a session id: {error}",
+                        owner_key.canonical(),
+                    )))
+                })?
+            }
+            _ => return Ok(target),
         };
         let Some(identity) = self
-            .resolve_member_identity(session_id)
+            .resolve_member_identity(&session_id)
             .await
             .map_err(WorkGraphAdmissionError::Service)?
         else {
-            return Ok(target);
+            return Ok(GoalAttentionTarget::Session { session_id });
         };
         Ok(
             match meerkat_mob::lower_agent_identity_attention_target(
@@ -287,7 +367,7 @@ impl WorkGraphAdmission {
                 &identity,
             ) {
                 Ok(lowered) => lowered,
-                Err(_) => target,
+                Err(_) => GoalAttentionTarget::Session { session_id },
             },
         )
     }

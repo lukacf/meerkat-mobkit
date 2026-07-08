@@ -36,6 +36,7 @@ import {
   buildSidebarViewState,
   buildWorkGraphOperatorResultFrame,
   createUserEntry,
+  createWorkGraphHydrationGate,
   appendOptimisticConversationEntry,
   framesContainWorkGraphCards,
   inferResponsePhaseFromFrames,
@@ -1386,6 +1387,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         limit: 200,
       });
       reconcileServerLog(normalized, page.frames, page.available);
+      // Older frames just folded in may be the first page to contain a
+      // workgraph card for this identity; re-run the (idempotent) hydration
+      // check so that case doesn't stay permanently un-hydrated.
+      void hydrateWorkGraphCardsForIdentity(normalized);
     } catch {
       // The current view remains usable; a later scroll can retry.
     } finally {
@@ -2592,23 +2597,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // Operator workgraph mutations live only as client-local echo frames, so a
   // page reload silently reverts the inline cards to agent-observed state
   // until an agent next touches the graph. Once per identity per mount, after
-  // the initial history backfill, a pane whose restored transcript folds a
+  // a page of history folds in, a pane whose restored transcript contains a
   // workgraph card fetches ONE snapshot and folds it through the refresh-echo
   // path (`refresh: true` — a read, never an action outcome) so the cards
-  // re-hydrate to live status/revisions. The done-set is marked before the
-  // fetch so concurrent effect runs never double-fetch; identities whose
-  // transcript shows no cards are marked done without fetching.
-  const workGraphHydrationDoneRef = React.useRef(new Set<string>());
+  // re-hydrate to live status/revisions. See `createWorkGraphHydrationGate`
+  // for the once-per-identity decision: a scroll-up fold that first
+  // introduces cards (loadOlderIdentityTimeline) can still trigger the fetch.
+  const workGraphHydrationGateRef = React.useRef(createWorkGraphHydrationGate());
   async function hydrateWorkGraphCardsForIdentity(identity: string): Promise<void> {
-    if (workGraphHydrationDoneRef.current.has(identity)) return;
-    // Experience may still be loading: skip WITHOUT marking done so the
-    // availability flip re-triggers the check.
-    if (experience?.workgraph?.available !== true) return;
-    if (!framesContainWorkGraphCards(getSortedFrames(identity))) {
-      workGraphHydrationDoneRef.current.add(identity);
-      return;
-    }
-    workGraphHydrationDoneRef.current.add(identity);
+    const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
+      workgraphAvailable: experience?.workgraph?.available === true,
+      hasCards: framesContainWorkGraphCards(getSortedFrames(identity)),
+    });
+    if (!shouldFetch) return;
     try {
       const snapshot = await executeHeadlessCommand(
         CONSOLE_COMMAND_NAMES.workgraphSnapshot,

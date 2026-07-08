@@ -5274,6 +5274,17 @@ function framesContainWorkGraphCards(frames) {
   }
   return false;
 }
+function createWorkGraphHydrationGate() {
+  const done = /* @__PURE__ */ new Set();
+  return {
+    shouldFetch(identity, { workgraphAvailable, hasCards }) {
+      if (done.has(identity)) return false;
+      if (!workgraphAvailable || !hasCards) return false;
+      done.add(identity);
+      return true;
+    }
+  };
+}
 function parsePeerSummary(text) {
   const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
   if (!match) return null;
@@ -18396,6 +18407,7 @@ function ConsoleApp({ baseUrl }) {
         limit: 200
       });
       reconcileServerLog(normalized, page.frames, page.available);
+      void hydrateWorkGraphCardsForIdentity(normalized);
     } catch {
     } finally {
       log.olderHistoryLoading = false;
@@ -19287,15 +19299,13 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
-  const workGraphHydrationDoneRef = import_react34.default.useRef(/* @__PURE__ */ new Set());
+  const workGraphHydrationGateRef = import_react34.default.useRef(createWorkGraphHydrationGate());
   async function hydrateWorkGraphCardsForIdentity(identity) {
-    if (workGraphHydrationDoneRef.current.has(identity)) return;
-    if (experience?.workgraph?.available !== true) return;
-    if (!framesContainWorkGraphCards(getSortedFrames(identity))) {
-      workGraphHydrationDoneRef.current.add(identity);
-      return;
-    }
-    workGraphHydrationDoneRef.current.add(identity);
+    const shouldFetch = workGraphHydrationGateRef.current.shouldFetch(identity, {
+      workgraphAvailable: experience?.workgraph?.available === true,
+      hasCards: framesContainWorkGraphCards(getSortedFrames(identity))
+    });
+    if (!shouldFetch) return;
     try {
       const snapshot = await executeHeadlessCommand(
         CONSOLE_COMMAND_NAMES2.workgraphSnapshot,

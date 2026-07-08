@@ -152,6 +152,9 @@ pub fn install_workgraph_tools(
 /// form — the same normalize-at-write rule as the RPC arms (see
 /// [`crate::workgraph_admission`]'s module docs), so tool-plane writes never
 /// mint the session-form member rows that are alias-blind cross-process.
+/// Round-6: "session target" includes a session spelled as an owner key
+/// (`owner_key.kind == "session"`), which canonicalizes through the same
+/// path instead of reaching the store verbatim.
 struct ScopePinnedWorkGraphTools {
     inner: Arc<WorkGraphToolSurface>,
     service: WorkGraphService,
@@ -1350,6 +1353,517 @@ comms = true
             .await
             .expect("join")
             .expect("witnessed reassign admits and succeeds onto the free target");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    // -- Round-6: owner-spelled session targets + resolution cost ----------
+
+    /// A member session spelled as an OWNER key — the round-6 bypass form:
+    /// same canonical occupancy key as `{kind:"session"}`, different target
+    /// variant.
+    fn owner_spelled_session_target(session_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "owner",
+            "owner_key": { "kind": "session", "id": session_id },
+        })
+    }
+
+    /// Session-service stand-in for the admission's ONE read seam,
+    /// `load_persisted_session`: counts store reads and either delegates to
+    /// a real service (the round-6 resolution-cache tests) or fails every
+    /// read (the fail-closed tests). Every other session-service surface is
+    /// inert — the admission never touches it.
+    struct AdmissionStoreProbe {
+        delegate: Option<Arc<dyn meerkat_mob::MobSessionService>>,
+        loads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionService for AdmissionStoreProbe {
+        async fn create_session(
+            &self,
+            _req: meerkat_core::service::CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "create_session".to_string(),
+            ))
+        }
+
+        async fn start_turn(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StartTurnRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "start_turn".to_string(),
+            ))
+        }
+
+        async fn interrupt(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::service::SessionView, meerkat_core::service::SessionError>
+        {
+            Err(meerkat_core::service::SessionError::NotFound { id: id.clone() })
+        }
+
+        async fn list(
+            &self,
+            _query: meerkat_core::service::SessionQuery,
+        ) -> Result<Vec<meerkat_core::service::SessionSummary>, meerkat_core::service::SessionError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn archive(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceCommsExt for AdmissionStoreProbe {}
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceControlExt for AdmissionStoreProbe {
+        async fn append_system_context(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::AppendSystemContextRequest,
+        ) -> Result<
+            meerkat_core::service::AppendSystemContextResult,
+            meerkat_core::service::SessionControlError,
+        > {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "append_system_context".to_string(),
+            )
+            .into())
+        }
+
+        async fn stage_tool_results(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StageToolResultsRequest,
+        ) -> Result<
+            meerkat_core::service::StageToolResultsResult,
+            meerkat_core::service::SessionError,
+        > {
+            Err(meerkat_core::service::SessionError::Unsupported(
+                "stage_tool_results".to_string(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_core::service::SessionServiceHistoryExt for AdmissionStoreProbe {
+        async fn read_history(
+            &self,
+            id: &meerkat_core::types::SessionId,
+            _query: meerkat_core::service::SessionHistoryQuery,
+        ) -> Result<meerkat_core::service::SessionHistoryPage, meerkat_core::service::SessionError>
+        {
+            Err(meerkat_core::service::SessionError::NotFound { id: id.clone() })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        async fn load_persisted_session(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_core::session::Session>, meerkat_core::service::SessionError>
+        {
+            self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match &self.delegate {
+                Some(inner) => inner.load_persisted_session(session_id).await,
+                None => Err(meerkat_core::service::SessionError::Unsupported(
+                    "simulated session-store outage".to_string(),
+                )),
+            }
+        }
+    }
+
+    /// Round-6 T1 (RPC write side): a member session spelled as an owner key
+    /// must lower to the member's agent-owner form on `goal/create` — stored
+    /// verbatim it would be a session-spelled `LoweredOwner` row invisible
+    /// to identity-form occupancy checks in a roster-blind process. The
+    /// lowered row then conflicts with an identity-form duplicate.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn owner_spelled_member_session_lowers_to_owner_form_on_goal_create() {
+        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime).await;
+        let admission = runtime.workgraph_admission();
+
+        let created = rpc_goal_create(
+            &service,
+            &admission,
+            "owner-spelled member session in, owner form stored",
+            owner_spelled_session_target(&session_id.to_string()),
+        )
+        .await
+        .expect("an owner-spelled member session target is admitted");
+        assert_eq!(
+            created["attention"]["target"]["kind"],
+            serde_json::json!("lowered_owner"),
+            "{created:#?}"
+        );
+        assert_eq!(
+            created["attention"]["target"]["owner_key"]["kind"],
+            serde_json::json!("agent"),
+            "{created:#?}"
+        );
+        assert_eq!(
+            created["attention"]["target"]["owner_key"]["id"],
+            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+        );
+
+        let error = rpc_goal_create(
+            &service,
+            &admission,
+            "identity-form duplicate",
+            serde_json::json!({ "kind": "identity", "identity": "helper" }),
+        )
+        .await
+        .expect_err("the lowered row must conflict with an identity-form duplicate");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// Round-6 T1 (tool plane): the same owner-spelled bypass through
+    /// `workgraph_attention_reassign`'s target args must forward with the
+    /// target lowered to the member's agent-owner form.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_plane_reassign_lowers_owner_spelled_member_session_targets() {
+        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime).await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let context = witness_context(&service, &mover.attention.binding_id).await;
+
+        let onto_owner_spelled = serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "binding_id": mover.attention.binding_id,
+                "expected_revision": mover.attention.machine_state.revision,
+                "target": owner_spelled_session_target(&session_id.to_string()),
+            })
+            .to_string(),
+        )
+        .expect("reassign args");
+        dispatcher
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-owner-spelled-member",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_owner_spelled,
+                },
+                &context,
+            )
+            .await
+            .expect("reassign onto the owner-spelled member session succeeds");
+
+        let bindings = service
+            .list_attention(meerkat::AttentionListRequest::default())
+            .await
+            .expect("list attention");
+        let member_binding = bindings
+            .attention
+            .iter()
+            .find(|binding| matches!(binding.status, meerkat::WorkAttentionStatus::Active))
+            .expect("the moved binding is active");
+        assert_eq!(
+            member_binding
+                .target
+                .owner_key()
+                .expect("owner key")
+                .canonical(),
+            "agent:mob/wiring-admission-mob/agent/helper",
+            "the owner-spelled session key must not reach the store verbatim"
+        );
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// Round-6 T1 (the two-row brick): before the fix, an owner-spelled
+    /// member session row was stored session-spelled, and a roster-BLIND
+    /// admission then admitted an identity-form create for the same member —
+    /// two occupying rows, a bricked member. Both writes now normalize
+    /// through the shared session store, so the second conflicts. Uses the
+    /// `lowered_owner` wire alias for the first row — both owner spellings
+    /// must canonicalize.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn owner_spelled_session_rows_cannot_reopen_the_blind_duplicate_window() {
+        let (runtime_knows, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime_knows).await;
+        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        let blind = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime_blind.handle(),
+            runtime_knows.session_service().cloned(),
+            None,
+        );
+
+        let created = rpc_goal_create(
+            &service,
+            &blind,
+            "owner-spelled member session via the blind co-process",
+            serde_json::json!({
+                "kind": "lowered_owner",
+                "owner_key": { "kind": "session", "id": session_id.to_string() },
+            }),
+        )
+        .await
+        .expect("the blind admission canonicalizes the owner-spelled session key");
+        assert_eq!(
+            created["attention"]["target"]["owner_key"]["id"],
+            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+            "{created:#?}"
+        );
+        let occupant = created["attention"]["binding_id"].as_str().unwrap();
+
+        let error = rpc_goal_create(
+            &service,
+            &blind,
+            "identity-form second row of the round-6 brick",
+            serde_json::json!({ "kind": "identity", "identity": "helper" }),
+        )
+        .await
+        .expect_err("the identity-form create must conflict, not brick the member");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+        assert!(
+            error.message.contains(occupant),
+            "conflict must name the occupying binding: {error:?}"
+        );
+        runtime_knows.handle().stop().await.expect("stop");
+        runtime_blind.handle().stop().await.expect("stop");
+    }
+
+    /// Round-6 T1 (non-member): a session-kind owner key for a session
+    /// neither roster nor store knows behaves exactly like a plain session
+    /// target — stored in the canonical `{kind:"session"}` arm (same
+    /// occupancy key, so the plain spelling conflicts against it), and a
+    /// session-kind owner key whose id is not a session id is refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_member_session_kind_owner_keys_canonicalize_to_plain_session_targets() {
+        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let admission = runtime.workgraph_admission();
+
+        let created = rpc_goal_create(
+            &service,
+            &admission,
+            "non-member owner-spelled session goal",
+            owner_spelled_session_target(SESSION_FREE),
+        )
+        .await
+        .expect("a non-member owner-spelled session create is admitted");
+        assert_eq!(
+            created["attention"]["target"]["kind"],
+            serde_json::json!("session"),
+            "{created:#?}"
+        );
+        assert_eq!(
+            created["attention"]["target"]["session_id"],
+            serde_json::json!(SESSION_FREE),
+        );
+
+        let error = rpc_goal_create(
+            &service,
+            &admission,
+            "plain session duplicate",
+            serde_json::json!({ "kind": "session", "session_id": SESSION_FREE }),
+        )
+        .await
+        .expect_err("the plain spelling must conflict with the canonicalized row");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+
+        let error = rpc_goal_create(
+            &service,
+            &admission,
+            "session-kind owner key with a garbage id",
+            serde_json::json!({
+                "kind": "owner",
+                "owner_key": { "kind": "session", "id": "not-a-session-id" },
+            }),
+        )
+        .await
+        .expect_err("an unparseable session-kind owner id must be refused");
+        assert_eq!(error.code, -32602, "{error:?}");
+        assert!(
+            error.message.contains("does not parse as a session id"),
+            "{error:?}"
+        );
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// Round-6 T2: `load_persisted_session` deserializes the FULL session —
+    /// multi-GB for OB3-profile eternal members — under the runtime-wide
+    /// gate, so the admission must pay it at most ONCE per session id. The
+    /// binding is stamped at build and immutable, and a non-member session
+    /// can never become a member session, so positive AND negative
+    /// resolutions are both cacheable.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn member_resolution_is_cached_after_the_first_store_read() {
+        let (runtime_knows, _service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime_knows).await;
+        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(AdmissionStoreProbe {
+            delegate: runtime_knows.session_service().cloned(),
+            loads: Arc::clone(&loads),
+        });
+        let admission = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime_blind.handle(),
+            Some(probe),
+            None,
+        );
+
+        let member_target = meerkat::GoalAttentionTarget::Session {
+            session_id: session_id.clone(),
+        };
+        let first = admission
+            .lower_member_session_target(member_target.clone())
+            .await
+            .expect("first resolution lowers through the store");
+        assert!(
+            matches!(
+                &first,
+                meerkat::GoalAttentionTarget::Owner { owner_key }
+                    if owner_key.id == "mob/wiring-admission-mob/agent/helper"
+            ),
+            "{first:?}"
+        );
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let second = admission
+            .lower_member_session_target(member_target)
+            .await
+            .expect("second resolution lowers from the cache");
+        assert_eq!(second, first);
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second resolution must not call load_persisted_session"
+        );
+
+        let non_member_target = meerkat::GoalAttentionTarget::Session {
+            session_id: meerkat_core::SessionId::parse(SESSION_FREE).expect("session id"),
+        };
+        for _ in 0..2 {
+            let kept = admission
+                .lower_member_session_target(non_member_target.clone())
+                .await
+                .expect("a non-member session keeps its session form");
+            assert_eq!(kept, non_member_target);
+        }
+        assert_eq!(
+            loads.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a negative resolution is cached too"
+        );
+        runtime_knows.handle().stop().await.expect("stop");
+        runtime_blind.handle().stop().await.expect("stop");
+    }
+
+    /// Round-6 T4: pins the fail-closed posture. A session-store read
+    /// failure on a roster-miss session target must REFUSE `goal/create`
+    /// and `attention/reassign` with the store error — admitting in session
+    /// form instead would silently re-open the roster-blind aliasing hole
+    /// the store fallback exists to plug.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_store_read_failure_refuses_admission_instead_of_writing_session_form() {
+        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let probe: Arc<dyn meerkat_mob::MobSessionService> = Arc::new(AdmissionStoreProbe {
+            delegate: None,
+            loads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let admission = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime.handle(),
+            Some(probe),
+            None,
+        );
+
+        for target in [
+            serde_json::json!({ "kind": "session", "session_id": SESSION_FREE }),
+            owner_spelled_session_target(SESSION_FREE),
+        ] {
+            let error = rpc_goal_create(
+                &service,
+                &admission,
+                "create against a failing session store",
+                target,
+            )
+            .await
+            .expect_err("a store read failure must refuse the create");
+            assert_eq!(error.code, crate::rpc::WORKGRAPH_ERROR_CODE, "{error:?}");
+            assert!(
+                error.message.contains("could not read session"),
+                "{error:?}"
+            );
+            assert!(
+                error.message.contains("simulated session-store outage"),
+                "the refusal must carry the store error: {error:?}"
+            );
+        }
+        let bindings = service
+            .list_attention(meerkat::AttentionListRequest::default())
+            .await
+            .expect("list attention");
+        assert!(
+            bindings.attention.is_empty(),
+            "a refused create must not write any binding: {:?}",
+            bindings.attention
+        );
+
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let error = crate::rpc::workgraph_methods::handle_workgraph_method(
+            Some(&service),
+            &admission,
+            None,
+            "mobkit/workgraph/attention/reassign",
+            &serde_json::json!({
+                "binding_id": mover.attention.binding_id,
+                "expected_revision": mover.attention.machine_state.revision,
+                "target": { "kind": "session", "session_id": SESSION_FREE },
+            }),
+        )
+        .await
+        .expect_err("a store read failure must refuse the reassign");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_ERROR_CODE, "{error:?}");
+        assert!(
+            error.message.contains("could not read session"),
+            "{error:?}"
+        );
+        let bindings = service
+            .list_attention(meerkat::AttentionListRequest::default())
+            .await
+            .expect("list attention");
+        assert_eq!(bindings.attention.len(), 1, "{:?}", bindings.attention);
+        assert_eq!(
+            bindings.attention[0]
+                .target
+                .owner_key()
+                .expect("owner key")
+                .canonical(),
+            format!("session:{SESSION_MOVER}"),
+            "the refused reassign must not have moved the binding"
+        );
         runtime.handle().stop().await.expect("stop");
     }
 

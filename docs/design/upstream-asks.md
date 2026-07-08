@@ -1164,7 +1164,10 @@ SQL (indexed columns or generated columns over the JSON); (2) a GC/prune
 facility for terminal (Superseded/Stopped) bindings, mirroring the ask-2
 memory-store lifecycle shape. mobkit interim: realm+status-filtered list
 calls (upstream still decodes every row) and an actionable lock-timeout
-error.
+error; the guard's session→member resolution memoizes per session id, but
+each FIRST resolution still pays `load_persisted_session`'s full-session
+deserialization — `MobSessionService` has no metadata-only read seam (its
+own ask candidate).
 
 ## Ask 25 — attention-binding uniqueness belongs in the service/store (or arbitrate like sessions) — P1
 

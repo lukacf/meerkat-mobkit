@@ -8,6 +8,7 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   buildWorkGraphOperatorResultFrame,
+  createWorkGraphHydrationGate,
   describeMemoryTimelineEvent,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
@@ -7963,4 +7964,61 @@ test("workgraph post-reload snapshot refresh echoes re-hydrate operator-driven s
     ["item-reload"],
     "unrelated snapshot items never fold through a refresh echo",
   );
+});
+
+test("createWorkGraphHydrationGate leaves an identity unhydrated when the initial page has no cards", () => {
+  const gate = createWorkGraphHydrationGate();
+  // The recent-200 backfill page folds in first and shows no workgraph
+  // cards. Regression: this used to permanently mark the identity done,
+  // so a card folded in later via scroll-up would never re-hydrate.
+  const fetched = gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: false });
+  assert.equal(fetched, false, "no cards on this page means no fetch yet");
+  // The identity must still be eligible: calling again with the same
+  // (still cardless) page keeps returning false, not throwing or wedging.
+  assert.equal(
+    gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: false }),
+    false,
+    "still no cards: still no fetch",
+  );
+});
+
+test("createWorkGraphHydrationGate fetches exactly once when an older-page fold first introduces cards", () => {
+  const gate = createWorkGraphHydrationGate();
+  // Initial backfill page: no cards yet, per the scenario above.
+  assert.equal(gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: false }), false);
+  // loadOlderIdentityTimeline folds an older page that does contain a card.
+  assert.equal(
+    gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }),
+    true,
+    "the first page with cards triggers the one-time snapshot fetch",
+  );
+  // A second older-page fold (still cards present) must not re-fetch.
+  assert.equal(
+    gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }),
+    false,
+    "already hydrated: a later fold does not re-fetch",
+  );
+});
+
+test("createWorkGraphHydrationGate does not consume the identity while the workgraph experience is unavailable", () => {
+  const gate = createWorkGraphHydrationGate();
+  // Experience not loaded yet: skip without marking done, same as the
+  // no-cards case, so the availability flip can still trigger a fetch.
+  assert.equal(gate.shouldFetch("planner", { workgraphAvailable: false, hasCards: true }), false);
+  assert.equal(
+    gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }),
+    true,
+    "once available, the pending cards trigger the fetch",
+  );
+});
+
+test("createWorkGraphHydrationGate tracks identities independently", () => {
+  const gate = createWorkGraphHydrationGate();
+  assert.equal(gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }), true);
+  assert.equal(
+    gate.shouldFetch("other-agent", { workgraphAvailable: true, hasCards: true }),
+    true,
+    "a different identity gets its own independent fetch",
+  );
+  assert.equal(gate.shouldFetch("planner", { workgraphAvailable: true, hasCards: true }), false);
 });
