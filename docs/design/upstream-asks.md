@@ -1118,7 +1118,7 @@ known retiring-retry state), identity-first DURABLE members are unaffected
 Affects mob-plane worker churn under identity-first gateways (HomeCore
 agent-tool workers, OB3 worker plane after migration).
 
-## Ask 23 — host-plane attention reassignment (mode-independent) — P2
+## Ask 23 — break-glass host reassignment for stuck bindings — P3 (reframed 2026-07-08)
 
 meerkat 0.7.23's `reassign_attention` requires the witness's
 `can_link_derived_from`, which the machine derives ONLY for
@@ -1132,7 +1132,16 @@ a precise error and hides the affordance for non-coordinate bindings;
 the workaround (goal_request_close + create a new goal on the new
 target) loses binding history/evidence continuity.
 
-Ask: a host-plane reassign on `WorkGraphService` (or a
-`with_trusted_principal`-style promotion on `AttentionReassignRequest`)
-that lets an authenticated host/operator move any non-terminal binding,
-keeping the agent tool surface's mode-derived restriction intact.
+REFRAMED per doctrine (Luka, 2026-07-08): WorkGraphs are AGENT-operated;
+humans debug. The mode-derived restriction is the design, not a gap — the
+agent-native transfer is a COORDINATE-mode agent executing the move at a
+human's conversational request (pursuers can only request, which is the
+right shape: transfers are coordination acts). The one genuinely stuck
+case is a binding on a wedged/retired agent with NO coordinator holding
+authority over it — the graph cannot heal agent-natively.
+
+Ask (narrowed): a BREAK-GLASS host reassign — explicitly attributed to an
+authenticated principal, audit-logged, intended for debug/recovery only
+(`with_trusted_principal`-style promotion on `AttentionReassignRequest`).
+Not an operating path; the agent tool surface's mode-derived restriction
+stays untouched.

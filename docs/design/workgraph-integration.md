@@ -182,6 +182,19 @@ has NO producer in mobkit; the reducer is new work; ChatPane is the real path):
   ABAC, API-contract parity, console UX, perf) — ALL must be green.
 - `make ci` green → release 0.7.30 lockstep (crates + PyPI + npm, 12 assets).
 
+## Operating model (doctrine, Luka 2026-07-08)
+
+WorkGraphs are AGENT-operated; the console is a debug/inspection surface.
+Graph surgery (reassign/claim/close/pause) is normally performed by agents
+— transfers specifically by COORDINATE-mode bindings at a human's
+conversational request (HomeCore: triage/gate agents are the natural
+coordinate holders for cross-domain goals). Console mutations exist as
+debug overrides, deniable wholesale via the `workgraph.manage` ABAC
+action. The one human-NATIVE act is goal confirmation: PrincipalConfirmed
+completion policies mandate an authenticated human sign-off by design.
+Ask 23 (upstream) is correspondingly a break-glass recovery path for
+bindings stuck on wedged/retired agents, not an operating feature.
+
 ## Non-goals (this pass)
 
 - No mobkit-side workgraph identity-target rewriting dispatcher (upstream tools
