@@ -25,14 +25,48 @@
 //! past the check; a surface that skipped the check (the round-3 tool-plane
 //! hole) would both brick the member and invert authority — an agent doing
 //! what an ABAC-granted operator is refused.
+//!
+//! # Target spelling: normalize at write, alias at read (round-4 Q2)
+//!
+//! The roster is PROCESS-LOCAL, but the SQLite store is documented as
+//! shareable by two processes (gateway + library-mode runtime on one state
+//! dir). A guard that needed the roster to equate a session-form row with an
+//! identity-form check would be alias-blind in the process that doesn't know
+//! the member — and in-process while a member is mid-respawn (absent from
+//! the roster). So mobkit normalizes at WRITE instead: every mutation that
+//! points a binding at a target (`goal/create` and `attention/reassign` on
+//! the RPC arms, `workgraph_attention_reassign` on the tool plane) first
+//! lowers a session target that resolves to a roster member to its OWNER
+//! form (`mob/<mob>/agent/<identity>`) via
+//! [`WorkGraphAdmission::lower_member_session_target`]. Mobkit-created
+//! bindings are therefore owner-form whenever a member is involved, and the
+//! occupancy check's roster-FREE layer — primary owner-key equality, which
+//! for non-member sessions is raw-session-id equality — refuses duplicates
+//! without consulting any roster. The roster alias resolution in
+//! [`attention_target_alias_keys`] remains as an EXTRA layer for legacy or
+//! CLI-created session-form rows: bindings written by the meerkat CLI
+//! directly on a shared store bypass this normalization and can still alias;
+//! the guard catches those only when the local roster knows the member.
+//!
+//! # Occupancy-scan bounds
+//!
+//! The occupancy check queries `list_attention` once per occupying status
+//! (Active, Paused) with the service's realm and namespace pinned, so
+//! upstream filters before returning rather than handing back every
+//! permanently-accumulating Superseded/Stopped row. The upstream store-level
+//! SELECT itself has no WHERE clause (meerkat 0.7.23,
+//! meerkat-workgraph/src/store.rs `list_sqlite_attention` filters in Rust
+//! after a full scan) — that bound is upstream's; an upstream ask is filed
+//! separately.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use meerkat::{
-    AttentionListRequest, WorkAttentionBindingId, WorkAttentionStatus, WorkAttentionTarget,
-    WorkGraphError, WorkGraphService, WorkNamespace, WorkOwnerKey, WorkOwnerKind,
+    AttentionBindingRequest, AttentionListRequest, GoalAttentionTarget, WorkAttentionBinding,
+    WorkAttentionBindingId, WorkAttentionStatus, WorkAttentionTarget, WorkGraphError,
+    WorkGraphService, WorkNamespace, WorkOwnerKey, WorkOwnerKind,
 };
 
 /// File name of the cross-process admission lock database, created beside
@@ -104,8 +138,13 @@ impl SidecarLock {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| {
                 format!(
-                    "lock admission sidecar {} (held by another process?): {error}",
-                    path.display()
+                    "could not lock the workgraph admission sidecar {} within the {}s busy \
+                     timeout: {error}. The lock is held by another process sharing this state \
+                     dir (in the documented deployment: a gateway and a library-mode runtime on \
+                     one workgraph.sqlite3) — most likely a co-process is wedged mid-admission \
+                     or under heavy binding-mutation load; retry, or check that co-process",
+                    path.display(),
+                    Self::BUSY_TIMEOUT.as_secs(),
                 )
             })?;
         Ok(Self {
@@ -145,6 +184,34 @@ impl WorkGraphAdmission {
         &self.mob_handle
     }
 
+    /// WRITE-side target normalization (see the module docs): lower a
+    /// session target that addresses one of this runtime's roster members to
+    /// the member's owner form (`mob/<mob>/agent/<identity>`), so the stored
+    /// binding row matches identity-form occupancy checks WITHOUT a roster —
+    /// in the co-process sharing the store, and in this process while the
+    /// member is mid-respawn. Non-member sessions keep their session form
+    /// (their occupancy equivalence is raw-session-id equality; no aliasing
+    /// exists for them), as does a member whose identity refuses to lower.
+    pub(crate) async fn lower_member_session_target(
+        &self,
+        target: GoalAttentionTarget,
+    ) -> GoalAttentionTarget {
+        let GoalAttentionTarget::Session { session_id } = &target else {
+            return target;
+        };
+        let roster = self.mob_handle.roster().await;
+        let Some(entry) = roster.find_by_bridge_session_id(session_id) else {
+            return target;
+        };
+        match meerkat_mob::lower_agent_identity_attention_target(
+            &self.mob_handle.definition().id,
+            &entry.agent_identity,
+        ) {
+            Ok(lowered) => lowered,
+            Err(_) => target,
+        }
+    }
+
     /// Take the admission for one check-then-mutate window. The in-process
     /// gate is taken first so at most one task per process waits on the
     /// sidecar; the sidecar (when configured) then serializes against other
@@ -175,10 +242,14 @@ impl WorkGraphAdmission {
     }
 
     /// Refuse a `goal/create`/`attention/reassign` whose target already
-    /// carries an Active or Paused attention binding (by alias set, not
-    /// literal target spelling). `exclude` names the binding a reassign is
-    /// superseding, which cannot conflict with its own move. Must be called
-    /// with a permit held — the caller holds it across the mutation too.
+    /// carries an Active or Paused attention binding. Matching is primary
+    /// owner-key equality first (roster-free — the write side normalizes
+    /// member targets to owner form, see the module docs), with roster
+    /// session↔identity aliasing as an extra layer for rows some other
+    /// writer left in session form. `exclude` names the binding a reassign
+    /// is superseding, which cannot conflict with its own move. Must be
+    /// called with a permit held — the caller holds it across the mutation
+    /// too.
     pub(crate) async fn check_target_free(
         &self,
         service: &WorkGraphService,
@@ -190,16 +261,10 @@ impl WorkGraphAdmission {
         let aliases = attention_target_alias_keys(&self.mob_handle, target)
             .await
             .map_err(WorkGraphAdmissionError::Service)?;
-        let bindings = service
-            .list_attention(AttentionListRequest {
-                realm_id: None,
-                namespace,
-                target: None,
-                status: None,
-            })
+        let bindings = list_occupying_attention(service, namespace)
             .await
             .map_err(WorkGraphAdmissionError::Service)?;
-        let Some(existing) = bindings.attention.iter().find(|binding| {
+        let Some(existing) = bindings.iter().find(|binding| {
             exclude != Some(&binding.binding_id)
                 && binding_occupies_target(&binding.status)
                 && binding
@@ -243,26 +308,25 @@ impl WorkGraphAdmission {
         namespace: Option<WorkNamespace>,
         binding_id: &WorkAttentionBindingId,
     ) -> Result<(), WorkGraphAdmissionError> {
-        let all = service
-            .list_attention(AttentionListRequest {
+        let resumed = match service
+            .attention_binding(AttentionBindingRequest {
+                binding_id: binding_id.clone(),
                 realm_id: None,
-                namespace,
-                target: None,
-                status: None,
+                namespace: namespace.clone(),
             })
             .await
-            .map_err(WorkGraphAdmissionError::Service)?;
-        let Some(resumed) = all
-            .attention
-            .iter()
-            .find(|binding| binding.binding_id == *binding_id)
-        else {
-            return Ok(());
+        {
+            Ok(result) => result.attention,
+            Err(WorkGraphError::AttentionNotFound { .. }) => return Ok(()),
+            Err(error) => return Err(WorkGraphAdmissionError::Service(error)),
         };
         let aliases = attention_target_alias_keys(&self.mob_handle, &resumed.target)
             .await
             .map_err(WorkGraphAdmissionError::Service)?;
-        let Some(other) = all.attention.iter().find(|binding| {
+        let siblings = list_occupying_attention(service, namespace)
+            .await
+            .map_err(WorkGraphAdmissionError::Service)?;
+        let Some(other) = siblings.iter().find(|binding| {
             binding.binding_id != *binding_id
                 && binding_occupies_target(&binding.status)
                 && binding
@@ -304,6 +368,41 @@ fn binding_occupies_target(status: &WorkAttentionStatus) -> bool {
         status,
         WorkAttentionStatus::Active | WorkAttentionStatus::Paused { .. }
     )
+}
+
+/// The bindings that currently occupy a target, queried once per occupying
+/// status with the service scope pinned so upstream filters BEFORE returning
+/// — an unfiltered `list_attention` would hand back every
+/// permanently-accumulating Superseded/Stopped row on each admission, while
+/// the global gate and sidecar are held. Upstream's `Active` filter is
+/// eligibility-at-now (Active status, plus Paused past its deadline) and its
+/// `Paused` filter is paused-and-not-yet-eligible, so the two scans are
+/// disjoint and their union is exactly the Active-or-Paused set
+/// [`binding_occupies_target`] admits; the callers keep that predicate as an
+/// in-memory recheck so occupancy semantics do not silently follow upstream
+/// filter drift. The store-level SELECT under these calls is still a full
+/// scan (bounded by upstream — see the module docs).
+async fn list_occupying_attention(
+    service: &WorkGraphService,
+    namespace: Option<WorkNamespace>,
+) -> Result<Vec<WorkAttentionBinding>, WorkGraphError> {
+    let namespace = namespace.unwrap_or_else(|| service.default_namespace().clone());
+    let mut bindings = Vec::new();
+    for status in [
+        WorkAttentionStatus::Active,
+        WorkAttentionStatus::Paused { until: None },
+    ] {
+        let result = service
+            .list_attention(AttentionListRequest {
+                realm_id: Some(service.default_realm_id().to_string()),
+                namespace: Some(namespace.clone()),
+                target: None,
+                status: Some(status),
+            })
+            .await?;
+        bindings.extend(result.attention);
+    }
+    Ok(bindings)
 }
 
 /// Mirror of upstream `mob_agent_owner_key_parts` (meerkat 0.7.23,

@@ -10,7 +10,10 @@
 //!   wire-supplied witnesses are rejected (they are unforgeable by design).
 //! - Attention targets accept an additional `{kind:"identity", identity}`
 //!   form, lowered through `meerkat_mob::lower_agent_identity_attention_target`
-//!   with this runtime's mob id.
+//!   with this runtime's mob id. Session targets that resolve to a roster
+//!   member are ALSO lowered to the member's owner form before the write
+//!   (`goal/create`, `attention/reassign`) — see the normalize-at-write
+//!   section of [`crate::workgraph_admission`]'s module docs.
 //! - `goal/create`, `attention/resume` and `attention/reassign` refuse to
 //!   give a target a second Active-or-Paused binding (upstream would brick
 //!   the member with `MultipleActiveBindings` on every scoped turn). The
@@ -672,6 +675,7 @@ pub(crate) async fn handle_workgraph_method(
                 .remove("target")
                 .ok_or_else(|| invalid_params("target is required"))?;
             let target = resolve_goal_target(mob_id, &target_value)?;
+            let target = admission.lower_member_session_target(target).await;
             object.insert("target".to_string(), to_result_value(&target));
             let request: GoalCreateRequest = parse_request(object)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
@@ -773,6 +777,7 @@ pub(crate) async fn handle_workgraph_method(
                 .get("target")
                 .ok_or_else(|| invalid_params("target is required"))?;
             let target = resolve_goal_target(mob_id, target_value)?;
+            let target = admission.lower_member_session_target(target).await;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
             admission
                 .check_target_free(

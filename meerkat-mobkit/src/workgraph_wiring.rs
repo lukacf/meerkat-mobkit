@@ -133,6 +133,25 @@ pub fn install_workgraph_tools(
 /// exists), the call holds the runtime-wide admission across the forward
 /// and runs the same occupancy check as the RPC arms; when unfilled
 /// (non-mob embedder) it forwards as before.
+///
+/// Round-4 Q3: the admission is taken only for a reassign that CARRIES the
+/// attention-projection witness. Upstream requires the witness on both
+/// dispatch entry points — the trait `dispatch` funnels into
+/// `dispatch_with_context` with a default (witness-less) context, and a
+/// missing projection is an immediate `access_denied` for
+/// `workgraph_attention_reassign` before any store access (meerkat 0.7.23,
+/// meerkat-workgraph/src/tool_surface.rs; `WorkGraphToolSurface::new` bakes
+/// in no projection). A witness-less reassign therefore forwards directly
+/// into that cheap upstream denial instead of queueing on the global gate +
+/// cross-process sidecar (up to its 30s busy timeout) — otherwise a
+/// retry-looping model plus a wedged co-process would stall every operator
+/// binding mutation behind calls that can never succeed.
+///
+/// Round-4 Q2: an admitted reassign whose session target resolves to a
+/// roster member is forwarded with the target lowered to the member's owner
+/// form — the same normalize-at-write rule as the RPC arms (see
+/// [`crate::workgraph_admission`]'s module docs), so tool-plane writes never
+/// mint the session-form member rows that are alias-blind cross-process.
 struct ScopePinnedWorkGraphTools {
     inner: Arc<WorkGraphToolSurface>,
     service: WorkGraphService,
@@ -168,18 +187,32 @@ impl ScopePinnedWorkGraphTools {
 
     /// Guard a `workgraph_attention_reassign` before it reaches the inner
     /// surface: hold the runtime-wide admission and run the occupancy check
-    /// on the parsed target. `Ok(Some(permit))` must be held by the caller
-    /// across the forwarded dispatch so a racing RPC `goal/create` on the
-    /// same target cannot slip between check and mutate. `Ok(None)` means no
-    /// guard applies (not a reassign, or the slot is unfilled — a non-mob
-    /// embedder — where the call forwards exactly as before the guard).
+    /// on the parsed target. Returns the permit to hold across the forwarded
+    /// dispatch — so a racing RPC `goal/create` on the same target cannot
+    /// slip between check and mutate — plus the arguments to forward: for an
+    /// admitted reassign whose session target addresses a roster member,
+    /// the target is rewritten to the member's owner form (normalize at
+    /// write, as on the RPC arms); every other call forwards `pinned`
+    /// unchanged. A `None` permit means no guard applies: not a reassign, a
+    /// witness-less reassign (upstream denies it before any store access on
+    /// both entry points — see the struct docs — so taking the global
+    /// admission would only let doomed calls stall real mutations), or an
+    /// unfilled slot (a non-mob embedder, which forwards exactly as before
+    /// the guard existed).
     async fn admit(
         &self,
         name: &str,
-        pinned: &serde_json::value::RawValue,
-    ) -> Result<Option<WorkGraphAdmissionPermit>, meerkat_core::ToolError> {
-        if name != "workgraph_attention_reassign" {
-            return Ok(None);
+        pinned: Box<serde_json::value::RawValue>,
+        witnessed: bool,
+    ) -> Result<
+        (
+            Option<WorkGraphAdmissionPermit>,
+            Box<serde_json::value::RawValue>,
+        ),
+        meerkat_core::ToolError,
+    > {
+        if name != "workgraph_attention_reassign" || !witnessed {
+            return Ok((None, pinned));
         }
         let admission = self
             .admission
@@ -187,7 +220,7 @@ impl ScopePinnedWorkGraphTools {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let Some(admission) = admission else {
-            return Ok(None);
+            return Ok((None, pinned));
         };
         let args: ReassignAdmissionArgs = serde_json::from_str(pinned.get()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(
@@ -195,6 +228,9 @@ impl ScopePinnedWorkGraphTools {
                 format!("invalid workgraph_attention_reassign arguments: {error}"),
             )
         })?;
+        let target = admission
+            .lower_member_session_target(args.target.clone())
+            .await;
         let permit = admission
             .acquire()
             .await
@@ -206,13 +242,31 @@ impl ScopePinnedWorkGraphTools {
             .check_target_free(
                 &self.service,
                 None,
-                &args.target.to_attention_target(),
+                &target.to_attention_target(),
                 Some(&args.binding_id),
                 "reassigning this binding onto the same target",
             )
             .await
             .map_err(|error| admission_tool_error(name, error))?;
-        Ok(Some(permit))
+        let forwarded = if target == args.target {
+            pinned
+        } else {
+            let mut value: serde_json::Value =
+                serde_json::from_str(pinned.get()).map_err(|error| {
+                    meerkat_core::ToolError::invalid_arguments(
+                        name,
+                        format!("invalid workgraph_attention_reassign arguments: {error}"),
+                    )
+                })?;
+            value["target"] = serde_json::json!(target);
+            serde_json::value::RawValue::from_string(value.to_string()).map_err(|error| {
+                meerkat_core::ToolError::invalid_arguments(
+                    name,
+                    format!("failed to encode normalized reassign target: {error}"),
+                )
+            })?
+        };
+        Ok((Some(permit), forwarded))
     }
 
     /// Re-encode a `workgraph_*` call's arguments with the service scope
@@ -293,12 +347,14 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         let Some(pinned) = self.pin_args(&call)? else {
             return self.inner.dispatch(call).await;
         };
-        let _permit = self.admit(call.name, &pinned).await?;
+        // Plain dispatch carries no context and thus no witness: upstream
+        // denies a reassign here regardless, so no admission is taken.
+        let (_permit, forwarded) = self.admit(call.name, pinned, false).await?;
         self.inner
             .dispatch(meerkat_core::types::ToolCallView {
                 id: call.id,
                 name: call.name,
-                args: &pinned,
+                args: &forwarded,
             })
             .await
     }
@@ -311,13 +367,16 @@ impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
         let Some(pinned) = self.pin_args(&call)? else {
             return self.inner.dispatch_with_context(call, context).await;
         };
-        let _permit = self.admit(call.name, &pinned).await?;
+        let witnessed = context
+            .turn_metadata(meerkat::WORKGRAPH_ATTENTION_DISPATCH_CONTEXT_KEY)
+            .is_some();
+        let (_permit, forwarded) = self.admit(call.name, pinned, witnessed).await?;
         self.inner
             .dispatch_with_context(
                 meerkat_core::types::ToolCallView {
                     id: call.id,
                     name: call.name,
-                    args: &pinned,
+                    args: &forwarded,
                 },
                 context,
             )
@@ -357,7 +416,7 @@ mod tests {
     use meerkat::{AgentFactory, Config, CreateWorkItemRequest, WorkGraphStoreKind};
 
     fn test_builder(dir: &Path) -> FactoryAgentBuilder {
-        FactoryAgentBuilder::new(AgentFactory::new(dir), Config::default())
+        FactoryAgentBuilder::new(AgentFactory::new(dir).comms(true), Config::default())
     }
 
     fn slot_is_filled(builder: &FactoryAgentBuilder) -> bool {
@@ -629,6 +688,9 @@ id = "wiring-admission-mob"
 [profiles.worker]
 model = "gpt-5.5"
 runtime_mode = "autonomous_host"
+
+[profiles.worker.tools]
+comms = true
 "#,
         )
         .expect("parse admission test definition")
@@ -951,6 +1013,305 @@ runtime_mode = "autonomous_host"
             .await
             .expect("join")
             .expect("released sidecar admits the waiter");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    // -- Round-4 Q2: normalize member targets to owner form at write --------
+
+    async fn spawn_helper_member(runtime: &crate::MobRuntime) -> meerkat_core::types::SessionId {
+        runtime
+            .handle()
+            .spawn_spec(meerkat_mob::SpawnMemberSpec::new("worker", "helper"))
+            .await
+            .expect("spawn member");
+        runtime
+            .handle()
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from("helper"))
+            .await
+            .expect("member bridge session id")
+    }
+
+    async fn rpc_goal_create(
+        service: &WorkGraphService,
+        admission: &crate::workgraph_admission::WorkGraphAdmission,
+        title: &str,
+        target: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::rpc::JsonRpcError> {
+        crate::rpc::workgraph_methods::handle_workgraph_method(
+            Some(service),
+            admission,
+            None,
+            "mobkit/workgraph/goal/create",
+            &serde_json::json!({ "title": title, "target": target }),
+        )
+        .await
+    }
+
+    /// Round-4 Q2: the roster is PROCESS-local, so in the documented
+    /// two-process deployment (gateway + library-mode runtime on one
+    /// workgraph.sqlite3) a session-form row written by the process that
+    /// knows the member is invisible to the co-process's identity-form
+    /// occupancy check. Writes therefore lower member sessions to OWNER
+    /// form; the co-process (same mob, EMPTY roster — its aliasing layer is
+    /// blind) must refuse the identity-form duplicate on primary owner-key
+    /// equality alone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blind_roster_admission_refuses_identity_create_against_owner_form_row() {
+        let (runtime_knows, service, _dispatcher, dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime_knows).await;
+
+        // The "co-process": same mob definition, no members ever spawned.
+        let (runtime_blind, _service_b, _dispatcher_b, _dir_b) = bootstrapped_tool_plane().await;
+        assert!(
+            runtime_blind
+                .handle()
+                .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
+                    "helper"
+                ))
+                .await
+                .is_none(),
+            "the co-process fixture must not know the member"
+        );
+        let sidecar = crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path());
+        let knows = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime_knows.handle(),
+            Some(sidecar.clone()),
+        );
+        let blind = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime_blind.handle(),
+            Some(sidecar),
+        );
+
+        let created = rpc_goal_create(
+            &service,
+            &knows,
+            "session-form in, owner-form stored",
+            serde_json::json!({ "kind": "session", "session_id": session_id.to_string() }),
+        )
+        .await
+        .expect("create goal in the member-knowing process");
+        assert_eq!(
+            created["attention"]["target"]["kind"],
+            serde_json::json!("lowered_owner"),
+            "{created:#?}"
+        );
+        assert_eq!(
+            created["attention"]["target"]["owner_key"]["id"],
+            serde_json::json!("mob/wiring-admission-mob/agent/helper"),
+        );
+
+        let error = rpc_goal_create(
+            &service,
+            &blind,
+            "duplicate via the blind co-process",
+            serde_json::json!({ "kind": "identity", "identity": "helper" }),
+        )
+        .await
+        .expect_err("the blind admission must refuse the duplicate roster-free");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+        let occupant = created["attention"]["binding_id"].as_str().unwrap();
+        assert!(
+            error.message.contains(occupant),
+            "conflict must name the occupying binding: {error:?}"
+        );
+        runtime_knows.handle().stop().await.expect("stop");
+        runtime_blind.handle().stop().await.expect("stop");
+    }
+
+    /// Round-4 Q2 (mid-respawn): the same blind window exists IN-process
+    /// while a member is absent from the roster. The owner-form row written
+    /// while the member existed must still refuse an identity-form duplicate
+    /// after the member has left the roster.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn occupancy_check_holds_while_the_member_is_absent_from_the_roster() {
+        let (runtime, service, _dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime).await;
+        let admission = runtime.workgraph_admission();
+
+        let created = rpc_goal_create(
+            &service,
+            &admission,
+            "written while the member was rostered",
+            serde_json::json!({ "kind": "session", "session_id": session_id.to_string() }),
+        )
+        .await
+        .expect("create goal");
+        assert_eq!(
+            created["attention"]["target"]["kind"],
+            serde_json::json!("lowered_owner"),
+            "{created:#?}"
+        );
+
+        // The respawn window: the member leaves the roster, its binding
+        // stays. An idle member disposes promptly after retire.
+        runtime
+            .handle()
+            .retire(meerkat_mob::ids::AgentIdentity::from("helper"))
+            .await
+            .expect("retire member");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while runtime
+            .handle()
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from("helper"))
+            .await
+            .is_some()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retired member should leave the roster"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let error = rpc_goal_create(
+            &service,
+            &admission,
+            "duplicate during the respawn window",
+            serde_json::json!({ "kind": "identity", "identity": "helper" }),
+        )
+        .await
+        .expect_err("the occupancy check must not depend on the roster");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    /// Round-4 Q2 (tool plane): a witnessed reassign whose session target
+    /// addresses a roster member forwards with the target lowered to owner
+    /// form — the tool plane writes the same spelling as the RPC arms.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_plane_reassign_lowers_member_session_targets_to_owner_form() {
+        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let session_id = spawn_helper_member(&runtime).await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let context = witness_context(&service, &mover.attention.binding_id).await;
+
+        let onto_member = reassign_args(&mover, &session_id.to_string());
+        dispatcher
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-member-target",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_member,
+                },
+                &context,
+            )
+            .await
+            .expect("reassign onto the member succeeds");
+
+        let bindings = service
+            .list_attention(meerkat::AttentionListRequest::default())
+            .await
+            .expect("list attention");
+        let member_binding = bindings
+            .attention
+            .iter()
+            .find(|binding| matches!(binding.status, meerkat::WorkAttentionStatus::Active))
+            .expect("the moved binding is active");
+        assert_eq!(
+            member_binding
+                .target
+                .owner_key()
+                .expect("owner key")
+                .canonical(),
+            "agent:mob/wiring-admission-mob/agent/helper",
+            "tool-plane writes must store the owner form for members"
+        );
+        runtime.handle().stop().await.expect("stop");
+    }
+
+    // -- Round-4 Q3: witness-less reassigns never take the admission --------
+
+    /// Round-4 Q3: upstream denies a witness-less
+    /// `workgraph_attention_reassign` before any store access, on BOTH entry
+    /// points (plain `dispatch` funnels into a default, witness-less
+    /// context). The wrapper must forward such calls WITHOUT taking the
+    /// runtime-wide admission — proven by holding the admission for the
+    /// whole test: the witness-less call still completes with upstream's
+    /// denial, while a witnessed call queues on the held gate.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn witnessless_reassign_forwards_without_taking_the_admission() {
+        let (runtime, service, dispatcher, _dir) = bootstrapped_tool_plane().await;
+        let mover = create_session_goal(
+            &service,
+            "mover",
+            SESSION_MOVER,
+            meerkat::WorkAttentionMode::Coordinate,
+        )
+        .await;
+        let admission = runtime.workgraph_admission();
+        let held = admission.acquire().await.expect("hold the admission");
+
+        let args = reassign_args(&mover, SESSION_FREE);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            dispatcher.dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-no-witness-context",
+                    name: "workgraph_attention_reassign",
+                    args: &args,
+                },
+                &meerkat_core::agent::ToolDispatchContext::default(),
+            ),
+        )
+        .await
+        .expect("witness-less reassign must not wait on the held admission")
+        .expect_err("upstream denies a witness-less reassign");
+        assert!(
+            matches!(error, meerkat_core::ToolError::AccessDenied { .. }),
+            "expected upstream's access denial, got: {error}"
+        );
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            dispatcher.dispatch(meerkat_core::types::ToolCallView {
+                id: "call-no-witness-plain",
+                name: "workgraph_attention_reassign",
+                args: &args,
+            }),
+        )
+        .await
+        .expect("plain dispatch must not wait on the held admission either")
+        .expect_err("upstream denies the witness-less plain dispatch too");
+        assert!(
+            matches!(error, meerkat_core::ToolError::AccessDenied { .. }),
+            "expected upstream's access denial, got: {error}"
+        );
+
+        // A WITNESSED reassign still admits: it must wait on the held gate,
+        // then complete once the permit drops.
+        let witnessed = {
+            let dispatcher = Arc::clone(&dispatcher);
+            let context = witness_context(&service, &mover.attention.binding_id).await;
+            let args = reassign_args(&mover, SESSION_FREE);
+            tokio::spawn(async move {
+                dispatcher
+                    .dispatch_with_context(
+                        meerkat_core::types::ToolCallView {
+                            id: "call-witnessed",
+                            name: "workgraph_attention_reassign",
+                            args: &args,
+                        },
+                        &context,
+                    )
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !witnessed.is_finished(),
+            "a witnessed reassign must wait on the held admission"
+        );
+        drop(held);
+        witnessed
+            .await
+            .expect("join")
+            .expect("witnessed reassign admits and succeeds onto the free target");
         runtime.handle().stop().await.expect("stop");
     }
 

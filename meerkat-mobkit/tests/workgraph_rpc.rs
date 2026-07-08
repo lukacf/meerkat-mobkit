@@ -547,8 +547,13 @@ async fn goal_lifecycle_with_identity_target() {
     runtime.mob_handle().stop().await.expect("stop");
 }
 
+/// Round-4 Q2 (write normalization): a session target that belongs to a
+/// roster member is lowered to the member's OWNER form before the write, so
+/// the stored row matches identity-form occupancy checks without a roster —
+/// in a co-process sharing the SQLite store, and mid-respawn in this one.
+/// Non-member sessions have no aliasing and keep their session form.
 #[tokio::test(flavor = "multi_thread")]
-async fn goal_create_accepts_session_targets() {
+async fn goal_create_lowers_member_session_targets_to_owner_form() {
     let runtime = build_runtime().await;
     runtime
         .spawn_many(vec![SpawnMemberSpec::from_wire(
@@ -572,6 +577,34 @@ async fn goal_create_accepts_session_targets() {
         json!({
             "title": "session-scoped goal",
             "target": { "kind": "session", "session_id": session_id.to_string() },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    assert_eq!(
+        goal["attention"]["target"]["kind"],
+        json!("lowered_owner"),
+        "member session targets must be stored owner-form: {goal:#?}"
+    );
+    assert_eq!(
+        goal["attention"]["target"]["owner_key"]["kind"],
+        json!("agent")
+    );
+    assert_eq!(
+        goal["attention"]["target"]["owner_key"]["id"],
+        json!("mob/workgraph-rpc-mob/agent/helper")
+    );
+
+    // A session that is NOT a roster member keeps its session spelling.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "non-member session goal",
+            "target": {
+                "kind": "session",
+                "session_id": "019e63c2-0000-7000-8000-00000000beef",
+            },
         }),
     )
     .await;

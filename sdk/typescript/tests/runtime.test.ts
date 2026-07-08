@@ -171,6 +171,15 @@ describe("MobKitRuntime", () => {
     assert.equal(params.runtime_options.workgraph, false);
   });
 
+  it("passes a workgraph durable-store directory string through", () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._config.workgraphEnabled = "/var/lib/mob/workgraph";
+
+    const params = (rt as any)._buildInitParams();
+
+    assert.equal(params.runtime_options.workgraph, "/var/lib/mob/workgraph");
+  });
+
   it("omits workgraph runtime option when unset", () => {
     const { rt } = createMockRuntime();
 

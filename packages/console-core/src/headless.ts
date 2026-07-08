@@ -117,6 +117,7 @@ export const CONSOLE_COMMAND_NAMES = {
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
   workgraphSnapshot: "workgraphSnapshot",
+  workgraphGet: "workgraphGet",
   workgraphEvents: "workgraphEvents",
   workgraphGoalStatus: "workgraphGoalStatus",
   workgraphClaim: "workgraphClaim",
@@ -266,6 +267,10 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   },
   [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {
     method: CONSOLE_RPC_METHODS.workgraphSnapshot,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGet]: {
+    method: CONSOLE_RPC_METHODS.workgraphGet,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
   },
   [CONSOLE_COMMAND_NAMES.workgraphEvents]: {

@@ -2197,6 +2197,7 @@ var CONSOLE_RPC_METHODS = {
   memoryPanelDreamRuns: "mobkit/memory/panel/dream_runs",
   memoryPanelAuditVerdicts: "mobkit/memory/panel/audit_verdicts",
   workgraphSnapshot: "mobkit/workgraph/snapshot",
+  workgraphGet: "mobkit/workgraph/get",
   workgraphEvents: "mobkit/workgraph/events",
   workgraphGoalStatus: "mobkit/workgraph/goal/status",
   workgraphClaim: "mobkit/workgraph/claim",
@@ -2240,6 +2241,7 @@ var CONSOLE_COMMAND_NAMES = {
   listMemoryDreamRuns: "listMemoryDreamRuns",
   listMemoryAuditVerdicts: "listMemoryAuditVerdicts",
   workgraphSnapshot: "workgraphSnapshot",
+  workgraphGet: "workgraphGet",
   workgraphEvents: "workgraphEvents",
   workgraphGoalStatus: "workgraphGoalStatus",
   workgraphClaim: "workgraphClaim",
@@ -2378,6 +2380,10 @@ var CONSOLE_COMMAND_SPECS = {
   },
   [CONSOLE_COMMAND_NAMES.workgraphSnapshot]: {
     method: CONSOLE_RPC_METHODS.workgraphSnapshot,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
+  },
+  [CONSOLE_COMMAND_NAMES.workgraphGet]: {
+    method: CONSOLE_RPC_METHODS.workgraphGet,
     targetKinds: /* @__PURE__ */ new Set(["mobkit/workgraph"])
   },
   [CONSOLE_COMMAND_NAMES.workgraphEvents]: {
