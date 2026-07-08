@@ -71,8 +71,84 @@ fn scoped_workgraph_service(store: Arc<dyn WorkGraphStore>, realm_id: &str) -> W
 pub fn install_workgraph_tools(builder: &FactoryAgentBuilder, service: &WorkGraphService) {
     meerkat::surface::set_default_workgraph_tools(
         builder,
-        Some(Arc::new(WorkGraphToolSurface::new(service.clone()))),
+        Some(Arc::new(ScopePinnedWorkGraphTools::new(service))),
     );
+}
+
+/// Pin every `workgraph_*` tool call to the service's realm + namespace.
+///
+/// The upstream tool schema exposes `realm_id`/`namespace` as free parameters
+/// and models DO fill them with plausible inventions (live-fire: an agent
+/// passed `realm_id = "default", namespace = "<mob id>"` — the exact inverse
+/// of the service scope), which strands the work outside every operator
+/// surface: the RPC snapshot reads the pinned scope, and CAS actions against
+/// the invented scope NotFound. In mobkit one runtime is one realm (the mob
+/// definition id) and one namespace: mechanism owns scope, agents don't
+/// wander realms. Pinning uniformly on reads AND writes keeps the agent's
+/// view self-consistent whatever values it invents.
+struct ScopePinnedWorkGraphTools {
+    inner: Arc<WorkGraphToolSurface>,
+    realm_id: String,
+    namespace: String,
+}
+
+impl ScopePinnedWorkGraphTools {
+    fn new(service: &WorkGraphService) -> Self {
+        Self {
+            inner: Arc::new(WorkGraphToolSurface::new(service.clone())),
+            realm_id: service.default_realm_id().to_string(),
+            namespace: service.default_namespace().as_str().to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl meerkat_core::AgentToolDispatcher for ScopePinnedWorkGraphTools {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if !call.name.starts_with("workgraph_") {
+            return self.inner.dispatch(call).await;
+        }
+        let mut args: serde_json::Value =
+            serde_json::from_str(call.args.get()).map_err(|error| {
+                meerkat_core::ToolError::invalid_arguments(
+                    call.name,
+                    format!("invalid workgraph tool-call arguments JSON: {error}"),
+                )
+            })?;
+        if let Some(object) = args.as_object_mut() {
+            object.insert(
+                "realm_id".to_string(),
+                serde_json::Value::String(self.realm_id.clone()),
+            );
+            object.insert(
+                "namespace".to_string(),
+                serde_json::Value::String(self.namespace.clone()),
+            );
+            // A pinned namespace makes cross-namespace reads meaningless.
+            object.remove("all_namespaces");
+        }
+        let pinned =
+            serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+                meerkat_core::ToolError::invalid_arguments(
+                    call.name,
+                    format!("failed to encode pinned workgraph arguments: {error}"),
+                )
+            })?;
+        self.inner
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: call.id,
+                name: call.name,
+                args: &pinned,
+            })
+            .await
+    }
 }
 
 /// Open the durable store under `state_dir` and attach its tool surface to
@@ -185,6 +261,73 @@ mod tests {
         assert!(
             !dir.path().join(WORKGRAPH_STORE_FILE).exists(),
             "ephemeral variant must not create a store file"
+        );
+    }
+
+    /// Live-fire regression (2026-07-08): the upstream tool schema exposes
+    /// realm_id/namespace and a real model invented `realm_id = "default",
+    /// namespace = "<mob id>"` — the inverse of the service scope — stranding
+    /// its items outside every operator surface. The dispatcher must pin both
+    /// on every workgraph_* call, reads and writes alike.
+    #[tokio::test]
+    async fn tool_calls_with_invented_scope_are_pinned_to_the_service_scope() {
+        use meerkat_core::AgentToolDispatcher;
+        use serde_json::value::RawValue;
+
+        let service = ephemeral_workgraph_service("mob-realm");
+        let tools = ScopePinnedWorkGraphTools::new(&service);
+
+        let create_args = RawValue::from_string(
+            serde_json::json!({
+                "title": "invented scope",
+                "realm_id": "default",
+                "namespace": "mob-realm"
+            })
+            .to_string(),
+        )
+        .expect("args");
+        tools
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "call-1",
+                name: "workgraph_create",
+                args: &create_args,
+            })
+            .await
+            .expect("create dispatch");
+
+        // The item must be visible in the SERVICE scope (what the RPC and
+        // console read), not the invented one.
+        let items = service
+            .list(meerkat::WorkItemFilter::default())
+            .await
+            .expect("list");
+        assert_eq!(items.len(), 1, "item must land in the pinned scope");
+        assert_eq!(items[0].realm_id, "mob-realm");
+        assert_eq!(items[0].namespace.as_str(), "default");
+
+        // Reads with invented scope must see the same world (self-consistent
+        // agent view): snapshot with the inverted scope still returns the item.
+        let snap_args = RawValue::from_string(
+            serde_json::json!({
+                "realm_id": "default",
+                "namespace": "mob-realm",
+                "all_namespaces": false
+            })
+            .to_string(),
+        )
+        .expect("snap args");
+        let outcome = tools
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "call-2",
+                name: "workgraph_snapshot",
+                args: &snap_args,
+            })
+            .await
+            .expect("snapshot dispatch");
+        let rendered = format!("{outcome:?}");
+        assert!(
+            rendered.contains("invented scope"),
+            "pinned snapshot must see the pinned item: {rendered}"
         );
     }
 }
