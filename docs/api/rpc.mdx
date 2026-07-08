@@ -113,6 +113,13 @@ up gaplessly with the same predicate.
 
 Console-specific RPC methods are handled by the HTTP console dispatcher and are also listed in the console contract `v0.5.0`.
 
+**Surface split:** `mobkit/console/*` methods are served ONLY by the HTTP
+console dispatcher (`POST /console/rpc`). The stdio JSON-RPC surface
+(`rpc_gateway` stdin) neither dispatches nor advertises them — embedders
+needing console data over stdio should use the `http_base_url` from the
+init handshake and call the HTTP surface. The advertised-methods list on
+each surface reflects exactly what that surface dispatches.
+
 ### `mobkit/console/list_identities`
 
 List identities known to the console aggregator.
@@ -148,6 +155,15 @@ Response:
 ```
 
 `next_cursor` never advances past visible frames omitted due to `limit`, so clients can page with `mode: "since"` without gaps. `latest_cursor` is the live-continuation cursor for `mode: "recent"` seed queries.
+
+**Backfill frames are not fresh completions.** Session-history backfill
+re-emits past turns as frames whose `source.kind` is `"session_history"`,
+with `session_id` set and `interaction_id` null (the underlying transcript
+does not persist interaction ids — upstream ask 15). Identity queries can
+trigger backfill on demand, so any consumer correlating completions MUST
+exclude `source.kind == "session_history"` frames (correlating by
+`session_id` alone will treat old history as fresh `interaction_complete`
+events).
 
 ### `mobkit/console/send`
 

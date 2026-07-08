@@ -686,6 +686,18 @@ published 0.7.18 sources (all four asks are visible there); mobkit ships a
 read-only watchdog (`spawn_schedule_claim_watchdog`) that names the stall
 and the poisoned row, but only meerkat can make the driver survive one.
 
+### Ask 15 addendum (2026-07-08, mobkit issue #254 item 3)
+
+A second consumer class hit this: the console aggregator's session-history
+backfill re-emits past turns as `interaction_complete` frames with
+`session_id` set and `interaction_id: None` (nothing to stamp — the
+transcript doesn't persist it), and identity queries force-trigger
+backfill. A consumer correlating by session id alone treats old history as
+fresh completions (field: false job completion). mobkit interim: frames
+carry `source.kind == "session_history"` and the API docs now declare its
+exclusion mandatory. Real fix remains this ask: persist interaction ids in
+the transcript so backfill can stamp them.
+
 ## Ask 16 — `spawn_schedule_host` discards every driver tick error
 
 **Problem statement.** `meerkat/src/surface/schedule_host.rs` runs the firing
@@ -1193,3 +1205,18 @@ Ask, either (both is best):
    instead of hard-failing every turn.
 
 When either lands, mobkit's admission layer demotes to defense-in-depth.
+
+
+## Ask 26 — structural reply affordance on comms deliveries — P2
+
+Peer messages arrive framed as prose ("Peer message from <endpoint>...")
+with no structural reply affordance. Models reliably answer in their own
+transcript instead of calling the comms tool back — charter/prompt
+strengthening does not hold (mobkit consumer field report, 2026-07-08),
+so every consumer ends up building an app-side relay.
+
+Ask: deliver peer messages with a typed reply seam — e.g. a delivery
+envelope carrying a `reply_to` capability/token the runtime turns into a
+pre-addressed comms call (or a first-class `reply` tool scoped to the
+delivery), so "answer the peer" is an affordance rather than a prompt
+convention. mobkit interim: none (app-side relays).
