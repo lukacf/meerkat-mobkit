@@ -18,7 +18,7 @@ Read (ABAC `workgraph.view`):
 | `mobkit/workgraph/get` | `{id, namespace?}` | `{item: WorkItem}` |
 | `mobkit/workgraph/ready` | `{namespace?, labels?, limit?}` | `{items: WorkItem[]}` |
 | `mobkit/workgraph/events` | `{namespace?, all_namespaces?, after_seq?, limit?}` | `{events: WorkGraphEvent[]}` |
-| `mobkit/workgraph/attention/list` | `{namespace?, status?}` | `{attention: WorkAttentionBinding[]}` |
+| `mobkit/workgraph/attention/list` | `{namespace?, status?}` — `status` accepts plain strings `active\|paused\|superseded\|stopped` (or upstream's tagged `{state: ...}` form) | `{attention: WorkAttentionBinding[]}` |
 | `mobkit/workgraph/goal/status` | `{binding_id, namespace?}` | `{item, attention}` |
 
 Mutate (ABAC `workgraph.manage`; all honored on unified + console surfaces,
@@ -92,7 +92,11 @@ optional fields); retain `revision` fields verbatim.
 
 Builder opt-out both SDKs: Python `MobKitBuilder.workgraph(enabled: bool)`,
 TS `.workgraph(enabled: boolean)` → `runtime_options.workgraph` (bool,
-default true).
+default true; the gateway also accepts a STRING path for an explicit
+durable store location — identity-first launches without a state dir are
+otherwise memory-backed, warned at boot).
+
+Typed `CapabilitiesResult` in both SDKs carries the `workgraph: bool` flag.
 
 ## Console
 
@@ -131,10 +135,17 @@ frames. Operator actions on the card gated by
 - Library-mode spec constructors and `UnifiedRuntimeBuilder` also wire
   workgraph (not just the gateways) — a profile with `tools.workgraph=true`
   and no dispatcher is a fail-closed member-build error upstream.
-- `goal/create` rejects a second ACTIVE binding for a target that already has
-  one (`-32042`, detail names the existing binding) — upstream
-  `MultipleActiveBindings` would otherwise hard-fail every subsequent turn of
-  that member.
+- ONE BINDING PER TARGET, enforced across `goal/create`,
+  `attention/reassign` (the new target), and `attention/resume`: a second
+  ACTIVE — or PAUSED, since pauses expire — binding whose target aliases the
+  same member (session and identity forms are unified through the roster)
+  returns `-32042` naming the existing binding. Upstream
+  `MultipleActiveBindings` would otherwise hard-fail every subsequent turn
+  of that member. The check-then-act is serialized per runtime across both
+  RPC surfaces.
+- `goal/create`, `attention/*`, and `policy/escalate` reject non-default
+  `namespace` (`-32602`) — upstream turn-overlay resolution only reads the
+  service default namespace, so goals elsewhere would be silently inert.
 - `attention/reassign` is restricted by upstream's authority model to
   COORDINATE-mode bindings at meerkat 0.7.23 (the witness's
   `can_link_derived_from` derives from mode); other modes get a precise
