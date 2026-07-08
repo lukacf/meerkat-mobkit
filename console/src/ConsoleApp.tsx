@@ -37,6 +37,7 @@ import {
   buildWorkGraphOperatorResultFrame,
   createUserEntry,
   appendOptimisticConversationEntry,
+  framesContainWorkGraphCards,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   optimisticUserMessageForPanel,
@@ -2588,6 +2589,50 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // PANEL OPEN / SWITCH — fetch history for new identities
   // =========================================================================
 
+  // Operator workgraph mutations live only as client-local echo frames, so a
+  // page reload silently reverts the inline cards to agent-observed state
+  // until an agent next touches the graph. Once per identity per mount, after
+  // the initial history backfill, a pane whose restored transcript folds a
+  // workgraph card fetches ONE snapshot and folds it through the refresh-echo
+  // path (`refresh: true` — a read, never an action outcome) so the cards
+  // re-hydrate to live status/revisions. The done-set is marked before the
+  // fetch so concurrent effect runs never double-fetch; identities whose
+  // transcript shows no cards are marked done without fetching.
+  const workGraphHydrationDoneRef = React.useRef(new Set<string>());
+  async function hydrateWorkGraphCardsForIdentity(identity: string): Promise<void> {
+    if (workGraphHydrationDoneRef.current.has(identity)) return;
+    // Experience may still be loading: skip WITHOUT marking done so the
+    // availability flip re-triggers the check.
+    if (experience?.workgraph?.available !== true) return;
+    if (!framesContainWorkGraphCards(getSortedFrames(identity))) {
+      workGraphHydrationDoneRef.current.add(identity);
+      return;
+    }
+    workGraphHydrationDoneRef.current.add(identity);
+    try {
+      const snapshot = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.workgraphSnapshot,
+        controlWorkbenchTarget("workgraph"),
+      );
+      appendFrame(
+        identity,
+        buildWorkGraphOperatorResultFrame({
+          method: consoleCommandMethod(CONSOLE_COMMAND_NAMES.workgraphSnapshot),
+          params: {},
+          // The RPC returns the WorkGraphSnapshot verbatim; the fold expects
+          // the tool-result wrapper shape.
+          result: { snapshot },
+          identity,
+          refresh: true,
+        }),
+      );
+      forceRender();
+    } catch {
+      // Best-effort hydration: the card keeps its restored state and the
+      // next operator action heals revisions through the conflict path.
+    }
+  }
+
   React.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
@@ -2597,11 +2642,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Only fetch backfill once per identity — when we don't yet
       // know whether the runtime has an event log. Subsequent panel
       // re-opens reuse the existing log; we never wipe it.
-      if (log.hasServerLog !== null) continue;
-      void refreshIdentityTimelineNow(identity).catch(() => {});
+      if (log.hasServerLog !== null) {
+        void hydrateWorkGraphCardsForIdentity(identity);
+        continue;
+      }
+      void refreshIdentityTimelineNow(identity)
+        .then(() => hydrateWorkGraphCardsForIdentity(identity))
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, dock.viewState.panels, forceRender]);
+  }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
 
   React.useEffect(() => {
     const refreshOpenChatPanels = async () => {

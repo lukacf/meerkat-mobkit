@@ -8,6 +8,8 @@ import { JSDOM } from "jsdom";
 import type { ConversationWorkGraphEntry } from "@console-core";
 import { ConsoleActivityRail, WorkGraphCard, __workGraphCardUiState } from "@console-components";
 import { buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
+import { CONSOLE_COMMAND_NAMES } from "./headless";
+import { resolveWorkGraphGoalItemRevision, type WorkGraphCommandRunner } from "./workgraph-actions";
 import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
 import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
@@ -364,6 +366,82 @@ test("WorkGraphCard actions carry the right CAS token per class: goal actions th
       null,
     );
     assert.ok(dom.window.document.querySelector("[data-testid='workgraph-attention:b-pursue:pause']"));
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("WorkGraphCard goal actions on an unfolded goal item carry NO revision so the live-resolution path runs", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const calls: Array<{ action: string; input: { bindingId: string; revision?: number } }> = [];
+  const record = (action: string) => (input: { bindingId: string; revision?: number }) =>
+    calls.push({ action, input });
+  // The binding names a goal item the fold never observed; the card root has
+  // a revision of its own which must NOT be substituted for it.
+  const entry: ConversationWorkGraphEntry = {
+    kind: "workgraph",
+    id: "workgraph:root-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "root-1",
+    title: "Root card",
+    status: "active",
+    progress: { completed: 0, total: 1 },
+    items: [
+      { itemId: "root-1", title: "Root card", status: "in_progress", revision: 4, depth: 0 },
+    ],
+    attention: [
+      { bindingId: "b-unfolded", mode: "pursue", statusLabel: "active", revision: 7, itemId: "goal-unfolded" },
+    ],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <WorkGraphCard
+          entry={entry}
+          actions={{ onGoalConfirm: record("confirm"), onGoalRequestClose: record("request-close") }}
+        />,
+      );
+    });
+    const click = (testId: string) => {
+      const button = dom.window.document.querySelector(`[data-testid='${testId}']`);
+      assert.ok(button, `expected button ${testId}`);
+      button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    };
+    click("workgraph-attention:b-unfolded:confirm");
+    click("workgraph-attention:b-unfolded:request-close");
+    assert.deepEqual(calls, [
+      { action: "confirm", input: { bindingId: "b-unfolded", revision: undefined } },
+      { action: "request-close", input: { bindingId: "b-unfolded", revision: undefined } },
+    ], "neither the root's revision 4 nor the binding's machine revision 7 leaks into the goal payload");
+
+    // The revision-less payload is exactly what drives the host's live
+    // resolution (revisionOr → resolveWorkGraphGoalItemRevision): the same
+    // dispatch the app performs resolves the goal item via goal/status.
+    const queries: Array<{ command: string; params: Record<string, unknown> }> = [];
+    const runner: WorkGraphCommandRunner = async (command, params) => {
+      queries.push({ command, params });
+      return { item: { id: "goal-unfolded", revision: 12 } };
+    };
+    const payload = calls[0].input;
+    const expectedRevision = payload.revision !== undefined
+      ? payload.revision
+      : await resolveWorkGraphGoalItemRevision(runner, payload.bindingId);
+    assert.equal(expectedRevision, 12, "the CAS token comes from the live read, never another item");
+    assert.deepEqual(queries, [
+      { command: CONSOLE_COMMAND_NAMES.workgraphGoalStatus, params: { binding_id: "b-unfolded" } },
+    ]);
   } finally {
     root.unmount();
     globalThis.window = previousWindow;

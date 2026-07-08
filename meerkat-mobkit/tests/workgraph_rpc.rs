@@ -690,6 +690,58 @@ async fn attention_reassign_injects_witness_server_side() {
     runtime.mob_handle().stop().await.expect("stop");
 }
 
+/// Round-5 S2: every RESULT serializes the stored binding target, whose
+/// owner form is spelled `lowered_owner` — the exact string
+/// `resolve_goal_target` used to reject. A read-back `attention.target`
+/// must round-trip VERBATIM into `attention/reassign` params.
+#[tokio::test(flavor = "multi_thread")]
+async fn result_attention_target_round_trips_verbatim_into_reassign() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "round-trip goal",
+            "target": { "kind": "identity", "identity": "helper" },
+            "mode": "coordinate",
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let read_back_target = goal["attention"]["target"].clone();
+    assert_eq!(
+        read_back_target["kind"],
+        json!("lowered_owner"),
+        "precondition: results serialize the lowered_owner spelling: {goal:#?}"
+    );
+
+    // Reassigning the binding onto its own read-back target supersedes it
+    // with a fresh Active binding on the same member — the admission
+    // excludes the binding being moved, and upstream has no same-target
+    // rejection. Before the fix this was -32602 (unsupported target.kind).
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": goal["attention"]["binding_id"],
+            "expected_revision": goal["attention"]["machine_state"]["revision"],
+            "target": read_back_target,
+        }),
+    )
+    .await;
+    let reassigned = result(&response).clone();
+    assert_eq!(
+        reassigned["previous"]["status"]["state"],
+        json!("superseded")
+    );
+    assert_eq!(reassigned["attention"]["status"]["state"], json!("active"));
+    assert_eq!(
+        reassigned["attention"]["target"], read_back_target,
+        "the stored target must survive the round-trip unchanged"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
 /// Adversarial finding F10: a second ACTIVE binding for a target that
 /// already has one bricks the member — every subsequent scoped turn is a
 /// hard upstream `MultipleActiveBindings` error. `goal/create` must reject

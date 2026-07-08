@@ -1400,6 +1400,12 @@ interface WorkGraphEventDraft {
 
 interface WorkGraphFoldState {
   items: Map<string, WorkGraphItemDraft>;
+  // Item ids observed through a TARGETED result (create/get/claim/… `item`,
+  // operator echoes) as opposed to bulk snapshot/list folds. Bulk-only trees
+  // never earn their own card — a full-store snapshot would otherwise mint a
+  // card per loose root — while trees actually worked in this window keep
+  // theirs (see ownCardRoots).
+  directItemIds: Set<string>;
   // child item id -> FIRST observed parent item id (WorkEdge kind "parent"
   // runs child→parent). Upstream allows multiple parents per child; card
   // placement is first-parent-wins so a later edge never silently re-homes
@@ -1646,18 +1652,32 @@ function workGraphFailureLine(name: string, raw: unknown): string {
   return message ? `✗ ${name} failed: ${message}` : `✗ ${name} failed`;
 }
 
+// A workgraph_snapshot/list result can be a very large JSON string, and the
+// fold re-runs on every render pass — memoize the parsed result per frame so
+// re-renders never re-JSON.parse it. `frameVersion` participates in the key
+// because reconciliation can rewrite a frame's payload in place under the
+// same frame id. The fold only reads the cached object, never mutates it.
+const parsedWorkGraphResultCache = new Map<string, Record<string, unknown> | null>();
+const PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4000;
+
 function parseWorkGraphResult(frame: ConsoleFrame): Record<string, unknown> | null {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
   if (!record || record.is_error === true) return null;
   const raw = record.result;
   if (raw && typeof raw === "object") return raw as Record<string, unknown>;
-  if (typeof raw === "string") {
-    const parsed = parseJsonPayload(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
+  if (typeof raw !== "string") return null;
+  const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
+  const cached = parsedWorkGraphResultCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const parsed = parseJsonPayload(raw);
+  const result = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  if (parsedWorkGraphResultCache.size >= PARSED_WORKGRAPH_RESULT_CACHE_LIMIT) {
+    parsedWorkGraphResultCache.clear();
   }
-  return null;
+  parsedWorkGraphResultCache.set(cacheKey, result);
+  return result;
 }
 
 function resolveWorkGraphRoot(itemId: string, parents: Map<string, string>): string {
@@ -1787,6 +1807,39 @@ function workGraphAttentionRows(bindings: WorkGraphBindingDraft[]): Conversation
 
 const WORKGRAPH_RECENT_EVENT_LIMIT = 5;
 
+/// Rendered-row cap per card: a snapshot of a large store must not fold
+/// hundreds of rows into the transcript. Exported for the fixtures.
+export const WORKGRAPH_CARD_ITEM_ROW_LIMIT = 30;
+
+/// Keep the most recently active rows (lastEventAt, falling back to
+/// updatedAt/createdAt; frame order breaks ties) visible in their original
+/// tree order; everything else collapses into one "+N more items" overflow
+/// row. Progress, status, and title derivation always run on the FULL row
+/// set before this cap is applied.
+function capWorkGraphItemRows(rows: ConversationWorkGraphItemRow[]): {
+  rows: ConversationWorkGraphItemRow[];
+  overflow: number;
+} {
+  if (rows.length <= WORKGRAPH_CARD_ITEM_ROW_LIMIT) return { rows, overflow: 0 };
+  const recency = (row: ConversationWorkGraphItemRow): string =>
+    row.lastEventAt || row.updatedAt || row.createdAt || "";
+  const ranked = rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const leftKey = recency(left.row);
+      const rightKey = recency(right.row);
+      if (leftKey !== rightKey) return leftKey > rightKey ? -1 : 1;
+      return left.index - right.index;
+    });
+  const keep = new Set(
+    ranked.slice(0, WORKGRAPH_CARD_ITEM_ROW_LIMIT).map((entry) => entry.index),
+  );
+  return {
+    rows: rows.filter((_, index) => keep.has(index)),
+    overflow: rows.length - keep.size,
+  };
+}
+
 /**
  * Fold every workgraph tool frame into per-root conversation entries.
  * Returns the entries keyed by the index of their first contributing frame
@@ -1800,6 +1853,7 @@ function buildWorkGraphEntries(
 ): Map<number, ConversationWorkGraphEntry[]> {
   const state: WorkGraphFoldState = {
     items: new Map(),
+    directItemIds: new Set(),
     parents: new Map(),
     extraParents: new Map(),
     bindings: new Map(),
@@ -1812,6 +1866,9 @@ function buildWorkGraphEntries(
   // requested frame's args per tool_call_id so results and failures still
   // route to the right card.
   const argIdsByCallId = new Map<string, { itemId?: string; bindingId?: string }>();
+  // One failure note per tool call: a live frame and its session-history
+  // backfill twin share a tool_call_id and must not double-report.
+  const failureNotedCallIds = new Set<string>();
 
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
@@ -1848,13 +1905,15 @@ function buildWorkGraphEntries(
       isOperatorResult
     ) {
       const failed = record?.is_error === true;
-      // A refresh echo (post-conflict re-read, `data.refresh`) folds entity
-      // state without being an operator action: it never sets — or clears —
-      // the card's latest-action outcome.
-      if (record?.refresh !== true) {
+      const isRefresh = record?.refresh === true;
+      // A refresh echo (post-conflict re-read or post-reload re-hydration,
+      // `data.refresh`) folds entity state without being an operator action:
+      // it never sets — or clears — the card's latest-action outcome.
+      if (!isRefresh) {
         contribution.outcome = failed ? "error" : "ok";
       }
-      if (failed) {
+      if (failed && (!toolCallId || !failureNotedCallIds.has(toolCallId))) {
+        if (toolCallId) failureNotedCallIds.add(toolCallId);
         state.events.push({
           at: frameIso,
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : undefined),
@@ -1869,19 +1928,43 @@ function buildWorkGraphEntries(
       }
       const result = parseWorkGraphResult(frame);
       if (result) {
-        const foldItem = (value: unknown) => {
+        // Refresh echoes are pure re-reads: they may heal entities the card
+        // already shows but never introduce new ones — a full-store snapshot
+        // re-hydration would otherwise mint cards for unrelated work.
+        const knownItem = (value: unknown): boolean => {
+          const id = value && typeof value === "object"
+            ? workGraphString((value as Record<string, unknown>).id)
+            : undefined;
+          return Boolean(id && state.items.has(id));
+        };
+        const knownBinding = (value: unknown): boolean => {
+          const id = value && typeof value === "object"
+            ? workGraphString((value as Record<string, unknown>).binding_id)
+            : undefined;
+          return Boolean(id && state.bindings.has(id));
+        };
+        // `bulk` marks snapshot/list observations — they fold state but
+        // never mark a tree as directly worked (see directItemIds).
+        const foldItem = (value: unknown, bulk = false) => {
+          if (isRefresh && !knownItem(value)) return;
           const itemId = foldWorkGraphItem(state, value, frameIso);
-          if (itemId) contribution.itemIds.push(itemId);
+          if (itemId) {
+            contribution.itemIds.push(itemId);
+            if (!bulk && !isRefresh) state.directItemIds.add(itemId);
+          }
         };
         const foldBinding = (value: unknown) => {
+          if (isRefresh && !knownBinding(value)) return;
           const bindingId = foldWorkGraphBinding(state, value, frameIso);
           if (bindingId) contribution.bindingIds.push(bindingId);
         };
         foldItem(result.item);
-        if (Array.isArray(result.items)) result.items.forEach(foldItem);
+        if (Array.isArray(result.items)) {
+          for (const value of result.items) foldItem(value, true);
+        }
         foldBinding(result.attention);
         foldBinding(result.previous);
-        foldWorkGraphEdge(state, result.edge);
+        if (!isRefresh) foldWorkGraphEdge(state, result.edge);
         if (Array.isArray(result.events)) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
         }
@@ -1889,8 +1972,10 @@ function buildWorkGraphEntries(
           ? result.snapshot as Record<string, unknown>
           : null;
         if (snapshot) {
-          if (Array.isArray(snapshot.items)) snapshot.items.forEach(foldItem);
-          if (Array.isArray(snapshot.edges)) {
+          if (Array.isArray(snapshot.items)) {
+            for (const value of snapshot.items) foldItem(value, true);
+          }
+          if (!isRefresh && Array.isArray(snapshot.edges)) {
             for (const edge of snapshot.edges) foldWorkGraphEdge(state, edge);
           }
           if (Array.isArray(snapshot.attention)) snapshot.attention.forEach(foldBinding);
@@ -1922,14 +2007,20 @@ function buildWorkGraphEntries(
     if (!rootMembers.has(root)) rootMembers.set(root, []);
   }
 
-  // A root keeps its own card when it is a real hierarchy (children) or an
-  // attention-bound goal; loose single items fold into one catch-all card
-  // per interaction.
+  // A root keeps its own card when it is an attention-bound goal, or when it
+  // is a real hierarchy (children) that was directly worked in this window (a
+  // targeted result touched one of its members). Bulk snapshot/list folds
+  // alone never mint per-root cards: a full-store snapshot would otherwise
+  // produce a card per loose tree. Everything else folds into one bounded
+  // catch-all card per interaction.
   const rootForItem = (itemId: string) => resolveWorkGraphRoot(itemId, state.parents);
   const ownCardRoots = new Set<string>();
   for (const [root, members] of rootMembers) {
     const hasHierarchy = members.length > 1 || members.some((id) => id !== root);
-    if (hasHierarchy || (rootBindings.get(root)?.length || 0) > 0) {
+    const attentionBound = (rootBindings.get(root)?.length || 0) > 0;
+    const directlyWorked = state.directItemIds.has(root)
+      || members.some((id) => state.directItemIds.has(id));
+    if (attentionBound || (hasHierarchy && directlyWorked)) {
       ownCardRoots.add(root);
     }
   }
@@ -2065,6 +2156,7 @@ function buildWorkGraphEntries(
     const objective = rootItem
       ? rootItem.description ?? null
       : `Goal …${root.slice(-6)}`;
+    const capped = capWorkGraphItemRows(items);
     pushEntry({
       kind: "workgraph",
       id: entryId,
@@ -2076,7 +2168,8 @@ function buildWorkGraphEntries(
       objective,
       status: deriveWorkGraphStatus(items),
       progress: { completed, total: items.length },
-      items,
+      items: capped.rows,
+      ...(capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {}),
       attention,
       ...(recentEvents ? { recentEvents } : {}),
       ...(lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {}),
@@ -2087,15 +2180,18 @@ function buildWorkGraphEntries(
   for (const [entryId, members] of catchAllMembers) {
     const anchor = anchorByCard.get(entryId);
     if (!anchor) continue;
-    const memberIds = [...members].filter((id) => state.items.has(id));
+    // Members are root ids; a member renders its whole known tree (bulk
+    // snapshot folds can park multi-item non-goal trees here).
+    const memberIds = [...members].filter((id) => (rootMembers.get(id)?.length || 0) > 0);
     const recentEvents = eventsForMembers(members, anchor.interactionId);
     // A memberless catch-all exists only to host unroutable failure notes;
     // with nothing to show it is skipped entirely.
     if (memberIds.length === 0 && !recentEvents) continue;
     const rows = memberIds
-      .flatMap((id) => workGraphItemRows(id, [id], state));
+      .flatMap((id) => workGraphItemRows(id, rootMembers.get(id) || [id], state));
     const completed = rows.filter((item) => item.status === "completed").length;
     const lastUpdatedAt = latestIso(rows.flatMap((item) => [item.updatedAt, item.lastEventAt]));
+    const capped = capWorkGraphItemRows(rows);
     pushEntry({
       kind: "workgraph",
       id: entryId,
@@ -2111,7 +2207,8 @@ function buildWorkGraphEntries(
       objective: rows.length === 1 ? rows[0].description ?? null : null,
       status: deriveWorkGraphStatus(rows),
       progress: { completed, total: rows.length },
-      items: rows,
+      items: capped.rows,
+      ...(capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {}),
       attention: [],
       ...(recentEvents ? { recentEvents } : {}),
       ...(lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {}),
@@ -2120,6 +2217,17 @@ function buildWorkGraphEntries(
   }
 
   return byAnchor;
+}
+
+/// True when folding `frames` yields at least one workgraph card. The reload
+/// re-hydration path fetches a snapshot only for panes that actually show
+/// one; it runs once per identity, so the extra fold pass is bounded.
+export function framesContainWorkGraphCards(frames: ConsoleFrame[]): boolean {
+  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  for (const cards of entries.values()) {
+    if (cards.length > 0) return true;
+  }
+  return false;
 }
 
 function parsePeerSummary(text: string): { verb: string; summary: string } | null {

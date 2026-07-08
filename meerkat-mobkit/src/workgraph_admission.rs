@@ -5,10 +5,10 @@
 //! `MultipleActiveBindings` error until an operator intervenes — a bricked
 //! member. MobKit therefore refuses to ADMIT the second binding, and this
 //! module is the single place that refusal lives: the occupancy check
-//! (with session↔identity alias resolution through the mob roster), the
-//! in-process gate serializing every check-then-act window, and — for
-//! SQLite-backed stores that two processes may share — a cross-process
-//! sidecar lock.
+//! (with session↔identity alias resolution through the mob roster and the
+//! shared session store's member-binding metadata), the in-process gate
+//! serializing every check-then-act window, and — for SQLite-backed stores
+//! that two processes may share — a cross-process sidecar lock.
 //!
 //! One [`WorkGraphAdmission`] exists per [`MobRuntime`](crate::MobRuntime).
 //! Every surface that can mint an attention binding must go through it:
@@ -26,7 +26,7 @@
 //! hole) would both brick the member and invert authority — an agent doing
 //! what an ABAC-granted operator is refused.
 //!
-//! # Target spelling: normalize at write, alias at read (round-4 Q2)
+//! # Target spelling: normalize at write, alias at read (round-4 Q2, round-5 S1)
 //!
 //! The roster is PROCESS-LOCAL, but the SQLite store is documented as
 //! shareable by two processes (gateway + library-mode runtime on one state
@@ -36,17 +36,33 @@
 //! the roster). So mobkit normalizes at WRITE instead: every mutation that
 //! points a binding at a target (`goal/create` and `attention/reassign` on
 //! the RPC arms, `workgraph_attention_reassign` on the tool plane) first
-//! lowers a session target that resolves to a roster member to its OWNER
-//! form (`mob/<mob>/agent/<identity>`) via
-//! [`WorkGraphAdmission::lower_member_session_target`]. Mobkit-created
+//! lowers a session target that resolves to a member of THIS mob to its
+//! OWNER form (`mob/<mob>/agent/<identity>`) via
+//! [`WorkGraphAdmission::lower_member_session_target`]. Session→member
+//! resolution is roster-first with a SHARED-store fallback (round-5 S1): a
+//! mob member's session carries its durable identity on
+//! `session_metadata.mob_member_binding` (the exact seam meerkat's schedule
+//! identity-recovery reads — meerkat 0.7.23,
+//! meerkat-mob/src/runtime/builder.rs `persisted_session_matches_member`),
+//! and that metadata lives in the session store both processes share — so a
+//! roster-BLIND co-process (and this process mid-respawn) still lowers
+//! member session targets instead of minting the session-form rows an
+//! identity-form occupancy check cannot see. Only when BOTH the roster and
+//! the session metadata miss does a target keep its session form — a
+//! genuinely non-member session, for which no aliasing exists. Mobkit-created
 //! bindings are therefore owner-form whenever a member is involved, and the
 //! occupancy check's roster-FREE layer — primary owner-key equality, which
 //! for non-member sessions is raw-session-id equality — refuses duplicates
-//! without consulting any roster. The roster alias resolution in
-//! [`attention_target_alias_keys`] remains as an EXTRA layer for legacy or
-//! CLI-created session-form rows: bindings written by the meerkat CLI
-//! directly on a shared store bypass this normalization and can still alias;
-//! the guard catches those only when the local roster knows the member.
+//! without consulting any roster. The same roster-then-store resolution
+//! backs the session↔identity aliasing in
+//! [`WorkGraphAdmission::attention_target_alias_keys`], the EXTRA layer for
+//! legacy or CLI-created session-form rows (bindings written by the meerkat
+//! CLI directly on a shared store bypass write normalization). The residual
+//! holes are CLI-written rows for sessions OUTSIDE this mob's session store
+//! (no resolution seam exists for them at all), and CLI-written session-form
+//! member rows checked from an identity-form target in a process whose
+//! roster misses the member — the store carries no identity→session lookup
+//! short of a full session scan, so that direction stays roster-only.
 //!
 //! # Occupancy-scan bounds
 //!
@@ -157,6 +173,13 @@ impl SidecarLock {
 /// occupancy check. See the module docs for the invariants.
 pub struct WorkGraphAdmission {
     mob_handle: meerkat_mob::MobHandle,
+    /// Session-metadata read seam for session→member resolution when the
+    /// PROCESS-LOCAL roster misses (see the module docs): a member session
+    /// carries `session_metadata.mob_member_binding`, and the session store
+    /// is shared with any co-process on the same state dir. `None` only for
+    /// `MobRuntime::from_handle` runtimes, which have no session service to
+    /// read through — those keep roster-only resolution.
+    session_service: Option<Arc<dyn meerkat_mob::MobSessionService>>,
     /// Serializes every check-then-act window in this process. `Arc` so
     /// permits can hold an owned guard (the tool plane keeps one across the
     /// forwarded dispatch).
@@ -170,9 +193,14 @@ pub struct WorkGraphAdmission {
 }
 
 impl WorkGraphAdmission {
-    pub fn new(mob_handle: meerkat_mob::MobHandle, sidecar: Option<PathBuf>) -> Self {
+    pub fn new(
+        mob_handle: meerkat_mob::MobHandle,
+        session_service: Option<Arc<dyn meerkat_mob::MobSessionService>>,
+        sidecar: Option<PathBuf>,
+    ) -> Self {
         Self {
             mob_handle,
+            session_service,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             sidecar,
         }
@@ -184,32 +212,84 @@ impl WorkGraphAdmission {
         &self.mob_handle
     }
 
+    /// Resolve the mob member owning `session_id`: the PROCESS-LOCAL roster
+    /// first, then — on a roster miss — the session's persisted metadata. A
+    /// member session carries its durable identity on
+    /// `session_metadata.mob_member_binding` (the seam meerkat's schedule
+    /// identity-recovery reads), and the session store is SHARED across
+    /// co-processes on one state dir, so this resolves members the roster
+    /// has never seen (a roster-blind co-process) or has momentarily dropped
+    /// (mid-respawn). `Ok(None)` means both missed — a genuinely non-member
+    /// session, or a member of some OTHER mob (the binding is checked
+    /// against THIS mob's id). A session-store read failure fails CLOSED
+    /// (surfaced as a store error): treating it as a miss would silently
+    /// re-open the roster-blind aliasing hole this fallback exists to plug.
+    async fn resolve_member_identity(
+        &self,
+        session_id: &meerkat::SessionId,
+    ) -> Result<Option<meerkat_mob::ids::AgentIdentity>, WorkGraphError> {
+        if let Some(entry) = self
+            .mob_handle
+            .roster()
+            .await
+            .find_by_bridge_session_id(session_id)
+        {
+            return Ok(Some(entry.agent_identity.clone()));
+        }
+        let Some(service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        let session = service
+            .load_persisted_session(session_id)
+            .await
+            .map_err(|error| {
+                WorkGraphError::Store(format!(
+                    "workgraph admission could not read session {session_id} from the session \
+                     store while resolving its mob member: {error}"
+                ))
+            })?;
+        Ok(session
+            .and_then(|session| session.session_metadata())
+            .and_then(|metadata| metadata.mob_member_binding)
+            .filter(|binding| binding.mob_id == self.mob_handle.definition().id.as_str())
+            .map(|binding| meerkat_mob::ids::AgentIdentity::from(binding.member.as_str())))
+    }
+
     /// WRITE-side target normalization (see the module docs): lower a
-    /// session target that addresses one of this runtime's roster members to
-    /// the member's owner form (`mob/<mob>/agent/<identity>`), so the stored
-    /// binding row matches identity-form occupancy checks WITHOUT a roster —
-    /// in the co-process sharing the store, and in this process while the
-    /// member is mid-respawn. Non-member sessions keep their session form
-    /// (their occupancy equivalence is raw-session-id equality; no aliasing
-    /// exists for them), as does a member whose identity refuses to lower.
+    /// session target that addresses a member of THIS mob to the member's
+    /// owner form (`mob/<mob>/agent/<identity>`), so the stored binding row
+    /// matches identity-form occupancy checks WITHOUT a roster — in the
+    /// co-process sharing the store, and in this process while the member is
+    /// mid-respawn. Member resolution is roster-first with the shared-store
+    /// session-metadata fallback ([`Self::resolve_member_identity`]), so the
+    /// lowering itself is roster-free for persisted member sessions.
+    /// Non-member sessions keep their session form (their occupancy
+    /// equivalence is raw-session-id equality; no aliasing exists for them),
+    /// as does a member whose identity refuses to lower. A session-store
+    /// read failure refuses the mutation (fail closed).
     pub(crate) async fn lower_member_session_target(
         &self,
         target: GoalAttentionTarget,
-    ) -> GoalAttentionTarget {
+    ) -> Result<GoalAttentionTarget, WorkGraphAdmissionError> {
         let GoalAttentionTarget::Session { session_id } = &target else {
-            return target;
+            return Ok(target);
         };
-        let roster = self.mob_handle.roster().await;
-        let Some(entry) = roster.find_by_bridge_session_id(session_id) else {
-            return target;
+        let Some(identity) = self
+            .resolve_member_identity(session_id)
+            .await
+            .map_err(WorkGraphAdmissionError::Service)?
+        else {
+            return Ok(target);
         };
-        match meerkat_mob::lower_agent_identity_attention_target(
-            &self.mob_handle.definition().id,
-            &entry.agent_identity,
-        ) {
-            Ok(lowered) => lowered,
-            Err(_) => target,
-        }
+        Ok(
+            match meerkat_mob::lower_agent_identity_attention_target(
+                &self.mob_handle.definition().id,
+                &identity,
+            ) {
+                Ok(lowered) => lowered,
+                Err(_) => target,
+            },
+        )
     }
 
     /// Take the admission for one check-then-mutate window. The in-process
@@ -244,12 +324,12 @@ impl WorkGraphAdmission {
     /// Refuse a `goal/create`/`attention/reassign` whose target already
     /// carries an Active or Paused attention binding. Matching is primary
     /// owner-key equality first (roster-free — the write side normalizes
-    /// member targets to owner form, see the module docs), with roster
-    /// session↔identity aliasing as an extra layer for rows some other
-    /// writer left in session form. `exclude` names the binding a reassign
-    /// is superseding, which cannot conflict with its own move. Must be
-    /// called with a permit held — the caller holds it across the mutation
-    /// too.
+    /// member targets to owner form, see the module docs), with
+    /// session↔identity aliasing (roster, then shared-store session
+    /// metadata) as an extra layer for rows some other writer left in
+    /// session form. `exclude` names the binding a reassign is superseding,
+    /// which cannot conflict with its own move. Must be called with a permit
+    /// held — the caller holds it across the mutation too.
     pub(crate) async fn check_target_free(
         &self,
         service: &WorkGraphService,
@@ -258,7 +338,8 @@ impl WorkGraphAdmission {
         exclude: Option<&WorkAttentionBindingId>,
         action: &str,
     ) -> Result<(), WorkGraphAdmissionError> {
-        let aliases = attention_target_alias_keys(&self.mob_handle, target)
+        let aliases = self
+            .attention_target_alias_keys(target)
             .await
             .map_err(WorkGraphAdmissionError::Service)?;
         let bindings = list_occupying_attention(service, namespace)
@@ -320,7 +401,8 @@ impl WorkGraphAdmission {
             Err(WorkGraphError::AttentionNotFound { .. }) => return Ok(()),
             Err(error) => return Err(WorkGraphAdmissionError::Service(error)),
         };
-        let aliases = attention_target_alias_keys(&self.mob_handle, &resumed.target)
+        let aliases = self
+            .attention_target_alias_keys(&resumed.target)
             .await
             .map_err(WorkGraphAdmissionError::Service)?;
         let siblings = list_occupying_attention(service, namespace)
@@ -357,6 +439,57 @@ impl WorkGraphAdmission {
                 ),
             },
         })
+    }
+
+    /// Every canonical owner-key spelling that addresses the same member as
+    /// `target`. Upstream `attention_target_matches_session` (meerkat 0.7.23,
+    /// meerkat/src/surface.rs) matches BOTH a member's bridge session id and
+    /// its lowered `mob/<mob>/agent/<identity>` owner key to the same
+    /// member's turns, so a session-form binding and an identity-form
+    /// binding on one member are still two bindings on one member. The
+    /// primary key is always present; the other spelling is added when the
+    /// target resolves to a member — session→identity through the roster or
+    /// the shared store's session metadata
+    /// ([`Self::resolve_member_identity`]), identity→session through the
+    /// roster only (the store has no identity-keyed lookup; see the module
+    /// docs' residual note). An unresolvable target simply has one spelling.
+    async fn attention_target_alias_keys(
+        &self,
+        target: &WorkAttentionTarget,
+    ) -> Result<BTreeSet<String>, WorkGraphError> {
+        let mob_handle = &self.mob_handle;
+        let primary = target.owner_key()?;
+        let mut keys = BTreeSet::from([primary.canonical()]);
+        match primary.kind {
+            // session → identity: roster first, then shared-store metadata.
+            WorkOwnerKind::Session => {
+                if let Ok(session_id) = meerkat::SessionId::parse(&primary.id)
+                    && let Some(identity) = self.resolve_member_identity(&session_id).await?
+                    && let Ok(key) = meerkat_mob::lower_agent_identity_owner_key(
+                        &mob_handle.definition().id,
+                        &identity,
+                    )
+                {
+                    keys.insert(key.canonical());
+                }
+            }
+            // identity → session: only for THIS mob's lowered agent keys.
+            WorkOwnerKind::Agent => {
+                if let Some((mob_id, identity)) = mob_agent_owner_key_parts(&primary.id)
+                    && mob_id == mob_handle.definition().id.as_str()
+                    && let Some(session_id) = mob_handle
+                        .resolve_bridge_session_id_observation(
+                            &meerkat_mob::ids::AgentIdentity::from(identity),
+                        )
+                        .await
+                    && let Ok(key) = WorkOwnerKey::session(session_id.to_string())
+                {
+                    keys.insert(key.canonical());
+                }
+            }
+            _ => {}
+        }
+        Ok(keys)
     }
 }
 
@@ -419,55 +552,6 @@ fn mob_agent_owner_key_parts(owner_id: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((mob_id, agent_identity))
-}
-
-/// Every canonical owner-key spelling that addresses the same member as
-/// `target`. Upstream `attention_target_matches_session` (meerkat 0.7.23,
-/// meerkat/src/surface.rs) matches BOTH a member's bridge session id and its
-/// lowered `mob/<mob>/agent/<identity>` owner key to the same member's
-/// turns, so a session-form binding and an identity-form binding on one
-/// member are still two bindings on one member. The primary key is always
-/// present; the other spelling is added when the target resolves through
-/// this runtime's roster (an unresolvable target simply has one spelling).
-async fn attention_target_alias_keys(
-    mob_handle: &meerkat_mob::MobHandle,
-    target: &WorkAttentionTarget,
-) -> Result<BTreeSet<String>, WorkGraphError> {
-    let primary = target.owner_key()?;
-    let mut keys = BTreeSet::from([primary.canonical()]);
-    match primary.kind {
-        // session → identity: the roster member owning this bridge session.
-        WorkOwnerKind::Session => {
-            if let Ok(session_id) = meerkat::SessionId::parse(&primary.id)
-                && let Some(entry) = mob_handle
-                    .roster()
-                    .await
-                    .find_by_bridge_session_id(&session_id)
-                && let Ok(key) = meerkat_mob::lower_agent_identity_owner_key(
-                    &mob_handle.definition().id,
-                    &entry.agent_identity,
-                )
-            {
-                keys.insert(key.canonical());
-            }
-        }
-        // identity → session: only for THIS mob's lowered agent keys.
-        WorkOwnerKind::Agent => {
-            if let Some((mob_id, identity)) = mob_agent_owner_key_parts(&primary.id)
-                && mob_id == mob_handle.definition().id.as_str()
-                && let Some(session_id) = mob_handle
-                    .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
-                        identity,
-                    ))
-                    .await
-                && let Ok(key) = WorkOwnerKey::session(session_id.to_string())
-            {
-                keys.insert(key.canonical());
-            }
-        }
-        _ => {}
-    }
-    Ok(keys)
 }
 
 #[cfg(test)]

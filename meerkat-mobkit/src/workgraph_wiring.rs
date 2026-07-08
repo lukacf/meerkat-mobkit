@@ -230,7 +230,8 @@ impl ScopePinnedWorkGraphTools {
         })?;
         let target = admission
             .lower_member_session_target(args.target.clone())
-            .await;
+            .await
+            .map_err(|error| admission_tool_error(name, error))?;
         let permit = admission
             .acquire()
             .await
@@ -995,10 +996,14 @@ comms = true
         let sidecar = crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path());
         let first = crate::workgraph_admission::WorkGraphAdmission::new(
             runtime.handle(),
+            runtime.session_service().cloned(),
             Some(sidecar.clone()),
         );
-        let second =
-            crate::workgraph_admission::WorkGraphAdmission::new(runtime.handle(), Some(sidecar));
+        let second = crate::workgraph_admission::WorkGraphAdmission::new(
+            runtime.handle(),
+            runtime.session_service().cloned(),
+            Some(sidecar),
+        );
 
         let permit = first.acquire().await.expect("first admission");
         let waiter = tokio::spawn(async move { second.acquire().await.map(|_| ()) });
@@ -1047,16 +1052,19 @@ comms = true
         .await
     }
 
-    /// Round-4 Q2: the roster is PROCESS-local, so in the documented
-    /// two-process deployment (gateway + library-mode runtime on one
-    /// workgraph.sqlite3) a session-form row written by the process that
-    /// knows the member is invisible to the co-process's identity-form
-    /// occupancy check. Writes therefore lower member sessions to OWNER
-    /// form; the co-process (same mob, EMPTY roster — its aliasing layer is
-    /// blind) must refuse the identity-form duplicate on primary owner-key
-    /// equality alone.
+    /// Round-4 Q2 + round-5 S1: the roster is PROCESS-local, so in the
+    /// documented two-process deployment (gateway + library-mode runtime on
+    /// one state dir) a co-process whose roster has never seen the member
+    /// used to write raw SESSION-form rows for it — invisible to every
+    /// identity-form occupancy check. The admission now resolves session →
+    /// member through the SHARED session store's
+    /// `session_metadata.mob_member_binding` when the roster misses, so the
+    /// blind co-process (a) lowers its own session-form create to the
+    /// member's OWNER form, (b) refuses duplicates against that owner-form
+    /// row in BOTH spellings, and (c) still leaves a genuinely non-member
+    /// session in session form (no aliasing exists for it).
     #[tokio::test(flavor = "multi_thread")]
-    async fn blind_roster_admission_refuses_identity_create_against_owner_form_row() {
+    async fn blind_roster_admission_resolves_members_through_the_shared_session_store() {
         let (runtime_knows, service, _dispatcher, dir) = bootstrapped_tool_plane().await;
         let session_id = spawn_helper_member(&runtime_knows).await;
 
@@ -1073,23 +1081,26 @@ comms = true
             "the co-process fixture must not know the member"
         );
         let sidecar = crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path());
-        let knows = crate::workgraph_admission::WorkGraphAdmission::new(
-            runtime_knows.handle(),
-            Some(sidecar.clone()),
-        );
+        // The blind admission reads the member-knowing runtime's session
+        // service: in the real deployment both processes hold their own
+        // service instance over ONE shared session store, and
+        // `load_persisted_session` is the store read this models.
         let blind = crate::workgraph_admission::WorkGraphAdmission::new(
             runtime_blind.handle(),
+            runtime_knows.session_service().cloned(),
             Some(sidecar),
         );
 
+        // (a) The blind process's OWN session-form create resolves the
+        // member through the shared store and lands owner-form.
         let created = rpc_goal_create(
             &service,
-            &knows,
-            "session-form in, owner-form stored",
+            &blind,
+            "session-form in from the blind co-process, owner-form stored",
             serde_json::json!({ "kind": "session", "session_id": session_id.to_string() }),
         )
         .await
-        .expect("create goal in the member-knowing process");
+        .expect("the blind admission lowers via the shared session store");
         assert_eq!(
             created["attention"]["target"]["kind"],
             serde_json::json!("lowered_owner"),
@@ -1099,20 +1110,47 @@ comms = true
             created["attention"]["target"]["owner_key"]["id"],
             serde_json::json!("mob/wiring-admission-mob/agent/helper"),
         );
+        let occupant = created["attention"]["binding_id"].as_str().unwrap();
 
+        // (b) Duplicates are refused against the owner-form row in both
+        // spellings, still roster-blind.
         let error = rpc_goal_create(
             &service,
             &blind,
-            "duplicate via the blind co-process",
+            "identity-form duplicate via the blind co-process",
             serde_json::json!({ "kind": "identity", "identity": "helper" }),
         )
         .await
-        .expect_err("the blind admission must refuse the duplicate roster-free");
+        .expect_err("the blind admission must refuse the identity-form duplicate");
         assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
-        let occupant = created["attention"]["binding_id"].as_str().unwrap();
         assert!(
             error.message.contains(occupant),
             "conflict must name the occupying binding: {error:?}"
+        );
+        let error = rpc_goal_create(
+            &service,
+            &blind,
+            "session-form duplicate via the blind co-process",
+            serde_json::json!({ "kind": "session", "session_id": session_id.to_string() }),
+        )
+        .await
+        .expect_err("the blind admission must refuse the session-form duplicate");
+        assert_eq!(error.code, crate::rpc::WORKGRAPH_CONFLICT_CODE, "{error:?}");
+
+        // (c) A session neither roster nor store knows keeps its session
+        // form: it is genuinely not a member, so no aliasing exists.
+        let non_member = rpc_goal_create(
+            &service,
+            &blind,
+            "non-member session goal",
+            serde_json::json!({ "kind": "session", "session_id": SESSION_FREE }),
+        )
+        .await
+        .expect("a non-member session create is admitted");
+        assert_eq!(
+            non_member["attention"]["target"]["kind"],
+            serde_json::json!("session"),
+            "{non_member:#?}"
         );
         runtime_knows.handle().stop().await.expect("stop");
         runtime_blind.handle().stop().await.expect("stop");

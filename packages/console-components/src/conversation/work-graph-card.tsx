@@ -333,15 +333,13 @@ export function WorkGraphCard({
     || entry.attention.length > 0
     || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
   // Goal actions CAS against the goal work item, not the binding: resolve
-  // each binding's bound item revision (falling back to the card root only
-  // when the binding names no item — a known item with an unknown revision
-  // must stay unknown so the handler resolves it instead of CASing against
-  // the wrong item).
+  // each binding's bound item revision from the folded rows. When the bound
+  // item was never folded (or the binding names no item) the revision stays
+  // absent so the handler resolves the live one — substituting another
+  // item's revision (e.g. the card root's) would CAS against the wrong item.
   const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
   const goalRevisionFor = (row: ConversationWorkGraphAttentionRow): number | undefined => (
-    row.itemId != null && revisionByItemId.has(row.itemId)
-      ? revisionByItemId.get(row.itemId)
-      : revisionByItemId.get(entry.rootId)
+    row.itemId != null ? revisionByItemId.get(row.itemId) : undefined
   );
 
   return (
@@ -406,6 +404,14 @@ export function WorkGraphCard({
           {entry.items.map((row) => (
             <ItemRow key={row.itemId} row={row} actions={actions} />
           ))}
+          {typeof entry.itemOverflowCount === "number" && entry.itemOverflowCount > 0 ? (
+            <li
+              className="cc-work-graph__overflow"
+              data-testid={`workgraph-card:${entry.rootId}:overflow`}
+            >
+              +{entry.itemOverflowCount} more items
+            </li>
+          ) : null}
         </ul>
       ) : null}
       {!collapsed && entry.attention.length > 0 ? (

@@ -190,3 +190,31 @@ test("workgraph card gates reassign to coordinate-mode bindings and surfaces the
   const failedHtml = renderToStaticMarkup(<WorkGraphCard entry={entry("pursue", true)} />);
   assert.match(failedHtml, /data-testid="workgraph-card:goal-1:last-action-failed"/);
 });
+
+test("workgraph card renders a '+N more items' overflow row when the adapter capped the item rows", () => {
+  const entry: ConversationTimelineEntry = {
+    kind: "workgraph",
+    id: "workgraph:goal-1",
+    identity: { id: "planner", label: "Planner", role: "assistant" },
+    rootId: "goal-1",
+    title: "Release 0.7.30",
+    status: "active",
+    // The adapter counts overflow items toward progress: 40 total, 30 shown.
+    progress: { completed: 12, total: 40 },
+    items: [
+      { itemId: "goal-1", title: "Release 0.7.30", status: "in_progress", revision: 4, depth: 0 },
+    ],
+    itemOverflowCount: 10,
+    attention: [],
+  };
+
+  const html = renderToStaticMarkup(<WorkGraphCard entry={entry} />);
+  assert.match(html, /data-testid="workgraph-card:goal-1:overflow"/);
+  assert.match(html, /\+10 more items/);
+  assert.match(html, /12\/40/, "the progress counter reflects the full totals, not the visible rows");
+
+  const uncapped = renderToStaticMarkup(
+    <WorkGraphCard entry={{ ...entry, itemOverflowCount: undefined }} />,
+  );
+  assert.doesNotMatch(uncapped, /workgraph-card:goal-1:overflow/);
+});

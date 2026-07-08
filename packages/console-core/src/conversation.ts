@@ -163,6 +163,10 @@ export interface ConversationWorkGraphEntry extends ConversationTimelineEntryBas
   status: WorkGraphCardStatus;
   progress: { completed: number; total: number };
   items: ConversationWorkGraphItemRow[];
+  // Items hidden by the per-card render cap (the most recently active rows
+  // stay in `items`). Hidden items still count toward `progress` and the
+  // card status; the card renders one "+N more items" overflow row for them.
+  itemOverflowCount?: number;
   attention: ConversationWorkGraphAttentionRow[];
   recentEvents?: string[];
   // True when the most recent workgraph tool call folded into this card

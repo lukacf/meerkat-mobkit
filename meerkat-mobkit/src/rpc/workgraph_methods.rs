@@ -10,18 +10,23 @@
 //!   wire-supplied witnesses are rejected (they are unforgeable by design).
 //! - Attention targets accept an additional `{kind:"identity", identity}`
 //!   form, lowered through `meerkat_mob::lower_agent_identity_attention_target`
-//!   with this runtime's mob id. Session targets that resolve to a roster
-//!   member are ALSO lowered to the member's owner form before the write
-//!   (`goal/create`, `attention/reassign`) — see the normalize-at-write
-//!   section of [`crate::workgraph_admission`]'s module docs.
+//!   with this runtime's mob id, and `{kind:"lowered_owner", owner_key}` as
+//!   an alias of `owner` — the spelling results serialize, so a result's
+//!   `attention.target` round-trips verbatim into params. Session targets
+//!   that resolve to a member (roster, or the shared session store's
+//!   member-binding metadata) are ALSO lowered to the member's owner form
+//!   before the write (`goal/create`, `attention/reassign`) — see the
+//!   normalize-at-write section of [`crate::workgraph_admission`]'s module
+//!   docs.
 //! - `goal/create`, `attention/resume` and `attention/reassign` refuse to
 //!   give a target a second Active-or-Paused binding (upstream would brick
 //!   the member with `MultipleActiveBindings` on every scoped turn). The
 //!   check lives in [`crate::workgraph_admission::WorkGraphAdmission`] —
 //!   shared with the agent tool plane's `workgraph_attention_reassign` —
 //!   which resolves session↔identity target aliases through the mob roster
-//!   and serializes every check-then-act window on one runtime-wide gate
-//!   (plus a cross-process sidecar lock for SQLite-backed stores).
+//!   and the shared session store's member-binding metadata, and serializes
+//!   every check-then-act window on one runtime-wide gate (plus a
+//!   cross-process sidecar lock for SQLite-backed stores).
 //! - Goal/attention methods only accept the service's default namespace —
 //!   upstream turn overlays resolve nowhere else.
 //! - The `attention/list` `status` filter accepts the SDKs' bare-string
@@ -254,7 +259,11 @@ fn reject_non_default_namespace(
 }
 
 /// Resolve a goal/attention target, accepting the mobkit-only
-/// `{kind:"identity", identity}` form beside upstream `session`/`owner`.
+/// `{kind:"identity", identity}` form beside upstream `session`/`owner`,
+/// plus `lowered_owner` — the spelling every RESULT serializes (the stored
+/// binding target is a `WorkAttentionTarget`, whose owner arm is
+/// `LoweredOwner`) — so a result's `attention.target` round-trips verbatim
+/// back into `goal/create`/`attention/reassign` params.
 fn resolve_goal_target(
     mob_id: &meerkat_mob::MobId,
     value: &Value,
@@ -282,8 +291,16 @@ fn resolve_goal_target(
         }
         "session" | "owner" => serde_json::from_value(value.clone())
             .map_err(|error| invalid_params(format!("target is invalid: {error}"))),
+        // Alias of `owner` with the same `owner_key` payload shape.
+        "lowered_owner" => {
+            let mut object = object.clone();
+            object.insert("kind".to_string(), Value::String("owner".to_string()));
+            serde_json::from_value(Value::Object(object))
+                .map_err(|error| invalid_params(format!("target is invalid: {error}")))
+        }
         other => Err(invalid_params(format!(
-            "target.kind '{other}' is unsupported (allowed: session, owner, identity)"
+            "target.kind '{other}' is unsupported (allowed: session, owner, lowered_owner, \
+             identity)"
         ))),
     }
 }
@@ -445,11 +462,12 @@ fn admission_error_to_rpc(error: WorkGraphAdmissionError) -> JsonRpcError {
 /// party there).
 ///
 /// `admission` is the runtime-wide [`WorkGraphAdmission`]: its mob handle
-/// backs identity-target lowering and the session↔identity alias resolution
-/// the duplicate-binding guards need, and its gate serializes the guards'
-/// check-then-act windows — both RPC surfaces (unified stdin + console) and
-/// the agent tool plane must pass the SAME instance or concurrent creates
-/// race past the check.
+/// (with the shared session store's member-binding metadata as the
+/// roster-miss fallback) backs identity-target lowering and the
+/// session↔identity alias resolution the duplicate-binding guards need, and
+/// its gate serializes the guards' check-then-act windows — both RPC
+/// surfaces (unified stdin + console) and the agent tool plane must pass the
+/// SAME instance or concurrent creates race past the check.
 pub(crate) async fn handle_workgraph_method(
     service: Option<&WorkGraphService>,
     admission: &WorkGraphAdmission,
@@ -675,7 +693,10 @@ pub(crate) async fn handle_workgraph_method(
                 .remove("target")
                 .ok_or_else(|| invalid_params("target is required"))?;
             let target = resolve_goal_target(mob_id, &target_value)?;
-            let target = admission.lower_member_session_target(target).await;
+            let target = admission
+                .lower_member_session_target(target)
+                .await
+                .map_err(admission_error_to_rpc)?;
             object.insert("target".to_string(), to_result_value(&target));
             let request: GoalCreateRequest = parse_request(object)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
@@ -777,7 +798,10 @@ pub(crate) async fn handle_workgraph_method(
                 .get("target")
                 .ok_or_else(|| invalid_params("target is required"))?;
             let target = resolve_goal_target(mob_id, target_value)?;
-            let target = admission.lower_member_session_target(target).await;
+            let target = admission
+                .lower_member_session_target(target)
+                .await
+                .map_err(admission_error_to_rpc)?;
             let _permit = admission.acquire().await.map_err(admission_error_to_rpc)?;
             admission
                 .check_target_free(
@@ -892,6 +916,34 @@ mod tests {
             workgraph_unavailable_error().code,
             WORKGRAPH_UNAVAILABLE_CODE
         );
+    }
+
+    /// Round-5 S2: `lowered_owner` — the spelling every serialized RESULT
+    /// target carries — parses as an alias of `owner` with the same
+    /// `owner_key` payload, so read-back targets round-trip into params.
+    #[test]
+    fn resolve_goal_target_accepts_the_lowered_owner_result_spelling() {
+        let mob_id = meerkat_mob::MobId::from("round-trip-mob");
+        let owner_key = WorkOwnerKey::principal("operator@example.test").expect("owner key");
+        let owner_form = serde_json::json!({ "kind": "owner", "owner_key": owner_key });
+        let lowered_form = serde_json::json!({ "kind": "lowered_owner", "owner_key": owner_key });
+
+        let from_owner = resolve_goal_target(&mob_id, &owner_form).expect("owner form parses");
+        let from_lowered =
+            resolve_goal_target(&mob_id, &lowered_form).expect("lowered_owner form parses");
+        assert_eq!(from_owner, from_lowered);
+
+        // The serialized stored-target shape round-trips exactly: what a
+        // result carries is what `to_attention_target` re-produces.
+        assert_eq!(
+            to_result_value(&from_lowered.to_attention_target()),
+            lowered_form,
+        );
+
+        let error = resolve_goal_target(&mob_id, &serde_json::json!({ "kind": "mob" }))
+            .expect_err("unknown kinds stay rejected");
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("lowered_owner"), "{}", error.message);
     }
 
     #[test]

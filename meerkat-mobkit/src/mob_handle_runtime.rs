@@ -3168,8 +3168,13 @@ impl MobRuntime {
         // One admission per runtime; the tool-plane dispatchers were built
         // before the mob (and thus the roster) existed, so their late-bound
         // slots are filled here with the same instance the RPC surfaces use.
+        // The session service rides along as the admission's session→member
+        // resolution fallback: member sessions carry their identity on
+        // `session_metadata.mob_member_binding`, which co-processes sharing
+        // the state dir can read even when their roster is blind.
         let workgraph_admission = Arc::new(crate::workgraph_admission::WorkGraphAdmission::new(
             handle.clone(),
+            Some(Arc::clone(&session_service)),
             spec.workgraph_admission_sidecar,
         ));
         for slot in &spec.workgraph_admission_slots {
@@ -3195,6 +3200,7 @@ impl MobRuntime {
     pub fn from_handle(handle: MobHandle) -> Self {
         let workgraph_admission = Arc::new(crate::workgraph_admission::WorkGraphAdmission::new(
             handle.clone(),
+            None,
             None,
         ));
         Self {

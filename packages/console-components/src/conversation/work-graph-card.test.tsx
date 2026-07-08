@@ -153,4 +153,43 @@ describe("WorkGraphCard", () => {
     // Resume never renders while the binding is active.
     expect(screen.queryByTestId("workgraph-attention:attention-1:resume")).toBeNull();
   });
+
+  test("goal actions on an unfolded bound item carry no revision — never another item's CAS token", () => {
+    const onGoalConfirm = vi.fn();
+    render(
+      <WorkGraphCard
+        entry={entryFixture({
+          attention: [
+            {
+              bindingId: "b-unfolded",
+              mode: "pursue",
+              statusLabel: "active",
+              revision: 7,
+              // Bound goal item never folded into the card's rows: the goal
+              // revision must stay absent so the handler resolves the live
+              // one instead of CASing with the root's revision 4.
+              itemId: "goal-unfolded",
+            },
+          ],
+        })}
+        actions={{ onGoalConfirm }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("workgraph-attention:b-unfolded:confirm"));
+    expect(onGoalConfirm).toHaveBeenCalledWith({ bindingId: "b-unfolded", revision: undefined });
+  });
+
+  test("renders the overflow row when the adapter capped the item rows", () => {
+    render(
+      <WorkGraphCard
+        entry={entryFixture({
+          progress: { completed: 12, total: 40 },
+          itemOverflowCount: 10,
+        })}
+      />,
+    );
+    expect(screen.getByTestId("workgraph-card:goal-1:overflow")).toHaveTextContent("+10 more items");
+    expect(screen.getByText("12/40")).toBeInTheDocument();
+  });
 });

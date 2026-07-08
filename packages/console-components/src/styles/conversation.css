@@ -1946,6 +1946,11 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-work-graph__item-row[aria-expanded]:hover {
   background: var(--_cc-surface-raised, rgba(255, 255, 255, 0.04));
 }
+.cc-work-graph__overflow {
+  padding: 5px 14px 5px 29px;
+  font-size: 11px;
+  color: var(--_cc-foreground-muted, rgba(177, 184, 193, 0.6));
+}
 .cc-work-graph__dot {
   width: 7px;
   height: 7px;

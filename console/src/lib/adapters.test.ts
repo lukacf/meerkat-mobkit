@@ -17,6 +17,7 @@ import {
   sortConversationTimelineEntries,
   stripPeerTransportScaffold,
   systemNoticeClearsBusyState,
+  WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
 import { describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
@@ -7732,5 +7733,234 @@ test("workgraph events dedupe by seq (content for seq-less echoes) so overlappin
     echoCard.recentEvents,
     ["created · 09:00", "claimed · 09:01", "updated · 09:02", "evidence added · 09:03", "closed · 09:04"],
     "seq-less duplicates dedupe by content; the 5-slot window holds five distinct events",
+  );
+});
+
+// Big-store snapshot fixture: 3 attention-bound goals (36 + 3 + 3 items in
+// their trees) plus 58 loose items — 100 items total in one interaction.
+function bigSnapshotFrames(): Array<Record<string, unknown>> {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const items: Array<Record<string, unknown>> = [];
+  const edges: Array<Record<string, unknown>> = [];
+  const attention: Array<Record<string, unknown>> = [];
+  for (let goal = 1; goal <= 3; goal++) {
+    items.push(workGraphItem({
+      id: `goal-${goal}`,
+      title: `Goal ${goal}`,
+      status: "in_progress",
+      revision: 1,
+      createdAt: `2026-07-08T07:0${goal}:00Z`,
+    }));
+    attention.push({
+      binding_id: `b-${goal}`,
+      work_ref: { realm_id: "realm-1", namespace: "default", item_id: `goal-${goal}` },
+      target: { kind: "session", session_id: `sess-${goal}` },
+      mode: "pursue",
+      status: { state: "active" },
+      machine_state: { revision: goal },
+    });
+    const childCount = goal === 1 ? 35 : 2;
+    for (let child = 1; child <= childCount; child++) {
+      const id = `g${goal}-c${pad(child)}`;
+      items.push(workGraphItem({
+        id,
+        title: `Goal ${goal} child ${pad(child)}`,
+        // Goal 1 children 25..35 are completed — several of them fall past
+        // the row cap, so progress must count what the cap hides.
+        status: goal === 1 && child >= 25 ? "completed" : "open",
+        revision: 1,
+        createdAt: `2026-07-08T08:${pad(child)}:00Z`,
+      }));
+      edges.push({ kind: "parent", from_id: id, to_id: `goal-${goal}` });
+    }
+  }
+  for (let loose = 1; loose <= 58; loose++) {
+    items.push(workGraphItem({
+      id: `loose-${pad(loose)}`,
+      title: `Loose item ${pad(loose)}`,
+      status: loose >= 50 ? "completed" : "open",
+      revision: 1,
+      createdAt: `2026-07-08T09:${pad(loose)}:00Z`,
+    }));
+  }
+  return workGraphToolFrames({
+    idPrefix: "wg-big",
+    name: "workgraph_snapshot",
+    callArgs: {},
+    result: { snapshot: { realm_id: "realm-1", items, edges, attention } },
+    interactionId: "turn-big",
+  });
+}
+
+test("workgraph full-store snapshots mint goal cards only; loose items share one bounded catch-all with overflow accounting", () => {
+  const entries = mapFramesToTimelineEntries(WORKGRAPH_AGENT, bigSnapshotFrames());
+  const cards = entries.filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 4, "3 attention-bound goal cards + 1 catch-all, never a card per loose root");
+  const byId = new Map(cards.map((card) => [card.id, card]));
+
+  const goal1 = byId.get("workgraph:goal-1");
+  assert.ok(goal1 && goal1.kind === "workgraph");
+  assert.deepEqual(goal1.progress, { completed: 11, total: 36 }, "progress counts the full tree");
+  assert.equal(goal1.items.length, WORKGRAPH_CARD_ITEM_ROW_LIMIT, "rows cap at the render limit");
+  assert.equal(goal1.itemOverflowCount, 6, "hidden rows surface as overflow, not silence");
+  assert.equal(
+    goal1.items.filter((item) => item.status === "completed").length,
+    5,
+    "part of the completed set is hidden by the cap yet still counted in progress",
+  );
+
+  for (const rootId of ["goal-2", "goal-3"]) {
+    const card = byId.get(`workgraph:${rootId}`);
+    assert.ok(card && card.kind === "workgraph", `goal card for ${rootId}`);
+    assert.deepEqual(card.progress, { completed: 0, total: 3 });
+    assert.equal(card.itemOverflowCount, undefined, "small trees need no overflow row");
+    assert.equal(card.attention.length, 1);
+  }
+
+  const catchAll = byId.get("workgraph:interaction:turn-big");
+  assert.ok(catchAll && catchAll.kind === "workgraph", "loose items share ONE catch-all card");
+  assert.equal(catchAll.title, "Work items");
+  assert.deepEqual(catchAll.progress, { completed: 9, total: 58 }, "catch-all progress counts every loose item");
+  assert.equal(catchAll.items.length, WORKGRAPH_CARD_ITEM_ROW_LIMIT);
+  assert.equal(catchAll.itemOverflowCount, 28);
+});
+
+test("workgraph row caps keep the most recently active rows visible", () => {
+  const frames = [
+    ...bigSnapshotFrames(),
+    // A later targeted update touches a loose item deep past the visible
+    // window: recency must pull it into the visible rows.
+    ...workGraphToolFrames({
+      idPrefix: "wg-big-touch",
+      name: "workgraph_claim",
+      callArgs: { id: "loose-45", expected_revision: 1 },
+      result: { item: workGraphItem({ id: "loose-45", title: "Loose item 45", status: "in_progress", revision: 2 }) },
+      interactionId: "turn-big",
+      timestampMs: 1_779_405_470_000,
+    }),
+  ];
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames)
+    .filter((entry) => entry.kind === "workgraph");
+  const catchAll = cards.find((card) => card.kind === "workgraph" && card.id === "workgraph:interaction:turn-big");
+  assert.ok(catchAll && catchAll.kind === "workgraph");
+  assert.equal(catchAll.items.length, WORKGRAPH_CARD_ITEM_ROW_LIMIT);
+  const touched = catchAll.items.find((item) => item.itemId === "loose-45");
+  assert.ok(touched, "the freshly touched row stays visible despite sitting past the cap in fold order");
+  assert.equal(touched.revision, 2);
+});
+
+test("workgraph refolds with the same frames never re-JSON.parse tool results", () => {
+  const frames = bigSnapshotFrames().map((frame) => ({ ...frame, id: `${frame.id}-memo` }));
+  const originalParse = JSON.parse;
+  let parseCalls = 0;
+  JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    parseCalls += 1;
+    return originalParse(text, reviver);
+  }) as typeof JSON.parse;
+  try {
+    mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+    assert.ok(parseCalls > 0, "the first fold parses the snapshot payload");
+    parseCalls = 0;
+    mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames);
+    assert.equal(parseCalls, 0, "re-renders reuse the memoized parse per (frame id, frameVersion)");
+  } finally {
+    JSON.parse = originalParse;
+  }
+});
+
+test("workgraph failure notes dedupe by tool-call id across live and history twin frames", () => {
+  const frames = [
+    ...workGraphToolFrames({
+      idPrefix: "wg-twin-0",
+      name: "workgraph_create",
+      callArgs: { title: "Twin target" },
+      result: { item: workGraphItem({ id: "item-twin", title: "Twin target", status: "open", revision: 1 }) },
+      interactionId: "turn-twin",
+    }),
+    {
+      id: "wg-twin-call",
+      event: "tool_call_requested",
+      interactionId: "turn-twin",
+      timestampMs: 1_779_405_465_000,
+      data: { id: "wg-twin-tc", name: "workgraph_claim", args: { id: "item-twin", expected_revision: 9 } },
+    },
+    // The live result frame and its session-history backfill twin: distinct
+    // frame ids, one tool call.
+    {
+      id: "wg-twin-live",
+      event: "tool_result_received",
+      interactionId: "turn-twin",
+      timestampMs: 1_779_405_465_200,
+      data: { id: "wg-twin-tc", name: "workgraph_claim", is_error: true, result: "revision conflict" },
+    },
+    {
+      id: "wg-twin-history",
+      event: "tool_execution_completed",
+      interactionId: "turn-twin",
+      timestampMs: 1_779_405_465_200,
+      sourceKind: "session_history",
+      data: { id: "wg-twin-tc", is_error: true, result: "revision conflict" },
+    },
+  ];
+
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, frames)
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.lastActionFailed, true);
+  assert.equal(
+    (card.recentEvents || []).filter((line) => line.startsWith("✗ workgraph_claim failed:")).length,
+    1,
+    `twin frames of one failed call must fold ONE note, got ${JSON.stringify(card.recentEvents)}`,
+  );
+});
+
+test("workgraph post-reload snapshot refresh echoes re-hydrate operator-driven state without minting cards", () => {
+  // History restored after a page reload: the agent created the item at
+  // revision 1; the operator's close ran pre-reload and its client-local
+  // echo frame died with the page.
+  const base = workGraphToolFrames({
+    idPrefix: "wg-reload-0",
+    name: "workgraph_create",
+    callArgs: { title: "Reload target" },
+    result: { item: workGraphItem({ id: "item-reload", title: "Reload target", status: "open", revision: 1 }) },
+    interactionId: "turn-reload",
+  });
+  // The pane-mount hook fetches ONE snapshot and folds it as a refresh echo.
+  const refreshEcho = buildWorkGraphOperatorResultFrame({
+    method: "mobkit/workgraph/snapshot",
+    params: {},
+    result: {
+      snapshot: {
+        realm_id: "realm-1",
+        items: [
+          workGraphItem({ id: "item-reload", title: "Reload target", status: "completed", revision: 4 }),
+          // Unrelated store items ride along in a full snapshot: a refresh
+          // heals what the transcript shows but never introduces new work.
+          workGraphItem({ id: "item-unrelated", title: "Someone else's item", status: "open", revision: 7 }),
+        ],
+        edges: [],
+        attention: [],
+      },
+    },
+    identity: "planner",
+    timestampMs: 1_779_405_466_000,
+    frameId: "local-wg-rehydrate",
+    refresh: true,
+  });
+
+  const cards = mapFramesToTimelineEntries(WORKGRAPH_AGENT, [...base, refreshEcho])
+    .filter((entry) => entry.kind === "workgraph");
+  assert.equal(cards.length, 1, "the refresh echo updates the existing card and mints nothing new");
+  const card = cards[0];
+  if (card.kind !== "workgraph") return;
+  assert.equal(card.items[0].status, "completed", "the operator-driven status survives the reload");
+  assert.equal(card.items[0].revision, 4, "the next action CASes against the live revision");
+  assert.equal(card.lastActionFailed, undefined, "a refresh is a read: no outcome flags");
+  assert.deepEqual(
+    card.items.map((item) => item.itemId),
+    ["item-reload"],
+    "unrelated snapshot items never fold through a refresh echo",
   );
 });

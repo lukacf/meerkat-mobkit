@@ -3353,7 +3353,7 @@ function WorkGraphCard({
   const percent = total > 0 ? Math.round(completed / total * 100) : 0;
   const hasBody = entry.items.length > 0 || entry.attention.length > 0 || Boolean(entry.recentEvents && entry.recentEvents.length > 0);
   const revisionByItemId = new Map(entry.items.map((row) => [row.itemId, row.revision]));
-  const goalRevisionFor = (row) => row.itemId != null && revisionByItemId.has(row.itemId) ? revisionByItemId.get(row.itemId) : revisionByItemId.get(entry.rootId);
+  const goalRevisionFor = (row) => row.itemId != null ? revisionByItemId.get(row.itemId) : void 0;
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
     "section",
     {
@@ -3414,7 +3414,21 @@ function WorkGraphCard({
             }
           ) : null
         ] }),
-        !collapsed && entry.items.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__items", children: entry.items.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ItemRow, { row, actions }, row.itemId)) }) : null,
+        !collapsed && entry.items.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("ul", { className: "cc-work-graph__items", children: [
+          entry.items.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ItemRow, { row, actions }, row.itemId)),
+          typeof entry.itemOverflowCount === "number" && entry.itemOverflowCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+            "li",
+            {
+              className: "cc-work-graph__overflow",
+              "data-testid": `workgraph-card:${entry.rootId}:overflow`,
+              children: [
+                "+",
+                entry.itemOverflowCount,
+                " more items"
+              ]
+            }
+          ) : null
+        ] }) : null,
         !collapsed && entry.attention.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("ul", { className: "cc-work-graph__attention", children: entry.attention.map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
           AttentionRow,
           {
@@ -4826,18 +4840,24 @@ function workGraphFailureLine(name, raw) {
   }
   return message ? `\u2717 ${name} failed: ${message}` : `\u2717 ${name} failed`;
 }
+var parsedWorkGraphResultCache = /* @__PURE__ */ new Map();
+var PARSED_WORKGRAPH_RESULT_CACHE_LIMIT = 4e3;
 function parseWorkGraphResult(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
   if (!record || record.is_error === true) return null;
   const raw = record.result;
   if (raw && typeof raw === "object") return raw;
-  if (typeof raw === "string") {
-    const parsed = parseJsonPayload(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed;
-    }
+  if (typeof raw !== "string") return null;
+  const cacheKey = `${frame.id}@${frame.frameVersion ?? 0}`;
+  const cached = parsedWorkGraphResultCache.get(cacheKey);
+  if (cached !== void 0) return cached;
+  const parsed = parseJsonPayload(raw);
+  const result = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  if (parsedWorkGraphResultCache.size >= PARSED_WORKGRAPH_RESULT_CACHE_LIMIT) {
+    parsedWorkGraphResultCache.clear();
   }
-  return null;
+  parsedWorkGraphResultCache.set(cacheKey, result);
+  return result;
 }
 function resolveWorkGraphRoot(itemId, parents) {
   let current = itemId;
@@ -4948,9 +4968,28 @@ function workGraphAttentionRows(bindings) {
   }));
 }
 var WORKGRAPH_RECENT_EVENT_LIMIT = 5;
+var WORKGRAPH_CARD_ITEM_ROW_LIMIT = 30;
+function capWorkGraphItemRows(rows) {
+  if (rows.length <= WORKGRAPH_CARD_ITEM_ROW_LIMIT) return { rows, overflow: 0 };
+  const recency = (row) => row.lastEventAt || row.updatedAt || row.createdAt || "";
+  const ranked = rows.map((row, index) => ({ row, index })).sort((left, right) => {
+    const leftKey = recency(left.row);
+    const rightKey = recency(right.row);
+    if (leftKey !== rightKey) return leftKey > rightKey ? -1 : 1;
+    return left.index - right.index;
+  });
+  const keep = new Set(
+    ranked.slice(0, WORKGRAPH_CARD_ITEM_ROW_LIMIT).map((entry) => entry.index)
+  );
+  return {
+    rows: rows.filter((_, index) => keep.has(index)),
+    overflow: rows.length - keep.size
+  };
+}
 function buildWorkGraphEntries(agent, frames, namesByCallId) {
   const state = {
     items: /* @__PURE__ */ new Map(),
+    directItemIds: /* @__PURE__ */ new Set(),
     parents: /* @__PURE__ */ new Map(),
     extraParents: /* @__PURE__ */ new Map(),
     bindings: /* @__PURE__ */ new Map(),
@@ -4960,6 +4999,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   };
   let sawWorkGraphFrame = false;
   const argIdsByCallId = /* @__PURE__ */ new Map();
+  const failureNotedCallIds = /* @__PURE__ */ new Set();
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
     if (!isWorkGraphToolFrame(frame, namesByCallId)) continue;
@@ -4989,10 +5029,12 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const isOperatorResult = frame.event === WORKGRAPH_OPERATOR_RESULT_EVENT;
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed" || isOperatorResult) {
       const failed = record?.is_error === true;
-      if (record?.refresh !== true) {
+      const isRefresh = record?.refresh === true;
+      if (!isRefresh) {
         contribution.outcome = failed ? "error" : "ok";
       }
-      if (failed) {
+      if (failed && (!toolCallId || !failureNotedCallIds.has(toolCallId))) {
+        if (toolCallId) failureNotedCallIds.add(toolCallId);
         state.events.push({
           at: frameIso,
           itemId: argItemId || (argBindingId ? state.bindings.get(argBindingId)?.itemId : void 0),
@@ -5005,26 +5047,43 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       }
       const result = parseWorkGraphResult(frame);
       if (result) {
-        const foldItem = (value) => {
+        const knownItem = (value) => {
+          const id = value && typeof value === "object" ? workGraphString(value.id) : void 0;
+          return Boolean(id && state.items.has(id));
+        };
+        const knownBinding = (value) => {
+          const id = value && typeof value === "object" ? workGraphString(value.binding_id) : void 0;
+          return Boolean(id && state.bindings.has(id));
+        };
+        const foldItem = (value, bulk = false) => {
+          if (isRefresh && !knownItem(value)) return;
           const itemId = foldWorkGraphItem(state, value, frameIso);
-          if (itemId) contribution.itemIds.push(itemId);
+          if (itemId) {
+            contribution.itemIds.push(itemId);
+            if (!bulk && !isRefresh) state.directItemIds.add(itemId);
+          }
         };
         const foldBinding = (value) => {
+          if (isRefresh && !knownBinding(value)) return;
           const bindingId = foldWorkGraphBinding(state, value, frameIso);
           if (bindingId) contribution.bindingIds.push(bindingId);
         };
         foldItem(result.item);
-        if (Array.isArray(result.items)) result.items.forEach(foldItem);
+        if (Array.isArray(result.items)) {
+          for (const value of result.items) foldItem(value, true);
+        }
         foldBinding(result.attention);
         foldBinding(result.previous);
-        foldWorkGraphEdge(state, result.edge);
+        if (!isRefresh) foldWorkGraphEdge(state, result.edge);
         if (Array.isArray(result.events)) {
           for (const event of result.events) foldWorkGraphEvent(state, event);
         }
         const snapshot = result.snapshot && typeof result.snapshot === "object" ? result.snapshot : null;
         if (snapshot) {
-          if (Array.isArray(snapshot.items)) snapshot.items.forEach(foldItem);
-          if (Array.isArray(snapshot.edges)) {
+          if (Array.isArray(snapshot.items)) {
+            for (const value of snapshot.items) foldItem(value, true);
+          }
+          if (!isRefresh && Array.isArray(snapshot.edges)) {
             for (const edge of snapshot.edges) foldWorkGraphEdge(state, edge);
           }
           if (Array.isArray(snapshot.attention)) snapshot.attention.forEach(foldBinding);
@@ -5055,7 +5114,9 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   const ownCardRoots = /* @__PURE__ */ new Set();
   for (const [root, members] of rootMembers) {
     const hasHierarchy = members.length > 1 || members.some((id) => id !== root);
-    if (hasHierarchy || (rootBindings.get(root)?.length || 0) > 0) {
+    const attentionBound = (rootBindings.get(root)?.length || 0) > 0;
+    const directlyWorked = state.directItemIds.has(root) || members.some((id) => state.directItemIds.has(id));
+    if (attentionBound || hasHierarchy && directlyWorked) {
       ownCardRoots.add(root);
     }
   }
@@ -5155,6 +5216,7 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     const lastUpdatedAt = latestIso(items.flatMap((item) => [item.updatedAt, item.lastEventAt]));
     const title = rootItem ? rootItem.title : "Goal from an earlier conversation";
     const objective = rootItem ? rootItem.description ?? null : `Goal \u2026${root.slice(-6)}`;
+    const capped = capWorkGraphItemRows(items);
     pushEntry({
       kind: "workgraph",
       id: entryId,
@@ -5166,7 +5228,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       objective,
       status: deriveWorkGraphStatus(items),
       progress: { completed, total: items.length },
-      items,
+      items: capped.rows,
+      ...capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {},
       attention,
       ...recentEvents ? { recentEvents } : {},
       ...lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {},
@@ -5176,12 +5239,13 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
   for (const [entryId, members] of catchAllMembers) {
     const anchor = anchorByCard.get(entryId);
     if (!anchor) continue;
-    const memberIds = [...members].filter((id) => state.items.has(id));
+    const memberIds = [...members].filter((id) => (rootMembers.get(id)?.length || 0) > 0);
     const recentEvents = eventsForMembers(members, anchor.interactionId);
     if (memberIds.length === 0 && !recentEvents) continue;
-    const rows = memberIds.flatMap((id) => workGraphItemRows(id, [id], state));
+    const rows = memberIds.flatMap((id) => workGraphItemRows(id, rootMembers.get(id) || [id], state));
     const completed = rows.filter((item) => item.status === "completed").length;
     const lastUpdatedAt = latestIso(rows.flatMap((item) => [item.updatedAt, item.lastEventAt]));
+    const capped = capWorkGraphItemRows(rows);
     pushEntry({
       kind: "workgraph",
       id: entryId,
@@ -5193,7 +5257,8 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
       objective: rows.length === 1 ? rows[0].description ?? null : null,
       status: deriveWorkGraphStatus(rows),
       progress: { completed, total: rows.length },
-      items: rows,
+      items: capped.rows,
+      ...capped.overflow > 0 ? { itemOverflowCount: capped.overflow } : {},
       attention: [],
       ...recentEvents ? { recentEvents } : {},
       ...lastOutcomeByCard.get(entryId) === "error" ? { lastActionFailed: true } : {},
@@ -5201,6 +5266,13 @@ function buildWorkGraphEntries(agent, frames, namesByCallId) {
     }, anchor.frameIndex);
   }
   return byAnchor;
+}
+function framesContainWorkGraphCards(frames) {
+  const entries = buildWorkGraphEntries(null, frames, workGraphToolNamesByCallId(frames));
+  for (const cards of entries.values()) {
+    if (cards.length > 0) return true;
+  }
+  return false;
 }
 function parsePeerSummary(text) {
   const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
@@ -19215,17 +19287,50 @@ function ConsoleApp({ baseUrl }) {
     },
     [baseUrl, forceRender]
   );
+  const workGraphHydrationDoneRef = import_react34.default.useRef(/* @__PURE__ */ new Set());
+  async function hydrateWorkGraphCardsForIdentity(identity) {
+    if (workGraphHydrationDoneRef.current.has(identity)) return;
+    if (experience?.workgraph?.available !== true) return;
+    if (!framesContainWorkGraphCards(getSortedFrames(identity))) {
+      workGraphHydrationDoneRef.current.add(identity);
+      return;
+    }
+    workGraphHydrationDoneRef.current.add(identity);
+    try {
+      const snapshot = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES2.workgraphSnapshot,
+        controlWorkbenchTarget("workgraph")
+      );
+      appendFrame(
+        identity,
+        buildWorkGraphOperatorResultFrame({
+          method: consoleCommandMethod(CONSOLE_COMMAND_NAMES2.workgraphSnapshot),
+          params: {},
+          // The RPC returns the WorkGraphSnapshot verbatim; the fold expects
+          // the tool-result wrapper shape.
+          result: { snapshot },
+          identity,
+          refresh: true
+        })
+      );
+      forceRender();
+    } catch {
+    }
+  }
   import_react34.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       const identity = target.identity || target.memberId;
       const log = getOrCreateLog(identity);
-      if (log.hasServerLog !== null) continue;
-      void refreshIdentityTimelineNow(identity).catch(() => {
+      if (log.hasServerLog !== null) {
+        void hydrateWorkGraphCardsForIdentity(identity);
+        continue;
+      }
+      void refreshIdentityTimelineNow(identity).then(() => hydrateWorkGraphCardsForIdentity(identity)).catch(() => {
       });
     }
-  }, [baseUrl, dock.viewState.panels, forceRender]);
+  }, [baseUrl, dock.viewState.panels, forceRender, experience?.workgraph?.available]);
   import_react34.default.useEffect(() => {
     const refreshOpenChatPanels = async () => {
       const identities = /* @__PURE__ */ new Set();
