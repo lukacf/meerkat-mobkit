@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- meerkat family pinned to `=0.7.23` (from `=0.7.22`). Ask 21d verified
+  fixed: never-run identity-first mob workers no longer strand in
+  archive-NotFound during disposal — the doctrine worker-respawn test now
+  asserts success (tolerance branch removed). With 21c (0.7.22) and 21d
+  (0.7.23) the whole never-run-member disposal family (asks 20/21/21b/21c/
+  21d) is closed on BOTH constructions. API drift absorbed: the
+  runtime-backed schedule host takes an optional `WorkGraphService`
+  (mobkit passes `None` — WorkGraph is not wired yet), and
+  `flow_tool_overlay` → `turn_tool_overlay` on turn semantics/metadata.
+
 ### Fixed
 
 - Schedule self-delivery now reaches identity-first members: the internal

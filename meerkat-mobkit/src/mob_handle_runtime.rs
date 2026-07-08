@@ -5337,7 +5337,7 @@ image_generation = true
             event_tx: None,
             runtime: meerkat_core::service::StartTurnRuntimeSemantics {
                 handling_mode: meerkat_core::types::HandlingMode::Steer,
-                flow_tool_overlay: None,
+                turn_tool_overlay: None,
                 pre_turn_context_appends: Vec::new(),
                 typed_turn_appends: Vec::new(),
                 // Render metadata now lives only on the typed turn-metadata

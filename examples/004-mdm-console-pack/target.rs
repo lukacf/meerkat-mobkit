@@ -180,7 +180,7 @@ impl CoreExecutor for TargetCoreExecutor {
                 metadata
                     .and_then(|meta| meta.handling_mode)
                     .unwrap_or(HandlingMode::Queue),
-                metadata.and_then(|meta| meta.flow_tool_overlay.clone()),
+                metadata.and_then(|meta| meta.turn_tool_overlay.clone()),
                 pre_turn_context_appends,
                 metadata.cloned(),
             ),

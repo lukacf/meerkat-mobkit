@@ -731,20 +731,15 @@ comms = true
         json!({"member_id": "scratch-worker"}),
     )
     .await;
-    // Never-ran worker respawn on THIS construction still archive-NotFounds
-    // on meerkat 0.7.22 (ask 21d residue: retire_runtime_before_archive
-    // retires the runtime, yet the archive still resolves NotFound with the
-    // session left registered — unlike the classic persistent chain, which
-    // converged with ask 21c). Assert the ROUTING; tighten when 21d lands.
+    // Never-ran worker respawn converges since meerkat 0.7.23 (ask 21d:
+    // archive-NotFound on a terminal-phase registered runtime completes
+    // disposal instead of escalating).
     assert!(
         respawn["result"].get("identity_first").is_none(),
         "worker respawn must NOT route through the identity authority: {respawn}"
     );
-    if let Some(error) = respawn.get("error") {
-        let detail = error["data"]["detail"].as_str().unwrap_or_default();
-        assert!(
-            detail.contains("ArchiveSession"),
-            "the only acceptable worker-respawn failure is the ask-21d class: {respawn}"
-        );
-    }
+    assert!(
+        respawn.get("error").is_none(),
+        "worker respawn must succeed on the mob plane: {respawn}"
+    );
 }

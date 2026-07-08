@@ -744,6 +744,9 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
     // meerkat 0.7.13 (upstream ask 10): thread a host-runnable registry so
     // host-registered runnables (e.g. the memory steward's dream) can be
     // driven as schedule occurrences. `None` keeps mob/session targets only.
+    // meerkat 0.7.23: the runtime-backed session host injects the WorkGraph
+    // attention projection at apply time when given a WorkGraphService.
+    // MobKit does not wire WorkGraph yet — None keeps prompts un-decorated.
     spawn_runtime_backed_schedule_host_with_mobs(
         service,
         adapter,
@@ -752,6 +755,7 @@ pub fn spawn_schedule_host<B: SessionAgentBuilder + 'static>(
         SessionBuildOptions::default(),
         mob_host,
         runnable_host,
+        None,
         owner_id,
     )
 }
