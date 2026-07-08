@@ -390,4 +390,3 @@ class TestConventionDefaults:
         b = MobKit.builder().mob("config/mob.toml").scheduling("custom/s.toml")
         b._apply_convention_defaults()
         assert b._config.scheduling_files == ["custom/s.toml"]
-
