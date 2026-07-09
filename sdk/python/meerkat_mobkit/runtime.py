@@ -1907,6 +1907,23 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/workgraph/attention/reassign", params)
         return WorkGraphAttentionReassignResult.from_dict(raw)
 
+    async def workgraph_attention_prune(
+        self, updated_before: str | None = None, **kwargs: Any
+    ) -> int:
+        """Prune TERMINAL (superseded/stopped) attention binding rows.
+
+        The workgraph event stream keeps the audit history; binding rows
+        otherwise grow monotonically with reassignment churn.  Pass an
+        RFC3339 ``updated_before`` to prune only rows last updated strictly
+        before that instant.  Returns the number of rows pruned.
+        """
+        params: dict[str, Any] = dict(kwargs)
+        if updated_before is not None:
+            params["updated_before"] = updated_before
+        raw = await self._runtime._rpc("mobkit/workgraph/attention/prune", params)
+        pruned = raw.get("pruned", 0) if isinstance(raw, dict) else 0
+        return int(pruned)
+
     # -----------------------------------------------------------------
     # Cross-mob operations
     # -----------------------------------------------------------------

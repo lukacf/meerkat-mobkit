@@ -1950,3 +1950,221 @@ async fn console_goal_confirm_promotes_authenticated_principal() {
     );
     runtime.mob_handle().stop().await.expect("stop");
 }
+
+// ---------------------------------------------------------------------------
+// meerkat 0.7.25: attention prune (ask 24) + break-glass reassign (ask 23)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_prune_removes_terminal_bindings() {
+    let runtime = build_runtime().await;
+    // Coordinate goal, then reassign: the previous binding goes superseded —
+    // exactly the monotonically-growing row class prune exists for.
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "prunable",
+            "target": { "kind": "identity", "identity": "helper" },
+            "mode": "coordinate",
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let binding_id = goal["attention"]["binding_id"].as_str().unwrap();
+    let binding_revision = goal["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": binding_revision,
+            "target": { "kind": "identity", "identity": "backup" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        result(&response)["previous"]["status"]["state"],
+        json!("superseded")
+    );
+
+    let response = rpc(&runtime, "mobkit/workgraph/attention/prune", json!({})).await;
+    assert_eq!(result(&response)["pruned"], json!(1), "{response:#?}");
+
+    // The superseded row is gone; the live binding survives. The event
+    // stream (audit history) is untouched by prune.
+    let response = rpc(&runtime, "mobkit/workgraph/attention/list", json!({})).await;
+    let bindings = result(&response)["attention"].as_array().unwrap().clone();
+    assert_eq!(bindings.len(), 1, "{bindings:#?}");
+    assert_eq!(bindings[0]["status"]["state"], json!("active"));
+
+    // Idempotent: nothing terminal left.
+    let response = rpc(&runtime, "mobkit/workgraph/attention/prune", json!({})).await;
+    assert_eq!(result(&response)["pruned"], json!(0));
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn break_glass_reassign_does_not_exist_on_the_stdin_surface() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/attention/break_glass_reassign",
+        json!({
+            "binding_id": "wab-000000000000000000000000000000",
+            "expected_revision": 0,
+            "target": { "kind": "identity", "identity": "backup" },
+            "reason": "should never be dispatched",
+        }),
+    )
+    .await;
+    assert_eq!(error_code(&response), -32601, "{response:#?}");
+    // The stdin capabilities catalog does not advertise it either.
+    let caps = rpc(&runtime, "mobkit/capabilities", json!({})).await;
+    let methods = result(&caps)["methods"].as_array().unwrap().clone();
+    assert!(
+        !methods
+            .iter()
+            .any(|m| m == "mobkit/workgraph/attention/break_glass_reassign"),
+        "console-only method leaked into the stdin catalog"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Ask 23 end-to-end: a PURSUE-mode binding (which the agent-plane reassign
+/// refuses — only coordinate mode derives the authority) is recovered by an
+/// authenticated console operator through the break-glass seam, with the
+/// principal recorded server-side and the reason mandatory.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_break_glass_reassign_recovers_pursue_binding_with_audit() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "stuck on a wedged pursuer",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+    let binding_id = goal["attention"]["binding_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let binding_revision = goal["attention"]["machine_state"]["revision"]
+        .as_u64()
+        .unwrap();
+
+    let app = runtime.build_reference_app_router(decision_state(true, false));
+    let bearer = alice_bearer();
+
+    // Reason is mandatory.
+    let response = console_rpc_with_bearer(
+        &app,
+        "mobkit/workgraph/attention/break_glass_reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": binding_revision,
+            "target": { "kind": "identity", "identity": "backup" },
+        }),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], json!(-32602), "{response:#?}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("reason"),
+        "{response:#?}"
+    );
+
+    // The principal is never a wire parameter.
+    let response = console_rpc_with_bearer(
+        &app,
+        "mobkit/workgraph/attention/break_glass_reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": binding_revision,
+            "target": { "kind": "identity", "identity": "backup" },
+            "reason": "operator recovery",
+            "principal": "mallory@example.test",
+        }),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], json!(-32602), "{response:#?}");
+
+    // The authenticated operator's break-glass move succeeds on a binding
+    // the agent-plane reassign would refuse for mode.
+    let response = console_rpc_with_bearer(
+        &app,
+        "mobkit/workgraph/attention/break_glass_reassign",
+        json!({
+            "binding_id": binding_id,
+            "expected_revision": binding_revision,
+            "target": { "kind": "identity", "identity": "backup" },
+            "reason": "pursuer wedged; no coordinator holds authority",
+        }),
+        Some(&bearer),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response:#?}");
+    assert_eq!(
+        response["result"]["previous"]["status"]["state"],
+        json!("superseded")
+    );
+    assert_eq!(
+        response["result"]["attention"]["target"]["owner_key"]["id"],
+        json!("mob/workgraph-rpc-mob/agent/backup")
+    );
+
+    // The audit trail carries the authenticated principal and the reason.
+    let events = rpc(&runtime, "mobkit/workgraph/events", json!({ "limit": 200 })).await;
+    let events_json = serde_json::to_string(result(&events)).expect("events json");
+    assert!(events_json.contains("alice@example.test"), "{events_json}");
+    assert!(
+        events_json.contains("pursuer wedged"),
+        "reason missing from the audit stream: {events_json}"
+    );
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+/// Without an authenticated console principal there is no one to attribute
+/// the break-glass move to: the method refuses (access_denied) instead of
+/// minting an anonymous audit row.
+#[tokio::test(flavor = "multi_thread")]
+async fn console_break_glass_reassign_requires_authenticated_principal() {
+    let runtime = build_runtime().await;
+    let response = rpc(
+        &runtime,
+        "mobkit/workgraph/goal/create",
+        json!({
+            "title": "anonymous operators need not apply",
+            "target": { "kind": "identity", "identity": "helper" },
+        }),
+    )
+    .await;
+    let goal = result(&response).clone();
+
+    // Console with app auth DISABLED: requests dispatch, but there is no
+    // authenticated principal.
+    let app = runtime.build_reference_app_router(decision_state(false, false));
+    let response = console_rpc(
+        &app,
+        "mobkit/workgraph/attention/break_glass_reassign",
+        json!({
+            "binding_id": goal["attention"]["binding_id"],
+            "expected_revision": goal["attention"]["machine_state"]["revision"],
+            "target": { "kind": "identity", "identity": "backup" },
+            "reason": "no principal available",
+        }),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], json!(-32030), "{response:#?}");
+    assert_eq!(response["error"]["data"]["kind"], json!("access_denied"));
+    runtime.mob_handle().stop().await.expect("stop");
+}

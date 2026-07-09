@@ -5382,6 +5382,15 @@ function liveAssistantTerminalTextSignatures(frames) {
   }
   return signatures;
 }
+function liveInteractionIdSet(frames) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const id = frame.interactionId?.trim() || "";
+    if (UUID_FORM.test(id)) ids.add(id.toLowerCase());
+  }
+  return ids;
+}
 function buildBlobUrl(blobId, baseUrl) {
   const path = `/blobs/${encodeURIComponent(blobId)}`;
   const base = baseUrl?.trim();
@@ -5488,6 +5497,11 @@ function conversationEntryVisibleText(entry) {
     return "";
   }).filter(Boolean).join("\n");
 }
+var UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function authoritativeInteractionId(entry) {
+  const id = entry.interactionId?.trim() || "";
+  return UUID_FORM.test(id) ? id.toLowerCase() : "";
+}
 function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
   if (entry.kind !== "message") return false;
   if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
@@ -5495,6 +5509,7 @@ function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
   }
   const signature = normalizeComparableText(conversationEntryVisibleText(entry));
   if (!signature) return false;
+  const entryInteractionId = authoritativeInteractionId(entry);
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index = priorEntries.length - 1; index >= 0; index--) {
     const prior = priorEntries[index];
@@ -5507,6 +5522,11 @@ function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
     if (prior.identity.id !== entry.identity.id) continue;
     const priorSignature = normalizeComparableText(conversationEntryVisibleText(prior));
     if (priorSignature !== signature) continue;
+    const priorInteractionId = authoritativeInteractionId(prior);
+    if (entryInteractionId && priorInteractionId) {
+      if (entryInteractionId === priorInteractionId) return true;
+      return false;
+    }
     const priorTs = Date.parse(String(prior.createdAt || ""));
     if (Number.isFinite(entryTs) && Number.isFinite(priorTs) && Math.abs(entryTs - priorTs) > 15e3) {
       return false;
@@ -6658,6 +6678,7 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
     liveToolSignatureCounts
   } = liveToolDedupeState(orderedFrames, toolBlocks);
   const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
+  const liveInteractionIds = liveInteractionIdSet(orderedFrames);
   const emittedImages = /* @__PURE__ */ new Set();
   const emittedUserInputs = /* @__PURE__ */ new Set();
   const emittedCommsNotices = /* @__PURE__ */ new Map();
@@ -6982,7 +7003,11 @@ ${text.trimStart()}`;
         }
       }
       const historyText = frame.sourceKind === "session_history" ? terminalFrameVisibleText(frame).trim() : "";
-      if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
+      const historyUuid = frame.sourceKind === "session_history" && UUID_FORM.test(frame.interactionId?.trim() || "") ? (frame.interactionId || "").trim().toLowerCase() : "";
+      if (historyUuid && liveInteractionIds.has(historyUuid)) {
+        continue;
+      }
+      if (historyText && !historyUuid && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
         continue;
       }
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
@@ -7000,6 +7025,7 @@ ${text.trimStart()}`;
       });
       if (historyEntry) {
         flushPendingText();
+        historyEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
           continue;
         }
@@ -7015,7 +7041,11 @@ ${text.trimStart()}`;
       streamedInteractionId = "";
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
-        if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
+        const historyUuid = UUID_FORM.test(frame.interactionId?.trim() || "") ? (frame.interactionId || "").trim().toLowerCase() : "";
+        if (historyUuid && liveInteractionIds.has(historyUuid)) {
+          continue;
+        }
+        if (historyText && !historyUuid && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
           continue;
         }
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
@@ -7032,6 +7062,7 @@ ${text.trimStart()}`;
           consumeDuplicateToolBlock: (block) => WORKGRAPH_TOOL_NAMES.has(block.name) || liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
         });
         if (historyEntry) {
+          historyEntry.interactionId = frame.interactionId?.trim() || void 0;
           if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
             continue;
           }
@@ -7041,6 +7072,7 @@ ${text.trimStart()}`;
       }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
+        terminalEntry.interactionId = frame.interactionId?.trim() || void 0;
         if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
         }

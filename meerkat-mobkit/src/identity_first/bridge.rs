@@ -233,6 +233,7 @@ async fn submit_internal_bridge_work(
     content: &meerkat_core::ContentInput,
     injected_context: &[meerkat_core::ContentInput],
     handling_mode: HandlingMode,
+    interaction_id: Option<&str>,
 ) -> Result<(), BridgeError> {
     let entry = handle
         .get_member(member_id)
@@ -246,6 +247,25 @@ async fn submit_internal_bridge_work(
     let mut spec = WorkSpec::new(content.clone(), WorkOrigin::Internal);
     if !injected_context.is_empty() {
         spec = spec.with_injected_context(injected_context.to_vec());
+    }
+    // meerkat 0.7.25 ask 15 addendum: a host-supplied interaction id rides
+    // WorkSpec into runtime admission, so this turn's live events AND its
+    // committed transcript messages carry the SAME id the console minted at
+    // send time — the exact live↔history join the console dedup needs. Only
+    // UUID-form ids exist here (the identity-first console send mints v5
+    // UUIDs); anything else is skipped rather than corrupted.
+    if let Some(raw) = interaction_id {
+        match raw.parse::<uuid::Uuid>() {
+            Ok(id) => {
+                spec = spec.with_interaction_id(meerkat_core::interaction::InteractionId(id));
+            }
+            Err(_) => {
+                tracing::debug!(
+                    interaction_id = %raw,
+                    "non-UUID interaction id not threaded into runtime admission"
+                );
+            }
+        }
     }
     handle
         .submit_work_with_mode(
@@ -318,16 +338,21 @@ pub trait SessionBridge: Send + Sync {
 
     /// Deliver content plus a separate `injected_context` body (meerkat
     /// 0.7.12 ask 1: typed ambient injection alongside — not fused into —
-    /// the user's message). Bridges that do not carry injected context fall
-    /// back to plain delivery of the user content, dropping the injection.
+    /// the user's message) and an optional host-minted interaction id
+    /// (meerkat 0.7.25 ask 15 addendum: threaded into runtime admission so
+    /// transcript messages join the caller's live interaction frames).
+    /// Bridges that do not carry injected context fall back to plain
+    /// delivery of the user content, dropping the injection and the id.
     async fn deliver_with_mode_and_context(
         &self,
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
         injected_context: &[meerkat_core::ContentInput],
         handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let _ = injected_context;
+        let _ = interaction_id;
         self.deliver_with_mode(runtime_id, content, handling_mode)
             .await
     }
@@ -1172,8 +1197,15 @@ impl SessionBridge for MobSessionBridge {
         // complete. The identity layer owns addressability enforcement — the
         // bridge is an internal delivery mechanism regardless of whether the
         // identity is Addressable or InternalOnly.
-        match submit_internal_bridge_work(&self.handle, &mid, content, &[], HandlingMode::Queue)
-            .await
+        match submit_internal_bridge_work(
+            &self.handle,
+            &mid,
+            content,
+            &[],
+            HandlingMode::Queue,
+            None,
+        )
+        .await
         {
             Ok(()) => {}
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
@@ -1188,8 +1220,15 @@ impl SessionBridge for MobSessionBridge {
                     member_entry_before_delivery,
                 ))
                 .await?;
-                submit_internal_bridge_work(&self.handle, &mid, content, &[], HandlingMode::Queue)
-                    .await?;
+                submit_internal_bridge_work(
+                    &self.handle,
+                    &mid,
+                    content,
+                    &[],
+                    HandlingMode::Queue,
+                    None,
+                )
+                .await?;
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
         }
@@ -1210,7 +1249,7 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        self.deliver_with_mode_and_context(runtime_id, content, &[], handling_mode)
+        self.deliver_with_mode_and_context(runtime_id, content, &[], handling_mode, None)
             .await
     }
 
@@ -1220,6 +1259,7 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
         injected_context: &[meerkat_core::ContentInput],
         handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
         // Best-effort repair material: a faulted lookup degrades to "no
@@ -1259,6 +1299,7 @@ impl SessionBridge for MobSessionBridge {
             content,
             injected_context,
             handling_mode,
+            interaction_id,
         )
         .await
         {
@@ -1281,6 +1322,7 @@ impl SessionBridge for MobSessionBridge {
                     content,
                     injected_context,
                     handling_mode,
+                    interaction_id,
                 )
                 .await?;
             }

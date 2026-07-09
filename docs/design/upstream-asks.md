@@ -645,6 +645,9 @@ approximates from event recency.
 
 ## Ask 15 — Persist `interaction_id` in the transcript
 
+**SHIPPED in meerkat 0.7.25** (addendum included: `SubscribableInjector::inject_with_interaction_id` + `WorkSpec.interaction_id` thread host ids to runtime admission; `TranscriptMessageIdentity` persists onto committed messages). Mobkit adoption (0.7.30): identity-first console sends mint UUIDv5 interaction ids and thread them via `send_with_mode_and_interaction` → bridge `WorkSpec`; session-history backfill stamps `interaction_id`/`run_id` onto frames; console dedup treats UUID-form ids as authoritative twin identity. Residual: the CLASSIC console send path cannot thread (the external work door `external_turn_for_member` has no interaction parameter) — candidate follow-up ask.
+
+
 **Title:** Give live and historical copies of the same assistant reply a
 shared identity
 
@@ -685,6 +688,18 @@ just-cleaned store — with zero log output at any level. Root-caused in the
 published 0.7.18 sources (all four asks are visible there); mobkit ships a
 read-only watchdog (`spawn_schedule_claim_watchdog`) that names the stall
 and the poisoned row, but only meerkat can make the driver survive one.
+
+### Ask 15 addendum (2026-07-08, mobkit issue #254 item 3)
+
+A second consumer class hit this: the console aggregator's session-history
+backfill re-emits past turns as `interaction_complete` frames with
+`session_id` set and `interaction_id: None` (nothing to stamp — the
+transcript doesn't persist it), and identity queries force-trigger
+backfill. A consumer correlating by session id alone treats old history as
+fresh completions (field: false job completion). mobkit interim: frames
+carry `source.kind == "session_history"` and the API docs now declare its
+exclusion mandatory. Real fix remains this ask: persist interaction ids in
+the transcript so backfill can stamp them.
 
 ## Ask 16 — `spawn_schedule_host` discards every driver tick error
 
@@ -1120,6 +1135,9 @@ agent-tool workers, OB3 worker plane after migration).
 
 ## Ask 23 — break-glass host reassignment for stuck bindings — P3 (reframed 2026-07-08)
 
+**SHIPPED in meerkat 0.7.25** (`WorkGraphService::break_glass_reassign_attention`, host API only, mandatory principal+reason, event-stream audited). Mobkit adoption (0.7.30): `mobkit/workgraph/attention/break_glass_reassign` on the CONSOLE surface only; principal = authenticated console principal.
+
+
 meerkat 0.7.23's `reassign_attention` requires the witness's
 `can_link_derived_from`, which the machine derives ONLY for
 coordinate-mode bindings (`tool_surface.rs` pins: coordinate=true,
@@ -1148,6 +1166,9 @@ stays untouched.
 
 ## Ask 24 — filtered attention queries + terminal-binding GC — P2
 
+**SHIPPED in meerkat 0.7.25** (SQL-pushed status/target filters over indexed columns with NULL-tolerant migration; `prune_terminal_attention`; clause-3 metadata-only session read seam as `SessionStore::load_meta`). Mobkit adoption (0.7.30): `mobkit/workgraph/attention/prune` + SDK methods.
+
+
 `SqliteWorkGraphStore::list_sqlite_attention` (0.7.23 store.rs:1576) runs
 `SELECT attention_json FROM workgraph_attention` with no WHERE clause and
 JSON-decodes EVERY row — all realms, all statuses — before Rust-side
@@ -1171,6 +1192,9 @@ own ask candidate).
 
 ## Ask 25 — attention-binding uniqueness belongs in the service/store (or arbitrate like sessions) — P1
 
+**SHIPPED in meerkat 0.7.25** — BOTH halves: store-level transactional uniqueness with typed `Conflict` naming the occupant, AND newest-binding-wins arbitration for legacy duplicates (`MultipleActiveBindings` removed). Mobkit's admission demotes to defense-in-depth + session↔identity alias unification; sidecar-lock removal is the 0.7.31 follow-up.
+
+
 `MultipleActiveBindings` is a HARD per-turn error (0.7.23
 meerkat/src/surface.rs:209): two active bindings matching one member's
 turns brick that member until an operator intervenes. But nothing upstream
@@ -1193,3 +1217,21 @@ Ask, either (both is best):
    instead of hard-failing every turn.
 
 When either lands, mobkit's admission layer demotes to defense-in-depth.
+
+
+## Ask 26 — structural reply affordance on comms deliveries — P2
+
+**SHIPPED in meerkat 0.7.25** (`PeerReplyCapability` in the dispatch context, pre-addressed `reply_to_peer` comms tool, batch-level minting via the canonical `TurnToolOverlay::compose`). No mobkit change needed: nothing strips the overlay, and the console renders the tool generically. Verified at the 0.7.25 pin bump.
+
+
+Peer messages arrive framed as prose ("Peer message from <endpoint>...")
+with no structural reply affordance. Models reliably answer in their own
+transcript instead of calling the comms tool back — charter/prompt
+strengthening does not hold (mobkit consumer field report, 2026-07-08),
+so every consumer ends up building an app-side relay.
+
+Ask: deliver peer messages with a typed reply seam — e.g. a delivery
+envelope carrying a `reply_to` capability/token the runtime turns into a
+pre-addressed comms call (or a first-class `reply` tool scoped to the
+delivery), so "answer the peer" is an affordance rather than a prompt
+convention. mobkit interim: none (app-side relays).

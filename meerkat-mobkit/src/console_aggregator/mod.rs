@@ -89,6 +89,12 @@ struct AggregatorInner {
     session_backfill_permits: Arc<Semaphore>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
+    /// Per-runtime shutdown signals for the live-projection tasks spawned by
+    /// [`ConsoleAggregator::register_runtime_handles_with_policy`]. Without
+    /// them, every registration leaked an immortal projection task (its
+    /// broadcast receiver can never observe `Closed` while the runtime Arc
+    /// lives) after the runtime was destroyed (issue #254 follow-up).
+    live_projection_shutdowns: std::sync::Mutex<BTreeMap<String, tokio::sync::watch::Sender<bool>>>,
 }
 
 #[derive(Clone)]
@@ -342,6 +348,7 @@ impl MobKitConsoleAggregator {
                 )),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
+                live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -396,6 +403,14 @@ impl MobKitConsoleAggregator {
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
             runtimes.insert(runtime_key.clone(), entry);
         }
+        // Re-registering a key replaces its live-projection task: signal the
+        // old one before spawning the new (otherwise both would project).
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        if let Ok(mut shutdowns) = self.inner.live_projection_shutdowns.lock()
+            && let Some(previous) = shutdowns.insert(runtime_key.clone(), shutdown_tx)
+        {
+            let _ = previous.send(true);
+        }
         self.inner
             .identity_read_model
             .refresh_soon(self.inner.clone());
@@ -406,21 +421,32 @@ impl MobKitConsoleAggregator {
         tokio::spawn(async move {
             let mut rx = events_for_live.subscribe();
             loop {
-                match rx.recv().await {
-                    Ok(envelope) => {
-                        let _ =
-                            project_console_event(inner.clone(), &runtime_key_for_live, envelope)
-                                .await;
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        // Sender dropped or unregister signalled: stop.
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let _ = recover_lagged_source_events(
-                            inner.clone(),
-                            &runtime_key_for_live,
-                            &events_for_live_recovery,
-                        )
-                        .await;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    received = rx.recv() => match received {
+                        Ok(envelope) => {
+                            let _ = project_console_event(
+                                inner.clone(),
+                                &runtime_key_for_live,
+                                envelope,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let _ = recover_lagged_source_events(
+                                inner.clone(),
+                                &runtime_key_for_live,
+                                &events_for_live_recovery,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
                 }
             }
         });
@@ -450,6 +476,35 @@ impl MobKitConsoleAggregator {
             }
             let _ = ingestion_state.apply(SourceIngestionTransition::StartLive);
         });
+    }
+
+    /// Unregister a runtime (issue #254 follow-up): removes the registry
+    /// entry (which also terminates the 5s session-history discovery loop on
+    /// its next tick — it checks registration), signals the live-projection
+    /// task to stop (its broadcast receiver would otherwise never observe
+    /// `Closed` while the runtime's event store lives), and refreshes the
+    /// identity read model so the dead runtime's identities leave the
+    /// console. Frames already projected into the store remain queryable —
+    /// unregister detaches the LIVE source, it does not erase history.
+    /// Idempotent; unknown keys are a no-op.
+    pub fn unregister_runtime(&self, runtime_key: &str) {
+        let removed = self
+            .inner
+            .runtimes
+            .write()
+            .ok()
+            .and_then(|mut runtimes| runtimes.remove(runtime_key))
+            .is_some();
+        if let Ok(mut shutdowns) = self.inner.live_projection_shutdowns.lock()
+            && let Some(shutdown) = shutdowns.remove(runtime_key)
+        {
+            let _ = shutdown.send(true);
+        }
+        if removed {
+            self.inner
+                .identity_read_model
+                .refresh_soon(self.inner.clone());
+        }
     }
 
     pub async fn list_identities(&self) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
@@ -1261,14 +1316,59 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn timeline_event_visible(&self, event: &ConsoleTimelineEvent) -> bool {
+        self.timeline_event_visible_for_subscriber(event, None)
+            .await
+    }
+
+    /// Live-stream visibility gate, subscriber-aware (issue #254).
+    ///
+    /// The windowed query paths grant an own-identity allowance
+    /// (`allow_historical_identity = query.identity == frame.identity`), but
+    /// the live gate used to pass `false` unconditionally — so an
+    /// identity-scoped SSE stream dropped every frame of a member the
+    /// identity read model had not yet observed (`records=0 → Missing`),
+    /// starving live tails while reconnect-with-snapshot showed full
+    /// history. Two fixes, matching the issue's suggestions:
+    ///
+    /// 1. An identity-scoped subscriber gets the SAME own-identity
+    ///    allowance the query paths grant, so its frames flow immediately.
+    /// 2. A frame whose identity is unknown to the read model triggers a
+    ///    debounced [`ConsoleIdentityReadModel::refresh_soon`] — the model
+    ///    converges for UNSCOPED streams too (members spawned mid-run via
+    ///    `ensure_member` previously stayed invisible until an unrelated
+    ///    refresh).
+    pub async fn timeline_event_visible_for_subscriber(
+        &self,
+        event: &ConsoleTimelineEvent,
+        subscriber_identity: Option<&str>,
+    ) -> bool {
         match event {
             ConsoleTimelineEvent::ConsoleFrame { frame }
             | ConsoleTimelineEvent::FrameUpdated { frame } => {
                 let identity_records = self.inner.identity_read_model.current().await;
+                let identity_known = identity_records.iter().any(|record| {
+                    record.runtime_key == frame.runtime_key
+                        && (record.identity == frame.identity
+                            || record.runtime_member_id == frame.identity)
+                });
+                if !identity_known
+                    && frame.identity != "__console__"
+                    && frame.identity != SYSTEM_EVENT_IDENTITY
+                {
+                    // Self-heal: the read model has never seen this identity
+                    // (e.g. ensure_member mid-run). Debounced internally; a
+                    // spurious trigger for a namespaced alias mismatch just
+                    // refreshes early.
+                    self.inner
+                        .identity_read_model
+                        .refresh_soon(self.inner.clone());
+                }
+                let allow_historical_identity =
+                    subscriber_identity == Some(frame.identity.as_str());
                 Box::pin(frame_is_visible(
                     &self.inner,
                     frame,
-                    false,
+                    allow_historical_identity,
                     &identity_records,
                 ))
                 .await
@@ -1511,7 +1611,7 @@ impl MobKitConsoleAggregator {
             return Ok(accepted_from_frame(&existing));
         }
 
-        let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        let interaction_id = identity_first_interaction_uuid(&dedupe_key);
         let new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
@@ -3858,6 +3958,23 @@ fn frames_from_session_history_message_with_namespace(
             })
             .collect();
     }
+    // meerkat 0.7.25 persists `TranscriptMessageIdentity` onto committed
+    // transcript messages (ask 15 addendum). Stamping it here gives history
+    // frames the SAME interaction identity the live pipeline stamped (for
+    // identity-first sends the host-minted id round-trips through runtime
+    // admission), so the console can join live↔history twins exactly instead
+    // of by content heuristics.
+    let transcript_identity = match &parsed {
+        Message::User(user) => Some(&user.identity),
+        Message::BlockAssistant(assistant) => Some(&assistant.identity),
+        _ => None,
+    };
+    let history_interaction_id = transcript_identity
+        .and_then(|identity| identity.interaction_id.as_ref())
+        .map(|id| id.0.to_string());
+    let history_run_id = transcript_identity
+        .and_then(|identity| identity.run_id.as_ref())
+        .map(|id| id.0.to_string());
     let (kind, timestamp_ms, payload) = match &parsed {
         Message::User(user) => {
             if session_history_user_message_is_scaffold(&message) {
@@ -3919,9 +4036,9 @@ fn frames_from_session_history_message_with_namespace(
             source_cursor: Some(format!("{session_id}:{offset}")),
         },
         source_event_id: None,
-        interaction_id: None,
+        interaction_id: history_interaction_id,
         turn_id: None,
-        run_id: None,
+        run_id: history_run_id,
         parent_frame_id: None,
         caused_by_frame_id: None,
     }];
@@ -4665,6 +4782,23 @@ fn send_dedupe_key(
 fn send_request_fingerprint(origin: &str, content: &Value, handling_mode: &str) -> String {
     let content_json = serde_json::to_string(content).unwrap_or_default();
     hash_short(&format!("{origin}\n{handling_mode}\n{content_json}"))
+}
+
+/// Namespace for identity-first console interaction ids (UUIDv5 over the
+/// send's dedupe key). Deterministic: an idempotent retry mints the SAME id.
+/// UUID form is deliberate — the identity-first delivery path threads this id
+/// into meerkat runtime admission (`WorkSpec.interaction_id`, 0.7.25 ask 15
+/// addendum), so the turn's live frames and its persisted transcript messages
+/// carry one joinable identity. The classic send path keeps the legacy
+/// `console-interaction-{hash}` string: it cannot thread ids (the external
+/// work door has no interaction parameter), and the console's dedup treats
+/// only UUID-form ids as authoritative.
+const CONSOLE_INTERACTION_UUID_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x6d, 0x6f, 0x62, 0x6b, 0x69, 0x74, 0x2d, 0x63, 0x6f, 0x6e, 0x73, 0x6f, 0x6c, 0x65, 0x2d, 0x69,
+]);
+
+fn identity_first_interaction_uuid(dedupe_key: &str) -> String {
+    uuid::Uuid::new_v5(&CONSOLE_INTERACTION_UUID_NAMESPACE, dedupe_key.as_bytes()).to_string()
 }
 
 fn hash_short(value: &str) -> String {
@@ -5516,6 +5650,177 @@ comms = true
         assert_eq!(
             inspection.identity.runtime_member_id,
             "rt:channel:C0SMOKEOB3:0"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// Issue #254 (root cause of "flows stuck forever"): the live SSE gate
+    /// passed `allow_historical_identity = false` unconditionally, so an
+    /// identity-scoped stream dropped every frame of a member the identity
+    /// read model had not yet observed — while the windowed query path
+    /// passed the same frames via the own-identity allowance. The
+    /// subscriber-aware gate grants the same allowance, and an unknown
+    /// identity triggers a debounced read-model refresh so UNSCOPED streams
+    /// converge too (members spawned mid-run via ensure_member).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_scoped_live_stream_sees_members_unknown_to_the_read_model()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("live-tail-unknown-identity-test").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        // Prime the read model BEFORE the member exists — the exact state a
+        // mid-run ensure_member leaves an already-connected live stream in.
+        let _ = aggregator.list_identities_fresh().await?;
+
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "late-member".to_string(),
+                Some("You are the late member.".into()),
+                None,
+                None,
+            ))
+            .await?;
+        let outcome = aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "late-member-live-frame".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "late-member".to_string(),
+                conversation_id: Some("late-member".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Completed,
+                payload: json!({"delta": "hi"}),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: None,
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        let event = ConsoleTimelineEvent::ConsoleFrame {
+            frame: outcome.frame,
+        };
+
+        // The identity-scoped subscriber sees the frame IMMEDIATELY (the
+        // own-identity allowance the query path always had).
+        assert!(
+            aggregator
+                .timeline_event_visible_for_subscriber(&event, Some("late-member"))
+                .await,
+            "identity-scoped live stream must not starve on a read-model miss"
+        );
+        // A differently-scoped subscriber does not inherit the allowance.
+        // Race note (CI): the spawn's own projections can converge the read
+        // model before this line, after which the frame is legitimately
+        // visible to everyone because the identity is KNOWN — that is not an
+        // allowance leak. The leak we guard against is other-visibility
+        // WHILE the unscoped gate still hides the frame (identity unknown).
+        let visible_to_other = aggregator
+            .timeline_event_visible_for_subscriber(&event, Some("someone-else"))
+            .await;
+        if visible_to_other {
+            assert!(
+                aggregator.timeline_event_visible(&event).await,
+                "the allowance is strictly own-identity: someone-else saw the \
+                 frame while the read model still treats the identity as \
+                 unknown (unscoped gate hides it)"
+            );
+        }
+
+        // The miss triggered refresh_soon: the read model converges, after
+        // which even the UNSCOPED gate passes the frame.
+        let mut converged = false;
+        for _ in 0..40 {
+            if aggregator.timeline_event_visible(&event).await {
+                converged = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            converged,
+            "the unknown-identity miss must self-heal the read model"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    /// Issue #254 follow-up: registrations leaked an immortal live-projection
+    /// task (broadcast receiver never sees Closed while the runtime Arc
+    /// lives) plus the discovery loop. unregister_runtime detaches the live
+    /// source; already-projected frames stay queryable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unregister_runtime_stops_live_projection()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("unregister-live-projection-test").await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        aggregator.unregister_runtime("runtime-a");
+        assert!(
+            aggregator
+                .inner
+                .runtimes
+                .read()
+                .expect("runtime registry")
+                .is_empty(),
+            "unregister must remove the registry entry"
+        );
+        assert!(
+            aggregator
+                .inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("shutdown registry")
+                .is_empty(),
+            "unregister must consume the live-projection shutdown handle"
+        );
+        // Idempotent on unknown keys.
+        aggregator.unregister_runtime("runtime-a");
+
+        // Re-registration works and replaces cleanly.
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            runtime.identity_runtime().cloned(),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        assert_eq!(
+            aggregator
+                .inner
+                .live_projection_shutdowns
+                .lock()
+                .expect("shutdown registry")
+                .len(),
+            1
         );
 
         let _ = runtime.mob_handle().stop().await;
@@ -9482,6 +9787,80 @@ comms = true
                 .all(|frame| frame.identity == "review:singleton"),
             "child initial messages must not leak into parent timeline: {:#?}",
             parent_page.frames
+        );
+    }
+
+    #[test]
+    fn session_history_frames_carry_transcript_interaction_identity() {
+        // meerkat 0.7.25 ask 15 addendum: persisted TranscriptMessageIdentity
+        // must reach the projected frames so the console can join
+        // live/history twins by id instead of content heuristics.
+        let interaction = "6fa459ea-ee8a-3ca4-894e-db77e160355e";
+        let run = "886313e1-3b8a-5372-9b90-0c9aee199e5d";
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            3,
+            json!({
+                "role": "user",
+                "content": "please ack",
+                "identity": { "interaction_id": interaction, "run_id": run },
+                "created_at": "1970-01-01T00:00:00.100Z"
+            }),
+        );
+        assert_eq!(frames.len(), 1, "{frames:#?}");
+        assert_eq!(frames[0].interaction_id.as_deref(), Some(interaction));
+        assert_eq!(frames[0].run_id.as_deref(), Some(run));
+
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            4,
+            json!({
+                "role": "block_assistant",
+                "blocks": [ { "block_type": "text", "data": { "text": "ACK" } } ],
+                "identity": { "interaction_id": interaction },
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.200Z"
+            }),
+        );
+        assert!(!frames.is_empty(), "assistant history frame expected");
+        assert_eq!(frames[0].interaction_id.as_deref(), Some(interaction));
+        assert_eq!(frames[0].run_id, None);
+
+        // Messages without a persisted identity stay unstamped (pre-0.7.25
+        // transcripts deserialize with the empty default).
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "helper",
+            "",
+            "session-a",
+            5,
+            json!({
+                "role": "user",
+                "content": "legacy row",
+                "created_at": "1970-01-01T00:00:00.300Z"
+            }),
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].interaction_id, None);
+    }
+
+    #[test]
+    fn identity_first_interaction_ids_are_deterministic_uuids() {
+        let a = identity_first_interaction_uuid("send:key:1");
+        let b = identity_first_interaction_uuid("send:key:1");
+        let c = identity_first_interaction_uuid("send:key:2");
+        assert_eq!(a, b, "idempotent retries must mint the same id");
+        assert_ne!(a, c);
+        assert!(
+            a.parse::<uuid::Uuid>().is_ok(),
+            "identity-first interaction ids must be UUID-form (the console's \
+             authoritative twin-identity scheme): {a}"
         );
     }
 

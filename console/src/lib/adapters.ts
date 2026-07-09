@@ -2383,6 +2383,20 @@ function liveAssistantTerminalTextSignatures(frames: ConsoleFrame[]): Set<string
   return signatures;
 }
 
+/// UUID-form interaction ids carried by NON-history frames. A history frame
+/// bearing one of these ids is the persisted twin of a live frame (see
+/// authoritativeInteractionId); one that bears a UUID absent from this set is
+/// a distinct interaction and must render even when its text repeats.
+function liveInteractionIdSet(frames: ConsoleFrame[]): Set<string> {
+  const ids = new Set<string>();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const id = frame.interactionId?.trim() || "";
+    if (UUID_FORM.test(id)) ids.add(id.toLowerCase());
+  }
+  return ids;
+}
+
 function buildBlobUrl(blobId: string, baseUrl?: string): string {
   const path = `/blobs/${encodeURIComponent(blobId)}`;
   const base = baseUrl?.trim();
@@ -2533,6 +2547,18 @@ function conversationEntryVisibleText(entry: ConversationTimelineEntry): string 
     .join("\n");
 }
 
+const UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// UUID-form interaction ids are authoritative twin identity: the
+/// identity-first send path threads the console-minted UUID through meerkat
+/// runtime admission, so live frames and persisted transcript messages carry
+/// the SAME id. Legacy `console-interaction-*` strings never round-trip, so
+/// they are not comparable across live/history sources.
+function authoritativeInteractionId(entry: ConversationTimelineEntry): string {
+  const id = entry.interactionId?.trim() || "";
+  return UUID_FORM.test(id) ? id.toLowerCase() : "";
+}
+
 function shouldSuppressRepeatedAssistantEntry(
   entry: ConversationTimelineEntry,
   priorEntries: ConversationTimelineEntry[],
@@ -2543,6 +2569,7 @@ function shouldSuppressRepeatedAssistantEntry(
   }
   const signature = normalizeComparableText(conversationEntryVisibleText(entry));
   if (!signature) return false;
+  const entryInteractionId = authoritativeInteractionId(entry);
   const entryTs = Date.parse(String(entry.createdAt || ""));
   for (let index = priorEntries.length - 1; index >= 0; index--) {
     const prior = priorEntries[index];
@@ -2555,6 +2582,16 @@ function shouldSuppressRepeatedAssistantEntry(
     if (prior.identity.id !== entry.identity.id) continue;
     const priorSignature = normalizeComparableText(conversationEntryVisibleText(prior));
     if (priorSignature !== signature) continue;
+    // Exact interaction identity beats the text+time heuristic in BOTH
+    // directions: matching UUIDs are the same interaction (suppress even
+    // outside the time window); differing UUIDs are genuinely distinct
+    // interactions that happen to repeat the same text (the over-cull class
+    // — keep the entry).
+    const priorInteractionId = authoritativeInteractionId(prior);
+    if (entryInteractionId && priorInteractionId) {
+      if (entryInteractionId === priorInteractionId) return true;
+      return false;
+    }
     const priorTs = Date.parse(String(prior.createdAt || ""));
     if (Number.isFinite(entryTs) && Number.isFinite(priorTs) && Math.abs(entryTs - priorTs) > 15_000) {
       return false;
@@ -4257,6 +4294,7 @@ export function mapFramesToTimelineEntries(
     liveToolSignatureCounts,
   } = liveToolDedupeState(orderedFrames, toolBlocks);
   const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
+  const liveInteractionIds = liveInteractionIdSet(orderedFrames);
   const emittedImages = new Set<string>();
   const emittedUserInputs = new Set<string>();
   const emittedCommsNotices = new Map<string, { sourceKind?: string; timestampMs?: number }>();
@@ -4645,8 +4683,16 @@ export function mapFramesToTimelineEntries(
       const historyText = frame.sourceKind === "session_history"
         ? terminalFrameVisibleText(frame).trim()
         : "";
+      const historyUuid = frame.sourceKind === "session_history"
+        && UUID_FORM.test(frame.interactionId?.trim() || "")
+        ? (frame.interactionId || "").trim().toLowerCase()
+        : "";
+      if (historyUuid && liveInteractionIds.has(historyUuid)) {
+        continue;
+      }
       if (
         historyText
+        && !historyUuid
         && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
       ) {
         continue;
@@ -4670,6 +4716,7 @@ export function mapFramesToTimelineEntries(
         });
         if (historyEntry) {
           flushPendingText();
+          historyEntry.interactionId = frame.interactionId?.trim() || undefined;
           if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
             continue;
           }
@@ -4690,8 +4737,15 @@ export function mapFramesToTimelineEntries(
       streamedInteractionId = "";
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
+        const historyUuid = UUID_FORM.test(frame.interactionId?.trim() || "")
+          ? (frame.interactionId || "").trim().toLowerCase()
+          : "";
+        if (historyUuid && liveInteractionIds.has(historyUuid)) {
+          continue;
+        }
         if (
           historyText
+          && !historyUuid
           && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
         ) {
           continue;
@@ -4714,6 +4768,7 @@ export function mapFramesToTimelineEntries(
           ),
         });
         if (historyEntry) {
+          historyEntry.interactionId = frame.interactionId?.trim() || undefined;
           if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
             continue;
           }
@@ -4723,6 +4778,7 @@ export function mapFramesToTimelineEntries(
       }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
+        terminalEntry.interactionId = frame.interactionId?.trim() || undefined;
         if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
           continue;
         }

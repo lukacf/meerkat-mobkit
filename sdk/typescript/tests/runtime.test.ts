@@ -2485,3 +2485,28 @@ describe("MobHandle.workgraphAttentionReassign()", () => {
     assert.equal(result.attention.bindingId, "attention_1");
   });
 });
+
+describe("MobHandle.workgraphAttentionPrune()", () => {
+  it("sends updated_before and returns the pruned count", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ pruned: 3 }));
+
+    const pruned = await handle.workgraphAttentionPrune({
+      updatedBefore: "2026-07-01T00:00:00Z",
+    });
+    assert.equal(calls[0].method, "mobkit/workgraph/attention/prune");
+    assert.deepEqual(calls[0].params, {
+      updated_before: "2026-07-01T00:00:00Z",
+    });
+    assert.equal(pruned, 3);
+  });
+
+  it("sends an empty filter and tolerates a malformed count", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({}));
+
+    const pruned = await handle.workgraphAttentionPrune();
+    assert.deepEqual(calls[0].params, {});
+    assert.equal(pruned, 0);
+  });
+});

@@ -199,7 +199,11 @@ async fn list_runs_returns_full_ledger_projection_for_all_flows() {
     }
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -254,5 +258,9 @@ async fn list_runs_filters_by_flow_id() {
     assert!(alpha_run_in_results, "alpha run id should appear");
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }

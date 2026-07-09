@@ -870,8 +870,13 @@ comms = true
     }
 
     /// An UNFILLED admission slot (non-mob embedder: no runtime, no roster)
-    /// forwards exactly as before the guard existed — upstream has no
-    /// occupancy check, so the reassign lands even onto an occupied target.
+    /// forwards without any mobkit-side occupancy check. Since meerkat
+    /// 0.7.25 (ask 25) the STORE owns binding uniqueness, so the forwarded
+    /// duplicate-target reassign is rejected UPSTREAM with a typed conflict
+    /// naming the occupant — the invariant holds even where mobkit's
+    /// defense-in-depth admission is absent. (Pre-0.7.25 this test asserted
+    /// the opposite: the unguarded forward LANDED, which is why the
+    /// admission layer was load-bearing.)
     #[tokio::test]
     async fn unfilled_admission_slot_forwards_reassign_unguarded() {
         use meerkat_core::AgentToolDispatcher as _;
@@ -895,7 +900,7 @@ comms = true
         let context = witness_context(&service, &mover.attention.binding_id).await;
 
         let onto_occupied = reassign_args(&mover, SESSION_OCCUPIED);
-        tools
+        let error = tools
             .dispatch_with_context(
                 meerkat_core::types::ToolCallView {
                     id: "call-unguarded",
@@ -905,7 +910,31 @@ comms = true
                 &context,
             )
             .await
-            .expect("unfilled slot forwards to the (check-less) upstream surface");
+            .expect_err("store-owned uniqueness (0.7.25) rejects the unguarded duplicate");
+        let detail = error.to_string();
+        assert!(
+            detail.contains("conflict"),
+            "upstream rejection must be the typed uniqueness conflict: {detail}"
+        );
+        assert!(
+            detail.contains("already targets"),
+            "conflict must name the occupant binding: {detail}"
+        );
+
+        // A FREE target still forwards and lands — the unfilled slot only
+        // means no mobkit-side pre-check, not a dead surface.
+        let onto_free = reassign_args(&mover, SESSION_FREE);
+        tools
+            .dispatch_with_context(
+                meerkat_core::types::ToolCallView {
+                    id: "call-unguarded-free",
+                    name: "workgraph_attention_reassign",
+                    args: &onto_free,
+                },
+                &context,
+            )
+            .await
+            .expect("free-target reassign forwards through the unfilled slot");
     }
 
     /// Round-3 R1 (race): a tool-plane reassign and an RPC `goal/create`
@@ -947,7 +976,7 @@ comms = true
                 crate::rpc::workgraph_methods::handle_workgraph_method(
                     Some(&service),
                     &admission,
-                    None,
+                    crate::rpc::workgraph_methods::WorkgraphSurface::HostStdin,
                     "mobkit/workgraph/goal/create",
                     &serde_json::json!({
                         "title": "racer",
@@ -1048,7 +1077,7 @@ comms = true
         crate::rpc::workgraph_methods::handle_workgraph_method(
             Some(service),
             admission,
-            None,
+            crate::rpc::workgraph_methods::WorkgraphSurface::HostStdin,
             "mobkit/workgraph/goal/create",
             &serde_json::json!({ "title": title, "target": target }),
         )
@@ -2035,7 +2064,7 @@ comms = true
         let error = crate::rpc::workgraph_methods::handle_workgraph_method(
             Some(&service),
             &admission,
-            None,
+            crate::rpc::workgraph_methods::WorkgraphSurface::HostStdin,
             "mobkit/workgraph/attention/reassign",
             &serde_json::json!({
                 "binding_id": mover.attention.binding_id,

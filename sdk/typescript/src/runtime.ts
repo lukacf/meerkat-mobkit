@@ -2129,6 +2129,30 @@ export class MobHandle {
     );
   }
 
+  /**
+   * Prune TERMINAL (superseded/stopped) attention binding rows. The
+   * workgraph event stream keeps the audit history; binding rows otherwise
+   * grow monotonically with reassignment churn. Pass an RFC3339
+   * `updatedBefore` to prune only rows last updated strictly before that
+   * instant. Returns the number of rows pruned.
+   */
+  async workgraphAttentionPrune(options?: {
+    updatedBefore?: string;
+    namespace?: string;
+  }): Promise<number> {
+    const params: Record<string, unknown> = {};
+    if (options?.updatedBefore !== undefined) {
+      params.updated_before = options.updatedBefore;
+    }
+    if (options?.namespace !== undefined) params.namespace = options.namespace;
+    const raw = await this._runtime._rpc(
+      "mobkit/workgraph/attention/prune",
+      params,
+    );
+    const pruned = asWireRecord(raw).pruned;
+    return typeof pruned === "number" ? pruned : 0;
+  }
+
   // -- Topology -----------------------------------------------------------
 
   async rediscover(): Promise<RediscoverReport | null> {

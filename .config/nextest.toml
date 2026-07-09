@@ -26,9 +26,17 @@
 heavy-runtime = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming))'
+filter = 'package(meerkat-mobkit) & (binary(routing_delivery) + binary(list_runs) + binary(list_flows_run_flow) + binary(mob_events_cursor_persistence) + binary(mob_events_query_ledger) + binary(mob_events_streaming) + binary(access_control))'
 test-group = 'heavy-runtime'
 retries = 2
+
+# `access_control` joined the family 2026-07-09: its tests each boot a full
+# reference-app runtime, and under peak suite load on 4-core CI runners two
+# consecutive runs ABORTED with SIGBUS (~test 1020/1624, different tests each
+# time, 119GB disk free, passes 1/1 isolated and in the sibling same-commit
+# run) — the same aggregate-load starvation family expressed as a crash
+# rather than a teardown timeout. Retries re-run in a fresh process near-alone;
+# a deterministic crash would still fail all three attempts.
 
 # The console-aggregator burst test races a deliberately-slow backfill against
 # live frames; under peak suite load the burst window starves the same way the

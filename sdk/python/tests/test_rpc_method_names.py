@@ -1278,6 +1278,7 @@ async def test_workgraph_rpc_names_and_params():
             "previous": _wg_binding(binding_id="binding-1"),
             "attention": _wg_binding(binding_id="binding-2"),
         },
+        "mobkit/workgraph/attention/prune": {"pruned": 3},
     })
 
     snapshot = await handle.workgraph_snapshot(namespace="default")
@@ -1364,6 +1365,11 @@ async def test_workgraph_rpc_names_and_params():
     assert reassigned.previous.binding_id == "binding-1"
     assert reassigned.attention.binding_id == "binding-2"
 
+    pruned = await handle.workgraph_attention_prune(
+        updated_before="2026-07-01T00:00:00Z"
+    )
+    assert pruned == 3
+
     assert [c[0] for c in calls] == [
         "mobkit/workgraph/snapshot",
         "mobkit/workgraph/list",
@@ -1387,6 +1393,7 @@ async def test_workgraph_rpc_names_and_params():
         "mobkit/workgraph/attention/pause",
         "mobkit/workgraph/attention/resume",
         "mobkit/workgraph/attention/reassign",
+        "mobkit/workgraph/attention/prune",
     ]
     assert calls[0][1] == {"namespace": "default"}
     assert calls[1][1] == {"statuses": ["open"]}
@@ -1434,6 +1441,7 @@ async def test_workgraph_rpc_names_and_params():
         "expected_revision": 1,
         "target": {"kind": "owner", "owner_key": {"kind": "agent", "id": "worker-2"}},
     }
+    assert calls[22][1] == {"updated_before": "2026-07-01T00:00:00Z"}
 
 
 @pytest.mark.asyncio
