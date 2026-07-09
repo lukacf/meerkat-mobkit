@@ -1235,3 +1235,46 @@ envelope carrying a `reply_to` capability/token the runtime turns into a
 pre-addressed comms call (or a first-class `reply` tool scoped to the
 delivery), so "answer the peer" is an affordance rather than a prompt
 convention. mobkit interim: none (app-side relays).
+
+## Ask 27 — peer sends to unreachable targets must not read as success — P2
+
+Field (HomeCore, mobkit 0.7.30 / meerkat 0.7.25, 2026-07-09): an agent's
+comms `send_message` to a peer whose runtime is not booted (or whose
+transport is unreachable) returns `{"status": "sent", "receipt": {"acked":
+false}}` — indistinguishable from a successful no-ACK-kind delivery from the
+agent's seat. Agents confidently proceed ("ASKED") while nothing was
+delivered; HomeCore now relays cross-runtime asks host-side as a workaround.
+
+Root: `SendOutcome.acked` is only `true` on a verified peer ACK round-trip;
+kinds that do not await an ACK (and every inproc handoff) report
+`acked: false` for BOTH "delivered, no ack awaited" and — on some transport
+paths — "endpoint gone". The agent-facing tool result collapses delivery
+truth into one bit that cannot distinguish outcome classes.
+
+Ask: deliver-or-error at the comms tool seam (a send whose transport
+connect/write fails must surface a typed error to the agent), or a typed
+receipt state the agent can act on — e.g. `delivery: "acked" | "handed_off"
+| "queued" | "unreachable"` — so "the peer never got this" is representable.
+mobkit interim: none (host-side relay).
+
+## Ask 28 — kickoff-scoped objective→outcome correlation (reply-to-kickoff) — P2
+
+Field (HomeCore): the kickoff send's interaction completes on the lead's
+FIRST turn — usually the delegation, often textless. The real outcome lands
+turns later under different interaction ids, so hosts reconstruct
+"objective → final answer" with session-scope matching, a crew-quiescence
+gate over runtime.sqlite, and an empty-answer hold. This same gap is the
+likely trigger for their "peer no longer found/trusted after kickoff
+wind-down" reports: treating kickoff-interaction completion as objective
+completion starts teardown while workers still run, and a worker's report-
+back then races the lead's retirement.
+
+Ask, building on ask 15's interaction threading + ask 26's
+`PeerReplyCapability` shape: a kickoff-scoped correlation seam — the kickoff
+delivery mints a durable objective id that (a) stamps every transcript
+message and delegated turn transitively caused by it, and (b) gives the
+LEAD a pre-addressed "conclude the objective" affordance (mirroring
+`reply_to_peer`) whose payload is the objective's final answer. Hosts then
+await "objective concluded" instead of inferring it from interaction
+completion + quiescence heuristics. mobkit would surface the conclusion as
+a typed console/RPC event.

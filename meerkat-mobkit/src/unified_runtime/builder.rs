@@ -953,7 +953,10 @@ impl UnifiedRuntimeBuilder {
             error_hook: self.error_hook,
             drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
             discovery: self.discovery,
-            edge_discovery: self.edge_discovery,
+            // A custom embedder policy overrides the definition-derived
+            // default `bootstrap_with_options` installed (HomeCore,
+            // 2026-07-09); with none supplied the default is preserved.
+            edge_discovery: self.edge_discovery.or(runtime.edge_discovery),
             contact_directory: self.contact_directory,
             session_bridge,
             identity_first_context,

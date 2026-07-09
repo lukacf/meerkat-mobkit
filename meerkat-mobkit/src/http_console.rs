@@ -6971,6 +6971,13 @@ async fn handle_console_runtime_rpc_with_visibility(
                 .await
                 {
                     Ok(result) => {
+                        // Converge declared definition wiring after every
+                        // materialization — upstream spawn-time wiring is
+                        // bring-up-order dependent (HomeCore, 2026-07-09).
+                        let _ = crate::unified_runtime::edge_reconcile::reconcile_definition_edges(
+                            runtime,
+                        )
+                        .await;
                         let outcome = match result.outcomes.get(&identity) {
                             Some(crate::identity_first::RestoreOutcome::Created { .. }) => {
                                 "created"
@@ -7035,6 +7042,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             let mid = spec.identity.clone();
             match handle.ensure_member(spec).await {
                 Ok(_outcome) => {
+                    let _ =
+                        crate::unified_runtime::edge_reconcile::reconcile_definition_edges(runtime)
+                            .await;
                     let body = match lookup_member_with_session(&handle, &mid).await {
                         Some((entry, _sid)) => member_entry_to_json(&entry),
                         None => Value::Null,
@@ -7244,14 +7254,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(err) => internal_error(response_id, format!("respawn_member failed: {err}")),
             }
         }
-        "mobkit/reconcile_edges" => response_value(
-            response_id,
-            Some(serde_json::json!({
-                "status": "noop",
-                "reason": "console runtime routes directly to MobRuntime",
-            })),
-            None,
-        ),
+        "mobkit/reconcile_edges" => {
+            // Previously a hardcoded noop ("console runtime routes directly
+            // to MobRuntime") — which left declared definition wiring
+            // unreconcilable from the console surface while the stdin
+            // surface had the real handler (HomeCore, 2026-07-09).
+            let report =
+                crate::unified_runtime::edge_reconcile::reconcile_definition_edges(runtime).await;
+            response_value(
+                response_id,
+                Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
+                None,
+            )
+        }
         "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
             let query: EventQuery = if request.params.is_null() {
                 EventQuery::default()

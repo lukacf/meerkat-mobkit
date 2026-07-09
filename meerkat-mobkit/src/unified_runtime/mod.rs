@@ -236,6 +236,11 @@ impl UnifiedRuntime {
             console_events.clone(),
         ));
         let workgraph_service = mob_runtime.workgraph_service();
+        let definition_edge_discovery =
+            edge_reconcile::DefinitionWiringEdgeDiscovery::from_definition(
+                mob_runtime.handle().definition(),
+            )
+            .map(|policy| Box::new(policy) as Box<dyn EdgeDiscovery>);
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -243,7 +248,14 @@ impl UnifiedRuntime {
             error_hook: None,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
-            edge_discovery: None,
+            // Default the edge policy to the definition's declared wiring
+            // (auto_wire_orchestrator / role_wiring): upstream applies those
+            // rules only at spawn time and only from the non-orchestrator
+            // side, so bring-up order and restarts leave declared crews
+            // unwired (HomeCore, 2026-07-09). With the default installed,
+            // `reconcile_edges` converges the roster onto the declaration;
+            // embedder-supplied policies (builder) override it.
+            edge_discovery: definition_edge_discovery,
             module_runtime: Arc::new(tokio::sync::Mutex::new(module_runtime)),
             managed_dynamic_edges: tokio::sync::RwLock::new(BTreeSet::new()),
             shutting_down: AtomicBool::new(false),
