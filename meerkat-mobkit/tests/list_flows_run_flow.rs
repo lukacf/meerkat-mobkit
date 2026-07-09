@@ -272,7 +272,7 @@ impl meerkat::LlmClient for HangingTestClient {
         Box<dyn futures::Stream<Item = Result<meerkat::LlmEvent, meerkat::LlmError>> + Send + 'a>,
     > {
         Box::pin(async_stream::stream! {
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            tokio::time::sleep(Duration::from_mins(5)).await;
             yield Ok(meerkat::LlmEvent::Done {
                 outcome: meerkat::LlmDoneOutcome::Success {
                     stop_reason: meerkat::StopReason::EndTurn,
