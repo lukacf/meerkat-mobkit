@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mobkit"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "async-stream",
