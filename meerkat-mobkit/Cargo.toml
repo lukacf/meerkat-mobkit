@@ -57,12 +57,15 @@ meerkat-mcp = "=0.7.25"
 meerkat-models = "=0.7.25"
 # meerkat 0.7 split session memory out of `memory-store` (which now only maps
 # to meerkat-store/memory); explicit `memory` enables need `memory-store-session`.
-meerkat = { version = "=0.7.25", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store"] }
+meerkat = { version = "=0.7.25", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store", "live", "openai-realtime"] }
 # READ-ONLY host-side access to meerkat's OWN session semantic memory for the
 # Distiller's post-compaction harvest (§8.4: `MemoryStore::search` over the
 # discard range). This reads meerkat's store; the §12 bright line governs the
 # bundled agent-memory store, which stays plain B-tree SQLite.
 meerkat-memory = "=0.7.25"
+# Live (realtime) member sessions: `live_wiring` hosts the projection sink,
+# the WS transport state, and the mobkit/live/* handlers on top of this crate.
+meerkat-live = "=0.7.25"
 meerkat-runtime = { version = "=0.7.25", features = ["sqlite-store", "live"] }
 meerkat-session = { version = "=0.7.25", features = ["session-store"] }
 meerkat-store = { version = "=0.7.25", features = ["sqlite"] }

@@ -68,6 +68,19 @@ pub enum BigQuerySessionStoreError {
     ProcessFailed { command: String, stderr: String },
 }
 
+/// One process-wide HTTP client for the BigQuery adapter. First
+/// `reqwest::Client::build()` in a process performs the system-proxy scan
+/// (macOS SystemConfiguration — ~700ms observed once the `system-proxy`
+/// feature is unified in by the realtime provider chain); sharing the built
+/// client pays that exactly once, off the per-RPC path after first use, and
+/// per-request timeouts replace per-adapter client rebuilds.
+pub(crate) fn shared_bigquery_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().unwrap_or_default())
+        .clone()
+}
+
 #[derive(Debug, Clone)]
 pub struct BigQuerySessionStoreAdapter {
     dataset: String,
@@ -311,18 +324,14 @@ impl BigQuerySessionStoreAdapter {
     }
 
     pub fn new_native(dataset: impl Into<String>, table: impl Into<String>) -> Self {
-        let http_timeout = Duration::from_secs(30);
         Self {
             dataset: dataset.into(),
             table: table.into(),
             project_id: None,
             api_base_url: Self::DEFAULT_API_BASE_URL.to_string(),
             access_token: None,
-            client: reqwest::Client::builder()
-                .timeout(http_timeout)
-                .build()
-                .unwrap_or_default(),
-            http_timeout,
+            client: shared_bigquery_http_client(),
+            http_timeout: Duration::from_secs(30),
         }
     }
 
@@ -342,11 +351,13 @@ impl BigQuerySessionStoreAdapter {
     }
 
     pub fn with_http_timeout(mut self, timeout: Duration) -> Self {
+        // The timeout applies per REQUEST (see `authorized_request`) over one
+        // shared client: reqwest's first `Client::build()` in a process pays
+        // the macOS system-proxy scan (~700ms observed) since the realtime
+        // feature unification enabled reqwest's `system-proxy`; rebuilding a
+        // client per adapter put that scan — and a connector build — inside
+        // every RPC's latency window.
         self.http_timeout = timeout;
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .unwrap_or_default();
         self
     }
 
@@ -590,6 +601,7 @@ impl BigQuerySessionStoreAdapter {
         let mut request = self
             .client
             .request(method, endpoint)
+            .timeout(self.http_timeout)
             .bearer_auth(access_token)
             .header("accept", "application/json");
         if let Some(body) = body {

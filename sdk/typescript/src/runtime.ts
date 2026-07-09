@@ -2153,6 +2153,63 @@ export class MobHandle {
     return typeof pruned === "number" ? pruned : 0;
   }
 
+  // -- Live (realtime) sessions — mobkit/live/* (mobkit 0.7.31) ------------
+
+  /**
+   * Open a realtime (live) channel on a member's session. Returns the
+   * transport bootstrap `{channel_id, transport: {type: "websocket", url,
+   * token}, capabilities, continuity}`. The token is single-use with a
+   * short TTL — hand the URL to the client immediately.
+   */
+  async liveOpen(
+    identity: string,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/open", {
+      identity,
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
+  async liveStatus(
+    identity: string,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/status", {
+      identity,
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
+  async liveClose(
+    identity: string,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/close", {
+      identity,
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
+  /**
+   * Push refreshed mutable config (instructions/tools/audio) into an open
+   * live channel without rebuilding the transport. Model/provider swaps
+   * require close + reopen.
+   */
+  async liveRefresh(
+    identity: string,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/refresh", {
+      identity,
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
   // -- Topology -----------------------------------------------------------
 
   async rediscover(): Promise<RediscoverReport | null> {

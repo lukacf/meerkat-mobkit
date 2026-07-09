@@ -1235,12 +1235,35 @@ pub fn handle_unified_rpc_json<'a>(
     http_base_url: Option<&'a str>,
     identity_ctx: Option<&'a IdentityFirstContext>,
 ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+    handle_unified_rpc_json_with_live(
+        runtime,
+        request_json,
+        timeout,
+        http_base_url,
+        identity_ctx,
+        None,
+    )
+}
+
+/// [`handle_unified_rpc_json`] plus the gateway's type-erased live handler
+/// (`mobkit/live/*`). `None` keeps every live method answering the typed
+/// `live_unavailable` error — the posture of an ephemeral gateway or a
+/// deployment that did not opt into `runtime_options.live`.
+pub fn handle_unified_rpc_json_with_live<'a>(
+    runtime: &'a UnifiedRuntime,
+    request_json: &'a str,
+    timeout: Duration,
+    http_base_url: Option<&'a str>,
+    identity_ctx: Option<&'a IdentityFirstContext>,
+    live: Option<&'a crate::live_wiring::LiveRpcHandler>,
+) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
     Box::pin(handle_unified_rpc_json_inner(
         runtime,
         request_json,
         timeout,
         http_base_url,
         identity_ctx,
+        live,
     ))
 }
 
@@ -1250,6 +1273,7 @@ async fn handle_unified_rpc_json_inner(
     timeout: Duration,
     http_base_url: Option<&str>,
     identity_ctx: Option<&IdentityFirstContext>,
+    live: Option<&crate::live_wiring::LiveRpcHandler>,
 ) -> String {
     let raw_request: Value = match serde_json::from_str(request_json) {
         Ok(raw_request) => raw_request,
@@ -1401,6 +1425,19 @@ async fn handle_unified_rpc_json_inner(
             if workgraph_configured {
                 methods.extend_from_slice(workgraph_methods::WORKGRAPH_READ_METHODS);
                 methods.extend_from_slice(workgraph_methods::WORKGRAPH_MUTATE_METHODS);
+            }
+            // Live methods are advertised only when the gateway attached a
+            // live transport (`runtime_options.live`, persistent mode).
+            if live.is_some() {
+                methods.extend_from_slice(&[
+                    "mobkit/live/open",
+                    "mobkit/live/status",
+                    "mobkit/live/close",
+                    "mobkit/live/refresh",
+                    "mobkit/live/send_input",
+                    "mobkit/live/commit_input",
+                    "mobkit/live/interrupt",
+                ]);
             }
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
@@ -3874,6 +3911,25 @@ async fn handle_unified_rpc_json_inner(
                 },
             }
         }
+        method if method.starts_with("mobkit/live/") => match live {
+            None => crate::live_wiring::live_unavailable_response(response_id),
+            Some(live) => {
+                // Member target resolution accepts every public spelling
+                // (the #252 canonicalization class): raw session_id, plain
+                // member name / runtime alias, or a durable identity via
+                // the roster agent_identity label. Unresolvable targets
+                // flow through as None — the mobkit/live/* handlers answer
+                // with a typed invalid-params error naming the requirement.
+                let resolved_session = resolve_live_target(runtime, &request.params).await;
+                live(
+                    resolved_session,
+                    method.to_string(),
+                    request.params.clone(),
+                    response_id,
+                )
+                .await
+            }
+        },
         method if workgraph_methods::is_workgraph_method(method) => {
             let service = runtime.workgraph_service();
             let admission = runtime.workgraph_admission();
@@ -4731,6 +4787,39 @@ fn error_response(response_id: Value, code: i64, message: impl Into<String>) -> 
             data,
         }),
     })
+}
+
+/// Resolve a `mobkit/live/*` member target to the member's bridge session.
+/// Accepts `{session_id}` verbatim, `{identity}` / `{member_id}` as a plain
+/// member name, runtime alias, or durable identity (roster `agent_identity`
+/// label fallback — the same resolution as `/agents/{id}/events` and
+/// `cross_mob/peer_info`).
+async fn resolve_live_target(
+    runtime: &UnifiedRuntime,
+    params: &Value,
+) -> Option<meerkat_core::types::SessionId> {
+    if let Some(raw) = params.get("session_id").and_then(Value::as_str) {
+        return meerkat_core::types::SessionId::parse(raw).ok();
+    }
+    let raw = params
+        .get("identity")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("member_id").and_then(Value::as_str))?;
+    let handle = runtime.mob_handle();
+    let direct = crate::member_comms_id::mob_member_id(raw);
+    let member_id = if handle.get_member(&direct).await.ok().flatten().is_some() {
+        direct
+    } else if let Some(identity) = handle
+        .roster()
+        .await
+        .find_by_label("agent_identity", raw)
+        .map(|entry| entry.agent_identity.clone())
+    {
+        identity
+    } else {
+        direct
+    };
+    handle.resolve_bridge_session_id(&member_id).await
 }
 
 fn maybe_error_response(

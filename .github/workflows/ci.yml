@@ -34,6 +34,13 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    env:
+      # ~88 debug test binaries each statically link the full meerkat stack;
+      # with the 0.7.31 realtime deps aboard, full debuginfo blows past the
+      # runner disk even after the reclaim step (ENOSPC with 119GB free at
+      # job start). Line tables keep file:line backtraces at a fraction of
+      # the size; local builds are unaffected.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       # The workspace debug build (meerkat 0.7.25 dep tree + all test
       # binaries) plus the rust-cache restore no longer fits beside the

@@ -750,10 +750,9 @@ fn peer_projection_sender_identity(line: &str) -> Option<&str> {
             Some((name, _)) => name.trim(),
             None => rest.strip_suffix(':').unwrap_or(rest).trim(),
         }
-    } else if let Some(rest) = line.strip_prefix("Peer response from ") {
-        rest.split(" (to request:").next()?.trim()
     } else {
-        return None;
+        let rest = line.strip_prefix("Peer response from ")?;
+        rest.split(" (to request:").next()?.trim()
     };
     if name.is_empty() {
         return None;
