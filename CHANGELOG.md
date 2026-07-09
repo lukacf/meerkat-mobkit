@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Identity-first bootstrap restores up to four durable members concurrently
+  instead of serially, with bounded fan-out and per-member restore timing logs
+  for slow resumes. This prevents large full-history rosters from accumulating
+  every member's resume latency inside `mobkit/init`.
+
 ## [0.7.31] - 2026-07-09
 
 ### Added
