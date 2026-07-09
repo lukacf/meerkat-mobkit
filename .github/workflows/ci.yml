@@ -35,6 +35,16 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
+      # The workspace debug build (meerkat 0.7.25 dep tree + all test
+      # binaries) plus the rust-cache restore no longer fits beside the
+      # runner's preinstalled toolchains — three consecutive runs died to
+      # ENOSPC mid-link. Reclaim ~30GB of images we never use (mirrors
+      # meerkat's release-lane reclaim, meerkat#858).
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
