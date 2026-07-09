@@ -34,8 +34,7 @@ use meerkat_mobkit::{
     ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
     RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
     ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json,
-    load_console_ui_config_from_path_for_realm,
+    UnifiedRuntime, handle_mobkit_rpc_json, load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
         mob_definition_may_use_shell,
