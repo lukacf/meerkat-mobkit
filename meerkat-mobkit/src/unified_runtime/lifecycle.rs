@@ -196,11 +196,7 @@ impl UnifiedRuntime {
         // Phase 2: Stop the mob actor while its router/module dependencies
         // are still alive. Closing them first can race Stop against an
         // already-dropped actor reply channel under teardown pressure.
-        let mob_stop = self
-            .mob_handle()
-            .stop()
-            .await
-            .map_err(MobRuntimeError::from);
+        let mob_stop = self.stop_mob_quiescing().await;
 
         // Phase 3: Close event router
         self.close_event_router().await;
@@ -212,6 +208,39 @@ impl UnifiedRuntime {
             module_shutdown,
             mob_stop,
         }
+    }
+
+    /// Stop the mob, quiescing in-flight member work if the machine refuses.
+    ///
+    /// meerkat 0.7.25's mob machine rejects `Stop` while member work is in
+    /// flight (`InvalidTransition { from: Running, to: Stopped }`) instead of
+    /// stopping underneath it. Shutdown is an operator act on a possibly-busy
+    /// mob — a gateway going down mid-turn is normal — so a busy refusal is
+    /// answered by cancelling each member's in-flight work and retrying the
+    /// stop over a bounded window. Any other error, or exhaustion of the
+    /// window, reports the machine's last refusal untouched.
+    async fn stop_mob_quiescing(&self) -> Result<(), MobRuntimeError> {
+        const STOP_QUIESCE_WINDOW: Duration = Duration::from_secs(10);
+        let handle = self.mob_handle();
+        let deadline = tokio::time::Instant::now() + STOP_QUIESCE_WINDOW;
+        let mut last = handle.stop().await;
+        while let Err(meerkat_mob::MobError::InvalidTransition { .. }) = &last {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            for member in handle.list_members().await {
+                if let Ok(Some(entry)) = handle.get_member(&member.agent_identity).await {
+                    // Best-effort: a member that finished between list and
+                    // cancel (stale fence) is already quiesced.
+                    let _ = handle
+                        .cancel_all_work(entry.agent_runtime_id, entry.fence_token)
+                        .await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            last = handle.stop().await;
+        }
+        last.map_err(MobRuntimeError::from)
     }
 
     /// Drain pending agent/module events from the mob event router and

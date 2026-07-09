@@ -29,6 +29,12 @@ struct Fixture {
 }
 
 async fn build_unified_runtime_with_flow() -> Fixture {
+    build_unified_runtime_with_flow_and_client(Arc::new(TestClient::default())).await
+}
+
+async fn build_unified_runtime_with_flow_and_client(
+    default_llm_client: Arc<dyn meerkat::LlmClient>,
+) -> Fixture {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let session_path = temp_dir.path().join("sessions");
     std::fs::create_dir_all(&session_path).expect("session path");
@@ -64,7 +70,7 @@ message = "first"
         .with_options(MobBootstrapOptions {
             allow_ephemeral_sessions: true,
             notify_orchestrator_on_resume: true,
-            default_llm_client: Some(Arc::new(TestClient::default())),
+            default_llm_client: Some(default_llm_client),
         });
     let module_config = MobKitConfig {
         modules: vec![],
@@ -250,6 +256,86 @@ async fn run_flow_rejects_unknown_flow_id_with_invalid_params() {
     assert!(
         shutdown.mob_stop.is_ok(),
         "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
+}
+
+/// LLM client whose turn never completes within the test window — the flow
+/// step's member turn is guaranteed in flight when shutdown runs.
+struct HangingTestClient;
+
+impl meerkat::LlmClient for HangingTestClient {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a meerkat::LlmRequest,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<meerkat::LlmEvent, meerkat::LlmError>> + Send + 'a>,
+    > {
+        Box::pin(async_stream::stream! {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            yield Ok(meerkat::LlmEvent::Done {
+                outcome: meerkat::LlmDoneOutcome::Success {
+                    stop_reason: meerkat::StopReason::EndTurn,
+                },
+            });
+        })
+    }
+
+    fn provider(&self) -> meerkat::Provider {
+        meerkat::Provider::OpenAI
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), meerkat::LlmError>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// meerkat 0.7.25: the mob machine refuses `Stop` while member work is in
+/// flight (`InvalidTransition { from: Running, to: Stopped }`) instead of
+/// stopping underneath it — the exact CI teardown failure this suite kept
+/// hitting under load (the run was still executing when shutdown ran; fast
+/// local boxes finished it first). Deterministic repro: run the flow against
+/// a hanging LLM client so the step turn is GUARANTEED in flight, then shut
+/// down. `UnifiedRuntime::shutdown` must quiesce (cancel member work) and
+/// stop cleanly rather than reporting the machine's busy refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_quiesces_an_in_flight_flow_run() {
+    let fixture = build_unified_runtime_with_flow_and_client(Arc::new(HangingTestClient)).await;
+
+    let run_response = parse_json_rpc(
+        &handle_unified_rpc_json(
+            &fixture.runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "run-hang",
+                "method": "mobkit/run_flow",
+                "params": { "flow_id": "demo", "params": {} }
+            })
+            .to_string(),
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .await,
+    );
+    assert!(
+        run_response.error.is_none(),
+        "run_flow should not error: {:?}",
+        run_response.error
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "shutdown must quiesce the in-flight run and stop: {:?}",
         shutdown.mob_stop
     );
 }
