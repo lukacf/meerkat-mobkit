@@ -1548,3 +1548,38 @@ async def test_wire_local_omits_pubkey_when_absent():
     )
     assert calls[0][0] == "mobkit/cross_mob/wire_local"
     assert "remote_pubkey_b64" not in calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_live_method_names_and_identity_param():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/open": {
+            "channel_id": "ch-1",
+            "transport": {"type": "websocket", "url": "ws://x/live/ws", "token": "t"},
+        },
+        "mobkit/live/status": {"open": True, "channel_id": "ch-1"},
+        "mobkit/live/close": {"closed": True},
+        "mobkit/live/refresh": {"refreshed": True},
+    })
+
+    opened = await handle.live_open("reachy", model="gpt-realtime-2")
+    assert opened["channel_id"] == "ch-1"
+    assert opened["transport"]["type"] == "websocket"
+
+    status = await handle.live_status("reachy")
+    assert status["open"] is True
+
+    closed = await handle.live_close("reachy")
+    assert closed["closed"] is True
+
+    refreshed = await handle.live_refresh("reachy")
+    assert refreshed["refreshed"] is True
+
+    assert [c[0] for c in calls] == [
+        "mobkit/live/open",
+        "mobkit/live/status",
+        "mobkit/live/close",
+        "mobkit/live/refresh",
+    ]
+    assert calls[0][1] == {"identity": "reachy", "model": "gpt-realtime-2"}
+    assert calls[1][1] == {"identity": "reachy"}

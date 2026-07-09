@@ -19,6 +19,7 @@ pub mod http_auth;
 pub mod http_console;
 pub mod http_flow_editor;
 pub mod http_sse;
+pub mod live_wiring;
 pub mod member_comms_id;
 pub mod memory;
 pub mod memory_wiring;

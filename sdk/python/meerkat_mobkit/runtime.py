@@ -1925,6 +1925,50 @@ class MobHandle:
         return int(pruned)
 
     # -----------------------------------------------------------------
+    # Live (realtime) sessions — mobkit/live/* (mobkit 0.7.31)
+    # -----------------------------------------------------------------
+
+    async def live_open(
+        self, identity: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Open a realtime (live) channel on a member's session.
+
+        Returns the transport bootstrap::
+
+            {"channel_id": ..., "transport": {"type": "websocket",
+             "url": ..., "token": ...}, "capabilities": {...},
+             "continuity": {...}}
+
+        The token is single-use with a short TTL — hand the URL to the
+        client (robot, satellite process) immediately.  Optional kwargs are
+        forwarded (e.g. ``model=`` to override the realtime model,
+        ``turning_mode=``).
+        """
+        params: dict[str, Any] = {"identity": identity, **kwargs}
+        raw = await self._runtime._rpc("mobkit/live/open", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_status(self, identity: str, **kwargs: Any) -> dict[str, Any]:
+        """Status of the member's live channel (open/closed, channel id)."""
+        params: dict[str, Any] = {"identity": identity, **kwargs}
+        raw = await self._runtime._rpc("mobkit/live/status", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_close(self, identity: str, **kwargs: Any) -> dict[str, Any]:
+        """Close the member's live channel."""
+        params: dict[str, Any] = {"identity": identity, **kwargs}
+        raw = await self._runtime._rpc("mobkit/live/close", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_refresh(self, identity: str, **kwargs: Any) -> dict[str, Any]:
+        """Push refreshed mutable config (instructions/tools/audio) into an
+        open live channel without rebuilding the transport.  Model/provider
+        swaps require close + reopen."""
+        params: dict[str, Any] = {"identity": identity, **kwargs}
+        raw = await self._runtime._rpc("mobkit/live/refresh", params)
+        return raw if isinstance(raw, dict) else {}
+
+    # -----------------------------------------------------------------
     # Cross-mob operations
     # -----------------------------------------------------------------
 

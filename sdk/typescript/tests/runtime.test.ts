@@ -2510,3 +2510,34 @@ describe("MobHandle.workgraphAttentionPrune()", () => {
     assert.equal(pruned, 0);
   });
 });
+
+
+describe("MobHandle live methods", () => {
+  it("sends identity + options and parses the bootstrap", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      channel_id: "ch-1",
+      transport: { type: "websocket", url: "ws://x/live/ws", token: "t" },
+    }));
+
+    const opened = await handle.liveOpen("reachy", { model: "gpt-realtime-2" });
+    assert.equal(calls[0].method, "mobkit/live/open");
+    assert.deepEqual(calls[0].params, {
+      identity: "reachy",
+      model: "gpt-realtime-2",
+    });
+    assert.equal((opened.transport as Record<string, unknown>).type, "websocket");
+
+    setResponse(() => ({ open: true }));
+    await handle.liveStatus("reachy");
+    assert.equal(calls[1].method, "mobkit/live/status");
+
+    setResponse(() => ({ closed: true }));
+    await handle.liveClose("reachy");
+    assert.equal(calls[2].method, "mobkit/live/close");
+
+    setResponse(() => ({ refreshed: true }));
+    await handle.liveRefresh("reachy");
+    assert.equal(calls[3].method, "mobkit/live/refresh");
+  });
+});

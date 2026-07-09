@@ -16,6 +16,12 @@ pub fn start_mobkit_runtime_with_options(
     timeout: Duration,
     options: RuntimeOptions,
 ) -> Result<MobkitRuntimeHandle, MobkitRuntimeError> {
+    // Pay reqwest's one-time process init (the macOS system-proxy scan,
+    // ~700ms observed since the realtime feature unification enabled
+    // reqwest's `system-proxy`) at startup, not inside the first HTTP-backed
+    // RPC's latency window (the BigQuery adapter's timeout contract measures
+    // that window).
+    let _ = crate::runtime::session_store::shared_bigquery_http_client();
     let delivery_runtime_epoch_ms = current_time_ms();
     let mut lifecycle_events = Vec::new();
     let mut seq = 0_u64;
