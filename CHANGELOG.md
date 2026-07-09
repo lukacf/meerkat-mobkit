@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.30] - 2026-07-09
+
 ### Fixed
+
+- The rpc_gateway's `callback/build_agent` path composes host-returned tools
+  OVER pre-installed dispatchers instead of assigning the slot wholesale
+  (HomeCore "Bug D"): callback-built agents keep the native agent-memory
+  recorder's `memory` tool (a host tool named `memory` now shadows it by
+  design — primary wins name collisions). New
+  `meerkat_mobkit::tool_compose::ComposedExternalTools` is the canonical
+  compose utility; both dispatch entry points forward, so the
+  `ToolDispatchContext` attention witness survives.
+- The rpc_gateway stdin dispatch loop serves RPC requests concurrently
+  (each on its own task): a turn- or build-running RPC blocked on a host
+  callback round-trip no longer starves reentrant requests — an
+  `agent_memory/recall` issued from inside a callback tool handler used to
+  queue behind the turn until the 120s callback timeout.
+- `UnifiedRuntime::shutdown` quiesces in-flight member work before stopping
+  the mob: meerkat 0.7.25's machine refuses `Stop` mid-work
+  (`InvalidTransition`), so shutdown cancels member work and retries over a
+  bounded window — a gateway going down mid-turn stops cleanly.
 
 - Console live tails no longer starve on identities the read model has not
   observed (issue #254): identity-scoped SSE streams get the same
@@ -50,12 +70,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (upstream ask 25). Hardened by a six-round adversarial review battery
   (64 verified findings fixed) and live-fire verified end to end.
 
+- `mobkit/workgraph/attention/prune` (upstream ask 24): terminal-binding GC
+  on both RPC surfaces plus `workgraph_attention_prune` /
+  `workgraphAttentionPrune` in the SDKs.
+- `mobkit/workgraph/attention/break_glass_reassign` (upstream ask 23,
+  console surface ONLY): host-plane recovery for a binding stuck on a
+  wedged/retired agent with no coordinator holding authority. The principal
+  is the authenticated console principal — never a wire parameter — a
+  non-empty reason is mandatory, and upstream records both in the workgraph
+  event stream. Deliberately absent from the stdin surface and the SDKs.
+- Interaction identity threads end to end for identity-first console sends
+  (upstream ask 15): the console mints deterministic UUIDv5 interaction ids
+  and threads them through `WorkSpec` into meerkat runtime admission, the
+  session-history backfill stamps `interaction_id`/`run_id` from persisted
+  transcript messages, and the console dedup treats UUID-form ids as
+  authoritative twin identity — exact live↔history joins, and repeated
+  identical replies from DISTINCT interactions both render (the over-cull
+  class). Classic sends keep the text heuristic (the external work door
+  cannot thread an id yet).
+
 ### Changed
 
-- meerkat family pinned to `=0.7.24` (from `=0.7.23`): machine-owned
-  revival of Stopped sessions + cold-load snapshot reconciliation — the
-  root fix for the 0.7.19–0.7.23 resume-strand class. Disposal-adjacent
-  suites re-verified under per-test timeouts against the new semantics.
+- meerkat family pinned to `=0.7.25` (from `=0.7.23`): the outstanding-asks
+  sweep. Store-owned attention-binding uniqueness with typed occupant-naming
+  conflicts (ask 25 — mobkit's admission layer demotes to defense-in-depth
+  plus session↔identity alias unification; `MultipleActiveBindings` is gone),
+  machine-owned revival of Stopped sessions (0.7.24), O(delta) incremental
+  session persistence, the structural `reply_to_peer` affordance (ask 26),
+  metadata-only session reads (ask 24 clause 3), and the schedule
+  single-owner fix (`SessionRuntime` arms its own firing host — mobkit's
+  gateways already bound tools+host from one `ScheduleService`, so no
+  mobkit-side change was needed).
 
 ## [0.7.29] - 2026-07-08
 
