@@ -502,6 +502,63 @@ impl ContinuitySessionStoreAdapter {
     }
 }
 
+/// Mirror of meerkat-session's `runtime_projection_rollback_authorized`
+/// (persistent.rs, meerkat 0.7.24 write-half of the torn-shutdown fix): two
+/// pure observations — the persisted row is a faithful continuation of the
+/// incoming authority transcript (the same run-boundary proof the save guard
+/// uses), and the row carries the intra-turn checkpointer's typed provenance
+/// stamp — drive the canonical `SessionDocumentMachine`, which owns the
+/// disposition. `RebuildToAuthority` (both observations true) authorizes the
+/// save to converge the row back onto committed truth, discarding the
+/// unacknowledged tail; an unstamped row or a genuine content fork resolves
+/// `RejectDivergent` and the caller keeps failing closed.
+fn runtime_projection_rollback_authorized(
+    session: &meerkat_core::Session,
+    previous: &meerkat_core::Session,
+) -> Result<bool, meerkat_store::SessionStoreError> {
+    use meerkat_core::session_document::{
+        SessionDocumentEffect, SessionDocumentKey, SessionDocumentMachineAuthority,
+    };
+
+    let row_continues_authority =
+        meerkat_core::session_store::run_boundary_snapshot_save_guard(previous, Some(session))
+            .is_ok();
+    let row_is_runtime_checkpoint = previous.has_runtime_checkpoint_provenance();
+    let mut authority = SessionDocumentMachineAuthority::new();
+    let effects = authority
+        .resolve_runtime_projection_rollback(
+            SessionDocumentKey::new(session.id().to_string()),
+            row_continues_authority,
+            row_is_runtime_checkpoint,
+        )
+        .map_err(|err| {
+            meerkat_store::SessionStoreError::Internal(format!(
+                "session document authority rejected runtime-projection rollback resolution \
+                 for session {}: {err}",
+                session.id()
+            ))
+        })?;
+    let disposition = effects
+        .iter()
+        .find_map(|effect| match effect {
+            SessionDocumentEffect::RuntimeProjectionRollbackResolved { disposition } => {
+                Some(*disposition)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            meerkat_store::SessionStoreError::Internal(format!(
+                "session document authority returned no runtime-projection rollback \
+                 disposition for session {}",
+                session.id()
+            ))
+        })?;
+    Ok(matches!(
+        disposition,
+        meerkat_core::generated::session_document::RuntimeProjectionRollbackDisposition::RebuildToAuthority
+    ))
+}
+
 #[async_trait]
 impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
     async fn save(
@@ -516,7 +573,36 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             )));
         }
         let previous = self.load_previous_session_for_save(session.id()).await?;
-        meerkat_core::session_store::append_only_save_guard(session, previous.as_ref())?;
+        if let Err(save_error) =
+            meerkat_core::session_store::append_only_save_guard(session, previous.as_ref())
+        {
+            // Bug B-2 (HomeCore, 2026-07-09): the torn-shutdown save wedge.
+            // The intra-turn checkpointer can leave the continuity head
+            // carrying stamped mid-turn content the machine never
+            // acknowledged; after restart, the resume's first save of the
+            // (shorter) committed authority trips the append-only guard and
+            // the identity degrades forever. meerkat 0.7.24 fixed this in
+            // meerkat-session's projection-save shell
+            // (`runtime_projection_rollback_authorized`), but this adapter
+            // calls the raw guard — mirror the same machine-owned
+            // disposition here. `RebuildToAuthority` requires BOTH
+            // observations (stamped head + faithful continuation of the
+            // incoming authority); anything else keeps failing closed with
+            // the original guard error.
+            let rollback_authorized = match previous.as_ref() {
+                Some(previous) => runtime_projection_rollback_authorized(session, previous)?,
+                None => false,
+            };
+            if !rollback_authorized {
+                return Err(save_error);
+            }
+            tracing::warn!(
+                session_id = %session.id(),
+                error = %save_error,
+                "continuity head carried uncommitted intra-turn checkpoint residue; \
+                 rebuilding the row to committed authority (RebuildToAuthority)"
+            );
+        }
         let data = serde_json::to_vec(session)
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
@@ -1356,6 +1442,181 @@ mod tests {
                 || err.to_string().contains("continuity"),
             "unexpected shrink error: {err}"
         );
+    }
+
+    /// Bug B-2 (HomeCore field wedge): a torn shutdown leaves the continuity
+    /// head carrying the intra-turn checkpointer's STAMPED mid-turn content;
+    /// the resume's first save of the shorter committed authority must
+    /// converge the row back onto authority (`RebuildToAuthority`), not
+    /// wedge on `MonotonicityViolation` forever.
+    #[tokio::test]
+    async fn save_rebuilds_stamped_checkpoint_residue_to_authority() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut authority = meerkat_core::Session::new();
+        authority
+            .append_external_user_content(meerkat_core::ContentInput::Text("first".to_string()));
+        authority
+            .append_external_user_content(meerkat_core::ContentInput::Text("second".to_string()));
+        let identity = AgentIdentity::parse("agent:torn-shutdown").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:torn-shutdown:0")
+                .expect("runtime id"),
+            session_id: authority.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(21);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                authority.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+        meerkat::SessionStore::save(&adapter, &authority)
+            .await
+            .expect("boundary save of the authority");
+
+        // The intra-turn checkpointer persists a STAMPED head strictly ahead
+        // of the boundary commit; the host dies before the boundary lands.
+        let mut stamped_head = authority.clone();
+        stamped_head
+            .append_external_user_content(meerkat_core::ContentInput::Text("mid-turn".to_string()));
+        stamped_head.set_runtime_checkpoint_provenance();
+        meerkat::SessionStore::save(&adapter, &stamped_head)
+            .await
+            .expect("checkpointer save of the stamped head");
+
+        // Restart: the read source served the runtime snapshot (authority);
+        // the resume's first save of that shorter content used to trip
+        // MonotonicityViolation and wedge the identity.
+        meerkat::SessionStore::save(&adapter, &authority)
+            .await
+            .expect("authority save must rebuild the stamped residue, not wedge");
+        let loaded = meerkat::SessionStore::load(&adapter, authority.id())
+            .await
+            .expect("load")
+            .expect("session");
+        assert_eq!(
+            loaded.messages().len(),
+            authority.messages().len(),
+            "row must be rebuilt to committed authority (tail discarded)"
+        );
+    }
+
+    /// The rollback requires BOTH observations: a head that extends the
+    /// authority but does NOT carry the checkpointer's provenance stamp is
+    /// out-of-band divergence and must keep failing closed.
+    #[tokio::test]
+    async fn save_keeps_rejecting_unstamped_longer_heads() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut authority = meerkat_core::Session::new();
+        authority
+            .append_external_user_content(meerkat_core::ContentInput::Text("first".to_string()));
+        let identity = AgentIdentity::parse("agent:unstamped").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:unstamped:0").expect("runtime id"),
+            session_id: authority.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(22);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                authority.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+        meerkat::SessionStore::save(&adapter, &authority)
+            .await
+            .expect("initial save");
+        let mut unstamped_head = authority.clone();
+        unstamped_head
+            .append_external_user_content(meerkat_core::ContentInput::Text("tail".to_string()));
+        meerkat::SessionStore::save(&adapter, &unstamped_head)
+            .await
+            .expect("longer head appends fine");
+
+        meerkat::SessionStore::save(&adapter, &authority)
+            .await
+            .expect_err("unstamped longer head must keep failing closed");
+    }
+
+    /// A stamped head whose content FORKS from the incoming authority (not a
+    /// faithful continuation) resolves `RejectDivergent` — stamp alone never
+    /// authorizes the rollback.
+    #[tokio::test]
+    async fn save_keeps_rejecting_stamped_forked_heads() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut base = meerkat_core::Session::new();
+        base.append_external_user_content(meerkat_core::ContentInput::Text("first".to_string()));
+        let identity = AgentIdentity::parse("agent:forked").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:forked:0").expect("runtime id"),
+            session_id: base.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(23);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                base.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+        let mut stamped_fork = base.clone();
+        stamped_fork
+            .append_external_user_content(meerkat_core::ContentInput::Text("forked".to_string()));
+        stamped_fork.set_runtime_checkpoint_provenance();
+        meerkat::SessionStore::save(&adapter, &stamped_fork)
+            .await
+            .expect("seed the stamped head");
+
+        // A DIVERGENT authority (same length as base + different tail) is a
+        // content fork relative to the persisted head, not its prefix.
+        let mut diverged = base.clone();
+        diverged
+            .append_external_user_content(meerkat_core::ContentInput::Text("other".to_string()));
+        diverged
+            .append_external_user_content(meerkat_core::ContentInput::Text("branch".to_string()));
+        meerkat::SessionStore::save(&adapter, &diverged)
+            .await
+            .expect_err("stamped but forked head must keep failing closed");
     }
 
     #[tokio::test]
