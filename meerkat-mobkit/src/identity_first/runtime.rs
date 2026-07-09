@@ -4410,6 +4410,7 @@ pub async fn wire_cross_mob_by_identity(
 mod reset_reprofile_tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 
     use super::super::bridge::{BridgeError, MemberInspection, ResumeSessionOutcome};
@@ -4447,6 +4448,9 @@ mod reset_reprofile_tests {
     #[derive(Default)]
     struct RecordingBridge {
         create_profiles: AsyncMutex<Vec<String>>,
+        create_delay: Duration,
+        creates_in_flight: AtomicUsize,
+        max_creates_in_flight: AtomicUsize,
         retired_runtime_ids: AsyncMutex<Vec<String>>,
         hanging_retire_runtime_ids: AsyncMutex<BTreeSet<String>>,
         failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
@@ -4455,6 +4459,10 @@ mod reset_reprofile_tests {
     impl RecordingBridge {
         async fn create_profiles(&self) -> Vec<String> {
             self.create_profiles.lock().await.clone()
+        }
+
+        fn max_creates_in_flight(&self) -> usize {
+            self.max_creates_in_flight.load(Ordering::SeqCst)
         }
 
         async fn retired_runtime_ids(&self) -> Vec<String> {
@@ -4486,6 +4494,11 @@ mod reset_reprofile_tests {
             _draft: &AgentBuildDraft,
             session_id: &SessionId,
         ) -> Result<SessionId, BridgeError> {
+            let in_flight = self.creates_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_creates_in_flight
+                .fetch_max(in_flight, Ordering::SeqCst);
+            tokio::time::sleep(self.create_delay).await;
+            self.creates_in_flight.fetch_sub(1, Ordering::SeqCst);
             self.create_profiles
                 .lock()
                 .await
@@ -4582,6 +4595,46 @@ mod reset_reprofile_tests {
             backend: None,
             binding: None,
         }
+    }
+
+    #[tokio::test]
+    async fn restore_flow_bounds_parallel_member_creation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let specs = (0..8)
+            .map(|index| {
+                Ok(durable_spec(
+                    AgentIdentity::parse(&format!("domain:restore-{index}"))?,
+                    "domain",
+                ))
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        let bridge = Arc::new(RecordingBridge {
+            create_delay: Duration::from_millis(25),
+            ..RecordingBridge::default()
+        });
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "parallel-restore-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        });
+
+        let result = super::super::orchestrator::restore_flow(&runtime, &specs, None, None).await?;
+
+        assert_eq!(result.outcomes.len(), specs.len());
+        assert!(
+            bridge.max_creates_in_flight() > 1,
+            "member creation should no longer be serial"
+        );
+        assert!(
+            bridge.max_creates_in_flight()
+                <= super::super::orchestrator::IDENTITY_RESTORE_CONCURRENCY,
+            "restore concurrency must remain bounded"
+        );
+        Ok(())
     }
 
     #[tokio::test]

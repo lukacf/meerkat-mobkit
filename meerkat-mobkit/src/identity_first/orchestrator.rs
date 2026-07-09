@@ -5,6 +5,9 @@
 //! not continuity truth), and REQ-33 (identity-keyed reconciliation).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
+
+use futures::{StreamExt, stream};
 
 use super::contracts::{AgentCustomizer, TopologyProvider};
 use super::runtime::{IdentityRuntime, IdentityRuntimeError};
@@ -14,6 +17,25 @@ use super::types::{
     ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, LeaseAcquireResult,
     LeaseGrant, ManagedPeerEdge, SessionSnapshot, TopologyContext,
 };
+
+pub(crate) const IDENTITY_RESTORE_CONCURRENCY: usize = 4;
+
+fn trace_identity_restore_completed(identity: &AgentIdentity, started_at: Instant) {
+    let elapsed = started_at.elapsed();
+    if elapsed >= Duration::from_secs(1) {
+        tracing::info!(
+            %identity,
+            elapsed_ms = elapsed.as_millis(),
+            "identity restore completed"
+        );
+    } else {
+        tracing::debug!(
+            %identity,
+            elapsed_ms = elapsed.as_millis(),
+            "identity restore completed"
+        );
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Restore flow result
@@ -270,14 +292,12 @@ pub async fn restore_flow(
     let topology_context = TopologyContext {
         roster: roster.to_vec(),
     };
-    let mut activated_identities = BTreeSet::new();
     let managed_edges = if let Some(tp) = topology_provider {
         match tp.compute_edges(&identities, &topology_context).await {
             Ok(edges) => edges,
             Err(e) => {
                 let cleanup_error =
-                    release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                        .await;
+                    release_unactivated_restore_grants(runtime, &grants, &BTreeSet::new()).await;
                 return Err(IdentityRuntimeError::Internal(append_cleanup_error(
                     format!("topology: {e}"),
                     cleanup_error,
@@ -288,10 +308,32 @@ pub async fn restore_flow(
         Vec::new()
     };
 
-    // Steps 5-11: per-identity processing
-    let mut outcomes = BTreeMap::new();
-    for spec in roster {
-        let identity = &spec.identity;
+    // Steps 5-11: per-identity processing. Session restoration is dominated by
+    // independent history loading and agent construction, so keep a small
+    // bounded set in flight instead of making large durable rosters pay the
+    // full sum of every member's resume latency.
+    tracing::info!(
+        member_count = roster.len(),
+        concurrency = IDENTITY_RESTORE_CONCURRENCY,
+        "starting identity restore"
+    );
+    let restore_started_at = Instant::now();
+    let restore_results = stream::iter(roster.iter().cloned().enumerate())
+        .map(|(index, spec)| {
+            let resolve_state = resolved.get(&spec.identity).cloned();
+            let grant = grants.get(&spec.identity).cloned();
+            let identities = identities.clone();
+            let managed_edges = managed_edges.clone();
+            async move {
+                let member_started_at = Instant::now();
+                let mut grants = BTreeMap::new();
+                if let Some(grant) = grant {
+                    grants.insert(spec.identity.clone(), grant);
+                }
+                let mut activated_identities = BTreeSet::new();
+                let mut outcomes = BTreeMap::new();
+                let spec = &spec;
+                let identity = &spec.identity;
 
         // If this identity is already registered and in Active state
         // (from a previous restore_flow call), skip bridge operations — the
@@ -320,7 +362,7 @@ pub async fn restore_flow(
             activated_identities.insert(identity.clone());
         }
 
-        let persisted_resolve_state = resolved.get(identity).ok_or_else(|| {
+        let persisted_resolve_state = resolve_state.as_ref().ok_or_else(|| {
             IdentityRuntimeError::Internal(format!(
                 "resolve_many did not return state for {identity}"
             ))
@@ -851,9 +893,22 @@ pub async fn restore_flow(
                                     detail: err.to_string(),
                                 }),
                             );
-                            // Not added to activated_identities: the final
-                            // cleanup releases this identity's lease grant.
-                            continue;
+                            // Not added to activated_identities: release this
+                            // identity's lease grant before completing its
+                            // independently scheduled restore task.
+                            if let Some(cleanup_error) = release_unactivated_restore_grants(
+                                runtime,
+                                &grants,
+                                &activated_identities,
+                            )
+                            .await
+                            {
+                                return Err(IdentityRuntimeError::Internal(format!(
+                                    "restore cleanup failed: {cleanup_error}"
+                                )));
+                            }
+                            trace_identity_restore_completed(identity, member_started_at);
+                            return Ok((index, outcomes));
                         }
                     };
                     record.session_id = resumed_session_id;
@@ -1104,18 +1159,41 @@ pub async fn restore_flow(
 
             // Step 11: Broken → fail loudly (REQ-13)
             ContinuityResolveState::Broken { failure } => {
-                outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
+                outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure));
             }
         }
-    }
+                if let Some(cleanup_error) =
+                    release_unactivated_restore_grants(runtime, &grants, &activated_identities)
+                        .await
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "restore cleanup failed: {cleanup_error}"
+                    )));
+                }
 
-    if let Some(cleanup_error) =
-        release_unactivated_restore_grants(runtime, &grants, &activated_identities).await
-    {
-        return Err(IdentityRuntimeError::Internal(format!(
-            "restore cleanup failed: {cleanup_error}"
-        )));
+                trace_identity_restore_completed(identity, member_started_at);
+                Ok((index, outcomes))
+            }
+        })
+        .buffer_unordered(IDENTITY_RESTORE_CONCURRENCY)
+        .collect::<Vec<Result<(usize, BTreeMap<AgentIdentity, RestoreOutcome>), _>>>()
+        .await;
+
+    let mut ordered_results = Vec::with_capacity(restore_results.len());
+    for result in restore_results {
+        ordered_results.push(result?);
     }
+    ordered_results.sort_by_key(|(index, _)| *index);
+
+    let mut outcomes = BTreeMap::new();
+    for (_, member_outcomes) in ordered_results {
+        outcomes.extend(member_outcomes);
+    }
+    tracing::info!(
+        member_count = roster.len(),
+        elapsed_ms = restore_started_at.elapsed().as_millis(),
+        "identity restore completed"
+    );
 
     if let Err(err) = runtime.reconcile_managed_peer_edges(&managed_edges).await {
         tracing::warn!(
