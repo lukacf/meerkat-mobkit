@@ -23,6 +23,91 @@ use super::{
 
 const EDGE_RECONCILE_CONCURRENCY: usize = 64;
 
+/// Default [`super::edge_types::EdgeDiscovery`] policy derived from the mob
+/// definition's declared `wiring` block. Upstream applies
+/// `auto_wire_orchestrator`/`role_wiring` only at SPAWN time and only from
+/// the non-orchestrator side (meerkat-mob `spawn_wiring_targets`), which
+/// makes the result bring-up-order dependent: a lead ensured after its
+/// workers — or any member resumed after a gateway restart — ends up with
+/// `wired_to: []` and the declared crew never forms (HomeCore field report,
+/// 2026-07-09). This policy makes the declaration a RECONCILABLE desired
+/// state: `reconcile_edges` wires whatever the definition implies over the
+/// live roster, order-independently and restart-healingly. It is installed
+/// automatically when the embedder supplies no custom policy and the
+/// definition declares wiring; the reconciler only ever unwires edges it
+/// wired itself, so host-made manual edges are never touched.
+pub struct DefinitionWiringEdgeDiscovery {
+    auto_wire_orchestrator: bool,
+    orchestrator_profile: Option<String>,
+    role_wiring: Vec<(String, String)>,
+}
+
+impl DefinitionWiringEdgeDiscovery {
+    /// `None` when the definition declares no wiring (the reconciler then
+    /// stays inert exactly as before).
+    pub fn from_definition(definition: &meerkat_mob::MobDefinition) -> Option<Self> {
+        let auto_wire_orchestrator =
+            definition.wiring.auto_wire_orchestrator && definition.orchestrator.is_some();
+        if !auto_wire_orchestrator && definition.wiring.role_wiring.is_empty() {
+            return None;
+        }
+        Some(Self {
+            auto_wire_orchestrator,
+            orchestrator_profile: definition
+                .orchestrator
+                .as_ref()
+                .map(|config| config.profile.to_string()),
+            role_wiring: definition
+                .wiring
+                .role_wiring
+                .iter()
+                .map(|rule| (rule.a.to_string(), rule.b.to_string()))
+                .collect(),
+        })
+    }
+
+    fn desired_edges(&self, members: &[EdgeMemberView]) -> Vec<DesiredPeerEdge> {
+        let mut edges = BTreeSet::new();
+        if self.auto_wire_orchestrator
+            && let Some(orchestrator_profile) = &self.orchestrator_profile
+        {
+            for orchestrator in members.iter().filter(|m| &m.role == orchestrator_profile) {
+                for member in members.iter().filter(|m| &m.role != orchestrator_profile) {
+                    if let Ok(edge) = DesiredPeerEdge::new(
+                        orchestrator.agent_identity.clone(),
+                        member.agent_identity.clone(),
+                    ) {
+                        edges.insert(edge);
+                    }
+                }
+            }
+        }
+        for (a, b) in &self.role_wiring {
+            for left in members.iter().filter(|m| &m.role == a) {
+                for right in members.iter().filter(|m| &m.role == b) {
+                    if let Ok(edge) = DesiredPeerEdge::new(
+                        left.agent_identity.clone(),
+                        right.agent_identity.clone(),
+                    ) {
+                        edges.insert(edge);
+                    }
+                }
+            }
+        }
+        edges.into_iter().collect()
+    }
+}
+
+impl super::edge_types::EdgeDiscovery for DefinitionWiringEdgeDiscovery {
+    fn discover_edges(
+        &self,
+        active_members: Vec<EdgeMemberView>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<DesiredPeerEdge>> + Send + '_>>
+    {
+        Box::pin(async move { self.desired_edges(&active_members) })
+    }
+}
+
 impl UnifiedRuntime {
     pub async fn reconcile(
         &self,
@@ -102,6 +187,9 @@ impl UnifiedRuntime {
     /// Refreshes the roster, runs edge discovery if configured, diffs
     /// desired vs managed edges, and calls wire/unwire as needed.
     pub async fn reconcile_edges(&self) -> UnifiedRuntimeReconcileEdgesReport {
+        if self.edge_discovery.is_none() {
+            return UnifiedRuntimeReconcileEdgesReport::default();
+        }
         let active_members = self.mob_handle().list_members_including_retiring().await;
         let report = self.reconcile_edges_from_members(active_members).await;
         if !report.is_complete() {
@@ -121,248 +209,13 @@ impl UnifiedRuntime {
             Some(d) => d,
             None => return UnifiedRuntimeReconcileEdgesReport::default(),
         };
-
-        // Everything in this function speaks the public alias space: roster
-        // ids are comms-safe encodings (meerkat 0.7 `MemberCommsName`), so
-        // decode snapshots on entry and encode only at the wire/unwire calls.
-        let alias_of =
-            |id: &str| -> String { crate::member_comms_id::runtime_alias_str(id).into_owned() };
-
-        let active_ids: BTreeSet<String> = active_members
-            .iter()
-            .map(|m| alias_of(m.agent_identity.as_str()))
-            .collect();
-
-        // Build current wiring map from snapshots
-        let mut current_edges: BTreeSet<(String, String)> = BTreeSet::new();
-        for member in &active_members {
-            for peer in &member.wired_to {
-                let mut a = alias_of(member.agent_identity.as_str());
-                let mut b = alias_of(peer.as_str());
-                if a > b {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                current_edges.insert((a, b));
-            }
-        }
-
-        // Project to EdgeMemberView for the policy closure — it only needs
-        // identity/role/labels/wired_to, not meerkat's private runtime fields.
-        let member_views: Vec<EdgeMemberView> = active_members
-            .into_iter()
-            .map(|m| EdgeMemberView {
-                agent_identity: alias_of(m.agent_identity.as_str()),
-                role: m.role.to_string(),
-                wired_to: m
-                    .wired_to
-                    .iter()
-                    .map(|peer| alias_of(peer.as_str()))
-                    .collect(),
-                labels: m.labels,
-            })
-            .collect();
-
-        // Run edge discovery
-        let raw_desired = edge_discovery.discover_edges(member_views).await;
-
-        // Deduplicate and defensively validate (DesiredPeerEdge enforces
-        // invariants at construction, but we still canonicalize the key set)
-        let desired: BTreeSet<(String, String)> = raw_desired
-            .iter()
-            .map(|e| {
-                let (a, b) = e.endpoints();
-                (a.to_string(), b.to_string())
-            })
-            .collect();
-
-        let mut report = UnifiedRuntimeReconcileEdgesReport {
-            desired_edges: raw_desired,
-            ..Default::default()
-        };
-
-        let managed_snapshot = self.managed_dynamic_edges.read().await.clone();
-        let mut to_wire = Vec::new();
-
-        // Classify desired edges
-        for (a, b) in &desired {
-            // Skip if either endpoint is missing from the active roster
-            if !active_ids.contains(a) || !active_ids.contains(b) {
-                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                    report.skipped_missing_members.push(edge);
-                }
-                continue;
-            }
-            let key = (a.clone(), b.clone());
-            if managed_snapshot.contains(&key) {
-                // Managed by us — check if the actual edge still exists in the
-                // mob graph. If an out-of-band unwire() removed it, re-wire.
-                if current_edges.contains(&key) {
-                    if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                        report.retained_edges.push(edge);
-                    }
-                } else {
-                    to_wire.push((a.clone(), b.clone(), "wire (heal)"));
-                }
-            } else if current_edges.contains(&key) {
-                // Exists but not managed by us (static or external) — don't claim
-                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                    report.preexisting_edges.push(edge);
-                }
-            } else {
-                to_wire.push((a.clone(), b.clone(), "wire"));
-            }
-        }
-
-        // Unwire managed edges that are no longer desired
-        let mut stale_pruned = Vec::new();
-        let mut to_unwire = Vec::new();
-        for (a, b) in managed_snapshot
-            .iter()
-            .filter(|key| !desired.contains(*key))
-            .cloned()
-        {
-            let key = (a.clone(), b.clone());
-            // If either endpoint is gone, just prune from managed set
-            if !active_ids.contains(&a) || !active_ids.contains(&b) {
-                stale_pruned.push((a, b));
-                continue;
-            }
-            // If the edge is already gone from the mob graph (out-of-band
-            // unwire/reset), just drop ownership — don't attempt unwire.
-            if !current_edges.contains(&key) {
-                stale_pruned.push((a, b));
-                continue;
-            }
-            to_unwire.push((a, b));
-        }
-
-        let handle = self.mob_handle();
-        let wire_operations = to_wire
-            .iter()
-            .map(|(a, b, operation)| ((a.clone(), b.clone()), (*operation).to_string()))
-            .collect::<BTreeMap<_, _>>();
-        let mut wire_successes = Vec::new();
-        let mut wire_failures = Vec::new();
-        if !to_wire.is_empty() {
-            let batch_edges = to_wire
-                .iter()
-                .map(|(a, b, _)| {
-                    (
-                        crate::member_comms_id::mob_member_id(a.as_str()),
-                        crate::member_comms_id::mob_member_id(b.as_str()),
-                    )
-                })
-                .collect::<Vec<_>>();
-            // The batch report carries roster ids; decode back to aliases and
-            // re-canonicalize (alias-space ordering can differ from roster-id
-            // ordering) so keys line up with `to_wire`.
-            let alias_edge_key = |a: &AgentIdentity, b: &AgentIdentity| -> (String, String) {
-                let mut a = crate::member_comms_id::runtime_alias_str(a.as_str()).into_owned();
-                let mut b = crate::member_comms_id::runtime_alias_str(b.as_str()).into_owned();
-                if a > b {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                (a, b)
-            };
-            match handle.wire_members_batch(batch_edges).await {
-                Ok(batch_report) => {
-                    let mut seen = BTreeSet::new();
-                    for edge in batch_report.wired {
-                        let key = alias_edge_key(&edge.a, &edge.b);
-                        seen.insert(key.clone());
-                        wire_successes.push((key.0, key.1, true));
-                    }
-                    for edge in batch_report.already_wired {
-                        let key = alias_edge_key(&edge.a, &edge.b);
-                        seen.insert(key.clone());
-                        wire_successes.push((key.0, key.1, false));
-                    }
-                    for (a, b, operation) in to_wire {
-                        let key = if a <= b { (a, b) } else { (b, a) };
-                        if !seen.contains(&key) {
-                            wire_failures.push((
-                                key.0,
-                                key.1,
-                                operation.to_string(),
-                                "wire_members_batch omitted edge from report".to_string(),
-                            ));
-                        }
-                    }
-                }
-                Err(err) => {
-                    let error = err.to_string();
-                    for (a, b, operation) in to_wire {
-                        wire_failures.push((a, b, operation.to_string(), error.clone()));
-                    }
-                }
-            }
-        }
-
-        let handle = self.mob_handle();
-        let unwire_results = stream::iter(to_unwire.into_iter().map(|(a, b)| {
-            let handle = handle.clone();
-            async move {
-                let result = handle
-                    .unwire(
-                        crate::member_comms_id::mob_member_id(a.as_str()),
-                        crate::member_comms_id::mob_member_id(b.as_str()),
-                    )
-                    .await
-                    .map_err(|err| format!("{err}"));
-                (a, b, result)
-            }
-        }))
-        .buffer_unordered(EDGE_RECONCILE_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
-
-        let mut managed_edges = self.managed_dynamic_edges.write().await;
-        for (a, b, newly_wired) in wire_successes {
-            managed_edges.insert((a.clone(), b.clone()));
-            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                if newly_wired {
-                    report.wired_edges.push(edge);
-                } else {
-                    report.retained_edges.push(edge);
-                }
-            }
-        }
-        for (a, b, operation, error) in wire_failures {
-            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                report.failures.push(EdgeReconcileFailure {
-                    edge,
-                    operation: wire_operations.get(&(a, b)).cloned().unwrap_or(operation),
-                    error,
-                });
-            }
-        }
-        for (a, b) in stale_pruned {
-            managed_edges.remove(&(a.clone(), b.clone()));
-            if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                report.pruned_stale_managed_edges.push(edge);
-            }
-        }
-        for (a, b, result) in unwire_results {
-            match result {
-                Ok(()) => {
-                    managed_edges.remove(&(a.clone(), b.clone()));
-                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                        report.unwired_edges.push(edge);
-                    }
-                }
-                Err(error) => {
-                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                        report.failures.push(EdgeReconcileFailure {
-                            edge,
-                            operation: "unwire".into(),
-                            error,
-                        });
-                    }
-                }
-            }
-        }
-
-        report
+        reconcile_edges_over_members(
+            &self.mob_handle(),
+            edge_discovery.as_ref(),
+            &self.managed_dynamic_edges,
+            active_members,
+        )
+        .await
     }
 
     pub(super) async fn reconcile_routing_wiring(
@@ -429,4 +282,274 @@ impl UnifiedRuntime {
             removed_route_keys,
         })
     }
+}
+
+/// Definition-driven, wire-only edge reconcile for surfaces that hold only a
+/// [`crate::MobRuntime`] (the console RPC dispatch): derives the desired
+/// edges from the definition's declared `wiring` block over the live roster
+/// and wires whatever is missing. The transient managed set means this NEVER
+/// unwires — host-made and upstream-made edges are untouched.
+pub async fn reconcile_definition_edges(
+    runtime: &crate::MobRuntime,
+) -> UnifiedRuntimeReconcileEdgesReport {
+    let handle = runtime.handle();
+    let Some(policy) = DefinitionWiringEdgeDiscovery::from_definition(handle.definition()) else {
+        return UnifiedRuntimeReconcileEdgesReport::default();
+    };
+    let active_members = handle.list_members_including_retiring().await;
+    let managed = tokio::sync::RwLock::new(BTreeSet::new());
+    reconcile_edges_over_members(&handle, &policy, &managed, active_members).await
+}
+
+/// The reconcile body, shared by [`UnifiedRuntime::reconcile_edges`] and the
+/// console surface's definition-driven reconcile (which passes a transient
+/// empty managed set — wire-only convergence: it wires missing desired edges
+/// and never unwires anything it did not itself manage).
+pub(crate) async fn reconcile_edges_over_members(
+    mob_handle: &meerkat_mob::runtime::MobHandle,
+    edge_discovery: &dyn super::edge_types::EdgeDiscovery,
+    managed_dynamic_edges: &tokio::sync::RwLock<BTreeSet<(String, String)>>,
+    active_members: Vec<MobMemberListEntry>,
+) -> UnifiedRuntimeReconcileEdgesReport {
+    // Everything in this function speaks the public alias space: roster
+    // ids are comms-safe encodings (meerkat 0.7 `MemberCommsName`), so
+    // decode snapshots on entry and encode only at the wire/unwire calls.
+    let alias_of =
+        |id: &str| -> String { crate::member_comms_id::runtime_alias_str(id).into_owned() };
+
+    let active_ids: BTreeSet<String> = active_members
+        .iter()
+        .map(|m| alias_of(m.agent_identity.as_str()))
+        .collect();
+
+    // Build current wiring map from snapshots
+    let mut current_edges: BTreeSet<(String, String)> = BTreeSet::new();
+    for member in &active_members {
+        for peer in &member.wired_to {
+            let mut a = alias_of(member.agent_identity.as_str());
+            let mut b = alias_of(peer.as_str());
+            if a > b {
+                std::mem::swap(&mut a, &mut b);
+            }
+            current_edges.insert((a, b));
+        }
+    }
+
+    // Project to EdgeMemberView for the policy closure — it only needs
+    // identity/role/labels/wired_to, not meerkat's private runtime fields.
+    let member_views: Vec<EdgeMemberView> = active_members
+        .into_iter()
+        .map(|m| EdgeMemberView {
+            agent_identity: alias_of(m.agent_identity.as_str()),
+            role: m.role.to_string(),
+            wired_to: m
+                .wired_to
+                .iter()
+                .map(|peer| alias_of(peer.as_str()))
+                .collect(),
+            labels: m.labels,
+        })
+        .collect();
+
+    // Run edge discovery
+    let raw_desired = edge_discovery.discover_edges(member_views).await;
+
+    // Deduplicate and defensively validate (DesiredPeerEdge enforces
+    // invariants at construction, but we still canonicalize the key set)
+    let desired: BTreeSet<(String, String)> = raw_desired
+        .iter()
+        .map(|e| {
+            let (a, b) = e.endpoints();
+            (a.to_string(), b.to_string())
+        })
+        .collect();
+
+    let mut report = UnifiedRuntimeReconcileEdgesReport {
+        desired_edges: raw_desired,
+        ..Default::default()
+    };
+
+    let managed_snapshot = managed_dynamic_edges.read().await.clone();
+    let mut to_wire = Vec::new();
+
+    // Classify desired edges
+    for (a, b) in &desired {
+        // Skip if either endpoint is missing from the active roster
+        if !active_ids.contains(a) || !active_ids.contains(b) {
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                report.skipped_missing_members.push(edge);
+            }
+            continue;
+        }
+        let key = (a.clone(), b.clone());
+        if managed_snapshot.contains(&key) {
+            // Managed by us — check if the actual edge still exists in the
+            // mob graph. If an out-of-band unwire() removed it, re-wire.
+            if current_edges.contains(&key) {
+                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                    report.retained_edges.push(edge);
+                }
+            } else {
+                to_wire.push((a.clone(), b.clone(), "wire (heal)"));
+            }
+        } else if current_edges.contains(&key) {
+            // Exists but not managed by us (static or external) — don't claim
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                report.preexisting_edges.push(edge);
+            }
+        } else {
+            to_wire.push((a.clone(), b.clone(), "wire"));
+        }
+    }
+
+    // Unwire managed edges that are no longer desired
+    let mut stale_pruned = Vec::new();
+    let mut to_unwire = Vec::new();
+    for (a, b) in managed_snapshot
+        .iter()
+        .filter(|key| !desired.contains(*key))
+        .cloned()
+    {
+        let key = (a.clone(), b.clone());
+        // If either endpoint is gone, just prune from managed set
+        if !active_ids.contains(&a) || !active_ids.contains(&b) {
+            stale_pruned.push((a, b));
+            continue;
+        }
+        // If the edge is already gone from the mob graph (out-of-band
+        // unwire/reset), just drop ownership — don't attempt unwire.
+        if !current_edges.contains(&key) {
+            stale_pruned.push((a, b));
+            continue;
+        }
+        to_unwire.push((a, b));
+    }
+
+    let handle = mob_handle.clone();
+    let wire_operations = to_wire
+        .iter()
+        .map(|(a, b, operation)| ((a.clone(), b.clone()), (*operation).to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let mut wire_successes = Vec::new();
+    let mut wire_failures = Vec::new();
+    if !to_wire.is_empty() {
+        let batch_edges = to_wire
+            .iter()
+            .map(|(a, b, _)| {
+                (
+                    crate::member_comms_id::mob_member_id(a.as_str()),
+                    crate::member_comms_id::mob_member_id(b.as_str()),
+                )
+            })
+            .collect::<Vec<_>>();
+        // The batch report carries roster ids; decode back to aliases and
+        // re-canonicalize (alias-space ordering can differ from roster-id
+        // ordering) so keys line up with `to_wire`.
+        let alias_edge_key = |a: &AgentIdentity, b: &AgentIdentity| -> (String, String) {
+            let mut a = crate::member_comms_id::runtime_alias_str(a.as_str()).into_owned();
+            let mut b = crate::member_comms_id::runtime_alias_str(b.as_str()).into_owned();
+            if a > b {
+                std::mem::swap(&mut a, &mut b);
+            }
+            (a, b)
+        };
+        match handle.wire_members_batch(batch_edges).await {
+            Ok(batch_report) => {
+                let mut seen = BTreeSet::new();
+                for edge in batch_report.wired {
+                    let key = alias_edge_key(&edge.a, &edge.b);
+                    seen.insert(key.clone());
+                    wire_successes.push((key.0, key.1, true));
+                }
+                for edge in batch_report.already_wired {
+                    let key = alias_edge_key(&edge.a, &edge.b);
+                    seen.insert(key.clone());
+                    wire_successes.push((key.0, key.1, false));
+                }
+                for (a, b, operation) in to_wire {
+                    let key = if a <= b { (a, b) } else { (b, a) };
+                    if !seen.contains(&key) {
+                        wire_failures.push((
+                            key.0,
+                            key.1,
+                            operation.to_string(),
+                            "wire_members_batch omitted edge from report".to_string(),
+                        ));
+                    }
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                for (a, b, operation) in to_wire {
+                    wire_failures.push((a, b, operation.to_string(), error.clone()));
+                }
+            }
+        }
+    }
+
+    let handle = mob_handle.clone();
+    let unwire_results = stream::iter(to_unwire.into_iter().map(|(a, b)| {
+        let handle = handle.clone();
+        async move {
+            let result = handle
+                .unwire(
+                    crate::member_comms_id::mob_member_id(a.as_str()),
+                    crate::member_comms_id::mob_member_id(b.as_str()),
+                )
+                .await
+                .map_err(|err| format!("{err}"));
+            (a, b, result)
+        }
+    }))
+    .buffer_unordered(EDGE_RECONCILE_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut managed_edges = managed_dynamic_edges.write().await;
+    for (a, b, newly_wired) in wire_successes {
+        managed_edges.insert((a.clone(), b.clone()));
+        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+            if newly_wired {
+                report.wired_edges.push(edge);
+            } else {
+                report.retained_edges.push(edge);
+            }
+        }
+    }
+    for (a, b, operation, error) in wire_failures {
+        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+            report.failures.push(EdgeReconcileFailure {
+                edge,
+                operation: wire_operations.get(&(a, b)).cloned().unwrap_or(operation),
+                error,
+            });
+        }
+    }
+    for (a, b) in stale_pruned {
+        managed_edges.remove(&(a.clone(), b.clone()));
+        if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+            report.pruned_stale_managed_edges.push(edge);
+        }
+    }
+    for (a, b, result) in unwire_results {
+        match result {
+            Ok(()) => {
+                managed_edges.remove(&(a.clone(), b.clone()));
+                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                    report.unwired_edges.push(edge);
+                }
+            }
+            Err(error) => {
+                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                    report.failures.push(EdgeReconcileFailure {
+                        edge,
+                        operation: "unwire".into(),
+                        error,
+                    });
+                }
+            }
+        }
+    }
+
+    report
 }

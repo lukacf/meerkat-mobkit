@@ -846,6 +846,13 @@ pub(super) async fn handle_ensure_member(
             let mid = spec.identity.clone();
             match handle.ensure_member(spec).await {
                 Ok(_outcome) => {
+                    // Declared definition wiring (auto_wire_orchestrator /
+                    // role_wiring) is bring-up-order dependent at spawn time
+                    // upstream; reconcile after every ensure so the crew
+                    // topology converges regardless of the order hosts
+                    // materialize members in. Inert without an edge policy;
+                    // idempotent otherwise.
+                    let _ = runtime.reconcile_edges().await;
                     let entries = handle.list_members_including_retiring().await;
                     let entry = entries.into_iter().find(|e| e.agent_identity == mid);
                     let result = match entry {
@@ -2645,6 +2652,11 @@ fn parse_optional_pubkey(params: &Value, field: &str) -> Result<Option<[u8; 32]>
     if s.is_empty() {
         return Ok(None);
     }
+    // Peer descriptors emit `transport_public_key` with an `ed25519:` scheme
+    // prefix; callers round-tripping that value into `wire_local` had to
+    // strip it by hand (HomeCore DX report, 2026-07-09). Accept both
+    // spellings.
+    let s = s.strip_prefix("ed25519:").unwrap_or(s);
     crate::auth::peer_keys::decode_pubkey_b64(s)
         .map(Some)
         .map_err(|err| format!("{field}: {err}"))
@@ -2687,6 +2699,27 @@ pub(super) async fn handle_peer_pubkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HomeCore DX (2026-07-09): `cross_mob/peer_info` emits
+    /// `transport_public_key` with the `ed25519:` scheme prefix; callers
+    /// round-tripping it into `wire_local` had to strip it by hand.
+    #[test]
+    fn optional_pubkey_accepts_the_ed25519_prefixed_spelling() -> Result<(), String> {
+        use base64::Engine as _;
+        let key = [7u8; 32];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(key);
+        let plain = serde_json::json!({ "remote_pubkey_b64": b64 });
+        let prefixed = serde_json::json!({ "remote_pubkey_b64": format!("ed25519:{b64}") });
+        assert_eq!(
+            parse_optional_pubkey(&plain, "remote_pubkey_b64")?,
+            Some(key)
+        );
+        assert_eq!(
+            parse_optional_pubkey(&prefixed, "remote_pubkey_b64")?,
+            Some(key)
+        );
+        Ok(())
+    }
 
     #[test]
     fn extract_content_rejects_malformed_content_even_with_message_fallback()

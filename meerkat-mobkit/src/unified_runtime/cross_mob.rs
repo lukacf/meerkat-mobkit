@@ -503,7 +503,25 @@ impl UnifiedRuntime {
     ) -> Result<(String, String, String), CrossMobError> {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
-        let mid = crate::member_comms_id::mob_member_id(member_id);
+        // Accept every public spelling (the #252 canonicalization class,
+        // mirroring `/agents/{id}/events`): plain member names and runtime
+        // aliases ("rt:lead:0") encode directly to their roster id, but a
+        // DURABLE IDENTITY ("lead") has no encodable roster form — resolve
+        // it via the roster's `agent_identity` label. Unresolvable ids keep
+        // the direct encoding so the error still names the member.
+        let direct = crate::member_comms_id::mob_member_id(member_id);
+        let mid = if handle.get_member(&direct).await.ok().flatten().is_some() {
+            direct
+        } else if let Some(identity) = handle
+            .roster()
+            .await
+            .find_by_label("agent_identity", member_id)
+            .map(|entry| entry.agent_identity.clone())
+        {
+            identity
+        } else {
+            direct
+        };
         let info = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
         let address = format!("inproc://{}", info.comms_name);
         Ok((info.peer_id, info.comms_name, address))
