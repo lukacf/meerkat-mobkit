@@ -362,11 +362,19 @@ pub async fn restore_flow(
             activated_identities.insert(identity.clone());
         }
 
-        let persisted_resolve_state = resolve_state.as_ref().ok_or_else(|| {
-            IdentityRuntimeError::Internal(format!(
-                "resolve_many did not return state for {identity}"
-            ))
-        })?;
+        let Some(persisted_resolve_state) = resolve_state.as_ref() else {
+            // Internal-invariant path (resolve_many answered every roster
+            // identity two steps ago), but keep it symmetric with every
+            // sibling error path in this task: release THIS member's grant
+            // before failing — under the parallel restore there is no final
+            // whole-roster cleanup to catch a skipped release (#265 fixup).
+            let cleanup_error =
+                release_unactivated_restore_grants(runtime, &grants, &activated_identities).await;
+            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
+                format!("resolve_many did not return state for {identity}"),
+                cleanup_error,
+            )));
+        };
         let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {
             ContinuityResolveState::Uninitialized
         } else {
