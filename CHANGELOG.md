@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.31] - 2026-07-09
+
+### Added
+
+- Live (realtime) member sessions through the gateway: meerkat's live/*
+  surface on mob members. `mobkit/live/{open,status,close,refresh,
+  send_input,commit_input,interrupt}` accept identity targets; the live
+  WebSocket transport mounts on the gateway's EXISTING HTTP listener
+  (`runtime_options.live = true | {public_base_url}`, default off,
+  persistent mode only); tool calls made during live turns flow through
+  the member's normal external-tool machinery (callback bridge + gating
+  unchanged); live turns persist into the member's durable transcript
+  through the continuity adapter. Machine-authority-backed single-use
+  bootstrap tokens; per-open credential resolution matching text-turn
+  auth; per-open `model` override. SDK methods in both languages. Design:
+  docs/design/live-sessions.md.
+- Definition wiring is a reconcilable desired state (HomeCore field
+  report): `auto_wire_orchestrator`/`role_wiring` now converge regardless
+  of member bring-up order and re-converge after restarts — a
+  definition-derived default edge policy installs at bootstrap,
+  `ensure_member` reconciles after every materialization, and the console
+  surface's `mobkit/reconcile_edges` noop stub is a real wire-only
+  reconcile. Host-made manual edges are never unwired.
+- Cross-mob DX: `cross_mob/peer_info` accepts durable identities (roster
+  `agent_identity` label fallback); `cross_mob/wire_local` accepts the
+  `ed25519:`-prefixed `transport_public_key` spelling.
+
+### Fixed
+
+- `ContinuitySessionStoreAdapter` adopts the machine-owned
+  `RebuildToAuthority` rollback (HomeCore Bug B-2): the torn-shutdown save
+  wedge — a stamped intra-turn checkpoint head rejecting the resume's
+  shorter committed-authority save with `MonotonicityViolation`, degrading
+  the identity forever — now converges the row back onto committed truth.
+  Unstamped rows and content forks keep failing closed.
+- The BigQuery session-store adapter shares one process-wide HTTP client
+  with per-request timeouts, and runtime bootstrap pre-warms the client
+  stack: the realtime feature unification enabled reqwest's
+  `system-proxy`, putting a ~700ms one-time macOS proxy scan inside the
+  first HTTP-backed RPC's latency window.
+
+### Changed
+
+- meerkat family pinned to `=0.7.26` (from `=0.7.25`): cold revival of
+  stopped sessions re-binds under the fresh registration epoch (the
+  identity-first member-revival terminal failure), typed rejections are no
+  longer laundered into "session not found in runtime adapter", one
+  member's composition-dispatch rejection no longer terminates the whole
+  mob actor, and the classic-store projection bridge consults the
+  write-half rollback (the upstream half of Bug B-2).
+
 ## [0.7.30] - 2026-07-09
 
 ### Fixed
