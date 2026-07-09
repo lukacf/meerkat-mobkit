@@ -179,5 +179,9 @@ async fn structural_events_arrive_via_streaming_subscription_with_upstream_curso
     }
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }

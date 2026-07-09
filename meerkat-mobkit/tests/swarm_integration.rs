@@ -853,7 +853,11 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
         shutdown.module_shutdown.terminated_modules,
         vec!["mod-a".to_string()]
     );
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
     assert!(!fixture.runtime.module_is_running().await);
     assert_eq!(
         fixture.runtime.mob_handle().status().await.unwrap(),
@@ -972,7 +976,11 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
     }));
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -1044,7 +1052,11 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
     };
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -1112,7 +1124,11 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
     assert_eq!(error_kind, "mob_runtime");
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -1191,7 +1207,11 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
         shutdown.module_shutdown.terminated_modules,
         vec!["listener-mod".to_string()]
     );
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
     assert!(!fixture.runtime.module_is_running().await);
     assert_eq!(
         fixture.runtime.mob_handle().status().await.unwrap(),

@@ -187,7 +187,11 @@ async fn query_with_future_cursor_returns_typed_stale_error() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -239,7 +243,11 @@ async fn query_without_after_seq_returns_latest_events_in_ascending_order() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -301,7 +309,11 @@ async fn subscribe_url_carries_continuation_cursor_and_filters() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -343,7 +355,11 @@ async fn query_with_empty_filter_match_still_advances_next_after_seq() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -364,7 +380,11 @@ async fn query_after_seq_zero_paginates_forward_from_start() {
     if first_events.is_empty() {
         // No events landed yet for this very fast machine; bail early.
         let shutdown = fixture.runtime.shutdown().await;
-        assert!(shutdown.mob_stop.is_ok());
+        assert!(
+            shutdown.mob_stop.is_ok(),
+            "mob stop failed at teardown: {:?}",
+            shutdown.mob_stop
+        );
         return;
     }
     let first_cursors: Vec<u64> = first_events
@@ -412,5 +432,9 @@ async fn query_after_seq_zero_paginates_forward_from_start() {
     }
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }

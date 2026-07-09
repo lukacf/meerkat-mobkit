@@ -131,7 +131,11 @@ async fn list_flows_returns_configured_flow_ids() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -204,7 +208,11 @@ async fn run_flow_starts_run_and_status_observes_it() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
 
 #[tokio::test]
@@ -239,5 +247,9 @@ async fn run_flow_rejects_unknown_flow_id_with_invalid_params() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }

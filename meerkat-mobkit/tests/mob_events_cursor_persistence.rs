@@ -150,5 +150,9 @@ message = "first"
     );
 
     let shutdown = runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert!(
+        shutdown.mob_stop.is_ok(),
+        "mob stop failed at teardown: {:?}",
+        shutdown.mob_stop
+    );
 }
