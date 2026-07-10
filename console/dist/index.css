@@ -1892,9 +1892,9 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-flow-run__outcome {
   padding: 9px 14px;
   border-top: 1px solid var(--_cc-border-soft, rgba(255, 255, 255, 0.06));
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
   color: var(--_cc-foreground, rgba(232, 234, 237, 0.9));
-  white-space: pre-wrap;
 }
 :is([data-cc-theme=light], .cc-theme-scope[data-cc-theme=light]) .cc-flow-run {
   border-color: var(--_cc-border-soft);

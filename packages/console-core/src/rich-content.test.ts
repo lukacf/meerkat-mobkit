@@ -352,3 +352,32 @@ test("renderConversationInlineMarkdown allowlists link schemes", () => {
   assert.equal(safeConsoleHref("//evil.test/phish"), null);
   assert.equal(safeConsoleHref("mailto:ops@example.test\r\nbcc:evil@example.test"), null);
 });
+
+describe("splitMixedProseSection via parseConversationRichBlocks", () => {
+  test("heading glued to prose with single newlines becomes a heading block", () => {
+    const blocks = parseConversationRichBlocks("intro line\n## Bottom-line assessment\nThe ceiling is event amplification.");
+    expect(blocks.map((block) => block.type)).toEqual(["paragraph", "heading", "paragraph"]);
+    expect(blocks[1]).toMatchObject({ type: "heading", level: 2, text: "Bottom-line assessment" });
+  });
+
+  test("pipe table glued to surrounding prose renders as a table block", () => {
+    const blocks = parseConversationRichBlocks([
+      "# 5. Highest-risk design flaws",
+      "| Risk | Impact |",
+      "|---|---:|",
+      "| Runaway concurrency | High |",
+      "| Replay storm | High |",
+      "The highest-leverage improvements are.",
+    ].join("\n"));
+    const types = blocks.map((block) => block.type);
+    expect(types).toEqual(["heading", "table", "paragraph"]);
+    const table = blocks[1] as { headers: string[]; rows: string[][] };
+    expect(table.headers).toEqual(["Risk", "Impact"]);
+    expect(table.rows).toHaveLength(2);
+  });
+
+  test("list markers in mixed sections render as bullets", () => {
+    const blocks = parseConversationRichBlocks("## Plan\n- first\n- second");
+    expect(blocks[1]).toMatchObject({ type: "paragraph", text: "\u2022 first\n\u2022 second" });
+  });
+});

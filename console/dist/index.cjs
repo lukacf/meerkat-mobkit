@@ -807,14 +807,9 @@ function parseConversationTextBlocks(fragment, displayNormalization = true) {
       });
       continue;
     }
-    const heading = parseConversationHeadingBlock(section);
-    if (heading) {
-      blocks.push(...heading);
-      continue;
-    }
-    const table = parseConversationTableBlock(section);
-    if (table) {
-      blocks.push(table);
+    const mixed = splitMixedProseSection(section);
+    if (mixed) {
+      blocks.push(...mixed);
       continue;
     }
     const fileChange = parseConversationFileChangeBlock(section);
@@ -849,24 +844,55 @@ function compactConversationBlocks(blocks) {
   }
   return deduped;
 }
-function parseConversationHeadingBlock(section) {
-  const lines = String(section || "").split(/\n/u).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length || !lines[0].startsWith("#")) {
+function splitMixedProseSection(section) {
+  const lines = String(section || "").split(/\n/u);
+  const blocks = [];
+  let prose = [];
+  let structural = false;
+  const flushProse = () => {
+    const text = prose.join("\n").replace(/^(\s*)[-*]\s+/gm, "$1\u2022 ").trim();
+    prose = [];
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/u);
+    if (headingMatch) {
+      flushProse();
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        text: headingMatch[2].trim()
+      });
+      structural = true;
+      continue;
+    }
+    if (trimmed.startsWith("|")) {
+      const next = (lines[index + 1] || "").trim();
+      const nextAlignment = next.startsWith("|") || /^[\s:|-]+$/u.test(next) ? parseTableAlignment(splitMarkdownTableRow(next)) : null;
+      if (nextAlignment && nextAlignment.length) {
+        let end = index + 2;
+        while (end < lines.length && lines[end].trim().startsWith("|")) {
+          end += 1;
+        }
+        const table = parseConversationTableBlock(lines.slice(index, end).join("\n"));
+        if (table) {
+          flushProse();
+          blocks.push(table);
+          structural = true;
+          index = end - 1;
+          continue;
+        }
+      }
+    }
+    prose.push(lines[index]);
+  }
+  if (!structural) {
     return null;
   }
-  const headingMatch = lines[0].match(/^(#{1,6})\s+(.+)$/u);
-  if (!headingMatch) {
-    return null;
-  }
-  const blocks = [{
-    type: "heading",
-    level: headingMatch[1].length,
-    text: headingMatch[2].trim()
-  }];
-  const rest = lines.slice(1).join("\n").trim();
-  if (rest) {
-    blocks.push({ type: "paragraph", text: rest });
-  }
+  flushProse();
   return blocks;
 }
 function splitMarkdownTableRow(line) {

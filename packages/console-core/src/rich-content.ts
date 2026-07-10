@@ -771,15 +771,12 @@ function parseConversationTextBlocks(fragment: string, displayNormalization = tr
       continue;
     }
 
-    const heading = parseConversationHeadingBlock(section);
-    if (heading) {
-      blocks.push(...heading);
-      continue;
-    }
-
-    const table = parseConversationTableBlock(section);
-    if (table) {
-      blocks.push(table);
+    // Headings and pipe tables routinely arrive glued to prose with single
+    // newlines (one "section"); the line-wise splitter handles those mixed
+    // sections and subsumes the pure whole-section heading/table cases.
+    const mixed = splitMixedProseSection(section);
+    if (mixed) {
+      blocks.push(...mixed);
       continue;
     }
 
@@ -828,6 +825,72 @@ function compactConversationBlocks(blocks: ConversationRichBlock[]): Conversatio
     deduped.push(block);
   }
   return deduped;
+}
+
+// Split a single \n-separated section into heading / table / prose blocks.
+// Returns null when the section contains no structural markdown, so callers
+// fall through to the legacy per-section handling.
+function splitMixedProseSection(section: string): ConversationRichBlock[] | null {
+  const lines = String(section || "").split(/\n/u);
+  const blocks: ConversationRichBlock[] = [];
+  let prose: string[] = [];
+  let structural = false;
+
+  const flushProse = () => {
+    const text = prose
+      .join("\n")
+      .replace(/^(\s*)[-*]\s+/gm, "$1\u2022 ")
+      .trim();
+    prose = [];
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/u);
+    if (headingMatch) {
+      flushProse();
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        text: headingMatch[2].trim(),
+      });
+      structural = true;
+      continue;
+    }
+
+    if (trimmed.startsWith("|")) {
+      const next = (lines[index + 1] || "").trim();
+      const nextAlignment = next.startsWith("|") || /^[\s:|-]+$/u.test(next)
+        ? parseTableAlignment(splitMarkdownTableRow(next))
+        : null;
+      if (nextAlignment && nextAlignment.length) {
+        let end = index + 2;
+        while (end < lines.length && lines[end].trim().startsWith("|")) {
+          end += 1;
+        }
+        const table = parseConversationTableBlock(lines.slice(index, end).join("\n"));
+        if (table) {
+          flushProse();
+          blocks.push(table);
+          structural = true;
+          index = end - 1;
+          continue;
+        }
+      }
+    }
+
+    prose.push(lines[index]);
+  }
+
+  if (!structural) {
+    return null;
+  }
+  flushProse();
+  return blocks;
 }
 
 function parseConversationHeadingBlock(section: string): ConversationRichBlock[] | null {
