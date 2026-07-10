@@ -1,11 +1,13 @@
 import { useState, type CSSProperties } from "react";
 
-import type {
-  ConversationFlowRunEntry,
-  ConversationFlowRunMemberRow,
-  FlowRunStatus,
+import {
+  parseConversationRichBlocks,
+  type ConversationFlowRunEntry,
+  type ConversationFlowRunMemberRow,
+  type FlowRunStatus,
 } from "@console-core";
 
+import { ConversationRichContent } from "./conversation-rich-content";
 import { ConversationTranscript } from "./conversation-transcript";
 import type { IconRenderer } from "../shared";
 
@@ -136,7 +138,12 @@ export function FlowRunCard({
         </ul>
       ) : null}
       {entry.outcome ? (
-        <div className="cc-flow-run__outcome">{entry.outcome}</div>
+        // Crew outcomes are markdown (headings, lists, fences) — a raw text
+        // node rendered them as an unformatted wall. Route through the same
+        // rich-block pipeline as assistant prose.
+        <div className="cc-flow-run__outcome">
+          <ConversationRichContent blocks={parseConversationRichBlocks(entry.outcome)} Icon={Icon} />
+        </div>
       ) : null}
     </section>
   );
