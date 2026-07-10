@@ -2195,6 +2195,31 @@ export class MobHandle {
   }
 
   /**
+   * Send a still image into the member's open live channel (meerkat
+   * 0.7.27+). `idempotencyKey` must be caller-stable within the session —
+   * retries with the same key are exact-retry deduplicated.
+   */
+  async liveSendInputImage(
+    identity: string,
+    idempotencyKey: string,
+    mime: string,
+    dataBase64: string,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/send_input", {
+      identity,
+      chunk: {
+        kind: "image",
+        idempotency_key: idempotencyKey,
+        mime,
+        data: dataBase64,
+      },
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
+  /**
    * Push refreshed mutable config (instructions/tools/audio) into an open
    * live channel without rebuilding the transport. Model/provider swaps
    * require close + reopen.
@@ -2205,6 +2230,29 @@ export class MobHandle {
   ): Promise<Record<string, unknown>> {
     const raw = await this._runtime._rpc("mobkit/live/refresh", {
       identity,
+      ...(options ?? {}),
+    });
+    return asWireRecord(raw);
+  }
+
+  /**
+   * Truncate an assistant item at the client-tracked playback cursor
+   * (barge-in cleanup). `itemId`/`contentIndex` are the provider-side
+   * handle for the assistant item; `audioPlayedMs` is how much the client
+   * actually played.
+   */
+  async liveTruncate(
+    channelId: string,
+    itemId: string,
+    contentIndex: number,
+    audioPlayedMs: number,
+    options?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this._runtime._rpc("mobkit/live/truncate", {
+      channel_id: channelId,
+      item_id: itemId,
+      content_index: contentIndex,
+      audio_played_ms: audioPlayedMs,
       ...(options ?? {}),
     });
     return asWireRecord(raw);

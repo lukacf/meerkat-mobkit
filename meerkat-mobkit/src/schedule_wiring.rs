@@ -46,11 +46,18 @@ use meerkat_mob_mcp::{MobMcpScheduleHost, MobMcpState};
 use meerkat_runtime::MeerkatMachine;
 use serde_json::{Map, Value};
 
+use crate::identity_first::gateway_bridges::CallbackBridge;
 use crate::memory::steward::StewardEngine;
 
 /// File name for the durable schedule store, kept beside the runtime DB so a
 /// gateway and a library-mode runtime pointed at the same dir share state.
 pub const SCHEDULE_STORE_FILE: &str = "schedule.sqlite";
+
+/// JSON-RPC callback method the gateway sends to the SDK host when a
+/// host-runnable schedule target registered via
+/// `runtime_options.host_runnables` fires. Params:
+/// `{runnable, occurrence: {schedule_id, occurrence_id, due_at, payload?}}`.
+pub const SCHEDULE_FIRE_CALLBACK_METHOD: &str = "callback/schedule_fire";
 
 /// Reserved host-runnable name for the memory steward's scheduled dream
 /// (§8.5 / upstream ask 7). Stable across boots: the find-or-create schedule
@@ -102,6 +109,118 @@ pub fn steward_dream_runnable_host(
         .register(name, Arc::new(StewardDreamRunnable { engine }))
         .expect("first registration into a fresh registry cannot duplicate");
     Some(Arc::new(registry))
+}
+
+/// A [`HostRunnable`] whose fire forwards over the SDK callback bridge as
+/// [`SCHEDULE_FIRE_CALLBACK_METHOD`], so the app process (Python/TypeScript)
+/// runs the occurrence deterministically — no LLM turn is involved.
+///
+/// A bridge error (handler raised, no handler registered for the name, host
+/// gone, callback timeout) is reported as a typed runnable FAILURE so the
+/// schedule store records the occurrence attempt as failed rather than
+/// silently completing. The app's JSON result is logged and dropped:
+/// upstream's `HostRunnableOutcome` deliberately carries no success payload
+/// (occurrence completion consumes no detail).
+struct CallbackHostRunnable {
+    bridge: Arc<dyn CallbackBridge>,
+}
+
+#[async_trait]
+impl HostRunnable for CallbackHostRunnable {
+    async fn run(
+        &self,
+        invocation: HostRunnableInvocation,
+    ) -> Result<HostRunnableOutcome, HostRunnableError> {
+        let mut occurrence = Map::new();
+        occurrence.insert(
+            "schedule_id".to_string(),
+            Value::String(invocation.schedule_id.to_string()),
+        );
+        occurrence.insert(
+            "occurrence_id".to_string(),
+            Value::String(invocation.occurrence_id.to_string()),
+        );
+        occurrence.insert(
+            "due_at".to_string(),
+            Value::String(invocation.trigger_time.to_rfc3339()),
+        );
+        if let Some(params) = invocation.params.as_deref() {
+            match serde_json::from_str::<Value>(params.get()) {
+                Ok(payload) => {
+                    occurrence.insert("payload".to_string(), payload);
+                }
+                Err(error) => {
+                    // The binding canonicalizes params at every ingress, so a
+                    // non-JSON payload here is store corruption — fail the
+                    // occurrence rather than firing with silently dropped params.
+                    return Err(HostRunnableError::Failed {
+                        detail: format!("host-runnable params are not valid JSON: {error}"),
+                    });
+                }
+            }
+        }
+        let params = serde_json::json!({
+            "runnable": invocation.runnable.as_str(),
+            "occurrence": Value::Object(occurrence),
+        });
+        match self
+            .bridge
+            .call(SCHEDULE_FIRE_CALLBACK_METHOD, params)
+            .await
+        {
+            Ok(result) => {
+                tracing::debug!(
+                    runnable = %invocation.runnable,
+                    occurrence_id = %invocation.occurrence_id,
+                    %result,
+                    "callback schedule fire completed"
+                );
+                Ok(HostRunnableOutcome::completed())
+            }
+            Err(detail) => Err(HostRunnableError::Failed { detail }),
+        }
+    }
+}
+
+/// Compose the gateway's schedule runnable host: the steward dream (when a
+/// steward engine is present) plus SDK-registered callback runnables
+/// (`runtime_options.host_runnables`), each forwarding its fire over the
+/// callback bridge as [`SCHEDULE_FIRE_CALLBACK_METHOD`].
+///
+/// `Ok(None)` when there is nothing to register (the schedule host then
+/// serves session/mob targets only). `Err` on a duplicate runnable name —
+/// including a callback runnable colliding with the reserved
+/// [`STEWARD_DREAM_RUNNABLE`] name.
+// The steward runnable name is a non-empty const, so its parse is infallible.
+#[allow(clippy::expect_used)]
+pub fn gateway_runnable_host(
+    steward: Option<Arc<StewardEngine>>,
+    callback_runnables: Option<(Arc<dyn CallbackBridge>, Vec<HostRunnableName>)>,
+) -> Result<Option<Arc<dyn ScheduleRunnableHost>>, String> {
+    let mut registry = HostRunnableRegistry::new();
+    let mut registered = false;
+    if let Some(engine) = steward {
+        let name = HostRunnableName::parse(STEWARD_DREAM_RUNNABLE)
+            .expect("STEWARD_DREAM_RUNNABLE is a non-empty runnable name");
+        registry
+            .register(name, Arc::new(StewardDreamRunnable { engine }))
+            .map_err(|error| error.to_string())?;
+        registered = true;
+    }
+    if let Some((bridge, names)) = callback_runnables {
+        for name in names {
+            registry
+                .register(
+                    name,
+                    Arc::new(CallbackHostRunnable {
+                        bridge: Arc::clone(&bridge),
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+            registered = true;
+        }
+    }
+    Ok(registered.then(|| Arc::new(registry) as Arc<dyn ScheduleRunnableHost>))
 }
 
 /// Find-or-create the durable schedule that drives the steward dream runnable
@@ -1318,6 +1437,212 @@ mod tests {
     #[test]
     fn steward_dream_runnable_host_is_none_without_a_steward() {
         assert!(steward_dream_runnable_host(None).is_none());
+    }
+
+    /// Records bridge calls and answers each with a scripted result, standing
+    /// in for the SDK host on the far side of the stdio callback bridge.
+    struct ScriptedCallbackBridge {
+        calls: std::sync::Mutex<Vec<(String, Value)>>,
+        result: Result<Value, String>,
+    }
+
+    impl ScriptedCallbackBridge {
+        fn new(result: Result<Value, String>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                result,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CallbackBridge for ScriptedCallbackBridge {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push((method.to_string(), params));
+            self.result.clone()
+        }
+    }
+
+    fn runnable_name(value: &str) -> HostRunnableName {
+        HostRunnableName::parse(value).expect("valid runnable name")
+    }
+
+    fn callback_invocation(runnable: &str, params_json: Option<&str>) -> HostRunnableInvocation {
+        HostRunnableInvocation {
+            occurrence_id: meerkat::OccurrenceId::new(),
+            schedule_id: meerkat::ScheduleId::new(),
+            runnable: runnable_name(runnable),
+            trigger_time: chrono::Utc::now(),
+            params: params_json
+                .map(|text| RawValue::from_string(text.to_string()).expect("valid raw params")),
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_runnable_fires_over_the_bridge_with_the_occurrence_shape() {
+        let bridge = ScriptedCallbackBridge::new(Ok(json!({"digest": "sent"})));
+        let host = gateway_runnable_host(
+            None,
+            Some((
+                Arc::clone(&bridge) as Arc<dyn CallbackBridge>,
+                vec![runnable_name("digest")],
+            )),
+        )
+        .expect("compose runnable host")
+        .expect("callback runnables registered");
+
+        assert_eq!(
+            host.probe_runnable(&runnable_name("digest")),
+            meerkat::RunnableProbe::Registered
+        );
+        assert_eq!(
+            host.probe_runnable(&runnable_name("unknown")),
+            meerkat::RunnableProbe::Unknown
+        );
+
+        let invocation = callback_invocation("digest", Some(r#"{"depth":3}"#));
+        let outcome = host
+            .run_occurrence(invocation.clone())
+            .await
+            .expect("bridge success completes the occurrence");
+        assert_eq!(outcome, HostRunnableOutcome::completed());
+
+        let calls = bridge.calls.lock().expect("calls lock");
+        assert_eq!(calls.len(), 1);
+        let (method, params) = &calls[0];
+        assert_eq!(method, SCHEDULE_FIRE_CALLBACK_METHOD);
+        assert_eq!(params["runnable"], json!("digest"));
+        let occurrence = params["occurrence"].as_object().expect("occurrence object");
+        assert_eq!(
+            occurrence["schedule_id"],
+            json!(invocation.schedule_id.to_string())
+        );
+        assert_eq!(
+            occurrence["occurrence_id"],
+            json!(invocation.occurrence_id.to_string())
+        );
+        assert_eq!(
+            occurrence["due_at"],
+            json!(invocation.trigger_time.to_rfc3339())
+        );
+        assert_eq!(occurrence["payload"], json!({"depth": 3}));
+    }
+
+    #[tokio::test]
+    async fn callback_runnable_omits_payload_when_the_binding_has_no_params() {
+        let bridge = ScriptedCallbackBridge::new(Ok(Value::Null));
+        let host = gateway_runnable_host(
+            None,
+            Some((
+                Arc::clone(&bridge) as Arc<dyn CallbackBridge>,
+                vec![runnable_name("digest")],
+            )),
+        )
+        .expect("compose runnable host")
+        .expect("callback runnables registered");
+
+        host.run_occurrence(callback_invocation("digest", None))
+            .await
+            .expect("fire without params");
+        let calls = bridge.calls.lock().expect("calls lock");
+        assert!(
+            calls[0].1["occurrence"].get("payload").is_none(),
+            "no payload key without binding params: {}",
+            calls[0].1
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_runnable_maps_bridge_error_to_runnable_failure() {
+        let bridge = ScriptedCallbackBridge::new(Err("callback error: handler raised".to_string()));
+        let host = gateway_runnable_host(
+            None,
+            Some((
+                Arc::clone(&bridge) as Arc<dyn CallbackBridge>,
+                vec![runnable_name("digest")],
+            )),
+        )
+        .expect("compose runnable host")
+        .expect("callback runnables registered");
+
+        let error = host
+            .run_occurrence(callback_invocation("digest", None))
+            .await
+            .expect_err("bridge failure must fail the occurrence");
+        assert!(
+            matches!(&error, HostRunnableError::Failed { detail } if detail.contains("handler raised")),
+            "expected typed Failed with the bridge detail, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn gateway_runnable_host_is_none_with_nothing_to_register() {
+        assert!(
+            gateway_runnable_host(None, None)
+                .expect("empty composition is not an error")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gateway_runnable_host_rejects_duplicate_callback_names() {
+        let bridge = ScriptedCallbackBridge::new(Ok(Value::Null));
+        let error = match gateway_runnable_host(
+            None,
+            Some((
+                bridge as Arc<dyn CallbackBridge>,
+                vec![runnable_name("digest"), runnable_name("digest")],
+            )),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("duplicate names must be rejected"),
+        };
+        assert!(error.contains("digest"), "{error}");
+    }
+
+    /// The agent-facing schedule tools and any generic RPC pass-through
+    /// deserialize targets through `TargetBinding`'s serde — pin that the
+    /// host-runnable wire form is accepted and creation lands in the store.
+    #[tokio::test]
+    async fn schedule_creation_accepts_the_host_runnable_target_wire_form() {
+        let target: TargetBinding = serde_json::from_value(json!({
+            "target_kind": "host_runnable",
+            "runnable": "digest",
+            "params": {"depth": 3}
+        }))
+        .expect("host_runnable target wire form deserializes");
+        assert!(
+            matches!(&target, TargetBinding::HostRunnable(binding) if binding.runnable == runnable_name("digest")),
+            "expected host-runnable binding, got {target:?}"
+        );
+
+        let service = ScheduleService::new(Arc::new(MemoryScheduleStore::new()));
+        let created = service
+            .create(CreateScheduleRequest {
+                name: Some("sdk-digest".to_string()),
+                description: None,
+                trigger: TriggerSpec::Interval(IntervalTriggerSpec {
+                    start_at_utc: chrono::Utc::now() + chrono::Duration::seconds(60),
+                    every_seconds: 3600,
+                    end_at_utc: None,
+                }),
+                target,
+                misfire_policy: meerkat::MisfirePolicy::default(),
+                overlap_policy: meerkat::OverlapPolicy::default(),
+                missing_target_policy: meerkat::MissingTargetPolicy::default(),
+                labels: std::collections::BTreeMap::new(),
+                planning_horizon_days: None,
+                planning_horizon_occurrences: None,
+            })
+            .await
+            .expect("create schedule with host_runnable target");
+        assert!(
+            matches!(&created.target, TargetBinding::HostRunnable(_)),
+            "persisted schedule keeps the host-runnable target"
+        );
     }
 
     fn dream_target_count(schedules: &[meerkat::Schedule]) -> usize {

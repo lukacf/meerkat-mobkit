@@ -1583,3 +1583,40 @@ async def test_live_method_names_and_identity_param():
     ]
     assert calls[0][1] == {"identity": "reachy", "model": "gpt-realtime-2"}
     assert calls[1][1] == {"identity": "reachy"}
+
+
+@pytest.mark.asyncio
+async def test_live_truncate_wire_shape():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/truncate": {"status": "truncated"},
+    })
+    result = await handle.live_truncate("chan-1", "item_1", 0, 1200)
+    assert result["status"] == "truncated"
+    assert calls[0][0] == "mobkit/live/truncate"
+    assert calls[0][1] == {
+        "channel_id": "chan-1",
+        "item_id": "item_1",
+        "content_index": 0,
+        "audio_played_ms": 1200,
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_send_input_image_wire_shape():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/live/send_input": {"accepted": True},
+    })
+    result = await handle.live_send_input_image(
+        "reachy", "frame-0001", "image/jpeg", "aGVsbG8="
+    )
+    assert result["accepted"] is True
+    assert calls[0][0] == "mobkit/live/send_input"
+    assert calls[0][1] == {
+        "identity": "reachy",
+        "chunk": {
+            "kind": "image",
+            "idempotency_key": "frame-0001",
+            "mime": "image/jpeg",
+            "data": "aGVsbG8=",
+        },
+    }

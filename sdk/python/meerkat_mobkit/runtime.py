@@ -258,6 +258,19 @@ class MobKitRuntime:
             return
         await self._bootstrap()
 
+    def on_schedule_fire(self, name: str, handler: Any) -> None:
+        """Register the handler for a named host runnable.
+
+        Pairs with ``MobKitBuilder.host_runnables([...])``: when a durable
+        schedule with a ``host_runnable`` target of that name fires, the
+        gateway sends ``callback/schedule_fire`` and this handler runs with
+        the occurrence dict (``schedule_id``, ``occurrence_id``, ``due_at``,
+        optional ``payload``). Sync or async; raising fails the occurrence
+        attempt in the durable schedule store. Register before or after
+        :meth:`connect` — fires only start once a schedule targets the name.
+        """
+        self._dispatcher.register_schedule_fire_handler(name, handler)
+
     async def _bootstrap(self) -> None:
         if self._config.gateway_bin:
             self._transport = PersistentTransport(self._config.gateway_bin)
@@ -338,6 +351,8 @@ class MobKitRuntime:
             runtime_options["routing_config_path"] = self._config.routing_config_path
         if self._config.scheduling_files:
             runtime_options["scheduling_files"] = self._config.scheduling_files
+        if self._config.host_runnables:
+            runtime_options["host_runnables"] = list(self._config.host_runnables)
         if self._config.memory_config:
             runtime_options["memory_config"] = _serialize_config(self._config.memory_config)
         if self._config.agent_memory_config is not None:
@@ -1960,12 +1975,59 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/live/close", params)
         return raw if isinstance(raw, dict) else {}
 
+    async def live_send_input_image(
+        self,
+        identity: str,
+        idempotency_key: str,
+        mime: str,
+        data_base64: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Send a still image into the member's open live channel (meerkat
+        0.7.27+).  ``idempotency_key`` must be caller-stable within the
+        session — retries with the same key are exact-retry deduplicated.
+        """
+        params: dict[str, Any] = {
+            "identity": identity,
+            "chunk": {
+                "kind": "image",
+                "idempotency_key": idempotency_key,
+                "mime": mime,
+                "data": data_base64,
+            },
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/live/send_input", params)
+        return raw if isinstance(raw, dict) else {}
+
     async def live_refresh(self, identity: str, **kwargs: Any) -> dict[str, Any]:
         """Push refreshed mutable config (instructions/tools/audio) into an
         open live channel without rebuilding the transport.  Model/provider
         swaps require close + reopen."""
         params: dict[str, Any] = {"identity": identity, **kwargs}
         raw = await self._runtime._rpc("mobkit/live/refresh", params)
+        return raw if isinstance(raw, dict) else {}
+
+    async def live_truncate(
+        self,
+        channel_id: str,
+        item_id: str,
+        content_index: int,
+        audio_played_ms: int,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Truncate an assistant item at the client-tracked playback cursor
+        (barge-in cleanup).  ``item_id``/``content_index`` are the
+        provider-side handle for the assistant item; ``audio_played_ms`` is
+        how much the client actually played."""
+        params: dict[str, Any] = {
+            "channel_id": channel_id,
+            "item_id": item_id,
+            "content_index": content_index,
+            "audio_played_ms": audio_played_ms,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/live/truncate", params)
         return raw if isinstance(raw, dict) else {}
 
     # -----------------------------------------------------------------

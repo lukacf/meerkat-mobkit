@@ -114,6 +114,9 @@ class SessionBuildOptions:
     resume_session_id: str | None = None
     _tools: list[str] = field(default_factory=list, repr=False)
     _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Per-tool wire metadata from register_tool(description=/input_schema=);
+    # tools without an entry cross the wire as bare name strings.
+    _tool_defs: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     def add_tools(self, tools: list[str]) -> None:
         """Declare tool names the agent can use."""
@@ -122,7 +125,14 @@ class SessionBuildOptions:
                 raise TypeError(f"tools must be strings, got {type(t).__name__}: {t!r}")
         self._tools.extend(tools)
 
-    def register_tool(self, name: str, handler: Any) -> None:
+    def register_tool(
+        self,
+        name: str,
+        handler: Any,
+        *,
+        description: str = "",
+        input_schema: dict[str, Any] | None = None,
+    ) -> None:
         """Register a callable tool with the agent.
 
         The handler is called when the agent invokes this tool. It receives
@@ -131,13 +141,27 @@ class SessionBuildOptions:
         Args:
             name: Tool name (string).
             handler: Async or sync callable ``(args: dict) -> Any``.
+            description: Human-readable tool description.
+            input_schema: JSON Schema for the tool arguments. When omitted
+                the gateway advertises the permissive ``{"type": "object"}``.
         """
         if not isinstance(name, str):
             raise TypeError(f"tool name must be a string, got {type(name).__name__}: {name!r}")
         if not callable(handler):
             raise TypeError(f"handler must be callable, got {type(handler).__name__}: {handler!r}")
+        if input_schema is not None and not isinstance(input_schema, dict):
+            raise TypeError(
+                f"input_schema must be a dict, got {type(input_schema).__name__}: {input_schema!r}"
+            )
         self._tools.append(name)
         self._tool_handlers[name] = handler
+        if description or input_schema is not None:
+            tool_def: dict[str, Any] = {"name": name}
+            if description:
+                tool_def["description"] = description
+            if input_schema is not None:
+                tool_def["input_schema"] = input_schema
+            self._tool_defs[name] = tool_def
 
     @property
     def tools(self) -> list[str]:
@@ -162,5 +186,10 @@ class SessionBuildOptions:
         if self.resume_session_id is not None:
             result["resume_session_id"] = self.resume_session_id
         if self._tools:
-            result["tools"] = self._tools
+            # Names with registered metadata cross as {name, description?,
+            # input_schema?} objects; everything else stays a bare string
+            # (backward-compatible with pre-0.7.30 gateways).
+            result["tools"] = [
+                self._tool_defs.get(name, name) for name in self._tools
+            ]
         return result

@@ -23,6 +23,7 @@ class MobKitBuilderConfig:
     workgraph_enabled: bool | str | None = None
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
+    host_runnables: list[str] = field(default_factory=list)
     memory_config: Any | None = None
     agent_memory_config: Any | None = None
     auth_config: Any | None = None
@@ -142,6 +143,22 @@ class MobKitBuilder:
     def scheduling(self, *schedule_files: str) -> MobKitBuilder:
         """Set schedule config files (accepts multiple positional args)."""
         self._config.scheduling_files = list(schedule_files)
+        return self
+
+    def host_runnables(self, names: Sequence[str]) -> MobKitBuilder:
+        """Register named deterministic (non-LLM) schedule targets.
+
+        Wired into ``runtime_options.host_runnables``. Each name becomes a
+        schedule-host runnable: a durable schedule with target
+        ``{"target_kind": "host_runnable", "runnable": "<name>"}`` fires as
+        ``callback/schedule_fire`` into this process, dispatched to the
+        handler registered via :meth:`MobKitRuntime.on_schedule_fire`.
+        """
+        names = list(names)
+        for name in names:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"host runnable names must be non-empty strings, got {name!r}")
+        self._config.host_runnables = names
         return self
 
     def memory(self, config: Any = None, *, stores: list[str] | None = None) -> MobKitBuilder:

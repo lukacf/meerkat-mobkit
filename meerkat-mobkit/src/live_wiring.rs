@@ -57,16 +57,19 @@ use meerkat_client::realtime_session::{RealtimeSessionFactory, RealtimeSessionOp
 use meerkat_contracts::{
     LiveChannelParams, LiveCloseResult, LiveCommitInputParams, LiveCommitInputResult,
     LiveInterruptResult, LiveOpenResult, LiveOpenTransport, LiveRefreshResult, LiveSendInputParams,
-    LiveSendInputResult, LiveStatusResult, RealtimeCapabilities, RealtimeTurningMode,
-    WireLiveAdapterStatus, WireLiveDegradationReason,
+    LiveSendInputResult, LiveStatusResult, LiveTruncateParams, LiveTruncateResult,
+    RealtimeCapabilities, RealtimeTurningMode, WireLiveAdapterStatus, WireLiveDegradationReason,
 };
 use meerkat_core::live_adapter::{
     LiveAdapterCommand, LiveAdapterErrorCode, LiveAudioConfig, LiveChannelCapabilities,
     LiveContinuityMode, LiveProjectionSnapshot, LiveTransportBootstrap,
 };
 use meerkat_core::service::SessionService as _;
+use meerkat_core::session::SystemContextSource;
 use meerkat_core::types::{AssistantBlock, ContentInput, Message, SessionId, StopReason, Usage};
-use meerkat_core::{Config, ConfigError, RealtimeTranscriptEvent};
+use meerkat_core::{
+    Config, ConfigError, CoreRenderable, PendingSystemContextAppend, RealtimeTranscriptEvent,
+};
 use meerkat_live::{
     LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelCloseObservation,
     LiveChannelId, LiveChannelStatusFeedback, LiveChannelStatusObservation, LiveProjectionError,
@@ -796,15 +799,16 @@ impl<B: SessionAgentBuilder + 'static> LiveProjectionSink for GatewayLiveProject
         &self,
         session_id: &SessionId,
         event: &RealtimeTranscriptEvent,
-    ) -> Result<(), LiveProjectionError> {
+    ) -> Result<meerkat_core::RealtimeTranscriptApplyOutcome, LiveProjectionError> {
         // P1#2: forward provider-emitted realtime transcript events into the
         // same idempotent ordering / staging path used by deltas +
         // truncation; without this override `ItemObserved` /
-        // `AssistantTurnCompleted` etc. would be silently dropped.
+        // `AssistantTurnCompleted` etc. would be silently dropped. 0.7.27:
+        // the apply outcome flows back so the host synthesizes the redacted
+        // image receipt only AFTER durable reducer application.
         self.service
             .append_realtime_transcript_event(session_id, event.clone())
             .await
-            .map(|_outcome| ())
             .map_err(|err| session_error_to_projection(err, session_id))
     }
 }
@@ -870,6 +874,11 @@ pub struct GatewayLiveContext {
     pub ws_state: Arc<LiveWsState>,
     pub session_factory: Arc<dyn RealtimeSessionFactory>,
     pub ws_base_url: String,
+    /// Gateway-wide seed-projection clamp (`runtime_options.live.seed_max_chars`),
+    /// overridable per open. `None` = no clamp. Stopgap for upstream ask 30
+    /// (docs/design/upstream-asks.md): the provider caps live instructions at
+    /// 65,536 tokens and long member transcripts overflow the projected seed.
+    pub seed_max_chars: Option<usize>,
 }
 
 /// Compose the live stack for a persistent-mode gateway.
@@ -887,6 +896,7 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
     factory: &AgentFactory,
     config: Config,
     ws_base_url: String,
+    seed_max_chars: Option<usize>,
 ) -> GatewayLiveContext {
     let sink = Arc::new(GatewayLiveProjectionSink::new(
         Arc::clone(&service),
@@ -910,14 +920,33 @@ pub fn attach_live<B: SessionAgentBuilder + 'static>(
         ws_state,
         session_factory,
         ws_base_url,
+        seed_max_chars,
     }
 }
 
 // ---------------------------------------------------------------------------
 // mobkit/live/* handlers — port of meerkat-rpc/src/handlers/live.rs
-// (websocket arms; webrtc and truncate deliberately not ported, per design
-// §"What we deliberately do NOT do in v1").
+// (websocket arms; webrtc deliberately not ported, per design §"What we
+// deliberately do NOT do in v1").
 // ---------------------------------------------------------------------------
+
+/// `instructions` on `mobkit/live/open` accepts a single string or an array
+/// of strings — both spell the same per-open overlay.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LiveOpenInstructions {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl LiveOpenInstructions {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(text) => vec![text],
+            Self::Many(items) => items,
+        }
+    }
+}
 
 /// The gateway-side params for `mobkit/live/open`. The member target
 /// (`identity` / `member_id` / `session_id`) is resolved by the CALLER
@@ -933,6 +962,17 @@ struct GatewayLiveOpenParams {
     /// not realtime-capable open the channel against this model instead.
     #[serde(default)]
     model: Option<String>,
+    /// Per-open ephemeral instruction overlay. Rides the runtime
+    /// system-context lane of the open projection, so it reaches the
+    /// provider's instructions channel without ever touching the member's
+    /// durable transcript or prompt truth. Dropped on `live/refresh` (the
+    /// refresh path re-projects from the durable session) and on reopen.
+    #[serde(default)]
+    instructions: Option<LiveOpenInstructions>,
+    /// Per-open override of the gateway-wide seed clamp
+    /// (`runtime_options.live.seed_max_chars`).
+    #[serde(default)]
+    seed_max_chars: Option<usize>,
 }
 
 fn live_success(rpc_id: Value, result: Value) -> JsonRpcResponse {
@@ -1062,6 +1102,7 @@ pub async fn handle_live_method<B: SessionAgentBuilder + 'static>(
         "mobkit/live/send_input" => handle_live_send_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/commit_input" => handle_live_commit_input(ctx, machine, params, rpc_id).await,
         "mobkit/live/interrupt" => handle_live_interrupt(ctx, machine, params, rpc_id).await,
+        "mobkit/live/truncate" => handle_live_truncate(ctx, machine, params, rpc_id).await,
         other => live_error(
             rpc_id,
             METHOD_NOT_FOUND_CODE,
@@ -1088,12 +1129,23 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         .await?;
     let llm_identity = service.live_session_llm_identity(session_id).await?;
     let visible_tools = service.live_visible_tool_defs(session_id).await?;
+    // 0.7.27: exact-retry + live-rewrite guards ride the open config — the
+    // user-content identity lane and the transcript rewrite generation come
+    // from the exported snapshot, mirroring the facade orchestrator.
+    let transcript_rewrite_generation = session.transcript_rewrite_generation().map_err(|err| {
+        meerkat_core::SessionError::Agent(meerkat_core::error::AgentError::InternalError(
+            err.to_string(),
+        ))
+    })?;
     Ok(RealtimeSessionOpenConfig::new(
         turning_mode,
         llm_identity,
         visible_tools,
         realtime_projection_messages(&session)?,
     )
+    .with_user_content_identities(session.realtime_user_content_identities())
+    .with_user_content_tombstones(session.realtime_user_content_tombstones())
+    .with_transcript_rewrite_generation(transcript_rewrite_generation)
     .with_runtime_system_context(realtime_projection_runtime_system_context(&session)?)
     .with_system_prompt(match realtime_projection_root_system_message(&session)? {
         Some(Message::System(system)) => Some(system.content),
@@ -1101,6 +1153,84 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         // any other shape means no root system prompt to project.
         _ => None,
     }))
+}
+
+/// Provenance marker on the runtime system-context append carrying the
+/// per-open instruction overlay from `mobkit/live/open` `instructions`.
+const LIVE_OPEN_INSTRUCTIONS_SOURCE: &str = "mobkit/live/open#instructions";
+
+/// Fold the per-open instruction overlay into the open config's runtime
+/// system-context lane.
+///
+/// Lane choice: `runtime_system_context` (NOT `with_system_prompt`). The
+/// typed `system_prompt` field is the projection of the member's durable
+/// prompt truth (R10: single owner of live prompt truth), so baking a
+/// per-open overlay into it would misreport the member's prompt to the
+/// provider and to every snapshot consumer. The runtime system-context lane
+/// is exactly the typed carrier for runtime-authored ephemeral context:
+/// adapters fold it into the provider session as authoritative instructions,
+/// and because this append exists only on this open's projection it never
+/// persists into the durable transcript.
+fn apply_live_open_instruction_overlay(
+    open_config: &mut RealtimeSessionOpenConfig,
+    instructions: Vec<String>,
+) {
+    let joined = instructions
+        .iter()
+        .map(|instruction| instruction.trim())
+        .filter(|instruction| !instruction.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if joined.is_empty() {
+        return;
+    }
+    open_config
+        .runtime_system_context
+        .push(PendingSystemContextAppend {
+            content: CoreRenderable::text(joined),
+            source: Some(LIVE_OPEN_INSTRUCTIONS_SOURCE.to_string()),
+            idempotency_key: None,
+            source_kind: SystemContextSource::RuntimeSteer,
+            peer_response_terminal: None,
+            accepted_at: std::time::SystemTime::now(),
+        });
+}
+
+/// Serialized size of one projected seed message, as counted by the clamp.
+fn serialized_message_chars(message: &Message) -> usize {
+    serde_json::to_string(message).map_or(0, |text| text.len())
+}
+
+/// Clamp the projected seed transcript to `max_chars` total serialized
+/// length by dropping WHOLE messages oldest-first. A projected root system
+/// message at `seed_messages[0]` is never dropped — the system prompt is
+/// prompt truth, not seed history. Returns the number of dropped messages.
+///
+/// This is an explicit STOPGAP for upstream ask 30
+/// (docs/design/upstream-asks.md): providers cap live session instructions
+/// at 65,536 tokens and a long member transcript overflows the projected
+/// seed at open time. Remove once meerkat ships a machine-owned seed-window
+/// projection.
+fn clamp_seed_messages_oldest_first(
+    open_config: &mut RealtimeSessionOpenConfig,
+    max_chars: usize,
+) -> usize {
+    let head = usize::from(matches!(
+        open_config.seed_messages.first(),
+        Some(Message::System(_) | Message::SystemNotice(_))
+    ));
+    let mut total: usize = open_config
+        .seed_messages
+        .iter()
+        .map(serialized_message_chars)
+        .sum();
+    let mut dropped = 0usize;
+    while total > max_chars && open_config.seed_messages.len() > head {
+        let removed = open_config.seed_messages.remove(head);
+        total -= serialized_message_chars(&removed);
+        dropped += 1;
+    }
+    dropped
 }
 
 /// #176: project the factory's typed realtime audio policy into the typed
@@ -1150,6 +1280,9 @@ fn build_live_projection_snapshot(
         snapshot_version: 0,
         seed_messages: open_config.seed_messages.clone(),
         visible_tools: open_config.visible_tools.clone(),
+        user_content_identities: open_config.user_content_identities.clone(),
+        user_content_tombstones: open_config.user_content_tombstones.clone(),
+        transcript_rewrite_generation: open_config.transcript_rewrite_generation,
         // R10: the typed `system_prompt` field is the single owner of live
         // prompt truth — never re-derived from `seed_messages[0]` (the
         // history projector drops `Message::System`, so seed inference
@@ -1341,6 +1474,26 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // both gate — and the machine binds — the identity actually opened.
     if let Some(model) = parsed.model {
         open_config.llm_identity.model = model;
+    }
+    // Per-open ephemeral instruction overlay — runtime system-context lane
+    // (see apply_live_open_instruction_overlay for the lane rationale).
+    if let Some(instructions) = parsed.instructions {
+        apply_live_open_instruction_overlay(&mut open_config, instructions.into_vec());
+    }
+    // Seed clamp, upstream ask 30 stopgap: the per-open override beats the
+    // gateway-wide `runtime_options.live.seed_max_chars`; the projected
+    // system prompt is never touched.
+    if let Some(max_chars) = parsed.seed_max_chars.or(ctx.seed_max_chars) {
+        let dropped = clamp_seed_messages_oldest_first(&mut open_config, max_chars);
+        if dropped > 0 {
+            tracing::info!(
+                target: "meerkat_mobkit::live_wiring",
+                %session_id,
+                dropped,
+                max_chars,
+                "live open seed clamped oldest-first (upstream ask 30 stopgap)"
+            );
+        }
     }
 
     // B19 precheck runs BEFORE any channel infra is minted (the reference
@@ -1598,7 +1751,8 @@ fn live_command_result_from_machine_authority(
                 .map_err(|err| format!("failed to serialize LiveInterruptResult: {err}"))
         }
         LiveCommandPublicKind::TruncateAssistantOutput => {
-            Err("live/truncate is not surfaced by the mobkit gateway".to_string())
+            serde_json::to_value(LiveTruncateResult::truncated())
+                .map_err(|err| format!("failed to serialize LiveTruncateResult: {err}"))
         }
     }
 }
@@ -2306,6 +2460,74 @@ async fn handle_live_interrupt(
     }
 }
 
+/// A7: `mobkit/live/truncate` — truncate an assistant item at the given
+/// playback cursor. Port of the reference `handle_live_truncate`; maps to
+/// `LiveAdapterCommand::TruncateAssistantOutput` (no webrtc output-audio
+/// discard arm — the mobkit gateway mounts the WS transport only).
+async fn handle_live_truncate(
+    ctx: &GatewayLiveContext,
+    machine: &Arc<MeerkatMachine>,
+    params: &Value,
+    rpc_id: Value,
+) -> JsonRpcResponse {
+    let parsed: LiveTruncateParams = match parse_live_params(params, &rpc_id) {
+        Ok(p) => p,
+        Err(resp) => return *resp,
+    };
+    // Validate item_id is non-empty. content_index is `u32` and
+    // audio_played_ms is `u64`, so the type system already rejects negatives
+    // at deserialization (`>= 0` is satisfied by construction).
+    if parsed.item_id.is_empty() {
+        return live_error(rpc_id, INVALID_PARAMS_CODE, "item_id must be non-empty");
+    }
+
+    let channel_id = LiveChannelId::new(&parsed.channel_id);
+    let command_kind =
+        meerkat_runtime::meerkat_machine::dsl::LiveCommandPublicKind::TruncateAssistantOutput;
+    let Some(session_id) = machine.live_session_for_active_channel(&channel_id).await else {
+        return live_unbound_command_error_response(rpc_id, machine, &channel_id, command_kind)
+            .await;
+    };
+    let command = LiveAdapterCommand::TruncateAssistantOutput {
+        item_id: parsed.item_id.clone(),
+        content_index: parsed.content_index,
+        audio_played_ms: parsed.audio_played_ms,
+    };
+
+    match ctx.host.send_command_observed(&channel_id, command).await {
+        Ok(acceptance) => {
+            let authority = match machine
+                .resolve_live_command_result(&session_id, &acceptance)
+                .await
+            {
+                Ok(authority) => authority,
+                Err(error) => {
+                    return live_error(
+                        rpc_id,
+                        INTERNAL_ERROR_CODE,
+                        format!("live truncate authority rejected result: {error}"),
+                    );
+                }
+            };
+            match live_command_result_from_machine_authority(&authority, command_kind) {
+                Ok(value) => live_success(rpc_id, value),
+                Err(error) => live_error(rpc_id, INTERNAL_ERROR_CODE, error),
+            }
+        }
+        Err(err) => {
+            live_command_error_response(
+                rpc_id,
+                machine,
+                &session_id,
+                &channel_id,
+                command_kind,
+                &err,
+            )
+            .await
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -2317,6 +2539,177 @@ mod tests {
 
     fn other_session_id() -> SessionId {
         SessionId::parse("00000000-0000-0000-0000-000000000002").unwrap()
+    }
+
+    fn test_open_config(seed_messages: Vec<Message>) -> RealtimeSessionOpenConfig {
+        RealtimeSessionOpenConfig::new(
+            RealtimeTurningMode::ProviderManaged,
+            meerkat_core::SessionLlmIdentity {
+                model: "gpt-realtime-2".to_string(),
+                provider: meerkat_core::Provider::OpenAI,
+                self_hosted_server_id: None,
+                provider_params: None,
+                auth_binding: None,
+            },
+            Vec::new(),
+            seed_messages,
+        )
+        .with_system_prompt(Some("You are the member.".to_string()))
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message::User(meerkat_core::types::UserMessage::text(text))
+    }
+
+    fn system_message(text: &str) -> Message {
+        Message::System(meerkat_core::types::SystemMessage::new(text))
+    }
+
+    #[test]
+    fn live_open_params_accept_string_and_array_instructions_and_seed_clamp() {
+        let one: GatewayLiveOpenParams = serde_json::from_value(serde_json::json!({
+            "identity": "reachy",
+            "instructions": "Speak Swedish.",
+            "seed_max_chars": 1000
+        }))
+        .expect("single-string instructions parse");
+        assert_eq!(
+            one.instructions.expect("instructions").into_vec(),
+            vec!["Speak Swedish.".to_string()]
+        );
+        assert_eq!(one.seed_max_chars, Some(1000));
+
+        let many: GatewayLiveOpenParams = serde_json::from_value(serde_json::json!({
+            "instructions": ["Speak Swedish.", "Keep replies short."]
+        }))
+        .expect("array instructions parse");
+        assert_eq!(
+            many.instructions.expect("instructions").into_vec(),
+            vec![
+                "Speak Swedish.".to_string(),
+                "Keep replies short.".to_string()
+            ]
+        );
+        assert_eq!(many.seed_max_chars, None);
+
+        let neither: GatewayLiveOpenParams =
+            serde_json::from_value(serde_json::json!({})).expect("empty params parse");
+        assert!(neither.instructions.is_none());
+        assert!(neither.seed_max_chars.is_none());
+
+        assert!(
+            serde_json::from_value::<GatewayLiveOpenParams>(
+                serde_json::json!({ "instructions": 7 })
+            )
+            .is_err(),
+            "non-string instructions must be rejected"
+        );
+    }
+
+    /// Fix 2 lane assertion: the per-open overlay lands ONLY on the runtime
+    /// system-context lane — the typed system prompt (durable prompt truth)
+    /// and the projected seed history stay byte-identical.
+    #[test]
+    fn instruction_overlay_rides_the_runtime_system_context_lane() {
+        let seed = vec![system_message("You are the member."), user_message("hello")];
+        let mut config = test_open_config(seed.clone());
+
+        apply_live_open_instruction_overlay(
+            &mut config,
+            vec![
+                "Speak Swedish.".to_string(),
+                "   ".to_string(),
+                "Keep replies short.".to_string(),
+            ],
+        );
+
+        assert_eq!(config.runtime_system_context.len(), 1);
+        let append = &config.runtime_system_context[0];
+        assert_eq!(
+            append.content.render_text(),
+            "Speak Swedish.\n\nKeep replies short."
+        );
+        assert_eq!(
+            append.source.as_deref(),
+            Some(LIVE_OPEN_INSTRUCTIONS_SOURCE)
+        );
+        assert!(
+            append.source_kind.is_runtime_steer(),
+            "overlay is a transient runtime steer"
+        );
+        assert_eq!(
+            config.system_prompt.as_deref(),
+            Some("You are the member."),
+            "the typed system prompt is not the overlay lane"
+        );
+        assert_eq!(config.seed_messages, seed, "seed history untouched");
+    }
+
+    #[test]
+    fn empty_or_whitespace_instructions_append_nothing() {
+        let mut config = test_open_config(Vec::new());
+        apply_live_open_instruction_overlay(&mut config, Vec::new());
+        apply_live_open_instruction_overlay(&mut config, vec!["  ".to_string(), String::new()]);
+        assert!(config.runtime_system_context.is_empty());
+    }
+
+    /// Fix 4 (upstream ask 30 stopgap): whole messages drop OLDEST-first, a
+    /// projected root system message never drops, and the surviving tail fits
+    /// the budget.
+    #[test]
+    fn seed_clamp_drops_oldest_first_and_never_touches_the_system_prompt() {
+        let system = system_message("You are the member.");
+        let oldest = user_message(&"a".repeat(400));
+        let middle = user_message(&"b".repeat(400));
+        let newest = user_message(&"c".repeat(400));
+        let mut config =
+            test_open_config(vec![system.clone(), oldest, middle.clone(), newest.clone()]);
+
+        // Budget for the system message + two newest user messages.
+        let budget = serialized_message_chars(&system)
+            + serialized_message_chars(&middle)
+            + serialized_message_chars(&newest);
+        let dropped = clamp_seed_messages_oldest_first(&mut config, budget);
+        assert_eq!(dropped, 1, "exactly the oldest user message drops");
+        assert_eq!(config.seed_messages, vec![system.clone(), middle, newest]);
+        assert!(
+            config
+                .seed_messages
+                .iter()
+                .map(serialized_message_chars)
+                .sum::<usize>()
+                <= budget
+        );
+
+        // A budget below even the system message still never drops it.
+        let dropped = clamp_seed_messages_oldest_first(&mut config, 1);
+        assert_eq!(dropped, 2, "both remaining user messages drop");
+        assert_eq!(config.seed_messages, vec![system]);
+        assert_eq!(
+            config.system_prompt.as_deref(),
+            Some("You are the member."),
+            "the typed system prompt field is never clamped"
+        );
+    }
+
+    #[test]
+    fn seed_clamp_without_a_root_system_message_drops_from_the_front() {
+        let oldest = user_message(&"a".repeat(400));
+        let newest = user_message(&"b".repeat(400));
+        let mut config = test_open_config(vec![oldest, newest.clone()]);
+        let budget = serialized_message_chars(&newest);
+        let dropped = clamp_seed_messages_oldest_first(&mut config, budget);
+        assert_eq!(dropped, 1);
+        assert_eq!(config.seed_messages, vec![newest]);
+    }
+
+    #[test]
+    fn seed_clamp_within_budget_is_a_no_op() {
+        let seed = vec![system_message("prompt"), user_message("hi")];
+        let mut config = test_open_config(seed.clone());
+        let dropped = clamp_seed_messages_oldest_first(&mut config, usize::MAX);
+        assert_eq!(dropped, 0);
+        assert_eq!(config.seed_messages, seed);
     }
 
     /// #301 port: the surface mapper routes through the canonical typed
