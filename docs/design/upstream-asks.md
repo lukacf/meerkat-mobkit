@@ -32,6 +32,33 @@ holds the original deep-dive evidence.
 
 ---
 
+
+## Status ledger (verified against the meerkat CHANGELOG, 2026-07-10)
+
+**24 of 30 asks shipped; 6 open.**
+
+| Asks | Status |
+|---|---|
+| 1–8 (agent-memory initiative) | shipped meerkat 0.7.12 |
+| 9 (taint surfaces), 10 (host runnables) | shipped meerkat 0.7.13 |
+| 11 (incremental session persistence) | shipped meerkat 0.7.25 |
+| 12 (compaction-archive singletons) | **OPEN** |
+| 13 (event-forwarder backoff/quarantine) | **OPEN** |
+| 14 (typed member health surface) | **OPEN** |
+| 15 (transcript interaction ids) | shipped meerkat 0.7.25 (residual: the classic-send external work door has no interaction param) |
+| 16–19 (schedule poisoned-row family) | shipped meerkat 0.7.19 |
+| 20, 21, 21b (never-ran/archive strands) | shipped meerkat 0.7.22 |
+| 21c (retire-archive mob deadlock) | shipped meerkat 0.7.22 |
+| 21d (identity-first worker archive-NotFound) | shipped meerkat 0.7.23 |
+| 22 (past-due one-shot regeneration) | shipped meerkat 0.7.20 |
+| 23–26 (workgraph break-glass/GC/uniqueness/reply seam) | shipped meerkat 0.7.25 |
+| 27 (unreachable-peer sends read as success) | **OPEN** |
+| 28 (kickoff-scoped objective conclusion) | **OPEN** |
+| 29 (profile overrides freeze tool surface — Bug G′) | **OPEN** |
+
+Keep this table current when filing or closing asks; per-ask sections below
+carry the detail and mobkit adoption notes.
+
 ## Ask 1 — Typed injected-context message class, excluded from compaction indexing
 
 **Title:** Add a typed injected-context message class that
