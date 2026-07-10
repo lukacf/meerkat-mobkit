@@ -2662,12 +2662,8 @@ mod tests {
         let oldest = user_message(&"a".repeat(400));
         let middle = user_message(&"b".repeat(400));
         let newest = user_message(&"c".repeat(400));
-        let mut config = test_open_config(vec![
-            system.clone(),
-            oldest.clone(),
-            middle.clone(),
-            newest.clone(),
-        ]);
+        let mut config =
+            test_open_config(vec![system.clone(), oldest, middle.clone(), newest.clone()]);
 
         // Budget for the system message + two newest user messages.
         let budget = serialized_message_chars(&system)
