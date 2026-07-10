@@ -7,8 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.32] - 2026-07-10
+
+### Added
+
+- Live image input (meerkat 0.7.27): still images ride the existing
+  `mobkit/live/send_input` as `{kind: "image", idempotency_key, mime,
+  data}` — exact-retry deduplicated by the runtime's user-content identity
+  lane, which also rides the open config so reopened channels do not
+  replay committed images. SDK conveniences `live_send_input_image` /
+  `liveSendInputImage`. Only `gpt-realtime-2` accepts image input in the
+  shipped catalog.
+- Deterministic (non-LLM) schedule targets from the SDK:
+  `runtime_options.host_runnables` registers named host runnables whose
+  fire forwards over the stdio callback bridge as `callback/schedule_fire`;
+  Python `MobKitBuilder.host_runnables([...])` +
+  `runtime.on_schedule_fire(name, handler)`. Agents target them through the
+  `meerkat_schedule_*` tools' `host_runnable` target kind.
+- Per-open instruction overlay on `mobkit/live/open` (`instructions`:
+  string or array) — carried on the runtime-system-context lane, ephemeral
+  to the open, never persisted into the durable transcript; drops on
+  `live/refresh` by construction.
+- Callback/SDK tools publish real input schemas:
+  `SessionBuildOptions.register_tool(..., input_schema=...)` flows through
+  the build callback into the tool defs the provider (and live seeds) see;
+  schema-less registrations stay wire-compatible.
+- `mobkit/live/truncate` + `live_truncate`/`liveTruncate` SDK methods.
+- Live seed clamp: `runtime_options.live.seed_max_chars` (+ per-open
+  override) drops whole seed messages oldest-first to fit the realtime
+  provider's instruction cap — an explicit stopgap for upstream ask 30
+  (seed-window/summarized projection belongs in core).
+
 ### Changed
 
+- meerkat family pinned to `=0.7.27` (from `=0.7.26`): image input on the
+  OpenAI Realtime live channel end to end, the realtime user-content
+  identity lane (exact-retry + live rewrite guards), redacted image
+  receipts synthesized only after durable reducer application, and an
+  explicit durable start boundary for mob retirement (new mob event kinds,
+  projected by the console/SSE surfaces).
 - Identity-first bootstrap restores up to four durable members concurrently
   instead of serially, with bounded fan-out and per-member restore timing logs
   for slow resumes. This prevents large full-history rosters from accumulating
