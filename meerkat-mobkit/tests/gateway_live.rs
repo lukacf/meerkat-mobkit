@@ -163,6 +163,7 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
         "mobkit/live/status",
         "mobkit/live/close",
         "mobkit/live/refresh",
+        "mobkit/live/truncate",
     ] {
         assert!(methods.iter().any(|m| m == method), "missing {method}");
     }
@@ -186,6 +187,119 @@ fn live_opt_in_advertises_methods_and_mounts_the_ws_route() {
     assert!(
         response != 404,
         "live ws route must be mounted (got 404 from {url})"
+    );
+}
+
+/// Fix 5: `mobkit/live/truncate` is served (not method-not-found) and
+/// answers TYPED errors — invalid params for an empty item_id, and the
+/// machine-authority channel-not-found rejection for a channel that was
+/// never opened. A full truncate round-trip needs a live provider channel;
+/// the command mapping is covered by the shared
+/// `live_command_result_from_machine_authority` unit coverage.
+#[test]
+fn live_truncate_answers_typed_errors_without_a_channel() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(init_params(&state_dir, json!(true)));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(init["result"]["contract_version"].is_string(), "{init}");
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "truncate-empty-item",
+        "method": "mobkit/live/truncate",
+        "params": {
+            "channel_id": "chan-1",
+            "item_id": "",
+            "content_index": 0,
+            "audio_played_ms": 0
+        }
+    }));
+    let response = gateway.wait_for_response("truncate-empty-item", Duration::from_secs(15));
+    assert_eq!(response["error"]["code"], json!(-32602), "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("item_id"),
+        "{response}"
+    );
+
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "truncate-unbound",
+        "method": "mobkit/live/truncate",
+        "params": {
+            "channel_id": "no-such-channel",
+            "item_id": "item_1",
+            "content_index": 0,
+            "audio_played_ms": 1200
+        }
+    }));
+    let response = gateway.wait_for_response("truncate-unbound", Duration::from_secs(15));
+    let error = response.get("error").expect("typed error, not a hang");
+    assert!(
+        error["message"]
+            .as_str()
+            .expect("error message")
+            .contains("no-such-channel"),
+        "unbound-channel rejection names the channel: {response}"
+    );
+}
+
+/// Fix 4 parse surface: `runtime_options.live.seed_max_chars` is accepted at
+/// init (object form) — a bad value fails init loudly.
+#[test]
+fn live_object_form_accepts_seed_max_chars() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(init_params(&state_dir, json!({ "seed_max_chars": 200000 })));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(init["result"]["contract_version"].is_string(), "{init}");
+}
+
+/// Fix 1 registration surface: `runtime_options.host_runnables` is accepted
+/// at init on a persistent gateway (the schedule host composes the callback
+/// runnables), and malformed values fail init loudly. The fire path
+/// (callback/schedule_fire over the bridge) is unit-tested in
+/// `schedule_wiring`; target-kind acceptance is pinned there too.
+#[test]
+fn init_accepts_host_runnables_and_rejects_duplicates() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "runtime_options": { "host_runnables": ["digest", "backup.rotate"] }
+        }
+    }));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(init["result"]["contract_version"].is_string(), "{init}");
+    drop(gateway);
+
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG,
+            "runtime_options": { "host_runnables": ["digest", "digest"] }
+        }
+    }));
+    let init = gateway.wait_for_response("init", Duration::from_mins(1));
+    assert!(
+        init["error"]["message"]
+            .as_str()
+            .expect("init error")
+            .contains("duplicated"),
+        "{init}"
     );
 }
 

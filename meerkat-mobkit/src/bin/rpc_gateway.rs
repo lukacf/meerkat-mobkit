@@ -83,20 +83,29 @@ struct GatewayRuntimeOptions {
     workgraph: GatewayWorkgraphOption,
     /// Live (realtime) transport opt-in (default off). Persistent mode only.
     live: GatewayLiveOption,
+    /// SDK-registered deterministic schedule targets
+    /// (`runtime_options.host_runnables`): each name registers a schedule
+    /// host runnable whose fire forwards over the callback bridge as
+    /// `callback/schedule_fire`.
+    host_runnables: Vec<meerkat::HostRunnableName>,
 }
 
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
 /// transport on the gateway's HTTP listener with bootstrap URLs derived from
-/// the loopback base; `{"public_base_url": "ws://192.168.0.123:8080"}`
+/// the loopback base; the object form
+/// `{"public_base_url": "ws://192.168.0.123:8080", "seed_max_chars": 200000}`
 /// additionally rewrites the minted bootstrap URLs for clients that reach
 /// the gateway through a proxy or a LAN address (the token/channel query
-/// parameters are appended to this base).
+/// parameters are appended to this base) and/or clamps the projected seed
+/// transcript at open time (upstream ask 30 stopgap; see
+/// `live_wiring::clamp_seed_messages_oldest_first`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 enum GatewayLiveOption {
     #[default]
     Disabled,
     Enabled {
         public_base_url: Option<String>,
+        seed_max_chars: Option<usize>,
     },
 }
 
@@ -180,6 +189,7 @@ impl Default for GatewayRuntimeOptions {
             agent_memory: None,
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
+            host_runnables: Vec::new(),
         }
     }
 }
@@ -416,6 +426,128 @@ mod tests {
         assert_eq!(modules[0].args, Vec::<String>::new());
         assert_eq!(modules[0].restart_policy, RestartPolicy::Never);
         assert!(pre_spawn.is_empty());
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_host_runnables() {
+        let params = json!({
+            "runtime_options": {
+                "host_runnables": ["digest", "backup.rotate"]
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+        assert_eq!(
+            options
+                .host_runnables
+                .iter()
+                .map(meerkat::HostRunnableName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["digest", "backup.rotate"]
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_invalid_host_runnables() {
+        for (runtime_options, needle) in [
+            (json!({"host_runnables": "digest"}), "must be an array"),
+            (json!({"host_runnables": [7]}), "must be strings"),
+            (json!({"host_runnables": ["  "]}), "is invalid"),
+            (
+                json!({"host_runnables": ["digest", "digest"]}),
+                "duplicated",
+            ),
+            (
+                json!({"host_runnables": [
+                    meerkat_mobkit::schedule_wiring::STEWARD_DREAM_RUNNABLE
+                ]}),
+                "reserved",
+            ),
+        ] {
+            let params = json!({ "runtime_options": runtime_options });
+            let err = match parse_gateway_runtime_options(&params, None) {
+                Err(err) => err,
+                Ok(_) => panic!("expected rejection for {params}"),
+            };
+            assert!(err.contains(needle), "{err} should mention '{needle}'");
+        }
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_live_seed_max_chars() {
+        let params = json!({
+            "runtime_options": {
+                "live": { "seed_max_chars": 200000 }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+        assert_eq!(
+            options.live,
+            GatewayLiveOption::Enabled {
+                public_base_url: None,
+                seed_max_chars: Some(200_000),
+            }
+        );
+
+        let err = match parse_gateway_runtime_options(
+            &json!({"runtime_options": {"live": {"seed_max_chars": 0}}}),
+            None,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("zero seed_max_chars must be rejected"),
+        };
+        assert!(err.contains("seed_max_chars"), "{err}");
+    }
+
+    fn test_callback_bridge() -> StdioCallbackBridge {
+        let (stdout_tx, _stdout_rx) = mpsc::channel::<String>(4);
+        StdioCallbackBridge::new(stdout_tx)
+    }
+
+    /// Fix 3: `register_tool(..., input_schema=...)` schemas cross the
+    /// `callback/build_agent` wire and land on the dispatcher's `ToolDef`s
+    /// (which is what `live_visible_tool_defs` and normal turns both read).
+    #[test]
+    fn callback_tool_dispatcher_defs_carry_wire_schemas() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+        });
+        let specs = vec![
+            CallbackToolSpec::parse(&json!("legacy_name")).expect("legacy string spec"),
+            CallbackToolSpec::parse(&json!({
+                "name": "weather",
+                "description": "Look up the weather",
+                "input_schema": schema
+            }))
+            .expect("object spec"),
+        ];
+        let dispatcher =
+            CallbackToolDispatcher::new(test_callback_bridge(), "build-1".to_string(), specs);
+        let defs = AgentToolDispatcher::tools(&dispatcher);
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name.as_ref(), "legacy_name");
+        assert_eq!(defs[0].description, "Python callback tool");
+        assert_eq!(defs[0].input_schema, json!({"type": "object"}));
+        assert_eq!(defs[1].name.as_ref(), "weather");
+        assert_eq!(defs[1].description, "Look up the weather");
+        assert_eq!(defs[1].input_schema, schema);
+    }
+
+    #[test]
+    fn callback_tool_spec_rejects_malformed_wire_entries() {
+        for value in [
+            json!(7),
+            json!({"description": "no name"}),
+            json!({"name": ""}),
+            json!({"name": "x", "input_schema": "not-an-object"}),
+            json!({"name": "x", "description": 3}),
+        ] {
+            assert!(
+                CallbackToolSpec::parse(&value).is_err(),
+                "expected rejection for {value}"
+            );
+        }
     }
 
     #[test]
@@ -1744,6 +1876,7 @@ fn parse_gateway_runtime_options(
         "implicit_delegate_idle_sweep_interval_ms",
         "workgraph",
         "live",
+        "host_runnables",
     ];
     let unsupported = runtime_options
         .keys()
@@ -1847,16 +1980,30 @@ fn parse_gateway_runtime_options(
         parsed.live = match value {
             Value::Bool(true) => GatewayLiveOption::Enabled {
                 public_base_url: None,
+                seed_max_chars: None,
             },
             Value::Bool(false) => GatewayLiveOption::Disabled,
             Value::Object(map) => {
                 let enabled = map.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let seed_max_chars = match map.get("seed_max_chars") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        let chars = value.as_u64().filter(|chars| *chars > 0).ok_or_else(|| {
+                            "runtime_options.live.seed_max_chars must be a positive integer"
+                                .to_string()
+                        })?;
+                        Some(usize::try_from(chars).map_err(|_| {
+                            "runtime_options.live.seed_max_chars is too large".to_string()
+                        })?)
+                    }
+                };
                 if enabled {
                     GatewayLiveOption::Enabled {
                         public_base_url: map
                             .get("public_base_url")
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        seed_max_chars,
                     }
                 } else {
                     GatewayLiveOption::Disabled
@@ -1864,11 +2011,38 @@ fn parse_gateway_runtime_options(
             }
             _ => {
                 return Err(
-                    "runtime_options.live must be a boolean or an object                      ({enabled?, public_base_url?})"
+                    "runtime_options.live must be a boolean or an object                      ({enabled?, public_base_url?, seed_max_chars?})"
                         .to_string(),
                 );
             }
         };
+    }
+    if let Some(value) = runtime_options.get("host_runnables") {
+        let entries = value.as_array().ok_or_else(|| {
+            "runtime_options.host_runnables must be an array of runnable names".to_string()
+        })?;
+        let mut names = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let text = entry.as_str().ok_or_else(|| {
+                "runtime_options.host_runnables entries must be strings".to_string()
+            })?;
+            let name = meerkat::HostRunnableName::parse(text).map_err(|err| {
+                format!("runtime_options.host_runnables entry '{text}' is invalid: {err}")
+            })?;
+            if name.as_str() == meerkat_mobkit::schedule_wiring::STEWARD_DREAM_RUNNABLE {
+                return Err(format!(
+                    "runtime_options.host_runnables entry '{text}' collides with the \
+                     reserved steward dream runnable"
+                ));
+            }
+            if names.contains(&name) {
+                return Err(format!(
+                    "runtime_options.host_runnables entry '{text}' is duplicated"
+                ));
+            }
+            names.push(name);
+        }
+        parsed.host_runnables = names;
     }
     if let Some(value) = runtime_options.get("demo_llm") {
         parsed.demo_llm = value
@@ -3034,11 +3208,70 @@ impl meerkat_mobkit::identity_first::gateway_bridges::CallbackBridge for StdioCa
     }
 }
 
+/// One SDK-registered callback tool as it crosses the `callback/build_agent`
+/// response wire: a bare name string (legacy shape) or
+/// `{name, description?, input_schema?}` so the agent — and the live
+/// projection's `live_visible_tool_defs` — see the real argument schema
+/// instead of the permissive `{"type": "object"}` placeholder.
+struct CallbackToolSpec {
+    name: String,
+    description: Option<String>,
+    input_schema: Option<Value>,
+}
+
+impl CallbackToolSpec {
+    fn parse(value: &Value) -> Result<Self, String> {
+        if let Some(name) = value.as_str() {
+            return Ok(Self {
+                name: name.to_string(),
+                description: None,
+                input_schema: None,
+            });
+        }
+        let Some(object) = value.as_object() else {
+            return Err(format!(
+                "tools entries must be strings or {{name, description?, input_schema?}} \
+                 objects, got: {value}"
+            ));
+        };
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("tool object requires a non-empty string name, got: {value}"))?
+            .to_string();
+        let description = match object.get("description") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(other) => {
+                return Err(format!(
+                    "tool '{name}' description must be a string, got: {other}"
+                ));
+            }
+        };
+        let input_schema = match object.get("input_schema") {
+            None | Some(Value::Null) => None,
+            Some(schema @ Value::Object(_)) => Some(schema.clone()),
+            Some(other) => {
+                return Err(format!(
+                    "tool '{name}' input_schema must be a JSON object, got: {other}"
+                ));
+            }
+        };
+        Ok(Self {
+            name,
+            description,
+            input_schema,
+        })
+    }
+}
+
 /// Tool dispatcher that routes tool calls to Python via the callback bridge.
 ///
-/// Created from tool name strings provided by `SessionBuildOptions.add_tools()`.
-/// When the agent calls a tool, `dispatch()` sends `callback/call_tool` to Python
-/// and returns the result.
+/// Created from the tool specs the SDK returned from `callback/build_agent`
+/// (`add_tools()` names or `register_tool()` name + description + schema).
+/// When the agent calls a tool, `dispatch()` sends `callback/call_tool` to
+/// Python and returns the result.
 struct CallbackToolDispatcher {
     bridge: StdioCallbackBridge,
     scope_id: String,
@@ -3046,14 +3279,18 @@ struct CallbackToolDispatcher {
 }
 
 impl CallbackToolDispatcher {
-    fn new(bridge: StdioCallbackBridge, scope_id: String, tool_names: Vec<String>) -> Self {
-        let tool_defs: Vec<Arc<ToolDef>> = tool_names
+    fn new(bridge: StdioCallbackBridge, scope_id: String, tools: Vec<CallbackToolSpec>) -> Self {
+        let tool_defs: Vec<Arc<ToolDef>> = tools
             .into_iter()
-            .map(|name| {
+            .map(|tool| {
                 Arc::new(ToolDef {
-                    name: name.into(),
-                    description: "Python callback tool".to_string(),
-                    input_schema: json!({"type": "object"}),
+                    name: tool.name.into(),
+                    description: tool
+                        .description
+                        .unwrap_or_else(|| "Python callback tool".to_string()),
+                    input_schema: tool
+                        .input_schema
+                        .unwrap_or_else(|| json!({"type": "object"})),
                     provenance: None,
                 })
             })
@@ -3302,21 +3539,20 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 if let Some(tools) = result.get("tools") {
                     match tools.as_array() {
                         Some(arr) => {
-                            let mut tool_names = Vec::with_capacity(arr.len());
+                            let mut tool_specs = Vec::with_capacity(arr.len());
                             for v in arr {
-                                if let Some(name) = v.as_str() {
-                                    tool_names.push(name.to_string());
-                                } else {
-                                    return Err(SessionError::Agent(agent_tool_error(format!(
-                                        "callback/build_agent: tools must be strings, got: {v}"
-                                    ))));
-                                }
+                                let spec = CallbackToolSpec::parse(v).map_err(|reason| {
+                                    SessionError::Agent(agent_tool_error(format!(
+                                        "callback/build_agent: {reason}"
+                                    )))
+                                })?;
+                                tool_specs.push(spec);
                             }
-                            if !tool_names.is_empty() {
+                            if !tool_specs.is_empty() {
                                 let dispatcher = CallbackToolDispatcher::new(
                                     self.bridge.clone(),
                                     scope_id.clone(),
-                                    tool_names,
+                                    tool_specs,
                                 );
                                 let build = modified_req.build.get_or_insert_with(|| {
                                     meerkat_core::service::SessionBuildOptions::default()
@@ -4841,9 +5077,32 @@ external_addressable = true
         // the dream as a host runnable and find-or-create its cadence schedule
         // (idempotent across boots via the persistent store). The in-process
         // fallback loop is spawned only when there is no schedule host.
-        let runnable_host = meerkat_mobkit::schedule_wiring::steward_dream_runnable_host(
+        // SDK-registered runnables (`runtime_options.host_runnables`) compose
+        // into the same registry: their fires forward over the callback
+        // bridge as `callback/schedule_fire`, so apps get deterministic
+        // (non-LLM) schedule targets.
+        let callback_runnables = (!gateway_options.host_runnables.is_empty()).then(|| {
+            (
+                Arc::new(bridge.clone())
+                    as Arc<dyn meerkat_mobkit::identity_first::gateway_bridges::CallbackBridge>,
+                gateway_options.host_runnables.clone(),
+            )
+        });
+        let runnable_host = match meerkat_mobkit::schedule_wiring::gateway_runnable_host(
             agent_memory_steward.clone(),
-        );
+            callback_runnables,
+        ) {
+            Ok(host) => host,
+            Err(error) => {
+                // Structurally unreachable: names are deduplicated and the
+                // reserved steward name rejected at option parse time.
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("failed to compose schedule host runnables: {error}"),
+                );
+            }
+        };
         if let Some(steward) = agent_memory_steward.as_ref()
             && let Err(error) = meerkat_mobkit::schedule_wiring::ensure_steward_dream_schedule(
                 &schedule_service,
@@ -4879,6 +5138,13 @@ external_addressable = true
             Some(watchdog),
         )
     } else {
+        if !gateway_options.host_runnables.is_empty() {
+            tracing::warn!(
+                "runtime_options.host_runnables is configured but this gateway runs no \
+                 schedule host (ephemeral mode, or schedule store unavailable): \
+                 host-runnable schedule targets will never fire"
+            );
+        }
         (None, None)
     };
 
@@ -4923,8 +5189,13 @@ external_addressable = true
             let ws_base_url = match &gateway_options.live {
                 GatewayLiveOption::Enabled {
                     public_base_url: Some(public),
+                    ..
                 } => public.trim_end_matches('/').to_string(),
                 _ => format!("ws://127.0.0.1:{port}"),
+            };
+            let live_seed_max_chars = match &gateway_options.live {
+                GatewayLiveOption::Enabled { seed_max_chars, .. } => *seed_max_chars,
+                GatewayLiveOption::Disabled => None,
             };
             let live_ctx = Arc::new(meerkat_mobkit::live_wiring::attach_live(
                 Arc::clone(&live_service),
@@ -4932,6 +5203,7 @@ external_addressable = true
                 &live_agent_factory,
                 meerkat::Config::default(),
                 ws_base_url,
+                live_seed_max_chars,
             ));
             let app = app.merge(meerkat_live::live_ws_router(Arc::clone(&live_ctx.ws_state)));
             let handler =

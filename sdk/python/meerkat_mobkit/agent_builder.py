@@ -63,6 +63,9 @@ class CallbackDispatcher:
         self._roster_provider: Any | None = None
         self._topology_provider: Any | None = None
         self._agent_customizer: Any | None = None
+        # Host-runnable schedule-fire handlers, keyed by runnable name
+        # (callback/schedule_fire from runtime_options.host_runnables targets)
+        self._schedule_fire_handlers: dict[str, Any] = {}
 
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
@@ -84,6 +87,21 @@ class CallbackDispatcher:
 
     def register_agent_customizer(self, provider: Any) -> None:
         self._agent_customizer = provider
+
+    def register_schedule_fire_handler(self, name: str, handler: Any) -> None:
+        """Register the handler for a named host runnable.
+
+        The gateway invokes it via ``callback/schedule_fire`` when a schedule
+        with a ``host_runnable`` target of that name fires. The handler
+        receives the occurrence dict (``schedule_id``, ``occurrence_id``,
+        ``due_at``, optional ``payload``); raising marks the occurrence
+        attempt failed in the durable schedule store.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError(f"runnable name must be a non-empty string, got {name!r}")
+        if not callable(handler):
+            raise TypeError(f"handler must be callable, got {type(handler).__name__}: {handler!r}")
+        self._schedule_fire_handlers[name] = handler
 
     def release_scope(self, scope_id: str) -> None:
         """Remove all tool handlers for a scope. Call when a session ends."""
@@ -165,6 +183,22 @@ class CallbackDispatcher:
             if isinstance(result, ToolResultContent):
                 return {"content_blocks": result.blocks}
             return {"content": result}
+
+        if method == "callback/schedule_fire":
+            runnable = params.get("runnable", "")
+            handler = self._schedule_fire_handlers.get(runnable)
+            if handler is None:
+                # The error crosses the bridge and fails the occurrence in the
+                # durable schedule store — never silently complete a fire the
+                # app has no handler for.
+                raise ValueError(
+                    f"no schedule-fire handler registered for runnable: {runnable}"
+                )
+            occurrence = params.get("occurrence", {})
+            result = handler(occurrence)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
 
         # ----- Identity-first provider routing (REQ-45) -----
         if method.startswith("callback/continuity_store/"):

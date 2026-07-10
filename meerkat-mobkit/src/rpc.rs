@@ -1437,6 +1437,7 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/live/send_input",
                     "mobkit/live/commit_input",
                     "mobkit/live/interrupt",
+                    "mobkit/live/truncate",
                 ]);
             }
             if identity_ctx.is_some() {

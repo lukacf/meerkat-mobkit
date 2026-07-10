@@ -2539,5 +2539,28 @@ describe("MobHandle live methods", () => {
     setResponse(() => ({ refreshed: true }));
     await handle.liveRefresh("reachy");
     assert.equal(calls[3].method, "mobkit/live/refresh");
+
+    setResponse(() => ({ accepted: true }));
+    await handle.liveSendInputImage("reachy", "frame-0001", "image/jpeg", "aGVsbG8=");
+    assert.equal(calls[4].method, "mobkit/live/send_input");
+    assert.deepEqual(calls[4].params, {
+      identity: "reachy",
+      chunk: {
+        kind: "image",
+        idempotency_key: "frame-0001",
+        mime: "image/jpeg",
+        data: "aGVsbG8=",
+      },
+    });
+
+    setResponse(() => ({ status: "truncated" }));
+    await handle.liveTruncate("chan-1", "item_1", 0, 1200);
+    assert.equal(calls[5].method, "mobkit/live/truncate");
+    assert.deepEqual(calls[5].params, {
+      channel_id: "chan-1",
+      item_id: "item_1",
+      content_index: 0,
+      audio_played_ms: 1200,
+    });
   });
 });

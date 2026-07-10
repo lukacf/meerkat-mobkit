@@ -115,6 +115,9 @@ export class SessionBuildOptions {
 
   private _tools: string[] = [];
   private _toolHandlers: Map<string, ToolHandler> = new Map();
+  // Per-tool wire metadata from registerTool options; tools without an
+  // entry cross the wire as bare name strings.
+  private _toolDefs: Map<string, Record<string, unknown>> = new Map();
 
   /** Declare tool names the agent can use. */
   addTools(tools: string[]): void {
@@ -128,8 +131,17 @@ export class SessionBuildOptions {
     this._tools.push(...tools);
   }
 
-  /** Register a callable tool with the agent. */
-  registerTool(name: string, handler: ToolHandler): void {
+  /**
+   * Register a callable tool with the agent.
+   *
+   * `options.inputSchema` is the JSON Schema for the tool arguments; when
+   * omitted the gateway advertises the permissive `{"type": "object"}`.
+   */
+  registerTool(
+    name: string,
+    handler: ToolHandler,
+    options?: { description?: string; inputSchema?: Record<string, unknown> },
+  ): void {
     if (typeof name !== "string") {
       throw new TypeError(
         `tool name must be a string, got ${typeof name}: ${String(name)}`,
@@ -142,6 +154,12 @@ export class SessionBuildOptions {
     }
     this._tools.push(name);
     this._toolHandlers.set(name, handler);
+    if (options?.description !== undefined || options?.inputSchema !== undefined) {
+      const def: Record<string, unknown> = { name };
+      if (options.description !== undefined) def.description = options.description;
+      if (options.inputSchema !== undefined) def.input_schema = options.inputSchema;
+      this._toolDefs.set(name, def);
+    }
   }
 
   get tools(): string[] {
@@ -163,7 +181,14 @@ export class SessionBuildOptions {
       result.labels = { ...this.labels };
     }
     if (this.profileName !== null) result.profile_name = this.profileName;
-    if (this._tools.length > 0) result.tools = [...this._tools];
+    if (this._tools.length > 0) {
+      // Names with registered metadata cross as {name, description?,
+      // input_schema?} objects; everything else stays a bare string
+      // (backward-compatible with pre-0.7.30 gateways).
+      result.tools = this._tools.map(
+        (name) => this._toolDefs.get(name) ?? name,
+      );
+    }
     return result;
   }
 }

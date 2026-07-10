@@ -86,7 +86,8 @@ New module `meerkat-mobkit/src/live_wiring.rs`:
 5. **RPC surface** (unified stdin + console): `mobkit/live/open`,
    `mobkit/live/status`, `mobkit/live/close`, `mobkit/live/refresh`,
    `mobkit/live/send_input`, `mobkit/live/commit_input`,
-   `mobkit/live/interrupt`. Params accept an IDENTITY TARGET —
+   `mobkit/live/interrupt`, `mobkit/live/truncate`. Params accept an
+   IDENTITY TARGET —
    `{identity: "reachy"}` or `{member_id}` or raw `{session_id}` —
    resolved via `resolve_bridge_session_id` + the roster `agent_identity`
    label fallback (the same canonicalization class as
@@ -105,6 +106,45 @@ New module `meerkat-mobkit/src/live_wiring.rs`:
    `mobkit/init` (default OFF). ABAC: live methods map to `agent.send` on
    the target member (console surface); stdin surface is host-trusted as
    usual.
+
+## Images (meerkat 0.7.27, mobkit 0.7.32)
+
+Still-image input rides the SAME transport and RPC surface: the wire chunk
+`{kind: "image", idempotency_key, mime, data}` flows through
+`mobkit/live/send_input` unchanged (the handler deserializes
+`LiveInputChunkWire`, which gained the exhaustive `Image` variant), and the
+SDKs add `live_send_input_image` / `liveSendInputImage` conveniences
+mirroring meerkat's SDK signatures. `idempotency_key` is caller-stable
+within the session — retries are exact-retry deduplicated by the runtime's
+user-content identity lane, which also rides the open config
+(`user_content_identities` / `user_content_tombstones` /
+`transcript_rewrite_generation`) so reopened channels do not replay
+committed images. The projection sink forwards the transcript apply outcome
+(0.7.27 API) so the host synthesizes the redacted image receipt only after
+durable reducer application. Only `gpt-realtime-2` accepts image input in
+the shipped catalog (capabilities carry `image_in`).
+
+## Field-reported additions (mobkit 0.7.32)
+
+- **Per-open instruction overlay**: `mobkit/live/open` accepts
+  `instructions` (string or array of strings). The overlay rides the
+  runtime system-context lane of the open projection
+  (`with_runtime_system_context`), NOT the typed `system_prompt` — the
+  prompt field is the projection of durable prompt truth (R10) and must not
+  be contaminated by per-open ephemera. The overlay never persists into the
+  durable transcript and is dropped by `live/refresh` (which re-projects
+  from the durable session) and on reopen.
+- **Seed clamp (upstream ask 30 STOPGAP)**: providers cap live instructions
+  at 65,536 tokens, so long member transcripts overflow the projected seed
+  at open. `runtime_options.live.seed_max_chars` (object form) sets a
+  gateway-wide serialized-char budget; per-open `seed_max_chars` overrides
+  it. Whole messages drop OLDEST-first; a projected root system message is
+  never dropped. Remove when meerkat ships a machine-owned seed-window
+  projection (ask 30).
+- **`mobkit/live/truncate`** (was deliberately unported in v1): barge-in
+  cleanup — truncate an assistant item at the client-tracked playback
+  cursor. Same machine-authority choreography as the sibling command
+  handlers; SDK conveniences `live_truncate` / `liveTruncate`.
 
 ## What we deliberately do NOT do in v1
 

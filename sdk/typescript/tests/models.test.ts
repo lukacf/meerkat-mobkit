@@ -277,6 +277,28 @@ describe("SessionBuildOptions", () => {
           /handler must be callable/.test(err.message),
       );
     });
+
+    it("carries description + inputSchema onto the build_agent wire", () => {
+      const schema = {
+        type: "object",
+        properties: { city: { type: "string" } },
+        required: ["city"],
+      };
+      const opts = new SessionBuildOptions();
+      opts.registerTool("plain", () => "ok");
+      opts.registerTool("weather", () => "ok", {
+        description: "Look up the weather",
+        inputSchema: schema,
+      });
+      assert.deepEqual(opts.toDict().tools, [
+        "plain",
+        {
+          name: "weather",
+          description: "Look up the weather",
+          input_schema: schema,
+        },
+      ]);
+    });
   });
 
   describe("tools getter", () => {

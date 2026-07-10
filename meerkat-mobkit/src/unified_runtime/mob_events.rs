@@ -430,7 +430,10 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MobReset => "mob_reset",
         MobEventKind::MemberSpawned(_) => "member_spawned",
         MobEventKind::MemberSessionBindingRecovered(_) => "member_session_binding_recovered",
+        MobEventKind::MemberRetirementStarted { .. } => "member_retirement_started",
         MobEventKind::MemberRetired { .. } => "member_retired",
+        MobEventKind::RemoteMemberRuntimeRetired { .. } => "remote_member_runtime_retired",
+        MobEventKind::RemoteMemberSupervisorRevoked { .. } => "remote_member_supervisor_revoked",
         MobEventKind::MemberReset { .. } => "member_reset",
         MobEventKind::MemberKickoffUpdated { .. } => "member_kickoff_updated",
         MobEventKind::MembersWired { .. } => "members_wired",
@@ -535,8 +538,11 @@ pub(crate) fn extract_structural_fields(
             None,
             Some(decode_member_id(event.agent_identity.as_str())),
         ),
-        MobEventKind::MemberRetired { agent_identity, .. }
-        | MobEventKind::MemberReset { agent_identity, .. } => {
+        MobEventKind::MemberRetirementStarted { agent_identity, .. }
+        | MobEventKind::MemberRetired { agent_identity, .. }
+        | MobEventKind::MemberReset { agent_identity, .. }
+        | MobEventKind::RemoteMemberRuntimeRetired { agent_identity, .. }
+        | MobEventKind::RemoteMemberSupervisorRevoked { agent_identity, .. } => {
             (None, None, Some(decode_member_id(agent_identity.as_str())))
         }
         MobEventKind::MemberKickoffUpdated { member, .. } => {
