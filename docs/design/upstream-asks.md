@@ -1278,3 +1278,34 @@ LEAD a pre-addressed "conclude the objective" affordance (mirroring
 await "objective concluded" instead of inferring it from interaction
 completion + quiescence heuristics. mobkit would surface the conclusion as
 a typed console/RPC event.
+
+## Ask 29 — profile overrides freeze the whole tool surface across definition drift — P2
+
+Field (HomeCore Bug G′, 2026-07-10): the only reset-reprofiled member
+(domain:security, gen 8) has NO `meerkat_schedule_*` tools despite
+`[profiles.security.tools] schedule = true` — the agent improvised via its
+unrestricted shell, hand-writing schedule rows into `schedule.sqlite` that
+the driver fired into the wrong member.
+
+Mechanism (confirmed): a model-only reprofile forces mobkit to snapshot the
+WHOLE profile into `SpawnMemberSpec.override_profile` (there is no
+narrower override — handle.rs:1894). meerkat 0.7.25 M2 durably persists
+`effective_profile_override` and the revival path takes it VERBATIM over
+the current definition (actor.rs:5141, deliberately: "revival inputs must
+equal spawn-time inputs"). Net: the member's tool flags freeze at
+reset-time; definition edits (adding `schedule = true`) reach every
+ordinary member but never the reprofiled one. The 0.7.26 cold-revival
+epoch fix made revival work cold, which made the freeze bite every boot.
+
+Ask (either resolves it):
+- A FIELD-SCOPED override on `SpawnMemberSpec` (e.g. `model_override:
+  Option<String>`) so a reprofile pins only what it changed and the
+  definition stays authoritative for everything else (tools, skills,
+  peer_description) across drift; or
+- revival re-resolves the CURRENT definition profile and applies the
+  recorded override as a patch (requires knowing which fields were
+  overridden — same shape as the first option).
+
+mobkit interim: heal-on-divergence at identity-first restore (compare the
+replayed effective profile against the freshly-composed spec; retire +
+resume-respawn when they diverge) — planned, not yet shipped.
