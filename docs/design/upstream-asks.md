@@ -35,14 +35,14 @@ holds the original deep-dive evidence.
 
 ## Status ledger (verified against the meerkat CHANGELOG, 2026-07-10)
 
-**24 of 30 asks shipped; 6 open.**
+**25 of 30 asks shipped; 5 open.**
 
 | Asks | Status |
 |---|---|
 | 1–8 (agent-memory initiative) | shipped meerkat 0.7.12 |
 | 9 (taint surfaces), 10 (host runnables) | shipped meerkat 0.7.13 |
 | 11 (incremental session persistence) | shipped meerkat 0.7.25 |
-| 12 (compaction-archive singletons) | **OPEN** |
+| 12 (compaction-archive singletons) | shipped meerkat 0.6.30 (PR #747 — predates the tracker entry; see the section note) |
 | 13 (event-forwarder backoff/quarantine) | **OPEN** |
 | 14 (typed member health surface) | **OPEN** |
 | 15 (transcript interaction ids) | shipped meerkat 0.7.25 (residual: the classic-send external work door has no interaction param) |
@@ -606,6 +606,23 @@ persistence contract MobKit's memory providers will follow (memory writes
 must stay O(delta) — architecture §12 discipline).
 
 ## Ask 12 — Compaction-archive must not strand singletons
+
+**SHIPPED in meerkat 0.6.30 (PR #747) — predates this tracker entry; the
+tracker incorporated an older production report without recording that its
+original incident had already been fixed (maintainer annotation,
+2026-07-10).** Two layers: (1) root cause — a legitimately compacted
+runtime-authoritative session can replace a lagging, LONGER durable
+projection using the already-validated CAS/continuity proof instead of
+falling through to the rewrite-blind append-only guard; (2) defense in
+depth — even if archival fails for an unrelated reason, disposal removes
+the dead roster anchor so respawn/reset never leave an unreachable
+singleton stranded. Regression tests still on origin/main:
+`test_compacted_session_persists_when_durable_projection_lagged_across_compaction`,
+`test_archive_succeeds_for_compacted_session_with_lagging_durable_projection`.
+NOT the same bug as the later archive asks: 20/21 were created-but-never-run
+members with no runtime snapshot (ArchiveSession/NotFound), 21c was a
+runtime-loop self-deadlock during cleanup, and the 0.7.26 classic-store
+MonotonicityViolation fix addressed torn-shutdown projection rollback.
 
 **Title:** Fix retire-after-compaction stranding (`MonotonicityViolation` on
 ArchiveSession shrink-save, no fallback, ghost roster entry)
