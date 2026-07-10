@@ -1,5 +1,26 @@
 # Meerkat upstream asks — work order
 
+## Current status (2026-07-10)
+
+This file is both the historical evidence record and the current upstream work
+queue. Historical problem statements remain below, but their status is
+authoritative only through the explicit status line under each ask.
+
+**Open work is intentionally limited to five actionable asks:**
+
+| Ask | Current actionable residue |
+|---|---|
+| **10** | Add call-level tool authorization to executing transcript forks. Persisted/non-live transcript forking already works; that half of the original ask is closed. |
+| **14** | Add a typed member liveness/progress projection beyond lifecycle status: run-open/idle, in-flight work, last progress/event, and a machine-owned degraded/wedged classification. |
+| **27** | Make ordinary peer-send outcomes distinguish delivered/handed-off/queued from unreachable. Supervisor-rotation operation receipts do not close this general delivery ask. |
+| **28** | Add durable kickoff objective-to-outcome correlation and an explicit conclude-objective affordance. Kickoff quiescence/teardown safety is not objective completion. |
+| **29** | Make profile overrides field-scoped, or reapply them as patches over the current definition during revival, so unrelated tool/profile fields do not freeze. |
+
+Everything else in this document is **closed, shipped, superseded, or retired
+as a separate upstream ask**. In particular, ask 12 was fixed before it was
+filed, and ask 13's operational incidents were closed by a MobKit-local
+forwarder fix plus later Meerkat member-scoped failure containment.
+
 > **Handed to the meerkat coding agent by Luka (2026-07-02).** Eight asks for
 > the meerkat repo, derived from the MobKit memory initiative
 > ([`agent-memory-architecture.md`](agent-memory-architecture.md) §13) and
@@ -33,33 +54,10 @@ holds the original deep-dive evidence.
 ---
 
 
-## Status ledger (verified against the meerkat CHANGELOG, 2026-07-10)
-
-**25 of 30 asks shipped; 5 open.**
-
-| Asks | Status |
-|---|---|
-| 1–8 (agent-memory initiative) | shipped meerkat 0.7.12 |
-| 9 (taint surfaces), 10 (host runnables) | shipped meerkat 0.7.13 |
-| 11 (incremental session persistence) | shipped meerkat 0.7.25 |
-| 12 (compaction-archive singletons) | shipped meerkat 0.6.30 (PR #747 — predates the tracker entry; see the section note) |
-| 13 (event-forwarder backoff/quarantine) | **OPEN** |
-| 14 (typed member health surface) | **OPEN** |
-| 15 (transcript interaction ids) | shipped meerkat 0.7.25 (residual: the classic-send external work door has no interaction param) |
-| 16–19 (schedule poisoned-row family) | shipped meerkat 0.7.19 |
-| 20, 21, 21b (never-ran/archive strands) | shipped meerkat 0.7.22 |
-| 21c (retire-archive mob deadlock) | shipped meerkat 0.7.22 |
-| 21d (identity-first worker archive-NotFound) | shipped meerkat 0.7.23 |
-| 22 (past-due one-shot regeneration) | shipped meerkat 0.7.20 |
-| 23–26 (workgraph break-glass/GC/uniqueness/reply seam) | shipped meerkat 0.7.25 |
-| 27 (unreachable-peer sends read as success) | **OPEN** |
-| 28 (kickoff-scoped objective conclusion) | **OPEN** |
-| 29 (profile overrides freeze tool surface — Bug G′) | **OPEN** |
-
-Keep this table current when filing or closing asks; per-ask sections below
-carry the detail and mobkit adoption notes.
-
 ## Ask 1 — Typed injected-context message class, excluded from compaction indexing
+
+**CLOSED — shipped in Meerkat 0.7.12 (#821).** Typed injected context is a
+separate transcript class and is excluded from semantic-memory indexing.
 
 **Title:** Add a typed injected-context message class that
 `indexable_content()` excludes from compaction indexing
@@ -132,6 +130,10 @@ and MobKit's separate-typed-message delivery — have landed.
 
 ## Ask 2 — `MemoryStore` lifecycle: delete/GC and lazy per-scope index loading
 
+**CLOSED — shipped in Meerkat 0.7.12 (#821).** `drop_scope`, paged scoped
+enumeration, and lazy HNSW scope loading close the lifecycle and rebuild-cost
+properties requested here.
+
 **Title:** `MemoryStore` needs delete/GC (per-scope drop) and lazy per-scope
 index loading
 
@@ -184,6 +186,9 @@ identity-keyed store even though the meerkat rows are stranded.
 
 ## Ask 3 — Compaction-summary indexing exemption
 
+**CLOSED — shipped in Meerkat 0.7.12 (#821).** Compaction summaries are
+excluded from semantic-memory indexing and the retained-turn budget.
+
 **Title:** Discarded compaction summaries should be excluded from compaction
 indexing
 
@@ -219,6 +224,10 @@ known defect rather than worked around.
 ---
 
 ## Ask 4 — LLM-curated compaction seam (host-supplied curator)
+
+**CLOSED — shipped in Meerkat 0.7.12 (#821).** `CompactionCurator` supplies
+the summary in place of the compactor's LLM call; transcript revision listing
+also exposes the current head requested by the implementation refinement.
 
 **Title:** Let a host-supplied curator produce the compaction summary
 
@@ -287,6 +296,10 @@ ideally a revision list) on `SessionService` or the history extension.
 ---
 
 ## Ask 5 — Comms envelope taint metadata + dispatch-time taint visibility
+
+**CLOSED — shipped across Meerkat 0.7.12–0.7.13 (#821, #824).** Signed sender
+taint, typed tool provenance, synchronous dispatch classification, and
+host-consumable peer-ingestion/outbound-taint surfaces close both halves.
 
 **Title:** Taint metadata on comms envelopes; tool-source taint visibility at
 dispatch time
@@ -357,6 +370,10 @@ LLM-authored write quarantines until steward/operator review).
 
 ## Ask 6 — Capability-gated tool authorization for fork-launched members
 
+**CLOSED for member spawn — shipped in Meerkat 0.7.12 (#821).**
+`SpawnMemberSpec.tool_access_policy` is enforced end to end. The distinct
+call-level transcript-fork residue is tracked narrowly as open ask 10.
+
 **Title:** Call-level tool authorization policy on fork/spawn launch modes, so
 a fork-launched member can be capability-contained without changing its tool
 list
@@ -415,6 +432,10 @@ and can consider an agentic steward gather phase; the seam is documented in
 
 ## Ask 7 — Internal-runnable schedule targets in meerkat-schedule
 
+**CLOSED — shipped in Meerkat 0.7.12, with runtime-host wiring completed in
+0.7.13 (#821, #824).** Host-runnable targets flow through the normal durable
+occurrence lifecycle.
+
 **Title:** Let `meerkat-schedule` target a host-registered runnable, not only
 mob members/sessions
 
@@ -451,6 +472,9 @@ the dream as a host runnable and deletes the loop.
 ---
 
 ## Ask 8 — `MemoryStore` enumeration API
+
+**CLOSED — shipped in Meerkat 0.7.12 (#821).** `enumerate_scoped` provides
+paged deterministic reads with source-range and indexed-time filters.
 
 **Title:** Add a scoped enumeration/read API to the `MemoryStore` trait
 (pairs with Ask 2's delete/GC)
@@ -517,6 +541,10 @@ the exact range and the approximation caveat comes out of `distiller.rs`.
 
 ## Ask 9 — Dispatch-time content-taint visibility + `ToolDef` provenance
 
+**CLOSED — shipped across Meerkat 0.7.12–0.7.13 (#821, #824).** Tool
+provenance is typed and the host receives synchronous/typed taint facts rather
+than relying on name parsing and a lagging observe-only signal.
+
 **Title:** Give hosts a synchronous taint signal at tool dispatch, and typed
 tool provenance (completes Ask 5)
 
@@ -550,6 +578,15 @@ compat.
 
 ## Ask 10 — Fork tool authorization + fork-from-persisted (completes Ask 6)
 
+**OPEN, NARROWED (2026-07-10) — call-level fork authorization only.** Current
+`PersistentSessionService` already resolves transcript-edit sources from the
+authoritative persisted session when no live source is available, so the
+fork-from-persisted half is closed (and appears to have predated this filing).
+The real residue is that `SessionForkAtRequest` and
+`SessionForkReplaceRequest` still carry no `tool_access_policy`. Keep the
+zero-tool detached MobKit Distiller until an executing fork can be granted a
+call-scoped policy without broadening its tool surface.
+
 **Title:** Call-level `tool_access_policy` on session fork, and forking a
 persisted (non-live) session
 
@@ -577,6 +614,10 @@ prompt-cache economics). On landing, extraction moves to a fork sharing the
 parent's cached prefix — material at OB3-scale multi-GB transcripts.
 
 ## Ask 11 — Incremental session persistence (`IncrementalSessionStore`)
+
+**CLOSED — shipped in Meerkat 0.7.25 (#857).** `IncrementalSessionStore`
+makes ordinary saves O(delta), and compaction commits a shrinking canonical
+head rather than growing a monolithic session blob.
 
 **Title:** Adopt OB3's incremental session persistence spec — O(delta) saves,
 compaction that shrinks the persisted head
@@ -606,6 +647,13 @@ persistence contract MobKit's memory providers will follow (memory writes
 must stay O(delta) — architecture §12 discipline).
 
 ## Ask 12 — Compaction-archive must not strand singletons
+
+**CLOSED BEFORE FILING — shipped in Meerkat 0.6.30 (#747).** The validated
+projection CAS now accepts a legitimate compacted shrink when the durable
+projection lags, and disposal removes dead roster anchors even if an unrelated
+archive error occurs. The exact persistence and full-archive regressions remain
+in the current Meerkat test suite. Asks 20/21/21c were later, different
+never-run/archive and cleanup-deadlock bugs; they do not reopen this ask.
 
 **SHIPPED in meerkat 0.6.30 (PR #747) — predates this tracker entry; the
 tracker incorporated an older production report without recording that its
@@ -646,6 +694,15 @@ meerkat's session archive path); hosts carry watchdogs + process restarts.
 
 ## Ask 13 — Event-forwarder backoff + per-member commit-failure quarantine
 
+**CLOSED AS AN OPERATIONAL INCIDENT (2026-07-10).** The forwarder hot-loop was
+fixed in MobKit (`9b55a063`): only active members are subscribed, failures use
+per-member exponential backoff capped at 30 seconds, and repeated failures do
+not flood WARN logs. Meerkat later made failed-batch resolution machine-total
+(#859) and session-scoped composition-dispatch failures degrade only the
+affected member instead of terminating the mob actor (#864). The originally
+suggested generic forwarder terminal-state API was never needed to restore the
+requested operational property and is retired rather than left open.
+
 **Title:** Stop dead-stream hot-loops and fleet-wide commit cascades
 
 **Problem statement.** (a) The agent-event forwarder retries dead streams at
@@ -665,6 +722,12 @@ failure — one member degrades, the fleet continues.
 app-level timeouts and runs its own wedge sentinel.
 
 ## Ask 14 — Typed member health/progress surface
+
+**OPEN (2026-07-10).** Lifecycle/member status and restart-durable terminal
+input status have improved, but they still do not provide the requested
+machine-owned run-open/idle, in-flight-work, last-progress/event, and
+degraded/wedged projection. Hosts still reconstruct this from events and
+watchdogs, so the abstraction remains worthwhile.
 
 **Title:** A per-member liveness/progress signal, so hosts stop
 reverse-engineering health from event streams
@@ -689,7 +752,15 @@ approximates from event recency.
 
 ## Ask 15 — Persist `interaction_id` in the transcript
 
-**SHIPPED in meerkat 0.7.25** (addendum included: `SubscribableInjector::inject_with_interaction_id` + `WorkSpec.interaction_id` thread host ids to runtime admission; `TranscriptMessageIdentity` persists onto committed messages). Mobkit adoption (0.7.30): identity-first console sends mint UUIDv5 interaction ids and thread them via `send_with_mode_and_interaction` → bridge `WorkSpec`; session-history backfill stamps `interaction_id`/`run_id` onto frames; console dedup treats UUID-form ids as authoritative twin identity. Residual: the CLASSIC console send path cannot thread (the external work door `external_turn_for_member` has no interaction parameter) — candidate follow-up ask.
+**CLOSED — shipped in Meerkat 0.7.25 (#856) and adopted in MobKit 0.7.30.**
+`SubscribableInjector::inject_with_interaction_id` + `WorkSpec.interaction_id`
+thread host ids to runtime admission; `TranscriptMessageIdentity` persists
+them onto committed messages. Identity-first console sends mint UUIDv5 ids,
+history backfill stamps `interaction_id`/`run_id`, and console dedup treats
+UUID-form ids as authoritative twin identity. The CLASSIC compatibility path
+cannot thread an id through `external_turn_for_member`; that limitation does
+not reopen the identity-first MobKit ask and should only become a new ask if a
+supported classic consumer requires it.
 
 
 **Title:** Give live and historical copies of the same assistant reply a
@@ -747,6 +818,9 @@ the transcript so backfill can stamp them.
 
 ## Ask 16 — `spawn_schedule_host` discards every driver tick error
 
+**CLOSED — shipped in Meerkat 0.7.19 (#842).** Tick failures are tracked,
+attributed, rate-limited, and recovery is reported.
+
 **Problem statement.** `meerkat/src/surface/schedule_host.rs` runs the firing
 loop as `let _ = driver.tick_once().await;` every 250 ms. When ticks fail
 persistently (see asks 17–19 for why they do), schedules silently stop firing
@@ -760,6 +834,9 @@ count consecutive failures in the report struct. A driver that cannot claim
 is an incident, not a no-op.
 
 ## Ask 17 — one poisoned row starves every schedule (all-or-nothing scans)
+
+**CLOSED — shipped in Meerkat 0.7.19 (#842).** Schedule and occurrence row
+faults are isolated while healthy neighbors continue claiming.
 
 **Problem statement.** `ScheduleDriver::tick_once` begins with
 `service.list()` — which fails wholesale on the FIRST schedule row whose
@@ -783,6 +860,9 @@ claims everything healthy.
 
 ## Ask 18 — Deleted schedule tombstones fail recovery and kill `list()`
 
+**CLOSED — shipped in Meerkat 0.7.19 (#842).** Legacy tombstones heal at the
+durable parse boundary and new invalid states remain fail-closed.
+
 **Problem statement.** Deleting a schedule persists a tombstone row whose
 recovered `ScheduleLifecycleMachine` state is then REJECTED on read:
 `RecoveredStateInvariantRejected { phase: Deleted, invariant:
@@ -802,6 +882,9 @@ Plus an upgrade-carry test: delete a schedule under version N, open under
 N+1, `list()` must succeed.
 
 ## Ask 19 — claim scan reads the whole store per tick
+
+**CLOSED — shipped in Meerkat 0.7.19 (#842).** SQL prefiltering bounds scans
+to active schedules and live, due/lease-expired occurrences.
 
 **Problem statement.** `claim_due_occurrences_impl` SELECTs and deserializes
 every occurrence (joined with its schedule) with no SQL predicate on phase or
@@ -833,6 +916,11 @@ reporter's, relayed verbatim-in-substance; ask 20 is mobkit's root-cause of
 the reporter's K1, which turned out to be upstream.
 
 ## Ask 20 — retire/respawn of a never-ran member fails ArchiveSession and strands it in `retiring` (reported as mobkit K1) — P0
+
+**CLOSED — converged across Meerkat 0.7.19–0.7.23 (#842, #843, #845, #847,
+#849).** The original K1 disposal path and the subsequently exposed
+never-run/session-authority residues now retire and respawn without a stranded
+roster anchor or registered-runtime leak.
 
 **Problem statement.** A session-bound mob member that has never run a turn
 has no runtime-store session snapshot (the machine commits at run
@@ -923,6 +1011,11 @@ query in meerkat-session/runtime deletes that code for every embedder.
 
 ## Ask 21 — owned-but-snapshotless sessions still strand on archive (ask-20 residue) — P1
 
+**CLOSED — shipped across Meerkat 0.7.20–0.7.23 (#843, #845, #847, #849).**
+Never-run durable sessions archive, cleanup no longer self-deadlocks, retry
+states converge, and terminal registered-runtime NotFound residue completes
+disposal.
+
 **Problem statement.** 0.7.19's ask-20 fix routes disposal on
 `session_known_to_archive_authority`, but that gate only reroutes sessions
 the authority does NOT own (`known=false`, host-adopted). A mob-CREATED
@@ -960,6 +1053,10 @@ that never ran, a narrow window in practice since workers receive kickoff
 messages at spawn.
 
 ## Ask 22 — past-due one-shot regenerates occurrences unboundedly (planning-cursor precision loss) — P0
+
+**CLOSED — shipped in Meerkat 0.7.20 (#843).** Trigger comparison and the
+machine planning cursor use one millisecond representation, with a monotonic
+planning guard preventing recurrence.
 
 **Field report (HomeCore on 0.7.25):** one one-shot with a fire time
 near/just-past now produced 223 misfired occurrences + 223 receipts in ~2
@@ -1035,6 +1132,10 @@ persistent test; the trace capture recipe is a `tracing_subscriber` init
 with `meerkat_mob=debug,meerkat_session=debug` in the test body.
 
 ## Ask 21c — 0.7.21's retire-completing archive arm deadlocks the whole mob (runtime-loop self-deadlock on the session mutation gate) — P0, blocks 0.7.21 adoption
+
+**CLOSED — shipped in Meerkat 0.7.22 (#847), with the identity-first 21d
+residue closed in 0.7.23 (#849).** Runtime-loop stop realization no longer
+runs executor cleanup while holding the session mutation gate.
 
 Verified against meerkat =0.7.21 with the mobkit K1 persistent repro
 (`meerkat-mobkit/tests/studio_k_asks.rs`,
@@ -1179,7 +1280,10 @@ agent-tool workers, OB3 worker plane after migration).
 
 ## Ask 23 — break-glass host reassignment for stuck bindings — P3 (reframed 2026-07-08)
 
-**SHIPPED in meerkat 0.7.25** (`WorkGraphService::break_glass_reassign_attention`, host API only, mandatory principal+reason, event-stream audited). Mobkit adoption (0.7.30): `mobkit/workgraph/attention/break_glass_reassign` on the CONSOLE surface only; principal = authenticated console principal.
+**CLOSED — shipped in Meerkat 0.7.25 (#854).**
+`WorkGraphService::break_glass_reassign_attention` is host-only, requires a
+principal and reason, and is event-stream audited. MobKit 0.7.30 exposes it on
+the authenticated console surface only.
 
 
 meerkat 0.7.23's `reassign_attention` requires the witness's
@@ -1210,7 +1314,10 @@ stays untouched.
 
 ## Ask 24 — filtered attention queries + terminal-binding GC — P2
 
-**SHIPPED in meerkat 0.7.25** (SQL-pushed status/target filters over indexed columns with NULL-tolerant migration; `prune_terminal_attention`; clause-3 metadata-only session read seam as `SessionStore::load_meta`). Mobkit adoption (0.7.30): `mobkit/workgraph/attention/prune` + SDK methods.
+**CLOSED — shipped in Meerkat 0.7.25 (#854, #856).** SQL-pushed filters,
+NULL-tolerant migration, `prune_terminal_attention`, and
+`SessionStore::load_meta` close all three clauses. MobKit 0.7.30 exposes prune
+through RPC and the SDKs.
 
 
 `SqliteWorkGraphStore::list_sqlite_attention` (0.7.23 store.rs:1576) runs
@@ -1236,7 +1343,11 @@ own ask candidate).
 
 ## Ask 25 — attention-binding uniqueness belongs in the service/store (or arbitrate like sessions) — P1
 
-**SHIPPED in meerkat 0.7.25** — BOTH halves: store-level transactional uniqueness with typed `Conflict` naming the occupant, AND newest-binding-wins arbitration for legacy duplicates (`MultipleActiveBindings` removed). Mobkit's admission demotes to defense-in-depth + session↔identity alias unification; sidecar-lock removal is the 0.7.31 follow-up.
+**CLOSED — shipped in Meerkat 0.7.25 (#854).** Both halves landed:
+transactional store-level uniqueness with a typed occupant conflict, and
+newest-binding-wins arbitration for legacy duplicates. MobKit's admission
+layer is defense in depth; its sidecar-lock cleanup is downstream maintenance,
+not an open upstream ask.
 
 
 `MultipleActiveBindings` is a HARD per-turn error (0.7.23
@@ -1265,7 +1376,9 @@ When either lands, mobkit's admission layer demotes to defense-in-depth.
 
 ## Ask 26 — structural reply affordance on comms deliveries — P2
 
-**SHIPPED in meerkat 0.7.25** (`PeerReplyCapability` in the dispatch context, pre-addressed `reply_to_peer` comms tool, batch-level minting via the canonical `TurnToolOverlay::compose`). No mobkit change needed: nothing strips the overlay, and the console renders the tool generically. Verified at the 0.7.25 pin bump.
+**CLOSED — shipped in Meerkat 0.7.25 (#856).** `PeerReplyCapability` in the
+dispatch context and the pre-addressed `reply_to_peer` tool provide the
+structural affordance. No MobKit change is required.
 
 
 Peer messages arrive framed as prose ("Peer message from <endpoint>...")
@@ -1281,6 +1394,11 @@ delivery), so "answer the peer" is an affordance rather than a prompt
 convention. mobkit interim: none (app-side relays).
 
 ## Ask 27 — peer sends to unreachable targets must not read as success — P2
+
+**OPEN (2026-07-10).** Ordinary comms still collapse successful no-ACK
+handoff and some unreachable paths into `acked: false`. Supervisor rotation's
+durable operation receipts are intentionally scoped to that lifecycle
+operation and do not make general peer delivery truthful.
 
 Field (HomeCore, mobkit 0.7.30 / meerkat 0.7.25, 2026-07-09): an agent's
 comms `send_message` to a peer whose runtime is not booted (or whose
@@ -1303,6 +1421,12 @@ mobkit interim: none (host-side relay).
 
 ## Ask 28 — kickoff-scoped objective→outcome correlation (reply-to-kickoff) — P2
 
+**OPEN (2026-07-10).** Interaction ids and peer-reply capabilities are
+available building blocks, but no durable objective id propagates across the
+delegated work, and the lead has no explicit conclude-objective affordance.
+Kickoff quiescence prevents premature teardown; it does not identify the final
+answer.
+
 Field (HomeCore): the kickoff send's interaction completes on the lead's
 FIRST turn — usually the delegation, often textless. The real outcome lands
 turns later under different interaction ids, so hosts reconstruct
@@ -1324,6 +1448,10 @@ completion + quiescence heuristics. mobkit would surface the conclusion as
 a typed console/RPC event.
 
 ## Ask 29 — profile overrides freeze the whole tool surface across definition drift — P2
+
+**OPEN (2026-07-10).** Neither a field-scoped override nor patch-over-current-
+definition revival exists. The MobKit heal-on-divergence mitigation is still
+planned rather than shipped, so the upstream ownership fix remains warranted.
 
 Field (HomeCore Bug G′, 2026-07-10): the only reset-reprofiled member
 (domain:security, gen 8) has NO `meerkat_schedule_*` tools despite
