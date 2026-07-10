@@ -1481,3 +1481,19 @@ Ask (either resolves it):
 mobkit interim: heal-on-divergence at identity-first restore (compare the
 replayed effective profile against the freshly-composed spec; retire +
 resume-respawn when they diverge) — planned, not yet shipped.
+
+## Ask 30 — live seed-window: bounded/summarized session projection for realtime opens — P2
+
+Field (HomeCore robot, 2026-07-10): the realtime provider adapter enforces a
+65,536-token instruction cap, and `live/open` seeds the WHOLE projected
+session (system prompt + full transcript projection). Long-lived members
+with large durable histories cannot open a live channel at all once the
+projection exceeds the cap.
+
+Ask: a seed-window knob on the realtime open path — project a bounded
+suffix (and/or a compaction-style summary head) of the session instead of
+the full transcript, in the session-projection layer where
+`realtime_projection_messages` lives, so the bound composes with the
+user-content identity lane and exact-retry guards. mobkit stopgap (shipped
+0.7.32): the gateway clamps the projected seed at open time — correct but
+lossy; the principled summarize-then-seed belongs in core.
