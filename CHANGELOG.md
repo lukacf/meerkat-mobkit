@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.33] - 2026-07-11
+
+### Changed
+
+- meerkat family pinned to `=0.7.28` (from `=0.7.27`): GPT-5.6
+  (Sol/Terra/Luna) in the catalog with `gpt-5.6-sol` as the new
+  provider/catalog default (explicit GPT-5.5 pins stay honored; realtime
+  capability unchanged), plus endpoint-recovery hardening (cold restart
+  replays each member's exact generation peer endpoint; fail-closed on
+  descriptor drift and PeerId reuse).
+- Live seed bounding is upstream-owned: `seed_max_chars` (per-open or
+  `runtime_options.live`) now delegates to meerkat's windowed projection —
+  enabled root context, an affordable compaction summary, and the
+  identity/tombstone/rewrite-generation/canonical-image sidecars are
+  preserved, with explicit degraded-continuity reporting. The 0.7.32
+  oldest-first clamp stopgap is removed; wire parameters are unchanged.
+- The realtime open config and projection snapshot carry the
+  `canonical_user_image_decoded_bytes` image-budget sidecar.
+
 ## [0.7.32] - 2026-07-10
 
 ### Added
