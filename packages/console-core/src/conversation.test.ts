@@ -81,6 +81,30 @@ describe("conversation grouping", () => {
   });
 });
 
+describe("flow run entries", () => {
+  test("preserves an honest stopped state in the shared conversation model", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "flow-run:stopped",
+      kind: "flow_run",
+      identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+      helperId: "helper-1",
+      flowName: "Release crew",
+      status: "stopped",
+      rows: [
+        {
+          memberKey: "reviewer",
+          label: "Reviewer",
+          caption: "Stopped by the operator",
+          status: "stopped",
+        },
+      ],
+    };
+
+    expect(entry.status).toBe("stopped");
+    expect(conversationEntryText(entry)).toContain("Reviewer: Stopped by the operator");
+  });
+});
+
 describe("workgraph entry text", () => {
   test("projects the goal, indented item tree, and attention rows for copy surfaces", () => {
     const entry: ConversationTimelineEntry = {

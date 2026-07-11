@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties } from "react";
 
 import {
   parseConversationRichBlocks,
@@ -16,6 +16,7 @@ const STATUS_LABEL: Record<FlowRunStatus, string> = {
   running: "Working",
   completed: "Done",
   failed: "Failed",
+  stopped: "Stopped",
 };
 
 function statusDotClass(status: FlowRunStatus): string {
@@ -31,9 +32,21 @@ function MemberRow({
   Icon?: IconRenderer | null;
   onMessageMember?: ((memberKey: string) => void) | null;
 }) {
+  const detailId = useId();
   const [expanded, setExpanded] = useState(false);
   const hasDetail = Boolean(row.subView && row.subView.groups.length);
   const style = (row.tone?.variables || undefined) as CSSProperties | undefined;
+  const rowContent = (
+    <>
+      <span className={statusDotClass(row.status)} aria-hidden="true" />
+      <span className="cc-flow-run__member-label">{row.label}</span>
+      <span className="cc-flow-run__member-caption">{row.caption}</span>
+      <span className="cc-flow-run__member-status">{STATUS_LABEL[row.status]}</span>
+      {hasDetail ? (
+        <span className="cc-flow-run__member-chevron" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+      ) : null}
+    </>
+  );
 
   return (
     <li
@@ -42,26 +55,24 @@ function MemberRow({
       style={style}
     >
       <div className="cc-flow-run__member-line">
-        <button
-          type="button"
-          className="cc-flow-run__member-row"
-          disabled={!hasDetail}
-          aria-expanded={hasDetail ? expanded : undefined}
-          onClick={hasDetail ? () => setExpanded((value) => !value) : undefined}
-        >
-          <span className={statusDotClass(row.status)} aria-hidden="true" />
-          <span className="cc-flow-run__member-label">{row.label}</span>
-          <span className="cc-flow-run__member-caption">{row.caption}</span>
-          {hasDetail ? (
-            <span className="cc-flow-run__member-chevron" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
-          ) : (
-            <span className="cc-flow-run__member-status">{STATUS_LABEL[row.status]}</span>
-          )}
-        </button>
+        {hasDetail ? (
+          <button
+            type="button"
+            className="cc-flow-run__member-row"
+            aria-controls={detailId}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {rowContent}
+          </button>
+        ) : (
+          <div className="cc-flow-run__member-row">{rowContent}</div>
+        )}
         {onMessageMember ? (
           <button
             type="button"
             className="cc-flow-run__member-message"
+            aria-label={`Message ${row.label}`}
             title={`Message ${row.label}`}
             onClick={(event) => {
               event.stopPropagation();
@@ -73,7 +84,13 @@ function MemberRow({
         ) : null}
       </div>
       {hasDetail && expanded && row.subView ? (
-        <div className="cc-flow-run__member-detail">
+        <div
+          id={detailId}
+          className="cc-flow-run__member-detail"
+          role="region"
+          aria-label={`${row.label} transcript`}
+          tabIndex={0}
+        >
           <ConversationTranscript
             viewState={row.subView}
             compact
