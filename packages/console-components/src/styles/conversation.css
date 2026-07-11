@@ -1725,6 +1725,9 @@ span.cc-conversation-turn-preview__file-icon::after {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .cc-flow-run__dot.is-running { animation: none; }
+}
 .cc-flow-run__member-label {
   font-weight: 550;
   font-size: 12px;
@@ -1780,6 +1783,10 @@ span.cc-conversation-turn-preview__file-icon::after {
 :is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__member-label,
 :is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__outcome {
   color: var(--_cc-foreground);
+}
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__badge.is-stopped {
+  background: rgba(148, 96, 20, 0.14);
+  color: #69420a;
 }
 
 /* --- Work-graph card (in-conversation goal → work-items tree) --- */
