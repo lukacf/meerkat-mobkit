@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.34] - 2026-07-11
+
+### Fixed
+
+- Bug I mitigations (boot restore/retire race that terminally retires
+  slow-restoring identities; root cause is upstream — asks 31/32/33):
+  - `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` env knob (clamped 1-16,
+    default 4 unchanged); `=1` serializes identity restores, removing
+    mobkit's contribution to SQLite writer contention during boot.
+  - Collision-retry drain: after a roster-collision retire, the bridge
+    polls roster absence (bounded 2s) before retrying the resume, and a
+    retry canceled by the still-queued retire command is retried once
+    more after a second drain.
+  - Honest rejection contract: after any rejected resume the bridge
+    probes the session store and logs explicitly when the durable
+    session is GONE (destroyed by meerkat's spawn-failure rollback)
+    instead of the now-sometimes-false "durable session preserved".
+
 ## [0.7.33] - 2026-07-11
 
 ### Changed
