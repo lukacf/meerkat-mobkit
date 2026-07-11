@@ -30,6 +30,7 @@ export interface PendingStackProps {
   agentBusy: boolean;
   reducedMotion?: boolean;
   onSteer: (id: string) => void;
+  onRetry?: ((id: string) => void) | null;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -99,6 +100,7 @@ interface StackItemProps {
   dragging: boolean;
   dropHint: PendingDropWhere | null;
   onSteer: (id: string) => void;
+  onRetry?: ((id: string) => void) | null;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -126,6 +128,7 @@ function StackItem({
   dragging,
   dropHint,
   onSteer,
+  onRetry,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -270,7 +273,7 @@ function StackItem({
           <button
             type="button"
             className="cc-pending-btn cc-pending-btn--steer"
-            onClick={() => onSteer(item.id)}
+            onClick={() => (item.manualRetryRequired ? (onRetry || onSteer)(item.id) : onSteer(item.id))}
             disabled={item.status === "promoting"}
             aria-label={item.manualRetryRequired
               ? "Retry delivery"
@@ -313,6 +316,7 @@ export function PendingStack({
   agentBusy,
   reducedMotion,
   onSteer,
+  onRetry,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -399,6 +403,7 @@ export function PendingStack({
             dragging={dragId === item.id}
             dropHint={dropTarget.id === item.id ? dropTarget.where : null}
             onSteer={onSteer}
+            onRetry={onRetry}
             onTrash={onTrash}
             onEdit={onEdit}
             onCommitEdit={onCommitEdit}

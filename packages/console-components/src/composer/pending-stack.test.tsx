@@ -15,6 +15,7 @@ function renderPendingStack(overrides: Partial<React.ComponentProps<typeof Pendi
     items: [baseItem],
     agentBusy: true,
     onSteer: vi.fn(),
+    onRetry: vi.fn(),
     onTrash: vi.fn(),
     onEdit: vi.fn(),
     onCommitEdit: vi.fn(),
@@ -64,7 +65,8 @@ describe("PendingStack", () => {
     const retry = screen.getByRole("button", { name: "Retry delivery" });
     expect(retry).toHaveTextContent("Retry");
     fireEvent.click(retry);
-    expect(props.onSteer).toHaveBeenCalledWith("queued-1");
+    expect(props.onRetry).toHaveBeenCalledWith("queued-1");
+    expect(props.onSteer).not.toHaveBeenCalled();
   });
 
   test("returns null when there is no queued work", () => {

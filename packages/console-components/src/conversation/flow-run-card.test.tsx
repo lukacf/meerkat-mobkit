@@ -87,6 +87,7 @@ describe("FlowRunCard", () => {
           rows: [
             { memberKey: "builder", label: "Builder", caption: "Waiting for a safe stop", status: "cancelling" },
             { memberKey: "reviewer", label: "Reviewer", caption: "Waiting to start", status: "queued" },
+            { memberKey: "observer", label: "Observer", caption: "Ready for work", status: "idle" },
           ],
         })}
       />,
@@ -96,6 +97,7 @@ describe("FlowRunCard", () => {
       .toBe("cancelling");
     expect(screen.getAllByText("Stopping")).toHaveLength(2);
     expect(screen.getByText("Queued", { selector: ".cc-flow-run__member-status" })).toBeTruthy();
+    expect(screen.getByText("Idle", { selector: ".cc-flow-run__member-status" })).toBeTruthy();
   });
 
   test("keeps status in an expandable row's accessible name and labels its bounded transcript region", () => {
