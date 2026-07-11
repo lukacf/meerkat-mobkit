@@ -1235,11 +1235,6 @@ fn apply_live_open_instruction_overlay(
         });
 }
 
-/// Serialized size of one projected seed message, as counted by the clamp.
-fn serialized_message_chars(message: &Message) -> usize {
-    serde_json::to_string(message).map_or(0, |text| text.len())
-}
-
 /// #176: project the factory's typed realtime audio policy into the typed
 /// [`LiveAudioConfig`] the snapshot carries. `None` when the factory does
 /// not advertise both directions of audio, so the caller fails closed
@@ -2612,10 +2607,6 @@ mod tests {
         apply_live_open_instruction_overlay(&mut config, vec!["  ".to_string(), String::new()]);
         assert!(config.runtime_system_context.is_empty());
     }
-
-    /// Fix 4 (upstream ask 30 stopgap): whole messages drop OLDEST-first, a
-    /// projected root system message never drops, and the surviving tail fits
-    /// the budget.
 
     /// #301 port: the surface mapper routes through the canonical typed
     /// owner so distinct `SessionError` variants land in distinct typed
