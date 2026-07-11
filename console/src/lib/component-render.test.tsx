@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   groupConversationTimelineEntries,
   normalizeConsoleNavigationModel,
+  type ConversationFlowRunEntry,
   type ConversationTimelineEntry,
 } from "@console-core";
 import {
@@ -159,6 +160,45 @@ test("workgraph entries render as cards through the shared transcript, with acti
   assert.doesNotMatch(managedHtml, /workgraph-attention:attention-1:confirm/);
   // No failure flag → no failed indicator.
   assert.doesNotMatch(managedHtml, /workgraph-card:goal-1:last-action-failed/);
+});
+
+test("flow-run cards render stopped state, semantic static rows, and uniquely named message actions", () => {
+  const flowRunEntry: ConversationFlowRunEntry = {
+    id: "flow-run:release-crew",
+    kind: "flow_run",
+    identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+    helperId: "helper-1",
+    flowName: "Release crew",
+    status: "stopped",
+    rows: [
+      {
+        memberKey: "reviewer",
+        label: "Reviewer",
+        caption: "Stopped by the operator",
+        status: "stopped",
+      },
+    ],
+  };
+  const html = renderToStaticMarkup(
+    <ConversationTranscript
+      viewState={{
+        conversationId: "fixture",
+        entries: [flowRunEntry],
+        groups: groupConversationTimelineEntries([flowRunEntry]),
+        turnDiff: null,
+        emptyState: null,
+      }}
+      onFlowRunMessageMember={() => undefined}
+    />,
+  );
+
+  assert.match(html, /data-flow-run-card=""/);
+  assert.match(html, /data-status="stopped"/);
+  assert.match(html, /cc-flow-run__badge is-stopped">Stopped/);
+  assert.match(html, /<div class="cc-flow-run__member-row">/);
+  assert.doesNotMatch(html, /<button[^>]+class="cc-flow-run__member-row"[^>]+disabled/);
+  assert.match(html, /aria-label="Message Reviewer"/);
+  assert.match(html, /cc-flow-run__member-status">Stopped/);
 });
 
 test("workgraph card gates reassign to coordinate-mode bindings and surfaces the last-action-failed flag", () => {

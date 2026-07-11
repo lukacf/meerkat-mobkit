@@ -5,8 +5,18 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
-import type { ConversationWorkGraphEntry } from "@console-core";
-import { ConsoleActivityRail, WorkGraphCard, __workGraphCardUiState } from "@console-components";
+import {
+  groupConversationTimelineEntries,
+  type ConversationFlowRunEntry,
+  type ConversationTimelineEntry,
+  type ConversationWorkGraphEntry,
+} from "@console-core";
+import {
+  ConsoleActivityRail,
+  ConversationTranscript,
+  WorkGraphCard,
+  __workGraphCardUiState,
+} from "@console-components";
 import { buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
 import { CONSOLE_COMMAND_NAMES } from "./headless";
 import { resolveWorkGraphGoalItemRevision, type WorkGraphCommandRunner } from "./workgraph-actions";
@@ -680,6 +690,91 @@ test("WorkGraphCard actions after a CAS conflict send the refetched revision, no
   } finally {
     root.unmount();
     __workGraphCardUiState.reset();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("flow-run member rows expose status and a labelled bounded transcript when expanded", () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const memberEntries: ConversationTimelineEntry[] = [
+    {
+      id: "builder-message",
+      kind: "message",
+      variant: "plain",
+      identity: { id: "builder", label: "Builder", role: "other" },
+      text: "Implemented the shared flow-run presentation.",
+    },
+  ];
+  const flowRunEntry: ConversationFlowRunEntry = {
+    id: "flow-run:release-crew",
+    kind: "flow_run",
+    identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+    helperId: "helper-1",
+    flowName: "Release crew",
+    status: "running",
+    rows: [
+      {
+        memberKey: "builder",
+        label: "Builder",
+        caption: "Implementing the shared component",
+        status: "running",
+        subView: {
+          conversationId: "builder-transcript",
+          entries: memberEntries,
+          groups: groupConversationTimelineEntries(memberEntries),
+          turnDiff: null,
+          emptyState: null,
+        },
+      },
+    ],
+  };
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    flushSync(() => {
+      root.render(
+        <ConversationTranscript
+          viewState={{
+            conversationId: "fixture",
+            entries: [flowRunEntry],
+            groups: groupConversationTimelineEntries([flowRunEntry]),
+            turnDiff: null,
+            emptyState: null,
+          }}
+        />,
+      );
+    });
+
+    const row = dom.window.document.querySelector("button.cc-flow-run__member-row");
+    assert.ok(row);
+    assert.match(row.textContent || "", /Builder.*Working/);
+    assert.equal(row.getAttribute("aria-expanded"), "false");
+    const detailId = row.getAttribute("aria-controls");
+    assert.ok(detailId);
+
+    flushSync(() => {
+      row.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+
+    assert.equal(row.getAttribute("aria-expanded"), "true");
+    const region = dom.window.document.querySelector(
+      "[role='region'][aria-label='Builder transcript']",
+    ) as HTMLElement | null;
+    assert.ok(region);
+    assert.equal(region.id, detailId);
+    assert.equal(region.tabIndex, 0);
+    assert.match(region.textContent || "", /Implemented the shared flow-run presentation/);
+  } finally {
+    root.unmount();
     globalThis.window = previousWindow;
     globalThis.document = previousDocument;
     dom.window.close();
