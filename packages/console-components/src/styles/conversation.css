@@ -1788,6 +1788,22 @@ span.cc-conversation-turn-preview__file-icon::after {
   background: rgba(148, 96, 20, 0.14);
   color: #69420a;
 }
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__badge.is-running {
+  background: rgba(34, 94, 168, 0.13);
+  color: #174f95;
+}
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__badge.is-completed {
+  background: rgba(22, 115, 63, 0.13);
+  color: #166534;
+}
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__badge.is-failed {
+  background: rgba(177, 35, 47, 0.12);
+  color: #941c28;
+}
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__dot.is-running { background: #2463a8; }
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__dot.is-completed { background: #167344; }
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__dot.is-failed { background: #b1232f; }
+:is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-flow-run__dot.is-stopped { background: #946014; }
 
 /* --- Work-graph card (in-conversation goal → work-items tree) --- */
 .cc-work-graph {
