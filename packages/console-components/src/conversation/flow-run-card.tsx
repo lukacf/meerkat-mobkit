@@ -13,7 +13,9 @@ import type { IconRenderer } from "../shared";
 
 const STATUS_LABEL: Record<FlowRunStatus, string> = {
   idle: "Queued",
+  queued: "Queued",
   running: "Working",
+  cancelling: "Stopping",
   completed: "Done",
   failed: "Failed",
   stopped: "Stopped",

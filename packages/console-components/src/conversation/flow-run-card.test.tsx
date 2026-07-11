@@ -79,6 +79,25 @@ describe("FlowRunCard", () => {
     expect(onMessageMember).toHaveBeenCalledWith("reviewer");
   });
 
+  test("distinguishes queued and cancelling agents from idle or completed work", () => {
+    const { container } = render(
+      <FlowRunCard
+        entry={entryFixture({
+          status: "cancelling",
+          rows: [
+            { memberKey: "builder", label: "Builder", caption: "Waiting for a safe stop", status: "cancelling" },
+            { memberKey: "reviewer", label: "Reviewer", caption: "Waiting to start", status: "queued" },
+          ],
+        })}
+      />,
+    );
+
+    expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-status"))
+      .toBe("cancelling");
+    expect(screen.getAllByText("Stopping")).toHaveLength(2);
+    expect(screen.getByText("Queued", { selector: ".cc-flow-run__member-status" })).toBeTruthy();
+  });
+
   test("keeps status in an expandable row's accessible name and labels its bounded transcript region", () => {
     const { container } = render(<FlowRunCard entry={entryFixture()} />);
     const rowButton = screen.getByRole("button", { name: /builder.*working/i });

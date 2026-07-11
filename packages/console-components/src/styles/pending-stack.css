@@ -53,6 +53,8 @@
   animation: cc-pending-stack-pulse 1.6s infinite;
 }
 .cc-pending-stack__head-phase.is-idle b { background: var(--ok); animation: none; }
+.cc-pending-stack__head-phase.is-needs-retry { color: var(--danger); }
+.cc-pending-stack__head-phase.is-needs-retry b { background: var(--danger); animation: none; }
 .cc-pending-stack__head-btn {
   border: none; background: transparent;
   padding: 1px 3px;
@@ -110,6 +112,7 @@
   width: 2px;
   background: var(--accent);
 }
+.cc-pending-item.is-needs-retry::before { background: var(--danger); }
 
 .cc-pending-item__lead {
   display: flex; align-items: center; gap: 4px;
@@ -190,6 +193,7 @@
   text-transform: uppercase;
   letter-spacing: 0.12em;
 }
+.cc-pending-item__head-tag.is-needs-retry { color: var(--danger); }
 .cc-pending-item__sending { color: var(--accent); }
 
 /* Inline edit panel */
@@ -286,6 +290,15 @@
   border-color: var(--accent);
 }
 .cc-pending-item.is-head .cc-pending-btn--steer { border-color: var(--accent); }
+.cc-pending-item.is-needs-retry .cc-pending-btn--steer {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.cc-pending-item.is-needs-retry .cc-pending-btn--steer:hover {
+  color: var(--bg);
+  background: var(--danger);
+  border-color: var(--danger);
+}
 
 .cc-pending-btn--save {
   color: var(--accent);

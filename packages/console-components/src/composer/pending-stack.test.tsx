@@ -54,6 +54,19 @@ describe("PendingStack", () => {
     expect(props.onTrash).toHaveBeenCalledWith("queued-1");
   });
 
+  test("surfaces a durable delivery failure as an explicit retry", () => {
+    const { props } = renderPendingStack({
+      agentBusy: false,
+      items: [{ ...baseItem, manualRetryRequired: true }],
+    });
+
+    expect(screen.getAllByText("Needs retry")).toHaveLength(2);
+    const retry = screen.getByRole("button", { name: "Retry delivery" });
+    expect(retry).toHaveTextContent("Retry");
+    fireEvent.click(retry);
+    expect(props.onSteer).toHaveBeenCalledWith("queued-1");
+  });
+
   test("returns null when there is no queued work", () => {
     const { container } = renderPendingStack({ items: [] });
 

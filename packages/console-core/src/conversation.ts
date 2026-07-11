@@ -73,7 +73,7 @@ export interface ConversationSummaryEntry extends ConversationTimelineEntryBase 
   actionLabel?: string | null;
 }
 
-export type FlowRunStatus = "idle" | "running" | "completed" | "failed" | "stopped";
+export type FlowRunStatus = "idle" | "queued" | "running" | "cancelling" | "completed" | "failed" | "stopped";
 
 export interface ConversationFlowRunMemberRow {
   memberKey: string;
