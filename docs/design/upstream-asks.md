@@ -1484,6 +1484,14 @@ resume-respawn when they diverge) — planned, not yet shipped.
 
 ## Ask 30 — live seed-window: bounded/summarized session projection for realtime opens — P2
 
+**SHIPPED in meerkat 0.7.28** (`live/open.seed_max_chars` — windowed
+projection preserving enabled root context, an affordable compaction
+summary, the identity/tombstone/rewrite-generation/canonical-image
+sidecars, with explicit degraded-continuity reporting). Mobkit adoption
+(0.7.33): `live_open_config_for_session` delegates to
+`realtime_projection_messages_with_window`; the 0.7.32 oldest-first clamp
+stopgap is DELETED — the `seed_max_chars` wire params are unchanged.
+
 Field (HomeCore robot, 2026-07-10): the realtime provider adapter enforces a
 65,536-token instruction cap, and `live/open` seeds the WHOLE projected
 session (system prompt + full transcript projection). Long-lived members

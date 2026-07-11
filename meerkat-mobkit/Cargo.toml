@@ -48,28 +48,28 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 futures = "0.3"
 fs2 = "0.4"
 object_store = { version = "0.13", features = ["fs"] }
-meerkat-core = "=0.7.27"
-meerkat-client = "=0.7.27"
-meerkat-contracts = "=0.7.27"
-meerkat-mob = "=0.7.27"
-meerkat-mob-mcp = "=0.7.27"
-meerkat-mcp = "=0.7.27"
-meerkat-models = "=0.7.27"
+meerkat-core = "=0.7.28"
+meerkat-client = "=0.7.28"
+meerkat-contracts = "=0.7.28"
+meerkat-mob = "=0.7.28"
+meerkat-mob-mcp = "=0.7.28"
+meerkat-mcp = "=0.7.28"
+meerkat-models = "=0.7.28"
 # meerkat 0.7 split session memory out of `memory-store` (which now only maps
 # to meerkat-store/memory); explicit `memory` enables need `memory-store-session`.
-meerkat = { version = "=0.7.27", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store", "live", "openai-realtime"] }
+meerkat = { version = "=0.7.28", features = ["comms", "skills", "mcp", "memory-store", "memory-store-session", "jsonl-store", "session-store", "sqlite-store", "live", "openai-realtime"] }
 # READ-ONLY host-side access to meerkat's OWN session semantic memory for the
 # Distiller's post-compaction harvest (§8.4: `MemoryStore::search` over the
 # discard range). This reads meerkat's store; the §12 bright line governs the
 # bundled agent-memory store, which stays plain B-tree SQLite.
-meerkat-memory = "=0.7.27"
+meerkat-memory = "=0.7.28"
 # Live (realtime) member sessions: `live_wiring` hosts the projection sink,
 # the WS transport state, and the mobkit/live/* handlers on top of this crate.
-meerkat-live = "=0.7.27"
-meerkat-runtime = { version = "=0.7.27", features = ["sqlite-store", "live"] }
-meerkat-session = { version = "=0.7.27", features = ["session-store"] }
-meerkat-store = { version = "=0.7.27", features = ["sqlite"] }
-meerkat-tools = "=0.7.27"
+meerkat-live = "=0.7.28"
+meerkat-runtime = { version = "=0.7.28", features = ["sqlite-store", "live"] }
+meerkat-session = { version = "=0.7.28", features = ["session-store"] }
+meerkat-store = { version = "=0.7.28", features = ["sqlite"] }
+meerkat-tools = "=0.7.28"
 tempfile = "3"
 async-trait = "0.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -123,10 +123,10 @@ futures = "0.3"
 tower = { version = "0.5", features = ["util"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
-meerkat-comms = "=0.7.27"
-meerkat-schedule = "=0.7.27"
+meerkat-comms = "=0.7.28"
+meerkat-schedule = "=0.7.28"
 # `schema` feature (test-only) exposes `meerkat_mob::adaptive::layer_decision_schema()`
 # so a parity guard can assert the bundled adaptive layer-decision schema stays
 # Value-equal to meerkat's canonical one. Dev-dependency: not enabled in release
 # builds, so the production binary keeps the lean (no-schemars) meerkat-mob.
-meerkat-mob = { version = "=0.7.27", features = ["schema"] }
+meerkat-mob = { version = "=0.7.28", features = ["schema"] }
