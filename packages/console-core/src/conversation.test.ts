@@ -81,6 +81,32 @@ describe("conversation grouping", () => {
   });
 });
 
+describe("system task entries", () => {
+  test("preserves the exact task prompt for transcript copy and accessibility surfaces", () => {
+    const prompt = "Study the assigned domain.\n\nLearn every boundary and invariant.";
+    const entry: ConversationTimelineEntry = {
+      id: "system-task-domain-study",
+      kind: "message",
+      variant: "plain",
+      identity: {
+        id: "system-task-domain-study",
+        label: "Initial domain study",
+        role: "system",
+        presentation: "system",
+      },
+      text: prompt,
+      taskKind: "domain_reconnaissance",
+      taskLabel: "Initial domain study",
+      taskId: "domain-study-runtime",
+      taskStatus: "running",
+      runId: "run-domain-study-runtime",
+    };
+
+    expect(conversationEntryText(entry)).toBe(prompt);
+    expect(conversationIdentityGroupKey(entry.identity)).toBe("system-task-domain-study:system:label");
+  });
+});
+
 describe("flow run entries", () => {
   test("preserves an honest stopped state in the shared conversation model", () => {
     const entry: ConversationTimelineEntry = {
