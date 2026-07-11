@@ -20,6 +20,55 @@ use super::types::{
 
 pub(crate) const IDENTITY_RESTORE_CONCURRENCY: usize = 4;
 
+/// Effective restore concurrency: `MOBKIT_IDENTITY_RESTORE_CONCURRENCY`
+/// overrides the default, clamped to [1, 16]. `1` serializes restores — the
+/// field mitigation for Bug I, where concurrent multi-hundred-MB session
+/// resumes against one SQLite store exceed the 5s writer busy_timeout and the
+/// resulting mid-spawn store failures feed meerkat's destructive resume
+/// rollback (upstream ask 31).
+pub(crate) fn identity_restore_concurrency() -> usize {
+    parse_identity_restore_concurrency(
+        std::env::var("MOBKIT_IDENTITY_RESTORE_CONCURRENCY")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_identity_restore_concurrency(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|value| value.clamp(1, 16))
+        .unwrap_or(IDENTITY_RESTORE_CONCURRENCY)
+}
+
+#[cfg(test)]
+mod restore_concurrency_tests {
+    use super::{IDENTITY_RESTORE_CONCURRENCY, parse_identity_restore_concurrency};
+
+    #[test]
+    fn defaults_when_unset_or_invalid() {
+        assert_eq!(
+            parse_identity_restore_concurrency(None),
+            IDENTITY_RESTORE_CONCURRENCY
+        );
+        assert_eq!(
+            parse_identity_restore_concurrency(Some("")),
+            IDENTITY_RESTORE_CONCURRENCY
+        );
+        assert_eq!(
+            parse_identity_restore_concurrency(Some("not-a-number")),
+            IDENTITY_RESTORE_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn parses_and_clamps() {
+        assert_eq!(parse_identity_restore_concurrency(Some("1")), 1);
+        assert_eq!(parse_identity_restore_concurrency(Some(" 8 ")), 8);
+        assert_eq!(parse_identity_restore_concurrency(Some("0")), 1);
+        assert_eq!(parse_identity_restore_concurrency(Some("64")), 16);
+    }
+}
+
 fn trace_identity_restore_completed(identity: &AgentIdentity, started_at: Instant) {
     let elapsed = started_at.elapsed();
     if elapsed >= Duration::from_secs(1) {
@@ -312,9 +361,10 @@ pub async fn restore_flow(
     // independent history loading and agent construction, so keep a small
     // bounded set in flight instead of making large durable rosters pay the
     // full sum of every member's resume latency.
+    let restore_concurrency = identity_restore_concurrency();
     tracing::info!(
         member_count = roster.len(),
-        concurrency = IDENTITY_RESTORE_CONCURRENCY,
+        concurrency = restore_concurrency,
         "starting identity restore"
     );
     let restore_started_at = Instant::now();
@@ -1183,7 +1233,7 @@ pub async fn restore_flow(
                 Ok((index, outcomes))
             }
         })
-        .buffer_unordered(IDENTITY_RESTORE_CONCURRENCY)
+        .buffer_unordered(restore_concurrency)
         .collect::<Vec<Result<(usize, BTreeMap<AgentIdentity, RestoreOutcome>), _>>>()
         .await;
 

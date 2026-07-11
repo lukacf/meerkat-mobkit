@@ -1,15 +1,18 @@
 # Meerkat upstream asks — work order
 
-## Current status (2026-07-10)
+## Current status (2026-07-11)
 
 This file is both the historical evidence record and the current upstream work
 queue. Historical problem statements remain below, but their status is
 authoritative only through the explicit status line under each ask.
 
-**Open work is intentionally limited to five actionable asks:**
+**Open actionable asks (31/32 are P0 — active continuity destruction in the field, Bug I):**
 
 | Ask | Current actionable residue |
 |---|---|
+| **31** | **P0 (Bug I).** Resume-provision rollback must be non-destructive: a failed resume spawn archives/retires the durable session it was resuming, permanently destroying the identity's continuity. Plus a revive affordance for already-retired sessions with intact snapshots. |
+| **32** | **P0 (Bug I racer).** A retire accepted as RetireAbsent must not cancel a subsequent spawn of the same id (or expose an awaitable retire-drain). Mobkit ships a drain-poll workaround; the fence belongs in the machine. |
+| **33** | SQLite writer contention under concurrent restores: the 5s busy_timeout is exceeded by multi-hundred-MB snapshot writes and lifecycle persists surface raw "database is locked" as spawn failures. Bounded SQLITE_BUSY retry for lifecycle persists and/or configurable busy_timeout. Related latent wall: a 366MB snapshot hit "string or blob too big". |
 | **10** | Add call-level tool authorization to executing transcript forks. Persisted/non-live transcript forking already works; that half of the original ask is closed. |
 | **14** | Add a typed member liveness/progress projection beyond lifecycle status: run-open/idle, in-flight work, last progress/event, and a machine-owned degraded/wedged classification. |
 | **27** | Make ordinary peer-send outcomes distinguish delivered/handed-off/queued from unreachable. Supervisor-rotation operation receipts do not close this general delivery ask. |
@@ -1505,3 +1508,118 @@ the full transcript, in the session-projection layer where
 user-content identity lane and exact-retry guards. mobkit stopgap (shipped
 0.7.32): the gateway clamps the projected seed at open time — correct but
 lossy; the principled summarize-then-seed belongs in core.
+
+## Ask 31 — resume-provision rollback destroys the durable session it was resuming — P0
+
+**OPEN (filed 2026-07-11, Bug I).** The single most destructive defect of the
+HomeCore saga: on 0.7.33 boots, 1-2 slow-restoring eternal identities per boot
+were terminally retired by their own failed resume, and repair boots re-rolled
+the race instead of converging (14/16 when the operator stopped repairing).
+
+Mechanism (code-verified in meerkat-mob 0.7.28):
+
+1. A resume spawn fails at a LATE stage — in the field, supervisor-trust
+   lifecycle persists failing with `SQLite error: database is locked` under
+   concurrent restores (ask 33), or a spawn canceled by a queued retire
+   (ask 32).
+2. `MobActor::finalize_spawn_from_pending` (actor.rs:10838 and the sibling
+   arms at 10789/10880/10938) compensates via `provision.rollback()`.
+3. `PendingProvision::rollback` (provision_guard.rs:56) calls
+   `provisioner.retire_member(&member_ref)` — "archiving the session" per its
+   own doc comment.
+4. `SessionBackend::retire_runtime_before_archive` (provisioner.rs:685)
+   durably persists `runtime_state=retired` with the binding nulled.
+5. Retire is terminal by design: every subsequent resume fails with
+   `missing durable session snapshot` (actor.rs:9544). The identity's entire
+   transcript is unreachable forever.
+
+Forensic confirmation (HomeCore server, store
+`data/mobkit_state/5f68197796d9.damaged-bug-i/runtime.sqlite`): victims'
+`runtime_states` rows read `{"record_version":2,"runtime_state":"retired",
+"binding":{"agent_runtime_id":null,...}}` while their multi-hundred-MB
+snapshots sit intact alongside. Gateway stderr shows the full chain, including
+`archive compensation failed` arms where even the destruction itself hit the
+locked store.
+
+The rollback semantics are correct for a FRESH spawn (the provisioned session
+is garbage without its member). They are catastrophic for a RESUME: the
+provisioned session is the only copy of an eternal identity's history, and the
+mobkit bridge's rejection contract ("durable session preserved, identity
+degraded pending reconcile retry") is silently violated — the bridge REFUSES
+fresh-spawn fallback precisely because it assumes the session survived.
+
+Ask (both halves):
+- **Non-destructive resume rollback**: `PendingProvision` (or the provision
+  request) must distinguish provision-of-fresh-session from
+  provision-of-resumed-durable-session; rollback of a resume returns the
+  session to its pre-resume durable state (idle, binding intact or cleanly
+  cleared) and NEVER archives/retires it.
+- **Revive affordance**: an authority-level operation to return a
+  retired-with-intact-snapshot session to `idle` (the manual row-copy repair,
+  made legitimate). Without it, every past and future victim needs hand
+  surgery on `runtime.sqlite`.
+
+mobkit interim (0.7.34): post-rejection verification probes the session store
+and logs continuity destruction explicitly instead of the false "durable
+session preserved"; restore concurrency knob + collision-retry drain reduce
+the two known triggers. mobkit CANNOT prevent the destruction — the rollback
+runs inside the spawn path.
+
+## Ask 32 — RetireAbsent leaves a queued retire that cancels the next spawn of the same id — P0
+
+**OPEN (filed 2026-07-11, Bug I secondary racer).** Field trace (2ms apart,
+two independent incidents captured):
+
+```
+WARN  resume_session hit a roster collision; retiring the stale member and retrying resume
+       error=mob member already exists: mk--rt_cfamily-group_cmain_c0
+WARN  meerkat_mob::runtime::actor: retire requested for unknown meerkat id; MobMachine accepted RetireAbsent
+ERROR resume rejected ... error=internal error: spawn canceled for 'mk--rt_cfamily-group_cmain_c0': retire command received
+```
+
+The colliding roster entry is a Broken residue of an earlier rejected resume
+(same boot); it exists in the MobMachine roster but has no live actor. The
+bridge retires it; `retire()` returns Ok when the command is ACCEPTED
+(MobMachine records RetireAbsent), but the command is still queued when the
+resume retry arrives, so the retry spawn is canceled — and via ask 31 the
+cancel's rollback then archives the durable session (the family-group victim's
+next attempt logged `session not found`, then `missing durable session
+snapshot` forever).
+
+Ask: a retire resolved as RetireAbsent must be inert for later spawns of the
+same identity (it retired nothing; there is nothing to cancel), or the machine
+exposes an awaitable retire-drain so a caller can sequence
+retire-then-respawn without racing the command queue.
+
+mobkit interim (0.7.34): after a collision retire the bridge drain-polls the
+roster (bounded 2s) before retrying, and treats `spawn canceled ... retire
+command received` as retryable-once-after-drain. This narrows the window; it
+cannot close it (the queue is unobservable from the handle surface).
+
+## Ask 33 — SQLite writer contention under concurrent session restores — P1
+
+**OPEN (filed 2026-07-11, Bug I trigger).** meerkat-store sets
+`busy_timeout=5s` + WAL (sqlite_store.rs:24,113-114). A HomeCore boot restores
+16 identities with sessions up to 366MB; mobkit restores up to 4 concurrently
+(#265). Multi-hundred-MB snapshot writes hold the WAL writer lock past 5s, and
+every lifecycle persist that loses the wait surfaces raw `Store write failed:
+SQLite error: database is locked` — in the field this hit supervisor-trust
+revoke/install begin-lifecycle persists and recovery persists mid resume-spawn,
+which then fed the ask 31 destructive rollback. Slow-restoring members are
+victimized precisely in proportion to their restore duration.
+
+Ask:
+- lifecycle persists (small, critical, idempotent begin/commit rows) should
+  retry bounded on SQLITE_BUSY instead of failing the whole spawn; and/or
+- busy_timeout configurable per store open, sized for stores whose single
+  writes can take tens of seconds.
+
+Related latent wall, same store, observed 2026-07-10: domain:security's 366MB
+snapshot failed `runtime transcript rewrite snapshot persistence failed: Store
+write failed: string or blob too big` — the per-value size ceiling is being
+approached by real single-session stores; worth a deliberate position
+(chunking, streaming blob, or a documented limit) before it becomes Bug J.
+
+mobkit interim (0.7.34): `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` env knob
+(clamped 1-16, default 4); `=1` serializes restores and removes mobkit's own
+contribution to writer contention.
