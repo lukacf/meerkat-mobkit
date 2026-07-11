@@ -9,6 +9,9 @@ export interface PendingItem {
   addedAt: number;
   expanded?: boolean;
   editing?: boolean;
+  // Durable delivery failure. Hosts keep the row until an explicit retry;
+  // the shared UI must distinguish it from an ordinary idle queue head.
+  manualRetryRequired?: boolean;
   // `null` = static; the others are transient animation flags driven
   // by CSS keyframes. Items in `promoting`/`trashing`/`draining` are
   // non-interactive and on their way out.
@@ -27,6 +30,7 @@ export interface PendingStackProps {
   agentBusy: boolean;
   reducedMotion?: boolean;
   onSteer: (id: string) => void;
+  onRetry?: ((id: string) => void) | null;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -39,6 +43,7 @@ export interface PendingStackProps {
 interface StackHeadProps {
   count: number;
   agentBusy: boolean;
+  needsRetry: boolean;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onClear: () => void;
@@ -47,6 +52,7 @@ interface StackHeadProps {
 function StackHead({
   count,
   agentBusy,
+  needsRetry,
   collapsed,
   onToggleCollapsed,
   onClear,
@@ -69,9 +75,9 @@ function StackHead({
         <span className="cc-pending-stack__head-hint">· drains top → bottom</span>
       )}
       <span className="cc-pending-stack__head-spacer" />
-      <span className={`cc-pending-stack__head-phase ${agentBusy ? "" : "is-idle"}`}>
+      <span className={`cc-pending-stack__head-phase ${needsRetry ? "is-needs-retry" : (agentBusy ? "" : "is-idle")}`}>
         <b />
-        {agentBusy ? "Busy" : "Idle"}
+        {needsRetry ? "Needs retry" : (agentBusy ? "Busy" : "Idle")}
       </span>
       {count > 0 && (
         <button
@@ -94,6 +100,7 @@ interface StackItemProps {
   dragging: boolean;
   dropHint: PendingDropWhere | null;
   onSteer: (id: string) => void;
+  onRetry?: ((id: string) => void) | null;
   onTrash: (id: string) => void;
   onEdit: (id: string) => void;
   onCommitEdit: (id: string, text: string) => void;
@@ -121,6 +128,7 @@ function StackItem({
   dragging,
   dropHint,
   onSteer,
+  onRetry,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -167,6 +175,7 @@ function StackItem({
     item.status === "trashing" ? "is-trashing" : "",
     item.status === "draining" ? "is-draining" : "",
     item.status === "entering" ? "is-entering" : "",
+    item.manualRetryRequired ? "is-needs-retry" : "",
     dragging ? "is-dragging" : "",
     dropHint === "above" ? "drop-target drop-above" : "",
     dropHint === "below" ? "drop-target drop-below" : "",
@@ -248,7 +257,9 @@ function StackItem({
             {item.text}
           </div>
           <div className="cc-pending-item__meta">
-            {isHead && <span className="cc-pending-item__head-tag">Next</span>}
+            {item.manualRetryRequired ? (
+              <span className="cc-pending-item__head-tag is-needs-retry">Needs retry</span>
+            ) : (isHead ? <span className="cc-pending-item__head-tag">Next</span> : null)}
             <span>{timeAgo(item.addedAt)}</span>
             {item.status === "promoting" && (
               <span className="cc-pending-item__sending">SENDING…</span>
@@ -262,13 +273,17 @@ function StackItem({
           <button
             type="button"
             className="cc-pending-btn cc-pending-btn--steer"
-            onClick={() => onSteer(item.id)}
+            onClick={() => (item.manualRetryRequired ? (onRetry || onSteer)(item.id) : onSteer(item.id))}
             disabled={item.status === "promoting"}
-            aria-label="Steer — send now and interrupt at next cooperative pause"
-            title="Send now and interrupt at the next cooperative pause"
+            aria-label={item.manualRetryRequired
+              ? "Retry delivery"
+              : "Steer — send now and interrupt at next cooperative pause"}
+            title={item.manualRetryRequired
+              ? "Retry delivery"
+              : "Send now and interrupt at the next cooperative pause"}
             data-testid={`pending-steer:${item.id}`}
           >
-            <span className="cc-pending-btn__glyph">↪</span>
+            <span className="cc-pending-btn__glyph">{item.manualRetryRequired ? "Retry" : "↪"}</span>
           </button>
           <button
             type="button"
@@ -301,6 +316,7 @@ export function PendingStack({
   agentBusy,
   reducedMotion,
   onSteer,
+  onRetry,
   onTrash,
   onEdit,
   onCommitEdit,
@@ -373,6 +389,7 @@ export function PendingStack({
       <StackHead
         count={items.length}
         agentBusy={agentBusy}
+        needsRetry={items.some((item) => item.manualRetryRequired)}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         onClear={onClearAll}
@@ -386,6 +403,7 @@ export function PendingStack({
             dragging={dragId === item.id}
             dropHint={dropTarget.id === item.id ? dropTarget.where : null}
             onSteer={onSteer}
+            onRetry={onRetry}
             onTrash={onTrash}
             onEdit={onEdit}
             onCommitEdit={onCommitEdit}

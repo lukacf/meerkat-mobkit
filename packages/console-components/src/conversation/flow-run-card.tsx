@@ -12,8 +12,10 @@ import { ConversationTranscript } from "./conversation-transcript";
 import type { IconRenderer } from "../shared";
 
 const STATUS_LABEL: Record<FlowRunStatus, string> = {
-  idle: "Queued",
+  idle: "Idle",
+  queued: "Queued",
   running: "Working",
+  cancelling: "Stopping",
   completed: "Done",
   failed: "Failed",
   stopped: "Stopped",

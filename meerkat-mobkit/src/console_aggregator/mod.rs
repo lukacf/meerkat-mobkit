@@ -1722,16 +1722,6 @@ impl MobKitConsoleAggregator {
                 &live_records,
             ))
             .await;
-            let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
-                &entry,
-                &durable_live_records,
-            ))
-            .await;
-            if let Some(ambiguous_error) =
-                ambiguous_live_alias_error(identity, &visible_durable_live_records)
-            {
-                return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
-            }
             if let Some(rebound_record) = self_heal_durable_session_mismatch(
                 &entry,
                 identity_runtime.as_ref(),
@@ -1859,7 +1849,36 @@ impl MobKitConsoleAggregator {
         &self,
         identity: &str,
     ) -> Result<Option<ResolvedConsoleMember>, ConsoleSendError> {
-        let matches = Box::pin(self.resolve_visible_members(identity)).await;
+        let mut matches = Box::pin(self.resolve_visible_members(identity)).await;
+        // Retiring generations remain visible for history and inspection, but
+        // they must not make a durable send alias ambiguous when exactly one
+        // active/addressable generation can receive the message. Preserve the
+        // ambiguity error when multiple genuinely sendable candidates exist.
+        let sendable_indices = sendable_resolved_member_indices(&matches);
+        if sendable_indices.len() > 1 {
+            let candidates = sendable_indices
+                .iter()
+                .map(|index| matches[*index].runtime_identity.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConsoleSendError::AmbiguousIdentity {
+                identity: identity.to_string(),
+                candidates,
+            });
+        }
+        if let Some(index) = sendable_indices.into_iter().next() {
+            let resolved = matches.swap_remove(index);
+            if let Some(record) = identity_record_for_resolved_member(&resolved).await
+                && let Some(stale_error) =
+                    reconcile_stale_live_record_binding(&resolved.entry, identity, &record).await
+            {
+                return Err(ConsoleSendError::InvalidRequest(stale_error));
+            }
+            if let Some(stale_error) = Box::pin(self.durable_send_binding_error(identity)).await? {
+                return Err(ConsoleSendError::InvalidRequest(stale_error));
+            }
+            return Ok(Some(resolved));
+        }
         if matches.len() > 1 {
             let candidates = matches
                 .iter()
@@ -1954,16 +1973,6 @@ impl MobKitConsoleAggregator {
             &live_records,
         ))
         .await;
-        let visible_durable_live_records = Box::pin(visible_live_records_for_entry(
-            &entry,
-            &durable_live_records,
-        ))
-        .await;
-        if let Some(ambiguous_error) =
-            ambiguous_live_alias_error(&durable_record.identity, &visible_durable_live_records)
-        {
-            return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
-        }
         if let Some(rebound_record) = self_heal_durable_session_mismatch(
             &entry,
             identity_runtime.as_ref(),
@@ -4665,6 +4674,18 @@ fn member_is_addressable(member: &MobMemberListEntry) -> bool {
         .unwrap_or(true)
 }
 
+fn sendable_resolved_member_indices(matches: &[ResolvedConsoleMember]) -> Vec<usize> {
+    matches
+        .iter()
+        .enumerate()
+        .filter_map(|(index, resolved)| {
+            (member_is_addressable(&resolved.member)
+                && resolved.member.status == meerkat_mob::MobMemberStatus::Active)
+                .then_some(index)
+        })
+        .collect()
+}
+
 fn apply_namespace(identity: &str, namespace: &str) -> String {
     let namespace = namespace.trim().trim_matches('/');
     if namespace.is_empty() || identity.starts_with(&format!("{namespace}/")) {
@@ -5226,6 +5247,50 @@ comms = true
             .build()
             .await
             .expect("runtime builds")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_selection_ignores_a_retiring_generation_when_one_active_generation_remains() {
+        let runtime = build_empty_runtime("console-send-retiring-generation-test").await;
+        let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
+        for generation in 0..=1 {
+            runtime
+                .spawn(
+                    SpawnMemberSpec::from_wire(
+                        "worker".to_string(),
+                        format!("rt:builder:{generation}"),
+                        Some("You are Builder.".into()),
+                        None,
+                        None,
+                    )
+                    .with_labels(labels.clone()),
+                )
+                .await
+                .expect("member spawns");
+        }
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        let mut matches = aggregator.resolve_visible_members("builder").await;
+        assert_eq!(matches.len(), 2);
+        assert_eq!(sendable_resolved_member_indices(&matches).len(), 2);
+
+        matches[0].member.status = meerkat_mob::MobMemberStatus::Retiring;
+        let sendable = sendable_resolved_member_indices(&matches);
+        assert_eq!(sendable.len(), 1);
+        assert_ne!(
+            matches[sendable[0]].member.status,
+            meerkat_mob::MobMemberStatus::Retiring
+        );
+
+        let _ = runtime.mob_handle().stop().await;
     }
 
     async fn build_stress_runtime(
@@ -7031,6 +7096,20 @@ comms = true
                     .contains("stale durable identity alias"),
             "unexpected runtime-id retire error: {runtime_id_retire_err}"
         );
+
+        aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "duplicate-live-alias-durable-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect("durable identity binding remains authoritative for interaction reserve");
 
         let _ = runtime.mob_handle().stop().await;
         Ok(())
