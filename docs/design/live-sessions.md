@@ -122,7 +122,9 @@ user-content identity lane, which also rides the open config
 committed images. The projection sink forwards the transcript apply outcome
 (0.7.27 API) so the host synthesizes the redacted image receipt only after
 durable reducer application. Only `gpt-realtime-2` accepts image input in
-the shipped catalog (capabilities carry `image_in`).
+the shipped catalog (capabilities carry `image_in`). As of meerkat 0.7.28
+the catalog default model is `gpt-5.6-sol` (GPT-5.6 Sol/Terra/Luna added;
+explicit GPT-5.5 pins stay honored) — realtime capability is unchanged.
 
 ## Field-reported additions (mobkit 0.7.32)
 

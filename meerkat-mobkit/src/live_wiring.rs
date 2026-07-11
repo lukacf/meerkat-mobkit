@@ -1123,9 +1123,10 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
     service: &PersistentSessionService<B>,
     session_id: &SessionId,
     turning_mode: RealtimeTurningMode,
+    seed_max_chars: Option<usize>,
 ) -> Result<RealtimeSessionOpenConfig, meerkat_core::SessionError> {
-    let session = service
-        .export_realtime_open_session_snapshot(session_id)
+    let (session, canonical_user_image_decoded_bytes) = service
+        .export_realtime_open_session_snapshot_with_image_usage(session_id)
         .await?;
     let llm_identity = service.live_session_llm_identity(session_id).await?;
     let visible_tools = service.live_visible_tool_defs(session_id).await?;
@@ -1137,22 +1138,60 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
             err.to_string(),
         ))
     })?;
-    Ok(RealtimeSessionOpenConfig::new(
-        turning_mode,
-        llm_identity,
-        visible_tools,
-        realtime_projection_messages(&session)?,
+    // 0.7.28: seed bounding is upstream-owned (`live/open.seed_max_chars`,
+    // upstream ask 30 SHIPPED) — the windowed projection preserves the
+    // enabled root context, an affordable compaction summary, and the
+    // identity/tombstone/rewrite-generation/canonical-image sidecars, and
+    // reports degraded continuity explicitly. This replaced mobkit's
+    // oldest-first clamp stopgap.
+    let seed_projection = match seed_max_chars {
+        Some(max_chars) => {
+            let window =
+                meerkat::session_runtime::live_orchestration::LiveSeedWindow::new(max_chars)
+                    .map_err(|err| {
+                        meerkat_core::SessionError::Agent(
+                            meerkat_core::error::AgentError::InternalError(err.to_string()),
+                        )
+                    })?;
+            let projection =
+                meerkat::session_runtime::live_orchestration::realtime_projection_messages_with_window(
+                    &session, window,
+                )
+                .map_err(|err| {
+                    meerkat_core::SessionError::Agent(
+                        meerkat_core::error::AgentError::InternalError(err.to_string()),
+                    )
+                })?;
+            if !matches!(
+                projection.status,
+                meerkat::session_runtime::live_orchestration::LiveSeedProjectionStatus::Complete
+            ) {
+                tracing::info!(
+                    target: "meerkat_mobkit::live_wiring",
+                    %session_id,
+                    max_chars,
+                    status = ?projection.status,
+                    "live open seed windowed (upstream seed_max_chars)"
+                );
+            }
+            projection.messages
+        }
+        None => realtime_projection_messages(&session)?,
+    };
+    Ok(
+        RealtimeSessionOpenConfig::new(turning_mode, llm_identity, visible_tools, seed_projection)
+            .with_user_content_identities(session.realtime_user_content_identities())
+            .with_user_content_tombstones(session.realtime_user_content_tombstones())
+            .with_canonical_user_image_decoded_bytes(canonical_user_image_decoded_bytes)
+            .with_transcript_rewrite_generation(transcript_rewrite_generation)
+            .with_runtime_system_context(realtime_projection_runtime_system_context(&session)?)
+            .with_system_prompt(match realtime_projection_root_system_message(&session)? {
+                Some(Message::System(system)) => Some(system.content),
+                // The projector only ever yields `Message::System` (or `None`);
+                // any other shape means no root system prompt to project.
+                _ => None,
+            }),
     )
-    .with_user_content_identities(session.realtime_user_content_identities())
-    .with_user_content_tombstones(session.realtime_user_content_tombstones())
-    .with_transcript_rewrite_generation(transcript_rewrite_generation)
-    .with_runtime_system_context(realtime_projection_runtime_system_context(&session)?)
-    .with_system_prompt(match realtime_projection_root_system_message(&session)? {
-        Some(Message::System(system)) => Some(system.content),
-        // The projector only ever yields `Message::System` (or `None`);
-        // any other shape means no root system prompt to project.
-        _ => None,
-    }))
 }
 
 /// Provenance marker on the runtime system-context append carrying the
@@ -1199,38 +1238,6 @@ fn apply_live_open_instruction_overlay(
 /// Serialized size of one projected seed message, as counted by the clamp.
 fn serialized_message_chars(message: &Message) -> usize {
     serde_json::to_string(message).map_or(0, |text| text.len())
-}
-
-/// Clamp the projected seed transcript to `max_chars` total serialized
-/// length by dropping WHOLE messages oldest-first. A projected root system
-/// message at `seed_messages[0]` is never dropped — the system prompt is
-/// prompt truth, not seed history. Returns the number of dropped messages.
-///
-/// This is an explicit STOPGAP for upstream ask 30
-/// (docs/design/upstream-asks.md): providers cap live session instructions
-/// at 65,536 tokens and a long member transcript overflows the projected
-/// seed at open time. Remove once meerkat ships a machine-owned seed-window
-/// projection.
-fn clamp_seed_messages_oldest_first(
-    open_config: &mut RealtimeSessionOpenConfig,
-    max_chars: usize,
-) -> usize {
-    let head = usize::from(matches!(
-        open_config.seed_messages.first(),
-        Some(Message::System(_) | Message::SystemNotice(_))
-    ));
-    let mut total: usize = open_config
-        .seed_messages
-        .iter()
-        .map(serialized_message_chars)
-        .sum();
-    let mut dropped = 0usize;
-    while total > max_chars && open_config.seed_messages.len() > head {
-        let removed = open_config.seed_messages.remove(head);
-        total -= serialized_message_chars(&removed);
-        dropped += 1;
-    }
-    dropped
 }
 
 /// #176: project the factory's typed realtime audio policy into the typed
@@ -1283,6 +1290,7 @@ fn build_live_projection_snapshot(
         user_content_identities: open_config.user_content_identities.clone(),
         user_content_tombstones: open_config.user_content_tombstones.clone(),
         transcript_rewrite_generation: open_config.transcript_rewrite_generation,
+        canonical_user_image_decoded_bytes: open_config.canonical_user_image_decoded_bytes,
         // R10: the typed `system_prompt` field is the single owner of live
         // prompt truth — never re-derived from `seed_messages[0]` (the
         // history projector drops `Message::System`, so seed inference
@@ -1450,8 +1458,13 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     let turning_mode = parsed
         .turning_mode
         .unwrap_or(RealtimeTurningMode::ProviderManaged);
+    // The per-open seed_max_chars override beats the gateway-wide
+    // `runtime_options.live.seed_max_chars`; windowing is upstream-owned
+    // (0.7.28, ask 30 SHIPPED).
+    let seed_max_chars = parsed.seed_max_chars.or(ctx.seed_max_chars);
     let mut open_config =
-        match live_open_config_for_session(service, session_id, turning_mode).await {
+        match live_open_config_for_session(service, session_id, turning_mode, seed_max_chars).await
+        {
             Ok(config) => config,
             Err(meerkat_core::SessionError::NotFound { .. }) => {
                 return live_error(
@@ -1479,21 +1492,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // (see apply_live_open_instruction_overlay for the lane rationale).
     if let Some(instructions) = parsed.instructions {
         apply_live_open_instruction_overlay(&mut open_config, instructions.into_vec());
-    }
-    // Seed clamp, upstream ask 30 stopgap: the per-open override beats the
-    // gateway-wide `runtime_options.live.seed_max_chars`; the projected
-    // system prompt is never touched.
-    if let Some(max_chars) = parsed.seed_max_chars.or(ctx.seed_max_chars) {
-        let dropped = clamp_seed_messages_oldest_first(&mut open_config, max_chars);
-        if dropped > 0 {
-            tracing::info!(
-                target: "meerkat_mobkit::live_wiring",
-                %session_id,
-                dropped,
-                max_chars,
-                "live open seed clamped oldest-first (upstream ask 30 stopgap)"
-            );
-        }
     }
 
     // B19 precheck runs BEFORE any channel infra is minted (the reference
@@ -2195,10 +2193,13 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
         .await;
     };
 
+    // Refresh re-projects from the durable session; the gateway-wide seed
+    // window applies (there is no per-refresh override on the wire).
     let open_config = match live_open_config_for_session(
         service,
         &session_id,
         RealtimeTurningMode::ProviderManaged,
+        ctx.seed_max_chars,
     )
     .await
     {
@@ -2565,47 +2566,6 @@ mod tests {
         Message::System(meerkat_core::types::SystemMessage::new(text))
     }
 
-    #[test]
-    fn live_open_params_accept_string_and_array_instructions_and_seed_clamp() {
-        let one: GatewayLiveOpenParams = serde_json::from_value(serde_json::json!({
-            "identity": "reachy",
-            "instructions": "Speak Swedish.",
-            "seed_max_chars": 1000
-        }))
-        .expect("single-string instructions parse");
-        assert_eq!(
-            one.instructions.expect("instructions").into_vec(),
-            vec!["Speak Swedish.".to_string()]
-        );
-        assert_eq!(one.seed_max_chars, Some(1000));
-
-        let many: GatewayLiveOpenParams = serde_json::from_value(serde_json::json!({
-            "instructions": ["Speak Swedish.", "Keep replies short."]
-        }))
-        .expect("array instructions parse");
-        assert_eq!(
-            many.instructions.expect("instructions").into_vec(),
-            vec![
-                "Speak Swedish.".to_string(),
-                "Keep replies short.".to_string()
-            ]
-        );
-        assert_eq!(many.seed_max_chars, None);
-
-        let neither: GatewayLiveOpenParams =
-            serde_json::from_value(serde_json::json!({})).expect("empty params parse");
-        assert!(neither.instructions.is_none());
-        assert!(neither.seed_max_chars.is_none());
-
-        assert!(
-            serde_json::from_value::<GatewayLiveOpenParams>(
-                serde_json::json!({ "instructions": 7 })
-            )
-            .is_err(),
-            "non-string instructions must be rejected"
-        );
-    }
-
     /// Fix 2 lane assertion: the per-open overlay lands ONLY on the runtime
     /// system-context lane — the typed system prompt (durable prompt truth)
     /// and the projected seed history stay byte-identical.
@@ -2656,61 +2616,6 @@ mod tests {
     /// Fix 4 (upstream ask 30 stopgap): whole messages drop OLDEST-first, a
     /// projected root system message never drops, and the surviving tail fits
     /// the budget.
-    #[test]
-    fn seed_clamp_drops_oldest_first_and_never_touches_the_system_prompt() {
-        let system = system_message("You are the member.");
-        let oldest = user_message(&"a".repeat(400));
-        let middle = user_message(&"b".repeat(400));
-        let newest = user_message(&"c".repeat(400));
-        let mut config =
-            test_open_config(vec![system.clone(), oldest, middle.clone(), newest.clone()]);
-
-        // Budget for the system message + two newest user messages.
-        let budget = serialized_message_chars(&system)
-            + serialized_message_chars(&middle)
-            + serialized_message_chars(&newest);
-        let dropped = clamp_seed_messages_oldest_first(&mut config, budget);
-        assert_eq!(dropped, 1, "exactly the oldest user message drops");
-        assert_eq!(config.seed_messages, vec![system.clone(), middle, newest]);
-        assert!(
-            config
-                .seed_messages
-                .iter()
-                .map(serialized_message_chars)
-                .sum::<usize>()
-                <= budget
-        );
-
-        // A budget below even the system message still never drops it.
-        let dropped = clamp_seed_messages_oldest_first(&mut config, 1);
-        assert_eq!(dropped, 2, "both remaining user messages drop");
-        assert_eq!(config.seed_messages, vec![system]);
-        assert_eq!(
-            config.system_prompt.as_deref(),
-            Some("You are the member."),
-            "the typed system prompt field is never clamped"
-        );
-    }
-
-    #[test]
-    fn seed_clamp_without_a_root_system_message_drops_from_the_front() {
-        let oldest = user_message(&"a".repeat(400));
-        let newest = user_message(&"b".repeat(400));
-        let mut config = test_open_config(vec![oldest, newest.clone()]);
-        let budget = serialized_message_chars(&newest);
-        let dropped = clamp_seed_messages_oldest_first(&mut config, budget);
-        assert_eq!(dropped, 1);
-        assert_eq!(config.seed_messages, vec![newest]);
-    }
-
-    #[test]
-    fn seed_clamp_within_budget_is_a_no_op() {
-        let seed = vec![system_message("prompt"), user_message("hi")];
-        let mut config = test_open_config(seed.clone());
-        let dropped = clamp_seed_messages_oldest_first(&mut config, usize::MAX);
-        assert_eq!(dropped, 0);
-        assert_eq!(config.seed_messages, seed);
-    }
 
     /// #301 port: the surface mapper routes through the canonical typed
     /// owner so distinct `SessionError` variants land in distinct typed
