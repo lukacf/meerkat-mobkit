@@ -1852,10 +1852,36 @@ impl MobKitConsoleAggregator {
         let mut matches = Box::pin(self.resolve_visible_members(identity)).await;
         // Retiring generations remain visible for history and inspection, but
         // they must not make a durable send alias ambiguous when exactly one
-        // active/addressable generation can receive the message. Preserve the
-        // ambiguity error when multiple genuinely sendable candidates exist.
+        // active/addressable generation can receive the message. A durable
+        // identity-runtime binding is authoritative over stale duplicate live
+        // generations left behind by a respawn: select the exact bound runtime
+        // member for sends while keeping inspection/control ambiguity strict.
+        // Preserve the ambiguity error when multiple genuinely sendable
+        // candidates have no single durable binding.
         let sendable_indices = sendable_resolved_member_indices(&matches);
         if sendable_indices.len() > 1 {
+            if let Some(index) = Box::pin(authoritative_durable_sendable_member_index(
+                identity,
+                &matches,
+                &sendable_indices,
+            ))
+            .await?
+            {
+                let resolved = matches.swap_remove(index);
+                if let Some(record) = identity_record_for_resolved_member(&resolved).await
+                    && let Some(stale_error) =
+                        reconcile_stale_live_record_binding(&resolved.entry, identity, &record)
+                            .await
+                {
+                    return Err(ConsoleSendError::InvalidRequest(stale_error));
+                }
+                if let Some(stale_error) =
+                    Box::pin(self.durable_send_binding_error(identity)).await?
+                {
+                    return Err(ConsoleSendError::InvalidRequest(stale_error));
+                }
+                return Ok(Some(resolved));
+            }
             let candidates = sendable_indices
                 .iter()
                 .map(|index| matches[*index].runtime_identity.clone())
@@ -4686,6 +4712,99 @@ fn sendable_resolved_member_indices(matches: &[ResolvedConsoleMember]) -> Vec<us
         .collect()
 }
 
+async fn authoritative_durable_sendable_member_index(
+    requested_identity: &str,
+    matches: &[ResolvedConsoleMember],
+    sendable_indices: &[usize],
+) -> Result<Option<usize>, ConsoleSendError> {
+    if matches.iter().any(|resolved| {
+        requested_identity_is_runtime_member_alias(
+            requested_identity,
+            &resolved.entry.identity_namespace,
+        )
+    }) {
+        return Ok(None);
+    }
+
+    let mut visited_runtime_keys = BTreeSet::new();
+    let mut bindings = BTreeSet::new();
+    for resolved in matches {
+        let entry = &resolved.entry;
+        if !visited_runtime_keys.insert(entry.runtime_key.clone()) {
+            continue;
+        }
+        let Some(identity_runtime) = entry.identity_runtime.as_ref() else {
+            continue;
+        };
+        for raw_identity in
+            namespace_match_candidates(requested_identity, &entry.identity_namespace)
+        {
+            let Ok(identity) = crate::identity_first::AgentIdentity::parse(&raw_identity) else {
+                continue;
+            };
+            let Ok(status) = identity_runtime.status(&identity).await else {
+                continue;
+            };
+            if status.state != crate::identity_first::IdentityLifecycleState::Active
+                || status.addressability != crate::identity_first::AgentAddressability::Addressable
+            {
+                continue;
+            }
+            let Some(runtime_id) = status.agent_runtime_id.as_ref() else {
+                continue;
+            };
+            let record = identity_record_for_status(entry, &status);
+            if !Box::pin(console_identity_record_visible(entry, &record)).await {
+                continue;
+            }
+            bindings.insert((entry.runtime_key.clone(), runtime_id.as_str().to_string()));
+        }
+    }
+
+    if bindings.len() > 1 {
+        let candidates = bindings
+            .iter()
+            .map(|(runtime_key, runtime_id)| format!("{runtime_id}@{runtime_key}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ConsoleSendError::AmbiguousIdentity {
+            identity: requested_identity.to_string(),
+            candidates,
+        });
+    }
+    let Some((runtime_key, runtime_id)) = bindings.into_iter().next() else {
+        return Ok(None);
+    };
+    let bound_indices = sendable_indices
+        .iter()
+        .copied()
+        .filter(|index| {
+            matches[*index].entry.runtime_key == runtime_key
+                && matches[*index].runtime_identity == runtime_id
+        })
+        .collect::<Vec<_>>();
+    match bound_indices.as_slice() {
+        [index] => Ok(Some(*index)),
+        [] => Ok(None),
+        _ => {
+            let candidates = bound_indices
+                .iter()
+                .map(|index| {
+                    format!(
+                        "{}@{}",
+                        matches[*index].runtime_identity, matches[*index].source_mob_id
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ConsoleSendError::AmbiguousIdentity {
+                identity: requested_identity.to_string(),
+                candidates,
+            })
+        }
+    }
+}
+
 fn apply_namespace(identity: &str, namespace: &str) -> String {
     let namespace = namespace.trim().trim_matches('/');
     if namespace.is_empty() || identity.starts_with(&format!("{namespace}/")) {
@@ -6953,6 +7072,151 @@ comms = true
         );
 
         let _ = delegate_runtime.mob_handle().stop().await;
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn durable_send_selects_bound_generation_when_stale_generation_is_still_active()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-respawn-send-authority-test").await;
+        let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
+        for generation in 0..=1 {
+            runtime
+                .spawn(
+                    SpawnMemberSpec::from_wire(
+                        "worker".to_string(),
+                        format!("rt:builder:{generation}"),
+                        Some(format!("You are Builder generation {generation}.").into()),
+                        None,
+                        None,
+                    )
+                    .with_labels(labels.clone()),
+                )
+                .await
+                .expect("both live generations spawn");
+        }
+        let bound_session_id = runtime
+            .mob_handle()
+            .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
+                "rt:builder:1",
+            ))
+            .await
+            .expect("bound generation has a bridge session");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-respawn-send-authority-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("builder")?;
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(crate::identity_first::ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: crate::identity_first::AgentRuntimeId::parse("rt:builder:1")?,
+                    session_id: bound_session_id.clone(),
+                    generation: crate::identity_first::ContinuityGeneration::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                }),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(9),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "default".to_string(),
+                RuntimeEntry {
+                    runtime_key: "default".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let matches = aggregator.resolve_visible_members("builder").await;
+        assert_eq!(
+            matches.len(),
+            2,
+            "both Active generations remain observable"
+        );
+        assert_eq!(
+            sendable_resolved_member_indices(&matches).len(),
+            2,
+            "the stale generation reproduces the pre-fix send ambiguity"
+        );
+        let resolved = aggregator
+            .resolve_send_member("builder")
+            .await?
+            .expect("durable builder alias resolves");
+        assert_eq!(
+            resolved.runtime_identity, "rt:builder:1",
+            "continuity binding must shadow the stale Active generation for sends"
+        );
+
+        let inspect_error = aggregator
+            .inspect_identity("builder")
+            .await
+            .expect_err("inspection must keep duplicate live aliases explicit");
+        assert!(
+            inspect_error
+                .to_string()
+                .contains("ambiguous live identity alias")
+        );
+        let retire_error = aggregator
+            .retire_identity("builder")
+            .await
+            .expect_err("control must not silently retire through a durable alias");
+        assert!(
+            retire_error
+                .to_string()
+                .contains("ambiguous live identity alias")
+        );
+
+        let accepted = aggregator
+            .send(ConsoleSendRequest {
+                identity: "builder".to_string(),
+                content: json!("continue after respawn"),
+                origin: "console:test".to_string(),
+                idempotency_key: "respawn-bound-generation-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await?;
+        assert_eq!(accepted.session_id, Some(bound_session_id.to_string()));
+
         let _ = runtime.mob_handle().stop().await;
         Ok(())
     }
