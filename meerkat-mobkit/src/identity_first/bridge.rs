@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use meerkat_core::types::HandlingMode;
@@ -55,6 +56,17 @@ fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
 
 fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
     matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
+}
+
+/// A spawn canceled by a still-queued retire command for the same id. Reaches
+/// us stringified through the provisioning path; the meerkat wording is
+/// `spawn canceled for '<id>': retire command received` (actor.rs). This is
+/// the self-inflicted collision-retry race (Bug I secondary racer): our own
+/// collision retire, accepted as RetireAbsent, cancels the resume retry that
+/// follows it.
+fn is_spawn_canceled_by_pending_retire_error(error: &meerkat_mob::MobError) -> bool {
+    let text = error.to_string();
+    text.contains("spawn canceled") && text.contains("retire command received")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -604,6 +616,71 @@ impl MobSessionBridge {
             .cloned()
     }
 
+    /// Wait for a collision retire to drain out of the mob actor before
+    /// retrying a resume. `MobHandle::retire` returning `Ok` only means the
+    /// command was accepted: when the colliding roster entry has no live
+    /// actor (a Broken residue from an earlier rejected resume), the retire
+    /// is recorded as RetireAbsent and its command can still be queued when
+    /// the retry spawn arrives, canceling it ("spawn canceled: retire command
+    /// received" — observed 2ms apart in the field, Bug I). Poll the roster
+    /// until the colliding entry is gone, then leave one settle tick for the
+    /// queued command itself.
+    async fn await_collision_retire_drain(&self, member_id: &MobAgentIdentity) {
+        const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+        const DRAIN_POLL_ATTEMPTS: usize = 40; // 2s bound
+        for _ in 0..DRAIN_POLL_ATTEMPTS {
+            match self.handle.get_member(member_id).await {
+                Ok(None) => break,
+                Ok(Some(_)) => tokio::time::sleep(DRAIN_POLL_INTERVAL).await,
+                // A faulted roster read cannot confirm the drain; fall
+                // through to the settle tick rather than spinning on it.
+                Err(_) => break,
+            }
+        }
+        tokio::time::sleep(DRAIN_POLL_INTERVAL).await;
+    }
+
+    /// After a rejected resume, verify the durable session actually survived.
+    /// meerkat's spawn rollback compensates late resume-spawn failures by
+    /// archiving the session it was resuming (`PendingProvision::rollback` →
+    /// `retire_member` → `retire_runtime_before_archive`), which durably
+    /// writes `runtime_state=retired` and makes every later resume fail with
+    /// "missing durable session snapshot" (Bug I). Until that is fixed
+    /// upstream (ask 31), the standard "durable session preserved" rejection
+    /// log can be false — probe the store and say so explicitly, so operators
+    /// see continuity destruction the moment it happens instead of on the
+    /// next boot.
+    async fn verify_durable_session_after_rejected_resume(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+    ) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        match store.load_meta(session_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                tracing::error!(
+                    identity = %identity,
+                    session_id = %session_id,
+                    "durable session is GONE after the rejected resume: the spawn-failure \
+                     rollback archived/retired the continuity session (Bug I, upstream ask 31); \
+                     reconcile retries cannot recover this identity — the session must be \
+                     restored from a pre-damage store"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    identity = %identity,
+                    session_id = %session_id,
+                    %error,
+                    "could not verify durable session presence after the rejected resume"
+                );
+            }
+        }
+    }
+
     /// Resolve the inline definition profile backing `spec.profile`, used as
     /// the base when a draft model override must be projected into the typed
     /// `override_profile` spawn owner. Realm-ref bindings resolve to `None`.
@@ -1130,10 +1207,44 @@ impl SessionBridge for MobSessionBridge {
                         ));
                     }
                 }
+                // The retire is accepted, not necessarily drained: retrying
+                // immediately loses the race against our own queued retire
+                // command, which cancels the retry spawn (Bug I).
+                self.await_collision_retire_drain(&mid).await;
                 self.forget_runtime_member(runtime_id).await;
-                self.spawn_member_spec(spawn_spec).await.map_err(|error| {
-                    resume_rejected(identity, session_id, &error, "resume retry after collision")
-                })?;
+                match self.spawn_member_spec(spawn_spec.clone()).await {
+                    Ok(()) => {}
+                    Err(error) if is_spawn_canceled_by_pending_retire_error(&error) => {
+                        tracing::warn!(
+                            identity = %identity,
+                            session_id = %session_id,
+                            %error,
+                            "resume retry canceled by the still-queued collision retire; \
+                             draining again and retrying once more"
+                        );
+                        self.await_collision_retire_drain(&mid).await;
+                        if let Err(error) = self.spawn_member_spec(spawn_spec).await {
+                            self.verify_durable_session_after_rejected_resume(identity, session_id)
+                                .await;
+                            return Err(resume_rejected(
+                                identity,
+                                session_id,
+                                &error,
+                                "resume retry after collision",
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        self.verify_durable_session_after_rejected_resume(identity, session_id)
+                            .await;
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &error,
+                            "resume retry after collision",
+                        ));
+                    }
+                }
                 self.remember_runtime_member(runtime_id, &mid).await;
                 self.remember_runtime_session(runtime_id, session_id).await;
                 Ok(ResumeSessionOutcome::Resumed {
@@ -1146,12 +1257,16 @@ impl SessionBridge for MobSessionBridge {
             // would permanently abandon it (the HomeCore restart-loss bug).
             // Surface a typed rejection so the caller marks the identity
             // degraded and the next reconcile retries the resume.
-            Err(error) => Err(resume_rejected(
-                identity,
-                session_id,
-                &error,
-                "resume spawn",
-            )),
+            Err(error) => {
+                self.verify_durable_session_after_rejected_resume(identity, session_id)
+                    .await;
+                Err(resume_rejected(
+                    identity,
+                    session_id,
+                    &error,
+                    "resume spawn",
+                ))
+            }
         }
     }
 
@@ -1887,6 +2002,28 @@ mod tests {
             ),
             "ordinary respawn failures must still fail bridge repair"
         );
+    }
+
+    /// The Bug I secondary racer reaches the bridge stringified through the
+    /// provisioning path; match the exact meerkat actor.rs wording and nothing
+    /// broader (an operator-initiated retire canceling a spawn is legitimate).
+    #[test]
+    fn spawn_canceled_by_pending_retire_matches_field_wording() {
+        let canceled = meerkat_mob::MobError::Internal(
+            "internal error: spawn canceled for 'mk--rt_cfamily-group_cmain_c0': \
+             retire command received"
+                .to_string(),
+        );
+        assert!(is_spawn_canceled_by_pending_retire_error(&canceled));
+
+        let other_cancel = meerkat_mob::MobError::Internal(
+            "spawn canceled for 'mk--x': shutdown requested".to_string(),
+        );
+        assert!(!is_spawn_canceled_by_pending_retire_error(&other_cancel));
+
+        let unrelated =
+            meerkat_mob::MobError::Internal("retire command received out of band".to_string());
+        assert!(!is_spawn_canceled_by_pending_retire_error(&unrelated));
     }
 
     /// The persisted System message is authoritative on resume: even when the
