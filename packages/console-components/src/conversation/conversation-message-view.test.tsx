@@ -54,6 +54,45 @@ describe("ConversationMessageView", () => {
     expect(screen.getByRole("img", { name: /uploaded receipt/i })).toBeInTheDocument();
   });
 
+  test("renders the exact initial-domain-study prompt in an accessible collapsible system card", () => {
+    const prompt = "Study the runtime domain.\n\nLearn every boundary, invariant, and workflow.";
+    const entry: ConversationTimelineEntry = {
+      id: "system-task-domain-study",
+      kind: "message",
+      variant: "plain",
+      identity: {
+        // Typed task metadata is authoritative even if a consumer's generic
+        // transcript adapter would otherwise present this entry as a user turn.
+        id: "user",
+        label: "You",
+        role: "user",
+        presentation: "user",
+        showLabel: false,
+      },
+      text: prompt,
+      taskKind: "domain_reconnaissance",
+      taskLabel: "Initial domain study",
+      taskId: "domain-study-runtime",
+      taskStatus: "running",
+      runId: "run-domain-study-runtime",
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    const card = screen.getByRole("group", { name: "Initial domain study" });
+    expect(card).toBeInstanceOf(HTMLDetailsElement);
+    expect(card).not.toHaveAttribute("open");
+    expect(card).toHaveClass("cc-message--system-task", "cc-message--system");
+    expect(card).not.toHaveClass("cc-message--user");
+    expect(screen.queryByRole("button", { name: /copy message/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Initial domain study", { selector: "summary span" })).toBeInTheDocument();
+    expect(screen.getByText("Domain reconnaissance · Running", { exact: false })).toBeInTheDocument();
+    expect(container.querySelector(".cc-rich-thinking__body")?.textContent).toBe(prompt);
+
+    fireEvent.click(screen.getByText("Initial domain study", { selector: "summary span" }));
+    expect(card).toHaveAttribute("open");
+  });
+
   test("labels single outgoing peer tools with the concrete tool name", () => {
     const entry: ConversationTimelineEntry = {
       id: "peer-tool-1",

@@ -56,6 +56,16 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   text?: string;
   blocks?: ConversationRichBlock[];
   richStyle?: "default" | "streaming";
+  /**
+   * Typed host-task metadata. System tasks stay distinct from operator turns
+   * all the way through the shared renderer instead of masquerading as user
+   * messages.
+   */
+  taskKind?: string;
+  taskLabel?: string;
+  taskId?: string;
+  taskStatus?: string;
+  runId?: string | null;
 }
 
 export interface ConversationSummaryFile {

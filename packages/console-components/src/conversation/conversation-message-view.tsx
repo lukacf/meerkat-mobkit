@@ -14,6 +14,8 @@ import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import type { IconRenderer } from "../shared";
 
+const SYSTEM_TASK_PROMPT_STYLE = { whiteSpace: "pre-wrap" } as const;
+
 function renderMultilineText(text: string) {
   return text.split("\n").map((line, index) => (
     <Fragment key={`${line}-${index}`}>
@@ -21,6 +23,14 @@ function renderMultilineText(text: string) {
       {line}
     </Fragment>
   ));
+}
+
+function humanizeSystemTaskMetadata(value: string | null | undefined) {
+  const normalized = String(value || "").trim().replace(/[_-]+/gu, " ");
+  if (!normalized) {
+    return "";
+  }
+  return `${normalized[0]?.toUpperCase() || ""}${normalized.slice(1)}`;
 }
 
 type ConversationMessageViewProps = {
@@ -71,6 +81,42 @@ export function ConversationMessageView({
 
   if (entry.kind === "summary") {
     return <SummaryCard entry={entry} />;
+  }
+
+  if (entry.taskKind || entry.taskLabel) {
+    const taskLabel = entry.taskLabel?.trim() || "System task";
+    const taskMetadata = [
+      humanizeSystemTaskMetadata(entry.taskKind),
+      humanizeSystemTaskMetadata(entry.taskStatus),
+    ].filter(Boolean).join(" · ");
+    const systemTaskClassName = [
+      "cc-message",
+      "cc-message--assistant",
+      "cc-message--system",
+      "cc-message--system-task",
+      "cc-summary-card",
+      "cc-rich-thinking",
+    ].join(" ");
+    return (
+      <details
+        aria-label={taskLabel}
+        className={systemTaskClassName}
+        data-task-kind={entry.taskKind}
+        data-task-status={entry.taskStatus}
+      >
+        <summary className="cc-rich-thinking__label">
+          <span className="cc-summary-card__title">{taskLabel}</span>
+          {taskMetadata ? (
+            <span className="cc-message-group__identity-meta"> · {taskMetadata}</span>
+          ) : null}
+        </summary>
+        <div className="cc-rich-thinking__body">
+          <p className="cc-rich-paragraph" style={SYSTEM_TASK_PROMPT_STYLE}>
+            {entry.text || ""}
+          </p>
+        </div>
+      </details>
+    );
   }
 
   if (entry.variant === "meta") {
