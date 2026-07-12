@@ -1,16 +1,20 @@
 # Meerkat upstream asks — work order
 
-## Current status (2026-07-11)
+## Current status (2026-07-12)
 
 This file is both the historical evidence record and the current upstream work
 queue. Historical problem statements remain below, but their status is
 authoritative only through the explicit status line under each ask.
 
-**Open actionable asks: 34 only** (revival-flow completion; filed
-2026-07-12 — see below). meerkat PR #874
-(`005e67837888497bdb266653de033481b6c58f18`, included in the published 0.7.29)
-closed ALL eight remaining asks — 10, 14, 27, 28, 29, 31, 32, 33 — at their
-root ownership boundaries. Asks 31/33/10/29 shipped changelog-silent and were
+**Open actionable asks: 34 and 35 only.** Ask 34 is the retired-session
+revival-flow completion. Ask 35 is Bug J, the quadratic transcript-revision
+body retention that inflates long-lived snapshots to hundreds of megabytes.
+
+meerkat PR #874 (`005e67837888497bdb266653de033481b6c58f18`, included
+in the published 0.7.29) closed asks 10, 14, 27, 28, 29, 32, and 33 plus ask
+31's destructive-rollback half at their root ownership boundaries. Ask 31's
+only unfinished property was split out and is tracked exclusively as ask 34.
+Ask 31's rollback half and asks 33/10/29 shipped changelog-silent and were
 source-verified 2026-07-12.
 
 **Mobkit adoption:**
@@ -22,21 +26,26 @@ source-verified 2026-07-12.
 - **0.7.36**: ask 29 (`SpawnMemberSpec.model_override` field-scoped seam for
   model-only reprofiles — whole-profile snapshot retained only for
   provider-pinned profiles, since upstream does not re-infer the provider
-  under `model_override`), ask 31 acknowledged (resume rollback restores to
-  durable idle; retired-with-intact-snapshot sessions auto-revive on ordinary
-  resume — no mobkit change needed; the 0.7.34 GONE-probe stays as a
+  under `model_override`), ask 31's rollback half acknowledged (resume
+  rollback restores to durable idle; MobKit forwards the retired-session
+  revival seam and carries ask 34's ignored end-to-end acceptance test, but
+  ordinary resume does not auto-revive yet; the 0.7.34 GONE-probe stays as a
   regression tripwire), ask 33 acknowledged (busy_timeout 5s→60s +
   `SqliteConnectionOptions`; `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` can return
   to its default of 4, knob retained). Ask 10 (call-level fork authorization)
   has no mobkit surface to adopt.
 
-Remaining follow-ups are mobkit-local (console health affordance from ask 14
-progress data), not upstream asks.
+Non-ask follow-ups remain: a MobKit console-health affordance from ask 14's
+progress data; an optional MobKit gateway projection for M4's already-shipped
+terminal-status query; and refresh of Meerkat's downstream compatibility
+table after M3. These are local projection/documentation maintenance, not
+open upstream runtime asks.
 
 Everything else in this document is **closed, shipped, superseded, or retired
 as a separate upstream ask**. In particular, ask 12 was fixed before it was
-filed, and ask 13's operational incidents were closed by a MobKit-local
-forwarder fix plus later Meerkat member-scoped failure containment.
+filed, ask 13's operational incidents were closed by a MobKit-local forwarder
+fix plus later Meerkat member-scoped failure containment, and the previously
+status-less Studio M1–M4 reports now carry explicit closure lines below.
 
 > **Handed to the meerkat coding agent by Luka (2026-07-02).** Eight asks for
 > the meerkat repo, derived from the MobKit memory initiative
@@ -389,7 +398,8 @@ LLM-authored write quarantines until steward/operator review).
 
 **CLOSED for member spawn — shipped in Meerkat 0.7.12 (#821).**
 `SpawnMemberSpec.tool_access_policy` is enforced end to end. The distinct
-call-level transcript-fork residue is tracked narrowly as open ask 10.
+call-level transcript-fork residue was tracked narrowly as ask 10 and shipped
+in Meerkat 0.7.29.
 
 **Title:** Call-level tool authorization policy on fork/spawn launch modes, so
 a fork-launched member can be capability-contained without changing its tool
@@ -597,21 +607,21 @@ compat.
 
 **SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent — call-level fork
 authorization landed at its ownership boundary; no mobkit surface to adopt).
-Previously: OPEN, NARROWED (2026-07-10) — call-level fork authorization only. Current
-`PersistentSessionService` already resolves transcript-edit sources from the
-authoritative persisted session when no live source is available, so the
-fork-from-persisted half is closed (and appears to have predated this filing).
-The real residue is that `SessionForkAtRequest` and
-`SessionForkReplaceRequest` still carry no `tool_access_policy`. Keep the
-zero-tool detached MobKit Distiller until an executing fork can be granted a
-call-scoped policy without broadening its tool surface.
+Historical status before PR #874: OPEN, NARROWED (2026-07-10) to call-level
+fork authorization only. `PersistentSessionService` already resolved
+transcript-edit sources from the authoritative persisted session when no live
+source was available, so the fork-from-persisted half was closed (and appears
+to have predated this filing). At that point `SessionForkAtRequest` and
+`SessionForkReplaceRequest` carried no call-scoped tool authorization; PR #874
+closed that residue. The paragraph is retained as history, not a current gap.
 
 **Title:** Call-level `tool_access_policy` on session fork, and forking a
 persisted (non-live) session
 
-**Problem statement.** Ask 6 landed fork-launched members, but the
-fork-Distiller remains blocked on two specifics: `SessionForkAtRequest`
-carries no `tool_access_policy` (fork authorization is build-time only), and
+**Historical problem statement (pre-#874).** Ask 6 had landed fork-launched
+members, but the fork-Distiller was blocked on two specifics:
+`SessionForkAtRequest` carried no `tool_access_policy` (fork authorization was
+build-time only), and
 `fork_session_at` requires a LIVE parent session — while MobKit's
 reset/resume-fallback/compaction distillations run AFTER teardown, reading
 from the session store.
@@ -627,8 +637,8 @@ the fork request family (fork-at / fork-replace), and a
 fork-from-persisted path (parent loaded from the session store when not in
 the live map) preserving the prompt-cache prefix.
 
-**MobKit interim behavior.** The Distiller runs detached bounded extraction
-over a bare LLM client (zero tools — so no containment gap, only foregone
+**Historical MobKit interim behavior.** The Distiller ran detached bounded
+extraction over a bare LLM client (zero tools — so no containment gap, only foregone
 prompt-cache economics). On landing, extraction moves to a fork sharing the
 parent's cached prefix — material at OB3-scale multi-GB transcripts.
 
@@ -750,10 +760,10 @@ Healthy/Degraded/Wedged/Unknown). Mobkit 0.7.35 exposure: flows natively on
 `MemberProgressSnapshot` on `RichMemberSnapshot` in both SDKs, and projected
 on the identity-inspect RPC. Console health affordance remains follow-up.
 Originally filed 2026-07-10. Lifecycle/member status and restart-durable terminal
-input status have improved, but they still do not provide the requested
-machine-owned run-open/idle, in-flight-work, last-progress/event, and
-degraded/wedged projection. Hosts still reconstruct this from events and
-watchdogs, so the abstraction remains worthwhile.
+input status had improved before this ask landed, but did not provide the
+requested machine-owned run-open/idle, in-flight-work, last-progress/event,
+and degraded/wedged projection. That paragraph records the pre-0.7.29 state;
+the explicit shipped status above is authoritative.
 
 **Title:** A per-member liveness/progress signal, so hosts stop
 reverse-engineering health from event streams
@@ -770,8 +780,8 @@ surfacing in UI (indicator driven by event recency, not run-open state).
 
 **Proposed shape.** A typed per-member health projection (last-event-at,
 run-open/idle state, in-flight work count, wedge classification) queryable
-from `MobHandle` and/or emitted as a low-rate status event. Design ask —
-shape open.
+from `MobHandle` and/or emitted as a low-rate status event. This is the
+historical design target; the shipped projection above closes it.
 
 **MobKit interim behavior.** Hosts keep their watchdogs; MobKit's console
 approximates from event recency.
@@ -993,6 +1003,12 @@ no-strand invariant.
 
 ## M1 — force_cancel_member stack-overflows (SIGABRT) mid-turn — P0
 
+**CLOSED — shipped in Meerkat 0.7.19 (#842).** Machine-owned
+`boundary_cancel_dispatch_pending` bounds re-entrant cancellation to one
+dispatch, and the exact mid-turn `force_cancel_member` stack-overflow shape is
+covered by a regression test.
+
+**Historical problem statement (pre-0.7.19).**
 `MobHandle::force_cancel_member` → `MobActor::handle_force_cancel` →
 provisioner `interrupt_member` → `LocalMobRuntimeBridge::interrupt_member` →
 `MeerkatMachine::cancel_after_boundary` recurses inside
@@ -1004,6 +1020,14 @@ and returns without crashing; regression test for exactly that.
 
 ## M2 — no MCP path for library/factory embedders; per-spawn overlay lossy — P1
 
+**CLOSED — declarative factory MCP shipped in Meerkat 0.7.19 (#842);
+revival/cold-restore tool retention completed in 0.7.25 (#856).** Embedders can
+declare `mcp_servers` on build options, builtin composites forward the runtime
+handles, and profile/per-spawn tools are recomposed on revival. Opaque
+in-memory dispatchers are intentionally reconstructed by the host after a
+process restart; declarative profile MCP is the durable mechanism.
+
+**Historical problem statement (pre-0.7.19/0.7.25).**
 `AgentBuildConfig` has `external_tools`/`wait_for_mcp` but no MCP-server
 config; `.rkat/mcp.toml` is CLI-only. The working embedder pattern
 (`McpRouter::new_with_surface_handle(RuntimeExternalToolSurfaceHandle::ephemeral())`
@@ -1022,6 +1046,14 @@ revival-surviving provider seam, `MobBootstrapSpec::with_default_external_tools_
 
 ## M3 — semver discipline within 0.7.x — P1
 
+**CLOSED AS POLICY — exact-pin and breaking-change policy documented in
+Meerkat 0.7.19; release enforcement shipped in 0.7.25 (#855).** Meerkat
+documents pre-1.0 patch-break behavior and a downstream compatibility matrix;
+release preflight runs `cargo-semver-checks` and requires a `### Breaking`
+changelog section for detected public-API breaks. The matrix needs routine
+refresh, which is documentation maintenance rather than an open runtime ask.
+
+**Historical problem statement (pre-0.7.25).**
 0.7.16 changed `PersistentSessionService::new` (Option → required Arc);
 0.7.12 added a required `content_taint` field to `CommsCommand::PeerMessage`.
 Both broke 0.7-pinned downstreams. Ask: treat public-signature changes as
@@ -1030,6 +1062,14 @@ breaking (minor bump) or publish a meerkat↔mobkit compatibility matrix.
 
 ## M4 — durable run/interaction lifecycle query — P2
 
+**CLOSED — durable reconciliation shipped in Meerkat 0.7.19 (#842), with
+restart-first-class interaction and run terminal-status queries completed in
+0.7.25 (#856).** Rust exposes live-or-durable terminal reports, and
+`session/input_status` projects interaction status over JSON-RPC and the SDKs.
+A MobKit-gateway wrapper and a direct run-id wire projection remain optional
+surface follow-ups, not missing upstream runtime authority.
+
+**Historical problem statement (pre-0.7.19/0.7.25).**
 Run framing is broadcast-only; after a host restart there is no "did
 interaction X reach a terminal state, and which?" query. Reporter hand-rolled
 runs.jsonl + a lookup RPC. A first-class terminal-status-by-interaction/run-id
@@ -1521,9 +1561,10 @@ Ask (either resolves it):
   recorded override as a patch (requires knowing which fields were
   overridden — same shape as the first option).
 
-mobkit interim: heal-on-divergence at identity-first restore (compare the
-replayed effective profile against the freshly-composed spec; retire +
-resume-respawn when they diverge) — planned, not yet shipped.
+Historical MobKit interim (superseded): heal-on-divergence at identity-first
+restore (compare the replayed effective profile against the freshly-composed
+spec; retire + resume-respawn when they diverge). The field-scoped upstream
+fix and MobKit 0.7.36 adoption made this mitigation unnecessary.
 
 ## Ask 30 — live seed-window: bounded/summarized session projection for realtime opens — P2
 
@@ -1551,12 +1592,14 @@ lossy; the principled summarize-then-seed belongs in core.
 
 ## Ask 31 — resume-provision rollback destroys the durable session it was resuming — P0
 
-**PARTIALLY SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent).
+**CLOSED FOR TRACKING after meerkat 0.7.29** (PR #874,
+changelog-silent). The rollback half shipped; the separately discovered
+revival-flow acceptance was moved to ask 34 rather than counted twice.
 - **Rollback half SHIPPED** (source-verified): `ProvisionSessionOrigin::{Fresh,
   ResumedDurable, RevivedRetired}` — rollback of a resumed durable session
   calls `restore_resumed_member` and returns it to durable idle, never
   archive. New Bug I destruction cannot occur.
-- **Revival half INCOMPLETE → ask 34**: the machinery exists
+- **Revival follow-up → ask 34**: the machinery exists
   (`load_revivable_retired_session` / `promote_revivable_retired_session` /
   `create_session_with_machine_archived_resume_authority`) but the flow fails
   end-to-end with "generated MeerkatMachine did not grant active executor
@@ -1663,8 +1706,9 @@ cannot close it (the queue is unobservable from the handle surface).
 `SQLITE_BUSY_TIMEOUT_MS` 5s→60s default sized for long WAL writer holds from
 large snapshot commits, plus per-store `SqliteConnectionOptions.busy_timeout`).
 `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` can return to its default (knob
-retained). The 366MB "string or blob too big" latent wall remains worth
-watching. Originally filed 2026-07-11 (Bug I trigger). meerkat-store sets
+retained). The snapshot-size defect initially observed here is now diagnosed
+and tracked separately as ask 35; it does not reopen ask 33. Originally filed
+2026-07-11 (Bug I trigger). At filing, meerkat-store set
 `busy_timeout=5s` + WAL (sqlite_store.rs:24,113-114). A HomeCore boot restores
 16 identities with sessions up to 366MB; mobkit restores up to 4 concurrently
 (#265). Multi-hundred-MB snapshot writes hold the WAL writer lock past 5s, and
@@ -1680,11 +1724,11 @@ Ask:
 - busy_timeout configurable per store open, sized for stores whose single
   writes can take tens of seconds.
 
-Related latent wall, same store, observed 2026-07-10: domain:security's 366MB
-snapshot failed `runtime transcript rewrite snapshot persistence failed: Store
-write failed: string or blob too big` — the per-value size ceiling is being
-approached by real single-session stores; worth a deliberate position
-(chunking, streaming blob, or a documented limit) before it becomes Bug J.
+Related defect, same store, observed 2026-07-10 and now tracked as ask 35:
+domain:security's 366MB snapshot failed `runtime transcript rewrite snapshot
+persistence failed: Store write failed: string or blob too big`. The apparent
+per-value ceiling was the symptom; retained full transcript bodies in the
+revision chain are the diagnosed root cause.
 
 mobkit interim (0.7.34): `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` env knob
 (clamped 1-16, default 4); `=1` serializes restores and removes mobkit's own
@@ -1692,8 +1736,10 @@ contribution to writer contention.
 
 ## Ask 34 — retired-session revival flow refuses executor registration — P1
 
-**OPEN (filed 2026-07-12).** The ask 31 revival machinery shipped in 0.7.29
-but does not survive its own flow; no upstream test drives it end-to-end.
+**OPEN (filed and live-reproduced 2026-07-12).** The ask 31 revival machinery
+shipped in 0.7.29 but does not survive its own flow; no upstream test drives it
+end-to-end. The ignored MobKit acceptance test fails against the published
+Meerkat 0.7.29 with the exact executor-registration rejection below.
 
 Reproduction (mobkit `identity_first_cold_restart_continuity.rs::
 identity_first_resume_revives_terminally_retired_runtime`, landed `#[ignore]`d
@@ -1729,3 +1775,82 @@ retired-with-intact-snapshot session, and add upstream coverage. The mobkit
 ignored test un-ignores on the fixing release. Until then Bug I victims
 (HomeCore domain:network, triage:main) still require the manual
 `runtime_states` row-copy repair.
+
+## Ask 35 — quadratic mechanical transcript-head retention inflates long-lived snapshots — P0
+
+**OPEN (filed 2026-07-12; fix implemented and locally verified, not yet
+merged or released).** Keep this row open until the Meerkat PR merges and the
+fix ships. No MobKit API adoption is required.
+
+Field-reported reproduction (HomeCore forensic measurement, 2026-07-12): the
+895-message `domain:security` member has a roughly 2MB live transcript but 764
+retained revisions. Its decoded `session_transcript_history_state_v1` is
+roughly 1,005MB and dominates a 366MB+ persisted snapshot. Each revision has
+shape `{created_at, messages, revision}`, where `messages` is another complete
+copy of the transcript at that moment. Other long-lived members scale with
+turn count (home-automation 213MB, network 154MB, parent-1 128MB), not with
+live context size.
+
+Mechanism (code-verified against Meerkat 0.7.29):
+
+1. `meerkat-core::Session::commit_transcript_rewrite` initializes history by
+   retaining the full parent and rewritten endpoint bodies for a genuine
+   audited commit.
+2. Once any history exists, ordinary message appends advance the history head
+   by retaining another complete transcript body even though the audited
+   `commits` list does not change. The field-matched regression needs only one
+   genuine rewrite followed by 762 ordinary appends: together they yielded
+   764 bodies.
+3. Every mechanical head body grows with the live transcript. Retaining one
+   full body per append therefore makes the history state
+   O(appends × transcript), which is O(N²) in cumulative message mutations for
+   a steadily growing conversation.
+4. Transient/synthetic-notice replacement is another mechanical mutation and
+   must not create a genuine audited commit, but rewrite-per-turn cleanup is
+   not required to explain the field reproduction.
+5. Context assembly reads only the live transcript. The model never consumes
+   these mechanical head bodies. Genuine endpoint bodies support revision
+   reads/restores plus strict lineage, integrity, and save validation.
+
+Field-reported impact: multi-hundred-megabyte boundary writes hold the SQLite
+writer lock, feeding `database is locked` failures and dead delivery surfaces;
+serialized restores exceeded 900 seconds and hit boot initialization timeouts;
+persisted stores grew toward SQLite's single-value ceiling. The earlier ask 33
+timeout increase reduces contention fallout but cannot fix this source of the
+writes.
+
+Ask, at the owning seams (the prepared fix takes this shape):
+
+- In `meerkat-core`, distinguish actual audited rewrite endpoints from
+  mechanical append heads. Retain only bodies required by genuine rewrite
+  commits plus the current live head; compact old append-head bodies on
+  read/save.
+- In `meerkat-core`, make typed transient/synthetic-notice replacement a
+  mechanical message mutation so core agent-loop callers cannot accidentally
+  mint audited undo points. No Meerkat-runtime API change is required.
+- Compact legacy unbounded revision state on read/save without weakening
+  revision-digest, parent-chain, recurrence, cycle, or persisted-MCP integrity
+  checks.
+- Preserve real operator/compaction rewrite endpoints as restorable audited
+  history; the fix removes mechanical per-append retention rather than
+  deleting the audited-restore feature.
+- A future last-K/digest-only policy or blob externalization for genuine
+  audited endpoints is a separate retention-policy decision: it would change
+  which historical revisions remain directly restorable and is neither
+  required nor implemented by this fix.
+
+Acceptance:
+
+- A field-matched 895-message/764-body regression scenario retains only the
+  current head and genuine rewrite endpoint bodies (the prepared fix yields
+  three bodies for one genuine rewrite), not one body per ordinary append.
+- Routine typed synthetic-notice injection/removal creates no audited
+  transcript revision.
+- A genuine rewrite remains listable and restorable at both retained
+  endpoints, with strict history-integrity checks intact.
+- Legacy parentless `{created_at, messages, revision}` chains compact safely on
+  the next persistence cycle.
+- The first legacy load still pays one parse of the oversized stored state
+  before read-time compaction. Subsequent serialization/persistence and cold
+  resumes scale with the live transcript plus genuine audited rewrite
+  endpoints, not with every append/message mutation times transcript size.
