@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.36] - 2026-07-12
+
+### Changed
+
+- Ask 29 (Bug G′) adopted: model-only reprofiles use the field-scoped
+  `SpawnMemberSpec.model_override` seam — the pin is reapplied over the
+  CURRENT definition profile on every materialization, so definition
+  drift (tools, skills, peer posture) keeps reaching reprofiled members.
+  The whole-profile snapshot survives only for provider-pinned profiles
+  (upstream does not re-infer the provider under `model_override`).
+  Realm-ref bindings now accept model overrides. Members frozen under
+  the old whole-profile override heal on their next reset.
+
+### Fixed
+
+- The `MobSessionService` wrappers now forward the meerkat 0.7.29
+  retired-session revival seam (`load_revivable_retired_session`,
+  `promote_revivable_retired_session`,
+  `create_session_with_machine_archived_resume_authority`,
+  `load_persisted_session_metadata`) instead of masking it with the
+  trait defaults. End-to-end revival still requires upstream ask 34
+  (the revival flow stages executor registration against the
+  still-Retired machine); the acceptance test ships `#[ignore]`d and
+  un-ignores on the fixing meerkat release. Until then, existing Bug I
+  victims still need the manual `runtime_states` row repair — new
+  destruction is impossible on meerkat ≥0.7.29.
+
 ## [0.7.35] - 2026-07-12
 
 ### Changed
