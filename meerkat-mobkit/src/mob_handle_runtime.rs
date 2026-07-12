@@ -1701,6 +1701,41 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
                 self.inner.load_persisted_session(session_id).await
             }
+            // meerkat 0.7.29 revival seam (ask 31): the trait defaults answer
+            // `Ok(None)`/`Unsupported`, which masks the inner persistent
+            // service's real revival support and leaves Bug I victims
+            // unresumable through this wrapper (same forwarding class as
+            // `session_known_to_archive_authority` above).
+            async fn load_revivable_retired_session(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+                self.inner.load_revivable_retired_session(session_id).await
+            }
+            async fn load_persisted_session_metadata(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+                self.inner.load_persisted_session_metadata(session_id).await
+            }
+            async fn promote_revivable_retired_session(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .promote_revivable_retired_session(session_id, authority)
+                    .await
+            }
+            async fn create_session_with_machine_archived_resume_authority(
+                &self,
+                req: meerkat_core::service::CreateSessionRequest,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<meerkat_core::RunResult, SessionError> {
+                self.inner
+                    .create_session_with_machine_archived_resume_authority(req, authority)
+                    .await
+            }
             async fn subscribe_session_events(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -2176,6 +2211,39 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
         self.inner.load_persisted_session(session_id).await
+    }
+    // meerkat 0.7.29 revival seam (ask 31): forward, never default — the
+    // trait defaults mask the inner service's revival support (Bug I victims
+    // stay unresumable through the wrapper).
+    async fn load_revivable_retired_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+        self.inner.load_revivable_retired_session(session_id).await
+    }
+    async fn load_persisted_session_metadata(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+        self.inner.load_persisted_session_metadata(session_id).await
+    }
+    async fn promote_revivable_retired_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .promote_revivable_retired_session(session_id, authority)
+            .await
+    }
+    async fn create_session_with_machine_archived_resume_authority(
+        &self,
+        req: meerkat_core::service::CreateSessionRequest,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<meerkat_core::RunResult, SessionError> {
+        self.inner
+            .create_session_with_machine_archived_resume_authority(req, authority)
+            .await
     }
     async fn subscribe_session_events(
         &self,

@@ -605,15 +605,12 @@ impl MobSessionBridge {
     }
 
     /// After a rejected resume, verify the durable session actually survived.
-    /// meerkat's spawn rollback compensates late resume-spawn failures by
-    /// archiving the session it was resuming (`PendingProvision::rollback` →
-    /// `retire_member` → `retire_runtime_before_archive`), which durably
-    /// writes `runtime_state=retired` and makes every later resume fail with
-    /// "missing durable session snapshot" (Bug I). Until that is fixed
-    /// upstream (ask 31), the standard "durable session preserved" rejection
-    /// log can be false — probe the store and say so explicitly, so operators
-    /// see continuity destruction the moment it happens instead of on the
-    /// next boot.
+    /// On meerkat ≤0.7.28 the spawn rollback compensated late resume-spawn
+    /// failures by archiving the session it was resuming (Bug I, ask 31 —
+    /// fixed in 0.7.29: resumed provisions restore to durable idle, and
+    /// retired-with-intact-snapshot sessions auto-revive on resume). The
+    /// probe stays as a regression tripwire: a GONE result on ≥0.7.29 is
+    /// always a platform bug worth a loud, immediate signal.
     async fn verify_durable_session_after_rejected_resume(
         &self,
         identity: &AgentIdentity,
@@ -628,10 +625,10 @@ impl MobSessionBridge {
                 tracing::error!(
                     identity = %identity,
                     session_id = %session_id,
-                    "durable session is GONE after the rejected resume: the spawn-failure \
-                     rollback archived/retired the continuity session (Bug I, upstream ask 31); \
-                     reconcile retries cannot recover this identity — the session must be \
-                     restored from a pre-damage store"
+                    "durable session is GONE after the rejected resume (Bug I class); this \
+                     should be impossible on meerkat >=0.7.29 (ask 31: non-destructive resume \
+                     rollback + auto-revival) — report upstream; recovery needs a pre-damage \
+                     store restore"
                 );
             }
             Err(error) => {
@@ -985,27 +982,27 @@ pub(crate) fn build_spawn_spec(
     }
     if let Some(model) = draft.model.as_ref() {
         match base_profile {
-            Some(base) => {
+            // A pinned provider (or self-hosted server binding) belongs to the
+            // base profile's ORIGINAL model id, and meerkat applies
+            // `model_override` without re-inferring the provider. Keep the
+            // whole-profile snapshot (provider cleared for catalog
+            // re-inference) for pinned profiles only — accepting the
+            // definition-drift freeze `model_override` was built to end.
+            Some(base) if base.provider.is_some() || base.self_hosted_server_id.is_some() => {
                 let mut profile = base.clone();
                 profile.model = model.clone();
-                // The base profile's pinned provider (and self-hosted server
-                // binding) belongs to its original model id; clear it so the
-                // catalog re-infers the provider for the overridden model.
                 profile.provider = None;
                 profile.self_hosted_server_id = None;
                 spawn_spec.override_profile = Some(profile);
             }
-            None => {
-                // No resolvable inline base profile (realm-ref binding or
-                // unknown role). Leave `override_profile` unset so the spawn
-                // resolves through the definition's canonical path; the model
-                // override cannot be applied without a base profile.
-                tracing::warn!(
-                    identity = %spec.identity,
-                    profile = %spec.profile,
-                    model = %model,
-                    "model override skipped: role profile is not an inline definition profile"
-                );
+            // meerkat 0.7.29 (ask 29, Bug G′): field-scoped seam. The model
+            // pin is reapplied over the CURRENT definition profile on every
+            // materialization (cold restore, revival, respawn), so definition
+            // drift in tools/skills/peer posture keeps reaching reprofiled
+            // members. Also covers realm-ref bindings, which the old
+            // whole-profile path had to skip with a warning.
+            _ => {
+                spawn_spec.model_override = Some(model.clone());
             }
         }
     }
@@ -1720,12 +1717,13 @@ mod tests {
                 .expect("minimal profile");
         let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile));
 
-        assert_eq!(
-            spawn
-                .override_profile
-                .as_ref()
-                .map(|profile| profile.model.as_str()),
-            Some("gpt-test")
+        // meerkat 0.7.29 (ask 29): an unpinned base profile takes the
+        // field-scoped seam — the model pin follows definition drift instead
+        // of freezing the whole profile (Bug G′).
+        assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
+        assert!(
+            spawn.override_profile.is_none(),
+            "unpinned profiles must not freeze the whole profile for a model-only override"
         );
         assert_eq!(
             spawn.system_prompt_override,
@@ -1770,6 +1768,61 @@ mod tests {
             "worker",
             "SpawnMemberSpec role remains the authoritative mob profile"
         );
+    }
+
+    /// A base profile that pins a provider (or self-hosted binding) keeps the
+    /// legacy whole-profile snapshot: upstream `model_override` does not
+    /// re-infer the provider, and the pin belongs to the original model id.
+    #[test]
+    fn build_spawn_spec_keeps_profile_snapshot_for_pinned_provider() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: Some("gpt-test".to_string()),
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+        };
+        let base_profile: meerkat_mob::Profile = serde_json::from_value(
+            serde_json::json!({"model": "base-model", "provider": "openai"}),
+        )
+        .expect("pinned profile");
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile));
+
+        assert!(spawn.model_override.is_none());
+        let profile = spawn
+            .override_profile
+            .as_ref()
+            .expect("pinned profile keeps the snapshot path");
+        assert_eq!(profile.model.as_str(), "gpt-test");
+        assert!(
+            profile.provider.is_none(),
+            "stale provider pin must be cleared for catalog re-inference"
+        );
+    }
+
+    /// Realm-ref bindings (no inline base profile) now take the field-scoped
+    /// seam instead of skipping the model override with a warning.
+    #[test]
+    fn build_spawn_spec_model_override_works_without_base_profile() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: Some("gpt-test".to_string()),
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+        };
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, None);
+
+        assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
+        assert!(spawn.override_profile.is_none());
     }
 
     #[test]

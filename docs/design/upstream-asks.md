@@ -6,26 +6,32 @@ This file is both the historical evidence record and the current upstream work
 queue. Historical problem statements remain below, but their status is
 authoritative only through the explicit status line under each ask.
 
-**Open actionable asks (31 is P0 — active continuity destruction in the field, Bug I):**
+**Open actionable asks: 34 only** (revival-flow completion; filed
+2026-07-12 — see below). meerkat PR #874
+(`005e67837888497bdb266653de033481b6c58f18`, included in the published 0.7.29)
+closed ALL eight remaining asks — 10, 14, 27, 28, 29, 31, 32, 33 — at their
+root ownership boundaries. Asks 31/33/10/29 shipped changelog-silent and were
+source-verified 2026-07-12.
 
-| Ask | Current actionable residue |
-|---|---|
-| **31** | **P0 (Bug I).** Resume-provision rollback must be non-destructive: a failed resume spawn archives/retires the durable session it was resuming, permanently destroying the identity's continuity. Plus a revive affordance for already-retired sessions with intact snapshots. |
-| **33** | SQLite writer contention under concurrent restores: the 5s busy_timeout is exceeded by multi-hundred-MB snapshot writes and lifecycle persists surface raw "database is locked" as spawn failures. Bounded SQLITE_BUSY retry for lifecycle persists and/or configurable busy_timeout. Related latent wall: a 366MB snapshot hit "string or blob too big". |
-| **10** | Add call-level tool authorization to executing transcript forks. Persisted/non-live transcript forking already works; that half of the original ask is closed. |
-| **29** | Make profile overrides field-scoped, or reapply them as patches over the current definition during revival, so unrelated tool/profile fields do not freeze. |
+**Mobkit adoption:**
+- **0.7.35**: ask 32 (retire-disposition fence — 0.7.34 drain-poll workaround
+  removed), ask 14 (`MemberProgressSnapshot` on member_status wire + SDK types
+  + identity-inspect projection), ask 28 (objective events projected), ask 27
+  (verified no mobkit surface consumes the receipt — outcomes reach agents
+  upstream).
+- **0.7.36**: ask 29 (`SpawnMemberSpec.model_override` field-scoped seam for
+  model-only reprofiles — whole-profile snapshot retained only for
+  provider-pinned profiles, since upstream does not re-infer the provider
+  under `model_override`), ask 31 acknowledged (resume rollback restores to
+  durable idle; retired-with-intact-snapshot sessions auto-revive on ordinary
+  resume — no mobkit change needed; the 0.7.34 GONE-probe stays as a
+  regression tripwire), ask 33 acknowledged (busy_timeout 5s→60s +
+  `SqliteConnectionOptions`; `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` can return
+  to its default of 4, knob retained). Ask 10 (call-level fork authorization)
+  has no mobkit surface to adopt.
 
-**Shipped in meerkat 0.7.29 (2026-07-12), mobkit adoption in 0.7.35:** ask 32
-(machine-authorized incarnation-scoped retire disposition — the Bug I
-secondary-racer fence; mobkit's 0.7.34 drain-poll workaround removed), ask 28
-(`ObjectiveOwnerBound`/`ObjectiveConcluded` mob events — projected through
-mobkit's structural event surface), ask 14 (`MemberProgressSnapshot`:
-run_state, in_flight_work, health Healthy/Degraded/Wedged), ask 27
-(`PeerDeliveryOutcome { Acked, HandedOff, Queued }`). Ask 14 is exposed in mobkit
-0.7.35 (member_status wire + SDK `MemberProgressSnapshot` + identity-inspect
-projection); ask 27 needs no mobkit exposure (peer-send outcomes reach agents
-upstream — verified no mobkit surface consumes the receipt). Console health
-affordance from ask 14 remains follow-up.
+Remaining follow-ups are mobkit-local (console health affordance from ask 14
+progress data), not upstream asks.
 
 Everything else in this document is **closed, shipped, superseded, or retired
 as a separate upstream ask**. In particular, ask 12 was fixed before it was
@@ -589,7 +595,9 @@ compat.
 
 ## Ask 10 — Fork tool authorization + fork-from-persisted (completes Ask 6)
 
-**OPEN, NARROWED (2026-07-10) — call-level fork authorization only.** Current
+**SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent — call-level fork
+authorization landed at its ownership boundary; no mobkit surface to adopt).
+Previously: OPEN, NARROWED (2026-07-10) — call-level fork authorization only. Current
 `PersistentSessionService` already resolves transcript-edit sources from the
 authoritative persisted session when no live source is available, so the
 fork-from-persisted half is closed (and appears to have predated this filing).
@@ -1477,9 +1485,16 @@ a typed console/RPC event.
 
 ## Ask 29 — profile overrides freeze the whole tool surface across definition drift — P2
 
-**OPEN (2026-07-10).** Neither a field-scoped override nor patch-over-current-
-definition revival exists. The MobKit heal-on-divergence mitigation is still
-planned rather than shipped, so the upstream ownership fix remains warranted.
+**SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent; source-verified:
+`SpawnMemberSpec.model_override: Option<String>` — a field-scoped model pin
+reapplied over the CURRENT role profile on every materialization, including
+cold restore, revival, and respawn, so tools/skills/peer posture keep
+following the definition). Mobkit 0.7.36 adopts it in `build_spawn_spec`
+(whole-profile snapshot retained only for provider-pinned profiles — upstream
+does not re-infer the provider under `model_override`); reset-reprofiled
+members frozen under the old whole-profile override (HomeCore domain:security)
+heal on their next reset. The planned mobkit heal-on-divergence mitigation is
+superseded. Originally filed 2026-07-10 (Bug G′).
 
 Field (HomeCore Bug G′, 2026-07-10): the only reset-reprofiled member
 (domain:security, gen 8) has NO `meerkat_schedule_*` tools despite
@@ -1536,7 +1551,23 @@ lossy; the principled summarize-then-seed belongs in core.
 
 ## Ask 31 — resume-provision rollback destroys the durable session it was resuming — P0
 
-**OPEN (filed 2026-07-11, Bug I).** The single most destructive defect of the
+**PARTIALLY SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent).
+- **Rollback half SHIPPED** (source-verified): `ProvisionSessionOrigin::{Fresh,
+  ResumedDurable, RevivedRetired}` — rollback of a resumed durable session
+  calls `restore_resumed_member` and returns it to durable idle, never
+  archive. New Bug I destruction cannot occur.
+- **Revival half INCOMPLETE → ask 34**: the machinery exists
+  (`load_revivable_retired_session` / `promote_revivable_retired_session` /
+  `create_session_with_machine_archived_resume_authority`) but the flow fails
+  end-to-end with "generated MeerkatMachine did not grant active executor
+  registration" — bindings/registration run against the still-Retired machine
+  before the revival reset, and no upstream test drives the flow. Existing
+  victims (HomeCore network/triage) still need the manual row-copy repair
+  until ask 34 lands. Mobkit 0.7.36 forwards the revival seam through its
+  session-service wrappers and lands the ignored acceptance test
+  (`identity_first_resume_revives_terminally_retired_runtime`).
+Mobkit keeps the destruction-detection probe as a regression tripwire.
+Originally filed 2026-07-11 (Bug I). The single most destructive defect of the
 HomeCore saga: on 0.7.33 boots, 1-2 slow-restoring eternal identities per boot
 were terminally retired by their own failed resume, and repair boots re-rolled
 the race instead of converging (14/16 when the operator stopped repairing).
@@ -1628,7 +1659,12 @@ cannot close it (the queue is unobservable from the handle surface).
 
 ## Ask 33 — SQLite writer contention under concurrent session restores — P1
 
-**OPEN (filed 2026-07-11, Bug I trigger).** meerkat-store sets
+**SHIPPED in meerkat 0.7.29** (PR #874, changelog-silent; source-verified:
+`SQLITE_BUSY_TIMEOUT_MS` 5s→60s default sized for long WAL writer holds from
+large snapshot commits, plus per-store `SqliteConnectionOptions.busy_timeout`).
+`MOBKIT_IDENTITY_RESTORE_CONCURRENCY` can return to its default (knob
+retained). The 366MB "string or blob too big" latent wall remains worth
+watching. Originally filed 2026-07-11 (Bug I trigger). meerkat-store sets
 `busy_timeout=5s` + WAL (sqlite_store.rs:24,113-114). A HomeCore boot restores
 16 identities with sessions up to 366MB; mobkit restores up to 4 concurrently
 (#265). Multi-hundred-MB snapshot writes hold the WAL writer lock past 5s, and
@@ -1653,3 +1689,43 @@ approached by real single-session stores; worth a deliberate position
 mobkit interim (0.7.34): `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` env knob
 (clamped 1-16, default 4); `=1` serializes restores and removes mobkit's own
 contribution to writer contention.
+
+## Ask 34 — retired-session revival flow refuses executor registration — P1
+
+**OPEN (filed 2026-07-12).** The ask 31 revival machinery shipped in 0.7.29
+but does not survive its own flow; no upstream test drives it end-to-end.
+
+Reproduction (mobkit `identity_first_cold_restart_continuity.rs::
+identity_first_resume_revives_terminally_retired_runtime`, landed `#[ignore]`d
+as the acceptance criterion): boot 1 creates a durable member and delivers a
+turn; a MOB-PLANE retire archives the session and durably writes
+`runtime_state=retired` while the continuity record still binds the identity
+(the exact Bug I terminal state); boot 2's ordinary resume then fails:
+
+```
+resume spawn: internal error: Input validation failed: generated
+MeerkatMachine did not grant active executor registration
+```
+
+Progression evidence: before mobkit forwarded the revival seam through its
+session-service wrappers, the same boot failed earlier with `missing durable
+session snapshot` — so `load_revivable_retired_session` now finds the session
+and the flow reaches session materialization, where executor registration is
+staged against the still-Retired machine and the claim check refuses
+(`stage_generated_executor_registration_claim`,
+meerkat-runtime `meerkat_machine/mod.rs:1407`; `EnsureSessionWithExecutor`
+leaves `registration_phase` non-Active for a Retired lifecycle).
+
+Ordering hypothesis: `SessionBackend::provision_member` prepares local session
+bindings (~line 2100) and creates the session (~2146) BEFORE the revival
+promote + `reset_runtime` pair (~2302); the archived-resume authority create
+exists but the machine is only reset to a registrable lifecycle after
+creation. Either the revival branch must reset/authorize registration before
+bindings/creation, or the registration claim must admit the archived-resume
+authority.
+
+Ask: make the revival flow pass end-to-end for the ordinary resume of a
+retired-with-intact-snapshot session, and add upstream coverage. The mobkit
+ignored test un-ignores on the fixing release. Until then Bug I victims
+(HomeCore domain:network, triage:main) still require the manual
+`runtime_states` row-copy repair.
