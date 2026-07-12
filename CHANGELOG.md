@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.35] - 2026-07-12
+
+### Changed
+
+- meerkat family pinned to `=0.7.29` (from `=0.7.28`). Four upstream asks
+  land and are adopted:
+  - **Ask 32 (Bug I secondary-racer fence)**: retire disposition is
+    machine-authorized and incarnation-scoped upstream; the 0.7.34
+    collision drain-poll + retry-once workaround is removed from the
+    resume bridge. The Bug I destruction-detection probe remains
+    (ask 31 still open — `MOBKIT_IDENTITY_RESTORE_CONCURRENCY=1`
+    remains the recommended boot mitigation until it ships).
+  - **Ask 14 (member liveness)**: the machine-owned
+    `MemberProgressSnapshot` (run_state, in_flight_work, last progress,
+    health healthy/degraded/wedged) flows on `mobkit/member_status`,
+    is typed as `MemberProgressSnapshot` on `RichMemberSnapshot` in the
+    Python and TypeScript SDKs, and projects on the identity-inspect
+    RPC as `progress`.
+  - **Ask 28 (objective correlation)**:
+    `objective_owner_bound`/`objective_concluded` mob events project
+    through the structural event surface with member attribution.
+  - **Ask 27 (delivery outcomes)**: typed
+    `PeerDeliveryOutcome{Acked,HandedOff,Queued}` reaches agents
+    upstream; verified no mobkit surface required exposure.
+
+### Fixed
+
+- `SessionStoreBackedRuntimeStore` now delegates every defaulted
+  `RuntimeStore` method instead of masking the inner store's answers:
+  the 0.7.29 compaction-projection outbox failed session create closed
+  through the facade, and `is_runtime_projection_quarantined`
+  (defaulting to "not quarantined") plus `delete_ops_lifecycle` were
+  latent pre-existing masks.
+
 ## [0.7.34] - 2026-07-11
 
 ### Fixed
