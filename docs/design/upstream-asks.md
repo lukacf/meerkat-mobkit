@@ -6,9 +6,11 @@ This file is both the historical evidence record and the current upstream work
 queue. Historical problem statements remain below, but their status is
 authoritative only through the explicit status line under each ask.
 
-**Open actionable asks: 34 and 35 only.** Ask 34 is the retired-session
-revival-flow completion. Ask 35 is Bug J, the quadratic transcript-revision
-body retention that inflates long-lived snapshots to hundreds of megabytes.
+**Open actionable asks: none.** All 40 tracked asks now have an explicit
+closed or shipped disposition. Ask 34 shipped in Meerkat 0.7.30 via PR #879
+(`9300fcf0df351125c6196d25a1cf97b8b26f3faa`) and was adopted in MobKit
+0.7.37 via PR #277 (`5f22e445`). Ask 35 shipped in Meerkat 0.7.30 via PR #878
+(`d084689a84c27c0a6daefcd926952110a967abfd`).
 
 meerkat PR #874 (`005e67837888497bdb266653de033481b6c58f18`, included
 in the published 0.7.29) closed asks 10, 14, 27, 28, 29, 32, and 33 plus ask
@@ -34,6 +36,11 @@ source-verified 2026-07-12.
   `SqliteConnectionOptions`; `MOBKIT_IDENTITY_RESTORE_CONCURRENCY` can return
   to its default of 4, knob retained). Ask 10 (call-level fork authorization)
   has no mobkit surface to adopt.
+- **0.7.37**: all Meerkat pins moved to 0.7.30 and ask 34's end-to-end
+  retired-session revival acceptance test was un-ignored. Ordinary cold
+  restart now revives the same archived + retired session identity with its
+  transcript intact; the Bug I manual row-copy repair is no longer needed on
+  Meerkat 0.7.30+.
 
 Non-ask follow-ups remain: a MobKit console-health affordance from ask 14's
 progress data; an optional MobKit gateway projection for M4's already-shipped
@@ -1599,16 +1606,16 @@ revival-flow acceptance was moved to ask 34 rather than counted twice.
   ResumedDurable, RevivedRetired}` — rollback of a resumed durable session
   calls `restore_resumed_member` and returns it to durable idle, never
   archive. New Bug I destruction cannot occur.
-- **Revival follow-up → ask 34**: the machinery exists
+- **Revival follow-up → ask 34, SHIPPED**: the 0.7.29 machinery existed
   (`load_revivable_retired_session` / `promote_revivable_retired_session` /
-  `create_session_with_machine_archived_resume_authority`) but the flow fails
+  `create_session_with_machine_archived_resume_authority`) but initially failed
   end-to-end with "generated MeerkatMachine did not grant active executor
   registration" — bindings/registration run against the still-Retired machine
-  before the revival reset, and no upstream test drives the flow. Existing
-  victims (HomeCore network/triage) still need the manual row-copy repair
-  until ask 34 lands. Mobkit 0.7.36 forwards the revival seam through its
-  session-service wrappers and lands the ignored acceptance test
-  (`identity_first_resume_revives_terminally_retired_runtime`).
+  before the revival reset, and no upstream test drove the flow. Meerkat
+  0.7.30 fixed the authority order and added upstream coverage; MobKit 0.7.37
+  adopted it and un-ignored
+  `identity_first_resume_revives_terminally_retired_runtime`. Existing victims
+  no longer need the manual row-copy repair on those versions.
 Mobkit keeps the destruction-detection probe as a regression tripwire.
 Originally filed 2026-07-11 (Bug I). The single most destructive defect of the
 HomeCore saga: on 0.7.33 boots, 1-2 slow-restoring eternal identities per boot
@@ -1736,10 +1743,13 @@ contribution to writer contention.
 
 ## Ask 34 — retired-session revival flow refuses executor registration — P1
 
-**OPEN (filed and live-reproduced 2026-07-12).** The ask 31 revival machinery
-shipped in 0.7.29 but does not survive its own flow; no upstream test drives it
-end-to-end. The ignored MobKit acceptance test fails against the published
-Meerkat 0.7.29 with the exact executor-registration rejection below.
+**SHIPPED in Meerkat 0.7.30** (PR #879,
+`9300fcf0df351125c6196d25a1cf97b8b26f3faa`) **and adopted in MobKit 0.7.37**
+(PR #277, `5f22e445`). The fix promotes the durable session document,
+synchronizes a genuinely archived live projection, resets the `Retired`
+runtime, and only then attaches the executor. Failure after promotion restores
+the exact `Archived` + `Retired` pair without leaking a live agent, executor,
+runtime registration, or provisioner sidecar.
 
 Reproduction (mobkit `identity_first_cold_restart_continuity.rs::
 identity_first_resume_revives_terminally_retired_runtime`, landed `#[ignore]`d
@@ -1770,17 +1780,19 @@ creation. Either the revival branch must reset/authorize registration before
 bindings/creation, or the registration claim must admit the archived-resume
 authority.
 
-Ask: make the revival flow pass end-to-end for the ordinary resume of a
-retired-with-intact-snapshot session, and add upstream coverage. The mobkit
-ignored test un-ignores on the fixing release. Until then Bug I victims
-(HomeCore domain:network, triage:main) still require the manual
-`runtime_states` row-copy repair.
+Resolution: upstream now covers both explicit `Archived` + `Retired` revival
+and the `Active` + `Retired` crash-recovery compatibility shape. MobKit's
+`identity_first_resume_revives_terminally_retired_runtime` acceptance test is
+un-ignored and shipped in 0.7.37 against Meerkat 0.7.30. Bug I victims no
+longer require the manual `runtime_states` row-copy repair on these versions.
 
 ## Ask 35 — quadratic mechanical transcript-head retention inflates long-lived snapshots — P0
 
-**OPEN (filed 2026-07-12; fix implemented and locally verified, not yet
-merged or released).** Keep this row open until the Meerkat PR merges and the
-fix ships. No MobKit API adoption is required.
+**SHIPPED in Meerkat 0.7.30** (PR #878,
+`d084689a84c27c0a6daefcd926952110a967abfd`). The released fix keeps genuine
+audited rewrite endpoints plus the live head, compacts legacy mechanical
+append-head chains on read/save, and routes typed synthetic-notice refreshes
+outside the audited undo path. No MobKit API adoption is required.
 
 Field-reported reproduction (HomeCore forensic measurement, 2026-07-12): the
 895-message `domain:security` member has a roughly 2MB live transcript but 764
@@ -1819,7 +1831,7 @@ persisted stores grew toward SQLite's single-value ceiling. The earlier ask 33
 timeout increase reduces contention fallout but cannot fix this source of the
 writes.
 
-Ask, at the owning seams (the prepared fix takes this shape):
+Resolution at the owning seams (the shipped fix takes this shape):
 
 - In `meerkat-core`, distinguish actual audited rewrite endpoints from
   mechanical append heads. Retain only bodies required by genuine rewrite
@@ -1842,7 +1854,7 @@ Ask, at the owning seams (the prepared fix takes this shape):
 Acceptance:
 
 - A field-matched 895-message/764-body regression scenario retains only the
-  current head and genuine rewrite endpoint bodies (the prepared fix yields
+  current head and genuine rewrite endpoint bodies (the 0.7.30 fix yields
   three bodies for one genuine rewrite), not one body per ordinary append.
 - Routine typed synthetic-notice injection/removal creates no audited
   transcript revision.
