@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.37] - 2026-07-13
+
+### Changed
+
+- meerkat family pinned to `=0.7.30` (from `=0.7.29`): ask 34 ships —
+  the retired-session revival flow completes end-to-end. The mobkit
+  acceptance test (`identity_first_resume_revives_terminally_retired_
+  runtime`, landed ignored in 0.7.36) is un-ignored and green: a
+  terminally-retired durable session revives on ordinary resume with
+  the transcript intact. Bug I is fully closed — existing victims
+  revive automatically on their next boot; the manual `runtime_states`
+  row repair is retired. Zero open upstream asks.
+
 ## [0.7.36] - 2026-07-12
 
 ### Changed
