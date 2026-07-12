@@ -1287,6 +1287,63 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    async fn commit_unregister_finalization(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        commit: MachineLifecycleCommit,
+        input_states: &[InputStatePersistenceRecord],
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .commit_unregister_finalization(runtime_id, commit, input_states)
+            .await
+    }
+
+    // Defaulted trait methods MUST be delegated too: the defaults answer
+    // "unsupported"/"not quarantined", which would mask the inner store's real
+    // capabilities through this facade (0.7.29 compaction outbox fails session
+    // create closed; a masked quarantine flag would un-quarantine projections).
+    fn supports_compaction_projection_outbox(&self) -> bool {
+        self.inner.supports_compaction_projection_outbox()
+    }
+
+    async fn load_pending_compaction_projections(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Vec<meerkat_core::CompactionProjectionIntent>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_pending_compaction_projections(runtime_id)
+            .await
+    }
+
+    async fn mark_compaction_projection_finalized(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        projection: &meerkat_core::CompactionProjectionId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .mark_compaction_projection_finalized(runtime_id, projection)
+            .await
+    }
+
+    async fn is_runtime_projection_quarantined(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .is_runtime_projection_quarantined(runtime_id)
+            .await
+    }
+
+    async fn delete_ops_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.delete_ops_lifecycle(runtime_id).await
+    }
+
     async fn persist_ops_lifecycle(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,

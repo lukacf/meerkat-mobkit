@@ -6,18 +6,26 @@ This file is both the historical evidence record and the current upstream work
 queue. Historical problem statements remain below, but their status is
 authoritative only through the explicit status line under each ask.
 
-**Open actionable asks (31/32 are P0 — active continuity destruction in the field, Bug I):**
+**Open actionable asks (31 is P0 — active continuity destruction in the field, Bug I):**
 
 | Ask | Current actionable residue |
 |---|---|
 | **31** | **P0 (Bug I).** Resume-provision rollback must be non-destructive: a failed resume spawn archives/retires the durable session it was resuming, permanently destroying the identity's continuity. Plus a revive affordance for already-retired sessions with intact snapshots. |
-| **32** | **P0 (Bug I racer).** A retire accepted as RetireAbsent must not cancel a subsequent spawn of the same id (or expose an awaitable retire-drain). Mobkit ships a drain-poll workaround; the fence belongs in the machine. |
 | **33** | SQLite writer contention under concurrent restores: the 5s busy_timeout is exceeded by multi-hundred-MB snapshot writes and lifecycle persists surface raw "database is locked" as spawn failures. Bounded SQLITE_BUSY retry for lifecycle persists and/or configurable busy_timeout. Related latent wall: a 366MB snapshot hit "string or blob too big". |
 | **10** | Add call-level tool authorization to executing transcript forks. Persisted/non-live transcript forking already works; that half of the original ask is closed. |
-| **14** | Add a typed member liveness/progress projection beyond lifecycle status: run-open/idle, in-flight work, last progress/event, and a machine-owned degraded/wedged classification. |
-| **27** | Make ordinary peer-send outcomes distinguish delivered/handed-off/queued from unreachable. Supervisor-rotation operation receipts do not close this general delivery ask. |
-| **28** | Add durable kickoff objective-to-outcome correlation and an explicit conclude-objective affordance. Kickoff quiescence/teardown safety is not objective completion. |
 | **29** | Make profile overrides field-scoped, or reapply them as patches over the current definition during revival, so unrelated tool/profile fields do not freeze. |
+
+**Shipped in meerkat 0.7.29 (2026-07-12), mobkit adoption in 0.7.35:** ask 32
+(machine-authorized incarnation-scoped retire disposition — the Bug I
+secondary-racer fence; mobkit's 0.7.34 drain-poll workaround removed), ask 28
+(`ObjectiveOwnerBound`/`ObjectiveConcluded` mob events — projected through
+mobkit's structural event surface), ask 14 (`MemberProgressSnapshot`:
+run_state, in_flight_work, health Healthy/Degraded/Wedged), ask 27
+(`PeerDeliveryOutcome { Acked, HandedOff, Queued }`). Ask 14 is exposed in mobkit
+0.7.35 (member_status wire + SDK `MemberProgressSnapshot` + identity-inspect
+projection); ask 27 needs no mobkit exposure (peer-send outcomes reach agents
+upstream — verified no mobkit surface consumes the receipt). Console health
+affordance from ask 14 remains follow-up.
 
 Everything else in this document is **closed, shipped, superseded, or retired
 as a separate upstream ask**. In particular, ask 12 was fixed before it was
@@ -726,7 +734,14 @@ app-level timeouts and runs its own wedge sentinel.
 
 ## Ask 14 — Typed member health/progress surface
 
-**OPEN (2026-07-10).** Lifecycle/member status and restart-durable terminal
+**SHIPPED in meerkat 0.7.29** (`MemberProgressSnapshot` on the member
+snapshot: `run_state` Idle/RunOpen, `in_flight_work`, `last_progress_at_ms`,
+typed last-progress event, machine-owned `health`
+Healthy/Degraded/Wedged/Unknown). Mobkit 0.7.35 exposure: flows natively on
+`mobkit/member_status` (whole-snapshot serde), typed as
+`MemberProgressSnapshot` on `RichMemberSnapshot` in both SDKs, and projected
+on the identity-inspect RPC. Console health affordance remains follow-up.
+Originally filed 2026-07-10. Lifecycle/member status and restart-durable terminal
 input status have improved, but they still do not provide the requested
 machine-owned run-open/idle, in-flight-work, last-progress/event, and
 degraded/wedged projection. Hosts still reconstruct this from events and
@@ -1398,7 +1413,13 @@ convention. mobkit interim: none (app-side relays).
 
 ## Ask 27 — peer sends to unreachable targets must not read as success — P2
 
-**OPEN (2026-07-10).** Ordinary comms still collapse successful no-ACK
+**SHIPPED in meerkat 0.7.29** (`PeerDeliveryOutcome { Acked, HandedOff,
+Queued }` typed peer-send outcomes; Python/TS SDKs validate the canonical
+`comms/send` result variants and reject legacy/malformed shapes). Verified
+2026-07-12: no mobkit surface consumes `PeerMessageReceipt`/`acked` — peer
+sends happen agent-side inside the actor, so the typed outcome reaches the
+complaining agents (HomeCore's false-success sends) directly upstream;
+nothing to expose in mobkit. Originally filed 2026-07-10. Ordinary comms still collapse successful no-ACK
 handoff and some unreachable paths into `acked: false`. Supervisor rotation's
 durable operation receipts are intentionally scoped to that lifecycle
 operation and do not make general peer delivery truthful.
@@ -1424,7 +1445,11 @@ mobkit interim: none (host-side relay).
 
 ## Ask 28 — kickoff-scoped objective→outcome correlation (reply-to-kickoff) — P2
 
-**OPEN (2026-07-10).** Interaction ids and peer-reply capabilities are
+**SHIPPED in meerkat 0.7.29** (`ObjectiveOwnerBound` durable owner-authority
+binding + `ObjectiveConcluded { member, objective_id, outcome }` explicit
+conclusion mob events; batched runtime inputs merge transcript causality with
+conflict-stable objective consensus). Mobkit 0.7.35 projects both events
+through the structural mob-event surface. Originally filed 2026-07-10. Interaction ids and peer-reply capabilities are
 available building blocks, but no durable objective id propagates across the
 delegated work, and the lead has no explicit conclude-objective affordance.
 Kickoff quiescence prevents premature teardown; it does not identify the final
@@ -1567,7 +1592,12 @@ runs inside the spawn path.
 
 ## Ask 32 — RetireAbsent leaves a queued retire that cancels the next spawn of the same id — P0
 
-**OPEN (filed 2026-07-11, Bug I secondary racer).** Field trace (2ms apart,
+**SHIPPED in meerkat 0.7.29** (`ClassifyRetirePendingSpawnDisposition`:
+public mob retire asks MobMachine for an incarnation-scoped pending-spawn
+disposition; only the exact machine-authorized pending session can be
+canceled, and an absent committed identity preserves a pending later
+incarnation). Mobkit 0.7.35 removed the 0.7.34 drain-poll + retry-once
+workaround. Originally filed 2026-07-11 (Bug I secondary racer). Field trace (2ms apart,
 two independent incidents captured):
 
 ```
