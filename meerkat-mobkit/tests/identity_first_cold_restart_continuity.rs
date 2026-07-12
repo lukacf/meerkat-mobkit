@@ -566,17 +566,11 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
 /// with the transcript intact — no operator row surgery, no mobkit revive
 /// call.
 ///
-/// IGNORED (upstream ask 34): the 0.7.29 revival machinery exists
-/// (`load_revivable_retired_session` finds the session, mobkit's wrappers
-/// forward the seam) but the flow dies at "generated MeerkatMachine did not
-/// grant active executor registration" — executor registration/bindings run
-/// against the still-Retired machine before the revival reset
-/// (meerkat-runtime meerkat_machine/mod.rs `stage_generated_executor_
-/// registration_claim`; meerkat-mob provisioner prepares bindings at ~2100
-/// before the revival branch at ~2117/2302). No upstream test drives the
-/// flow end-to-end. This test is the acceptance criterion: un-ignore on the
-/// meerkat release that fixes the ordering.
-#[ignore = "upstream ask 34: revival flow refuses executor registration against the Retired machine"]
+/// History: landed `#[ignore]`d against meerkat 0.7.29, whose revival flow
+/// died at "generated MeerkatMachine did not grant active executor
+/// registration" (executor registration staged against the still-Retired
+/// machine — upstream ask 34, fixed in 0.7.30). Un-ignored as the ask 34
+/// acceptance criterion.
 #[tokio::test(flavor = "multi_thread")]
 async fn identity_first_resume_revives_terminally_retired_runtime() {
     let temp = tempfile::TempDir::new().expect("temp dir");
