@@ -552,3 +552,157 @@ async fn identity_first_cold_restart_turnless_resume_chain_preserves_transcript(
         unified.shutdown().await;
     }
 }
+
+/// Bug I terminal state, revived (meerkat 0.7.29, ask 31).
+///
+/// Forge the exact damage Bug I left behind through public APIs: a MOB-PLANE
+/// retire archives the durable session and durably writes
+/// `runtime_state=retired` while the continuity record still binds the
+/// identity to that session — precisely what the ≤0.7.28 resume-failure
+/// rollback did to HomeCore's members. On meerkat ≤0.7.28 the next resume
+/// answered `missing durable session snapshot` forever (retire is terminal);
+/// on ≥0.7.29 the ordinary resume path must AUTO-REVIVE the
+/// retired-with-intact-snapshot session (`promote_revivable_retired_session`)
+/// with the transcript intact — no operator row surgery, no mobkit revive
+/// call.
+///
+/// IGNORED (upstream ask 34): the 0.7.29 revival machinery exists
+/// (`load_revivable_retired_session` finds the session, mobkit's wrappers
+/// forward the seam) but the flow dies at "generated MeerkatMachine did not
+/// grant active executor registration" — executor registration/bindings run
+/// against the still-Retired machine before the revival reset
+/// (meerkat-runtime meerkat_machine/mod.rs `stage_generated_executor_
+/// registration_claim`; meerkat-mob provisioner prepares bindings at ~2100
+/// before the revival branch at ~2117/2302). No upstream test drives the
+/// flow end-to-end. This test is the acceptance criterion: un-ignore on the
+/// meerkat release that fixes the ordering.
+#[ignore = "upstream ask 34: revival flow refuses executor registration against the Retired machine"]
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_first_resume_revives_terminally_retired_runtime() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let alice = id("personal:alice");
+    let roster = vec![spec(
+        "personal:alice",
+        AgentAddressability::Addressable,
+        "personal",
+    )];
+    const TOKEN: &str = "MARKER-REVIVAL-7-ZULU";
+
+    // --- Boot 1: create, deliver turn 1, then retire on the MOB PLANE
+    // (bypassing the continuity layer, exactly like Bug I's rollback). ---
+    let original_session_id;
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
+            other => panic!("expected Created on first boot, got {other:?}"),
+        }
+
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for turn 1 to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        sleep(Duration::from_millis(500)).await;
+
+        let members = unified.mob_handle().list_members().await;
+        assert_eq!(members.len(), 1, "one durable member expected");
+        let member_id = members[0].agent_identity.clone();
+        unified
+            .mob_handle()
+            .retire(member_id.clone())
+            .await
+            .expect("mob-plane retire (forging the Bug I terminal state)");
+        // Wait until the retire fully lands (member gone or final) so the
+        // archived+retired pair is durable before the restart.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let members = unified.mob_handle().list_members().await;
+            let live = members
+                .iter()
+                .any(|entry| entry.agent_identity == member_id && !entry.is_final);
+            if !live {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the mob-plane retire to finalize"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        sleep(Duration::from_millis(300)).await;
+        unified.shutdown().await;
+    }
+
+    // --- Boot 2: the continuity record still binds alice to the retired
+    // session. The resume must revive it with the transcript intact. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 2) — a retired-with-intact-snapshot session must revive");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "revival must rebind the SAME durable session, not a fresh one"
+                );
+            }
+            other => panic!(
+                "resume of a terminally-retired runtime must revive (ask 31), got: {other:?}"
+            ),
+        }
+
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send post-revival turn");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the post-revival turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        let last_request = capture.last().expect("a post-revival request was captured");
+        assert!(
+            last_request.contains(TOKEN),
+            "post-revival LLM request must replay the pre-retire transcript (token {TOKEN})"
+        );
+        unified.shutdown().await;
+    }
+}
