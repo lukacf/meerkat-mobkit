@@ -1195,6 +1195,40 @@ class TestPeerConnectivitySnapshot:
         assert snapshot.peer_connectivity.unknown_peer_count == 1
         assert len(snapshot.peer_connectivity.unreachable_peers) == 1
 
+    def test_progress_snapshot_parses_and_defaults(self):
+        # meerkat 0.7.29 machine-owned liveness projection (ask 14).
+        snapshot = RichMemberSnapshot.from_dict({
+            "status": "active",
+            "progress": {
+                "run_state": "run_open",
+                "in_flight_work": 2,
+                "last_progress_at_ms": 1752300000000,
+                "last_progress_event": "execution_advanced",
+                "health": "healthy",
+            },
+        })
+        assert snapshot.progress is not None
+        assert snapshot.progress.run_state == "run_open"
+        assert snapshot.progress.in_flight_work == 2
+        assert snapshot.progress.last_progress_at_ms == 1752300000000
+        assert snapshot.progress.last_progress_event == "execution_advanced"
+        assert snapshot.progress.health == "healthy"
+
+    def test_progress_absent_on_older_gateways(self):
+        snapshot = RichMemberSnapshot.from_dict({"status": "active"})
+        assert snapshot.progress is None
+
+    def test_progress_tolerates_unknown_vocabulary(self):
+        snapshot = RichMemberSnapshot.from_dict({
+            "status": "active",
+            "progress": {"run_state": "hibernating", "health": "quantum"},
+        })
+        assert snapshot.progress is not None
+        assert snapshot.progress.run_state == "hibernating"
+        assert snapshot.progress.health == "quantum"
+        assert snapshot.progress.in_flight_work == 0
+        assert snapshot.progress.last_progress_event == "unchanged"
+
 
 class TestIdentityResolvedToolsResult:
     def test_from_dict(self):

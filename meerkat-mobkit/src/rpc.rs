@@ -4524,6 +4524,9 @@ async fn rpc_live_identity_inspect_json(
         "output_preview": snapshot.as_ref().and_then(|snapshot| snapshot.output_preview.clone()),
         "is_final": snapshot.as_ref().map(|snapshot| snapshot.is_final).unwrap_or(false),
         "peer_reachable_count": alias.member.wired_to.len(),
+        // Machine-owned liveness projection (meerkat 0.7.29, ask 14):
+        // run_state / in_flight_work / health for operator triage.
+        "progress": snapshot.as_ref().and_then(|snapshot| snapshot.progress.clone()),
     })
 }
 

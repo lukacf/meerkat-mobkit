@@ -1202,6 +1202,33 @@ export function parsePeerConnectivitySnapshot(raw: unknown): PeerConnectivitySna
   };
 }
 
+/**
+ * Machine-owned live execution/progress projection (meerkat 0.7.29).
+ *
+ * `runState` is `idle`/`run_open`/`unknown`; `health` is
+ * `healthy`/`degraded`/`wedged`/`unknown`; `lastProgressEvent` is
+ * `execution_advanced`/`became_idle`/`unchanged`. All three are open
+ * vocabularies — tolerate future values.
+ */
+export interface MemberProgressSnapshot {
+  readonly runState: string;
+  readonly inFlightWork: number;
+  readonly lastProgressAtMs: number;
+  readonly lastProgressEvent: string;
+  readonly health: string;
+}
+
+export function parseMemberProgressSnapshot(raw: unknown): MemberProgressSnapshot {
+  const d = asRecord(raw);
+  return {
+    runState: String(d.run_state ?? "unknown"),
+    inFlightWork: Number(d.in_flight_work ?? 0),
+    lastProgressAtMs: Number(d.last_progress_at_ms ?? 0),
+    lastProgressEvent: String(d.last_progress_event ?? "unchanged"),
+    health: String(d.health ?? "unknown"),
+  };
+}
+
 export interface RichMemberSnapshot {
   readonly status: string;
   readonly outputPreview: string | null;
@@ -1210,6 +1237,7 @@ export interface RichMemberSnapshot {
   readonly isFinal: boolean;
   readonly currentSessionId: string | null;
   readonly peerConnectivity: PeerConnectivitySnapshot | null;
+  readonly progress: MemberProgressSnapshot | null;
 }
 
 export interface IdentityResolvedToolsResult {
@@ -1240,6 +1268,10 @@ export function parseRichMemberSnapshot(raw: unknown): RichMemberSnapshot {
     peerConnectivity:
       typeof d.peer_connectivity === "object" && d.peer_connectivity !== null
         ? parsePeerConnectivitySnapshot(d.peer_connectivity)
+        : null,
+    progress:
+      typeof d.progress === "object" && d.progress !== null
+        ? parseMemberProgressSnapshot(d.progress)
         : null,
   };
 }

@@ -168,6 +168,43 @@ describe("parseRichMemberSnapshot peer_connectivity", () => {
     assert.equal(snapshot.peerConnectivity?.reachablePeerCount, 2);
     assert.equal(snapshot.peerConnectivity?.status, "known");
   });
+
+  it("parses the meerkat 0.7.29 machine-owned progress projection", () => {
+    const snapshot = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 0,
+      is_final: false,
+      progress: {
+        run_state: "run_open",
+        in_flight_work: 2,
+        last_progress_at_ms: 1752300000000,
+        last_progress_event: "execution_advanced",
+        health: "healthy",
+      },
+    });
+    assert.ok(snapshot.progress);
+    assert.equal(snapshot.progress?.runState, "run_open");
+    assert.equal(snapshot.progress?.inFlightWork, 2);
+    assert.equal(snapshot.progress?.lastProgressAtMs, 1752300000000);
+    assert.equal(snapshot.progress?.lastProgressEvent, "execution_advanced");
+    assert.equal(snapshot.progress?.health, "healthy");
+  });
+
+  it("leaves progress null on older gateways and tolerates unknown vocabulary", () => {
+    const absent = parseRichMemberSnapshot({ status: "active", tokens_used: 0, is_final: false });
+    assert.equal(absent.progress, null);
+
+    const openVocab = parseRichMemberSnapshot({
+      status: "active",
+      tokens_used: 0,
+      is_final: false,
+      progress: { run_state: "hibernating", health: "quantum" },
+    });
+    assert.equal(openVocab.progress?.runState, "hibernating");
+    assert.equal(openVocab.progress?.health, "quantum");
+    assert.equal(openVocab.progress?.inFlightWork, 0);
+    assert.equal(openVocab.progress?.lastProgressEvent, "unchanged");
+  });
 });
 
 describe("parseIdentityResolvedToolsResult", () => {

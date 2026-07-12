@@ -1692,6 +1692,32 @@ class PeerConnectivitySnapshot:
 
 
 @dataclass(frozen=True)
+class MemberProgressSnapshot:
+    """Machine-owned live execution/progress projection (meerkat 0.7.29).
+
+    ``run_state`` is ``idle``/``run_open``/``unknown``; ``health`` is
+    ``healthy``/``degraded``/``wedged``/``unknown``; ``last_progress_event``
+    is ``execution_advanced``/``became_idle``/``unchanged``. All three are
+    open vocabularies — tolerate future values.
+    """
+    run_state: str
+    in_flight_work: int
+    last_progress_at_ms: int
+    last_progress_event: str
+    health: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemberProgressSnapshot:
+        return cls(
+            run_state=str(data.get("run_state", "unknown")),
+            in_flight_work=int(data.get("in_flight_work", 0)),
+            last_progress_at_ms=int(data.get("last_progress_at_ms", 0)),
+            last_progress_event=str(data.get("last_progress_event", "unchanged")),
+            health=str(data.get("health", "unknown")),
+        )
+
+
+@dataclass(frozen=True)
 class RichMemberSnapshot:
     """Rich execution snapshot from mobkit/member_status."""
     status: str
@@ -1701,10 +1727,12 @@ class RichMemberSnapshot:
     is_final: bool
     current_session_id: str | None
     peer_connectivity: PeerConnectivitySnapshot | None = None
+    progress: MemberProgressSnapshot | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RichMemberSnapshot:
         pc_raw = data.get("peer_connectivity")
+        progress_raw = data.get("progress")
         return cls(
             status=data.get("status", "unknown"),
             output_preview=data.get("output_preview"),
@@ -1713,6 +1741,7 @@ class RichMemberSnapshot:
             is_final=bool(data.get("is_final", False)),
             current_session_id=data.get("current_session_id"),
             peer_connectivity=PeerConnectivitySnapshot.from_dict(pc_raw) if pc_raw else None,
+            progress=MemberProgressSnapshot.from_dict(progress_raw) if progress_raw else None,
         )
 
 

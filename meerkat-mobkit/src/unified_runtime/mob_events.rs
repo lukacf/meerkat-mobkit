@@ -454,6 +454,8 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::TopologyViolation { .. } => "topology_violation",
         MobEventKind::SupervisorEscalation { .. } => "supervisor_escalation",
         MobEventKind::OperatorActionRecorded { .. } => "operator_action_recorded",
+        MobEventKind::ObjectiveOwnerBound { .. } => "objective_owner_bound",
+        MobEventKind::ObjectiveConcluded { .. } => "objective_concluded",
     }
 }
 
@@ -546,6 +548,14 @@ pub(crate) fn extract_structural_fields(
             (None, None, Some(decode_member_id(agent_identity.as_str())))
         }
         MobEventKind::MemberKickoffUpdated { member, .. } => {
+            (None, None, Some(decode_member_id(member.as_str())))
+        }
+        // Objective lifecycle facts attribute to the bound/concluding member
+        // (ask 28: durable kickoff objective-to-outcome correlation).
+        MobEventKind::ObjectiveOwnerBound { owner, .. } => {
+            (None, None, Some(decode_member_id(owner.as_str())))
+        }
+        MobEventKind::ObjectiveConcluded { member, .. } => {
             (None, None, Some(decode_member_id(member.as_str())))
         }
         MobEventKind::ExternalPeerWired { local, .. }
