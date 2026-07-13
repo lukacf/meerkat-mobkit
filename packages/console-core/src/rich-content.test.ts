@@ -285,6 +285,21 @@ test("parseStreamingConversationRichBlocks renders only stable markdown blocks",
   });
 });
 
+test("final rich parsing preserves the streamed paragraph topology", () => {
+  const text = "First paragraph.\n\nThe final line is complete.";
+  const streamed = parseStreamingConversationRichBlocks(text);
+  const finalized = parseConversationRichBlocks(text);
+
+  assert.deepEqual(streamed, [
+    { type: "paragraph", text: "First paragraph." },
+    { type: "paragraph", text: "The final line is complete.", streaming: true },
+  ]);
+  assert.deepEqual(finalized, [
+    { type: "paragraph", text: "First paragraph." },
+    { type: "paragraph", text: "The final line is complete." },
+  ]);
+});
+
 test("parseStreamingConversationRichBlocks keeps unclosed fences as plain tail text", () => {
   const blocks = parseStreamingConversationRichBlocks("Intro\n\n```ts\nconst answer = 1");
 

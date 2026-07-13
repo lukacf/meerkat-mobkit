@@ -129,6 +129,73 @@ describe("conversation grouping", () => {
       "assistant-run-1",
     ]);
   });
+
+  test("keeps a run-backed response group anchored when a late peer tool lands before a system group", () => {
+    const user: ConversationTimelineEntry = {
+      id: "user-message-1",
+      kind: "message",
+      variant: "plain",
+      identity: {
+        id: "user",
+        label: "You",
+        role: "user",
+        presentation: "user",
+      },
+      text: "Ask the peer for a critique.",
+    };
+    const system: ConversationTimelineEntry = {
+      id: "system-message-1",
+      kind: "message",
+      variant: "meta",
+      identity: {
+        id: "assistant",
+        label: "System",
+        role: "assistant",
+        presentation: "system",
+      },
+      text: "Tool activity completed.",
+    };
+    const response: ConversationTimelineEntry = {
+      id: "assistant-run-1",
+      kind: "message",
+      variant: "rich",
+      identity: {
+        id: "assistant",
+        label: "Assistant",
+        role: "assistant",
+        presentation: "assistant",
+      },
+      runId: "run-1",
+      reconciliationKey: "assistant-turn-user-message-1-response-0",
+      blocks: [{ type: "paragraph", text: "The peer recommends more breathing room." }],
+    };
+    const peerTool: ConversationTimelineEntry = {
+      id: "peer-tool-1",
+      kind: "message",
+      variant: "rich",
+      identity: response.identity,
+      interactionId: "peer-tool-interaction",
+      runId: "peer-tool-run",
+      reconciliationKey: "peer-tool-reconciliation",
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "peer-call-1",
+        name: "send_request",
+        arguments: "{}",
+        status: "success",
+      }],
+    };
+
+    const liveGroups = groupConversationTimelineEntries([user, system, response]);
+    const durableGroups = groupConversationTimelineEntries([user, peerTool, system, response]);
+    const liveResponseGroup = liveGroups.find((group) => group.entries.includes(response));
+    const durableResponseGroup = durableGroups.find((group) => group.entries.includes(response));
+
+    expect(durableResponseGroup?.id).toBe(liveResponseGroup?.id);
+    expect(durableResponseGroup?.id).toContain("reconciliation-assistant-turn-user-message-1-response-0");
+    expect(durableResponseGroup?.id).not.toContain("peer-tool-interaction");
+    expect(durableResponseGroup?.id).not.toContain("peer-tool-reconciliation");
+  });
 });
 
 describe("system task entries", () => {

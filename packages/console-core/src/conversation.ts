@@ -48,6 +48,9 @@ interface ConversationTimelineEntryBase {
    * legacy `console-interaction-*` strings are not comparable across
    * live/history sources. */
   interactionId?: string;
+  /** Host-owned stable identity for reconciling a provisional live entry with
+   * its durable twin when the transport run/interaction id arrives late. */
+  reconciliationKey?: string | null;
 }
 
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
@@ -331,10 +334,45 @@ export function conversationMessageHasIntrinsicCopyAction(
   return Boolean(entry.blocks?.some((block) => conversationRichBlockHasCopyAction(block)));
 }
 
+function conversationGroupReconciliationAnchor(
+  entries: ConversationTimelineEntry[],
+): string | null {
+  const substantive = entries.filter((entry) => {
+    if (entry.kind === "summary") {
+      return true;
+    }
+    if (entry.kind !== "message" || entry.variant === "meta") {
+      return false;
+    }
+    const blocks = entry.blocks || [];
+    return !blocks.length || !blocks.every((block) => block.type === "tool-call");
+  });
+  // A late peer tool can carry its own interaction/run id. It must not steal
+  // the group key from the substantive response that was already mounted.
+  for (const entry of [...substantive, ...entries.filter((entry) => !substantive.includes(entry))]) {
+    const reconciliationKey = entry.reconciliationKey?.trim();
+    if (reconciliationKey) {
+      return `reconciliation-${reconciliationKey}`;
+    }
+    const interactionId = entry.interactionId?.trim();
+    if (interactionId) {
+      return `interaction-${interactionId}`;
+    }
+    if (entry.kind === "message") {
+      const runId = entry.runId?.trim();
+      if (runId) {
+        return `run-${runId}`;
+      }
+    }
+  }
+  return null;
+}
+
 export function groupConversationTimelineEntries(
   entries: ConversationTimelineEntry[],
 ): ConversationTimelineGroup[] {
   const groups: ConversationTimelineGroup[] = [];
+  const turnAnchorsByGroup: string[] = [];
   let turnAnchor = "conversation-start";
   const groupOrdinalsByIdentity = new Map<string, number>();
 
@@ -352,6 +390,7 @@ export function groupConversationTimelineEntries(
       }
       const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
       groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
+      turnAnchorsByGroup.push(turnAnchor);
       groups.push({
         id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
         identity: entry.identity,
@@ -366,5 +405,19 @@ export function groupConversationTimelineEntries(
     current.copyText = [current.copyText, nextCopyText].filter(Boolean).join("\n\n");
   }
 
-  return groups;
+  return groups.map((group, index) => {
+    // A live response and its durable twin carry the same interaction/run
+    // identity even when a late peer tool creates another assistant group
+    // earlier in the turn. Prefer that source identity over the positional
+    // ordinal; the ordinal remains the compatibility fallback for entries
+    // without a reconciliation identity.
+    const reconciliationAnchor = conversationGroupReconciliationAnchor(group.entries);
+    if (!reconciliationAnchor) {
+      return group;
+    }
+    return {
+      ...group,
+      id: `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`,
+    };
+  });
 }
