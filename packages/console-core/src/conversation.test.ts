@@ -196,6 +196,67 @@ describe("conversation grouping", () => {
     expect(durableResponseGroup?.id).not.toContain("peer-tool-interaction");
     expect(durableResponseGroup?.id).not.toContain("peer-tool-reconciliation");
   });
+
+  test("anchors one assistant group across activity artifacts and its response without conflating entry identity", () => {
+    const identity = {
+      id: "assistant",
+      label: "Assistant",
+      role: "assistant" as const,
+      presentation: "assistant" as const,
+    };
+    const user: ConversationTimelineEntry = {
+      id: "user-tool-loop",
+      kind: "message",
+      variant: "plain",
+      identity: {
+        id: "user",
+        label: "You",
+        role: "user",
+        presentation: "user",
+      },
+      text: "Inspect package.json.",
+    };
+    const activity: ConversationTimelineEntry = {
+      id: "activity-tool-loop",
+      kind: "message",
+      variant: "rich",
+      identity,
+      groupReconciliationKey: "tool-loop-response",
+      blocks: [{ type: "thinking", label: "Thinking…", text: "" }],
+    };
+    const tool: ConversationTimelineEntry = {
+      id: "tool-tool-loop",
+      kind: "message",
+      variant: "rich",
+      identity,
+      groupReconciliationKey: "tool-loop-response",
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "read-package",
+        name: "cat",
+        arguments: "package.json",
+        status: "success",
+      }],
+    };
+    const response: ConversationTimelineEntry = {
+      id: "response-tool-loop",
+      kind: "message",
+      variant: "rich",
+      identity,
+      reconciliationKey: "tool-loop-response",
+      groupReconciliationKey: "tool-loop-response",
+      blocks: [{ type: "paragraph", text: "The renderer uses React." }],
+    };
+
+    const pending = groupConversationTimelineEntries([user, activity]);
+    const withTool = groupConversationTimelineEntries([user, tool, activity]);
+    const withResponse = groupConversationTimelineEntries([user, tool, activity, response]);
+
+    expect(withTool[1]?.id).toBe(pending[1]?.id);
+    expect(withResponse[1]?.id).toBe(pending[1]?.id);
+    expect(withResponse[1]?.id).toContain("group-reconciliation-tool-loop-response");
+    expect(new Set(withResponse[1]?.entries.map((entry) => entry.id)).size).toBe(3);
+  });
 });
 
 describe("system task entries", () => {

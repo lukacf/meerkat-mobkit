@@ -51,6 +51,10 @@ interface ConversationTimelineEntryBase {
   /** Host-owned stable identity for reconciling a provisional live entry with
    * its durable twin when the transport run/interaction id arrives late. */
   reconciliationKey?: string | null;
+  /** Host-owned stable identity for the surrounding conversation group.
+   * Activity artifacts and the response can share this anchor without sharing
+   * an entry key or being mistaken for live/durable twins. */
+  groupReconciliationKey?: string | null;
 }
 
 export interface ConversationMessageEntry extends ConversationTimelineEntryBase {
@@ -350,6 +354,10 @@ function conversationGroupReconciliationAnchor(
   // A late peer tool can carry its own interaction/run id. It must not steal
   // the group key from the substantive response that was already mounted.
   for (const entry of [...substantive, ...entries.filter((entry) => !substantive.includes(entry))]) {
+    const groupReconciliationKey = entry.groupReconciliationKey?.trim();
+    if (groupReconciliationKey) {
+      return `group-reconciliation-${groupReconciliationKey}`;
+    }
     const reconciliationKey = entry.reconciliationKey?.trim();
     if (reconciliationKey) {
       return `reconciliation-${reconciliationKey}`;
