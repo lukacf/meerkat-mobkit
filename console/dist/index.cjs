@@ -2903,7 +2903,10 @@ function onToolHeaderKeyDown(event, toggle) {
   event.preventDefault();
   toggle();
 }
-function ToolCallBlock({ block }) {
+function ToolCallBlock({
+  block,
+  className
+}) {
   const [expanded, setExpanded] = (0, import_react2.useState)(false);
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
@@ -2915,7 +2918,7 @@ function ToolCallBlock({ block }) {
     const content = peerBody || peerIntent || "";
     const arrow = block.peerIncoming ? "\u2199" : "\u2197";
     const detailRows = peerDetailRows(block);
-    return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass), children: [
+    return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass, className), children: [
       /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
         "div",
         {
@@ -2970,7 +2973,7 @@ function ToolCallBlock({ block }) {
     }
   } catch {
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: clsx_default("cc-tool-call", statusClass), children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: clsx_default("cc-tool-call", statusClass, className), children: [
     /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
       "div",
       {
@@ -3126,14 +3129,14 @@ function ConversationRichContent({
       return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(ToolCallGroup, { blocks: tools });
     }
   }
-  const body = blocks.map((block, index) => renderBlock(block, index, Icon3, displayNormalization)).filter(Boolean);
+  const body = blocks.map((block, index) => renderBlock(block, index, Icon3, displayNormalization)).filter((element) => element !== null);
   if (body.length === 0) {
     return null;
   }
-  if (richStyle === "streaming") {
-    return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "cc-rich-streaming", children: body });
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_jsx_runtime6.Fragment, { children: body });
+  const renderedBody = richStyle === "streaming" ? body.map((element) => (0, import_react2.cloneElement)(element, {
+    className: clsx_default(element.props.className, "cc-rich-streaming")
+  })) : body;
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_jsx_runtime6.Fragment, { children: renderedBody });
 }
 
 // ../packages/console-components/src/conversation/flow-run-card.tsx

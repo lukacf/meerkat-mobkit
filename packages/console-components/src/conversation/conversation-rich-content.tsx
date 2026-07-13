@@ -16,7 +16,7 @@ import {
   type ConversationRichThinkingBlock,
 } from "@console-core";
 
-import { useState, type KeyboardEvent } from "react";
+import { cloneElement, useState, type KeyboardEvent, type ReactElement } from "react";
 
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
@@ -371,7 +371,13 @@ function onToolHeaderKeyDown(event: KeyboardEvent<HTMLDivElement>, toggle: () =>
   toggle();
 }
 
-function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
+function ToolCallBlock({
+  block,
+  className,
+}: {
+  block: ConversationRichToolCallBlock;
+  className?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
@@ -385,7 +391,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
     const arrow = block.peerIncoming ? "↙" : "↗";
     const detailRows = peerDetailRows(block);
     return (
-      <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass)}>
+      <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass, className)}>
         <div
           className="cc-tool-call__header"
           role="button"
@@ -449,7 +455,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   } catch { /* use raw */ }
 
   return (
-    <section className={clsx("cc-tool-call", statusClass)}>
+    <section className={clsx("cc-tool-call", statusClass, className)}>
       <div
         className="cc-tool-call__header"
         role="button"
@@ -641,15 +647,21 @@ export function ConversationRichContent({
 
   const body = blocks
     .map((block, index) => renderBlock(block, index, Icon, displayNormalization))
-    .filter(Boolean);
+    .filter((element): element is ReactElement<{ className?: string }> => element !== null);
 
   if (body.length === 0) {
     return null;
   }
 
-  if (richStyle === "streaming") {
-    return <div className="cc-rich-streaming">{body}</div>;
-  }
+  // Keep every rendered block at the same React depth when a streamed response
+  // becomes final. A streaming-only wrapper forces React to replace the first
+  // block (usually the live paragraph), while a permanent wrapper breaks host
+  // selectors that intentionally target direct rich-message children.
+  const renderedBody = richStyle === "streaming"
+    ? body.map((element) => cloneElement(element, {
+        className: clsx(element.props.className, "cc-rich-streaming"),
+      }))
+    : body;
 
-  return <>{body}</>;
+  return <>{renderedBody}</>;
 }
