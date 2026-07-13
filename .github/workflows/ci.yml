@@ -127,7 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Pinned to the last-green revision: the floating v2 tag moved to a
+      # broken entrypoint on 2026-07-13 ("error: unrecognized subcommand
+      # 'warn'" before any check runs). Re-float once upstream fixes v2.
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe
 
   gate:
     name: gate
