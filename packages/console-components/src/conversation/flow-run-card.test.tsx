@@ -50,12 +50,115 @@ function entryFixture(overrides: Partial<ConversationFlowRunEntry> = {}): Conver
 }
 
 describe("FlowRunCard", () => {
+  test.each(["idle", "queued", "running", "cancelling"] as const)(
+    "keeps %s work expanded without a card-level disclosure",
+    (status) => {
+      const { container } = render(<FlowRunCard entry={entryFixture({ status })} />);
+
+      expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-details-expanded"))
+        .toBe("true");
+      expect(screen.getByRole("region", { name: "Release crew details" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
+      expect(screen.getByText("Builder")).toBeTruthy();
+    },
+  );
+
+  test.each(["completed", "failed", "stopped"] as const)(
+    "defaults %s work to a compact accessible summary and reveals details on request",
+    (status) => {
+      const onMessageMember = vi.fn();
+      const { container } = render(
+        <FlowRunCard
+          entry={entryFixture({
+            status,
+            outcome: "## Result\n\nThe crew left a concise durable outcome.",
+          })}
+          onMessageMember={onMessageMember}
+        />,
+      );
+      const card = container.querySelector("[data-flow-run-card]");
+      const disclosure = screen.getByRole("button", { name: "Show details" });
+      const detailsId = disclosure.getAttribute("aria-controls");
+
+      expect(card?.classList.contains("is-compact")).toBe(true);
+      expect(card?.getAttribute("data-details-expanded")).toBe("false");
+      expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("region", { name: "Release crew details" })).toBeNull();
+      expect(document.getElementById(detailsId || "")?.hidden).toBe(true);
+      expect(screen.getByText("The crew left a concise durable outcome.")).toBeTruthy();
+
+      fireEvent.click(disclosure);
+
+      expect(card?.getAttribute("data-details-expanded")).toBe("true");
+      expect(disclosure.textContent).toBe("Hide details");
+      expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByRole("region", { name: "Release crew details" }).id).toBe(detailsId);
+      expect(screen.getByText("The crew left a concise durable outcome.")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Message Builder" }));
+      expect(onMessageMember).toHaveBeenCalledWith("builder");
+    },
+  );
+
+  test("collapses when active work completes and expands again when resumed", () => {
+    const { container, rerender } = render(<FlowRunCard entry={entryFixture({ status: "running" })} />);
+
+    expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-details-expanded"))
+      .toBe("true");
+
+    rerender(<FlowRunCard entry={entryFixture({ status: "completed" })} />);
+
+    expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-details-expanded"))
+      .toBe("false");
+    expect(screen.getByRole("button", { name: "Show details" })).toBeTruthy();
+
+    rerender(<FlowRunCard entry={entryFixture({ status: "running" })} />);
+
+    expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-details-expanded"))
+      .toBe("true");
+    expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
+  });
+
+  test("keeps a terminal outcome visible without adding an empty disclosure", () => {
+    render(
+      <FlowRunCard
+        entry={entryFixture({
+          status: "completed",
+          rows: [],
+          outcome: "The durable result stays in the transcript.",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("The durable result stays in the transcript.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
+  });
+
+  test("keeps Resume available on a compact restorable card without exposing Message", () => {
+    const onRestore = vi.fn();
+    const onMessageMember = vi.fn();
+    render(
+      <FlowRunCard
+        entry={entryFixture({ status: "stopped", restorable: true })}
+        onRestore={onRestore}
+        onMessageMember={onMessageMember}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onRestore).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    expect(screen.queryByRole("button", { name: "Message Builder" })).toBeNull();
+    expect(onMessageMember).not.toHaveBeenCalled();
+  });
+
   test("renders stopped state and non-expandable members as content with a unique message action", () => {
     const onMessageMember = vi.fn();
     const { container } = render(
       <FlowRunCard
         entry={entryFixture({
-          status: "stopped",
+          status: "running",
           rows: [
             {
               memberKey: "reviewer",
@@ -70,8 +173,8 @@ describe("FlowRunCard", () => {
     );
 
     expect(container.querySelector("[data-flow-run-card]")?.getAttribute("data-status"))
-      .toBe("stopped");
-    expect(screen.getAllByText("Stopped")).toHaveLength(2);
+      .toBe("running");
+    expect(screen.getByText("Stopped", { selector: ".cc-flow-run__member-status" })).toBeTruthy();
     expect(container.querySelector(".cc-flow-run__member-row")?.tagName).toBe("DIV");
     expect(screen.queryByRole("button", { name: /reviewer.*stopped/i })).toBeNull();
 

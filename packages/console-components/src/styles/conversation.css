@@ -1573,6 +1573,9 @@ span.cc-conversation-turn-preview__file-icon::after {
   padding: 10px 14px;
   border-bottom: 1px solid var(--_cc-border-soft, rgba(255, 255, 255, 0.06));
 }
+.cc-flow-run.is-compact .cc-flow-run__header {
+  border-bottom-color: transparent;
+}
 .cc-flow-run__mark {
   display: inline-flex;
   align-items: center;
@@ -1636,6 +1639,32 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-flow-run__badge.is-stopped {
   background: rgba(224, 173, 92, 0.16);
   color: rgb(232, 190, 120);
+}
+.cc-flow-run__disclosure {
+  flex: none;
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--_cc-foreground-muted, rgba(177, 184, 193, 0.72));
+  font: inherit;
+  font-size: var(--_cc-text-xs, 11px);
+  font-weight: 550;
+  cursor: pointer;
+}
+.cc-flow-run__disclosure:hover {
+  color: var(--_cc-foreground, rgba(232, 234, 237, 0.95));
+  background: var(--_cc-surface-raised, rgba(255, 255, 255, 0.05));
+}
+.cc-flow-run__disclosure:focus-visible,
+.cc-flow-run__restore:focus-visible,
+.cc-flow-run__member-message:focus-visible {
+  outline: 2px solid var(--_cc-focus-ring, rgba(120, 170, 255, 0.72));
+  outline-offset: 2px;
+}
+.cc-flow-run__details[hidden] {
+  display: none;
 }
 .cc-flow-run__members {
   list-style: none;
