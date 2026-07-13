@@ -78,6 +78,50 @@ test("normalizeIdentityStatusRow and response phase trim data without inventing 
   assert.equal(normalizeResponsePhase("thinking"), null);
 });
 
+test("normalizeIdentityStatusRow carries the machine-owned progress projection", () => {
+  const row = normalizeIdentityStatusRow({
+    identity: "domain:network",
+    state: "active",
+    addressability: "addressable",
+    labels: {},
+    progress: {
+      run_state: "run_open",
+      in_flight_work: 2,
+      last_progress_at_ms: 1752300000000,
+      last_progress_event: "execution_advanced",
+      health: "degraded",
+    },
+  });
+  assert.deepEqual(row?.progress, {
+    run_state: "run_open",
+    in_flight_work: 2,
+    last_progress_at_ms: 1752300000000,
+    last_progress_event: "execution_advanced",
+    health: "degraded",
+  });
+
+  // Absent on older gateways: no invented field.
+  const bare = normalizeIdentityStatusRow({
+    identity: "domain:network",
+    state: "active",
+    addressability: "addressable",
+    labels: {},
+  });
+  assert.equal(bare && "progress" in bare, false);
+
+  // Open vocabulary + partial shapes degrade to defaults, never null out the row.
+  const partial = normalizeIdentityStatusRow({
+    identity: "domain:network",
+    state: "active",
+    addressability: "addressable",
+    labels: {},
+    progress: { health: "quantum" },
+  });
+  assert.equal(partial?.progress?.health, "quantum");
+  assert.equal(partial?.progress?.run_state, "unknown");
+  assert.equal(partial?.progress?.in_flight_work, 0);
+});
+
 test("normalize sidebar watch fields and filter presets preserves the phase-0 contract", () => {
   assert.deepEqual(
     normalizeSidebarWatchFields({

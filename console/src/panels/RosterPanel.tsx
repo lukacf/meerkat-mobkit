@@ -113,6 +113,7 @@ export function RosterPanel({
                 key={r.member_id}
                 className={`roster__row ${isSel ? "is-selected" : ""}`}
                 data-state={stateLabel(r.state)}
+                data-health={r.progress?.health || undefined}
                 onClick={() => { setSel(r.member_id); onSelect(r); }}
                 data-testid={`roster-row:${r.member_id}`}
               >
@@ -156,6 +157,27 @@ export function RosterPanel({
                 <dt>Generation</dt><dd className="mono">{active.generation ?? "—"}</dd>
                 <dt>Checkpoint</dt><dd className="mono">{active.checkpoint_version ?? "—"}</dd>
                 <dt>Lease</dt><dd className="mono">{active.lease_healthy === false ? "unhealthy" : "ok"}</dd>
+                {active.progress && (
+                  <>
+                    <dt>Health</dt>
+                    <dd>
+                      <span
+                        className="roster__state"
+                        data-health={active.progress.health}
+                      >
+                        {active.progress.health}
+                      </span>
+                    </dd>
+                    <dt>Run state</dt><dd className="mono">{active.progress.run_state}</dd>
+                    <dt>In flight</dt><dd className="mono">{active.progress.in_flight_work}</dd>
+                    <dt>Last progress</dt>
+                    <dd className="mono dim">
+                      {active.progress.last_progress_at_ms > 0
+                        ? `${new Date(active.progress.last_progress_at_ms).toLocaleTimeString()} (${active.progress.last_progress_event})`
+                        : active.progress.last_progress_event}
+                    </dd>
+                  </>
+                )}
                 <dt>Wired</dt>
                 <dd>
                   {activePeers.length > 0 ? (

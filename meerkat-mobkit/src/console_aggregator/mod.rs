@@ -239,6 +239,7 @@ fn console_member_for_resolved_member(
             .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
             .collect(),
         labels: record.labels.clone(),
+        progress: None,
     }
 }
 

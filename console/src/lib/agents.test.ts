@@ -18,6 +18,13 @@ test("normalizeAgents preserves identity-status summary fields without invention
               generation: 4,
             checkpoint_version: 8,
             lease_healthy: true,
+            progress: {
+              run_state: "run_open",
+              in_flight_work: 1,
+              last_progress_at_ms: 1752300000000,
+              last_progress_event: "execution_advanced",
+              health: "wedged",
+            },
             labels: { team: " console " },
             model_capabilities: { image_input: true },
           },
@@ -39,6 +46,8 @@ test("normalizeAgents preserves identity-status summary fields without invention
   assert.equal(agent?.generation, 4);
   assert.equal(agent?.checkpoint_version, 8);
   assert.equal(agent?.lease_healthy, true);
+  assert.equal(agent?.progress?.health, "wedged");
+  assert.equal(agent?.progress?.run_state, "run_open");
   assert.deepEqual(agent?.labels, { team: "console" });
 });
 

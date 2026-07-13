@@ -1,4 +1,5 @@
 import type {
+  MemberProgress,
   ActivityFilterPreset,
   ConsoleInteractionRejectedError,
   ExperienceSectionMeta,
@@ -76,6 +77,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   generation?: number;
   checkpoint_version?: number;
   lease_healthy?: boolean;
+  progress?: MemberProgress;
   response_phase?: ResponsePhase;
   wired_to?: string[];
   labels?: Record<string, string>;

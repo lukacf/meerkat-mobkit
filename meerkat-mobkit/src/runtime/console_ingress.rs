@@ -24,6 +24,13 @@ pub struct ConsoleMember {
     pub wired_to: Vec<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// Machine-owned liveness projection (meerkat 0.7.29+, ask 14):
+    /// `{run_state, in_flight_work, last_progress_at_ms, last_progress_event,
+    /// health}`. Kept as raw wire JSON — the console reads it, mobkit does
+    /// not interpret it. `None` when the member has no snapshot (final
+    /// members, or rosters over the progress projection cap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +640,7 @@ fn build_console_experience_contract(
                         "kind": "mob_agent",
                         "role": member.role,
                         "state": member.state,
+                        "progress": member.progress,
                         "model_capabilities": member.model_capabilities,
                         "session_id": member.session_id,
                         "wired_to": member.wired_to,
@@ -830,7 +838,7 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "identity", "label", "kind", "role", "state", "model_capabilities", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
+                "fields": ["agent_id", "member_id", "identity", "label", "kind", "role", "state", "progress", "model_capabilities", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
                 "group_by_field": "group",
@@ -1129,6 +1137,10 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             }
             if let Some(lease_healthy) = agent.get("lease_healthy").and_then(Value::as_bool) {
                 row["lease_healthy"] = Value::from(lease_healthy);
+            }
+            // Machine-owned liveness projection (meerkat 0.7.29+, ask 14).
+            if let Some(progress) = agent.get("progress").filter(|value| !value.is_null()) {
+                row["progress"] = progress.clone();
             }
             if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
                 row["response_phase"] = Value::String(response_phase.to_string());

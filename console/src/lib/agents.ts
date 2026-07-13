@@ -106,6 +106,7 @@ export function normalizeAgents(
         ...(statusRow?.generation !== undefined ? { generation: statusRow.generation } : {}),
         ...(statusRow?.checkpoint_version !== undefined ? { checkpoint_version: statusRow.checkpoint_version } : {}),
         ...(statusRow?.lease_healthy !== undefined ? { lease_healthy: statusRow.lease_healthy } : {}),
+        ...(statusRow?.progress !== undefined ? { progress: statusRow.progress } : {}),
         ...(responsePhase !== null && { response_phase: responsePhase }),
         ...(entry.wired_to !== undefined && { wired_to: entry.wired_to as string[] }),
         ...(statusRow?.labels && Object.keys(statusRow.labels).length > 0
@@ -145,6 +146,7 @@ export function normalizeAgents(
         ...(statusRow.generation !== undefined ? { generation: statusRow.generation } : {}),
         ...(statusRow.checkpoint_version !== undefined ? { checkpoint_version: statusRow.checkpoint_version } : {}),
         ...(statusRow.lease_healthy !== undefined ? { lease_healthy: statusRow.lease_healthy } : {}),
+        ...(statusRow.progress !== undefined ? { progress: statusRow.progress } : {}),
         ...(statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
         ...(statusRow.labels?.group ? { group: statusRow.labels.group } : {}),
         ...(statusRow.labels?.console_subgroup
@@ -180,6 +182,7 @@ export function normalizeAgents(
         ...(statusRow?.generation !== undefined ? { generation: statusRow.generation } : {}),
         ...(statusRow?.checkpoint_version !== undefined ? { checkpoint_version: statusRow.checkpoint_version } : {}),
         ...(statusRow?.lease_healthy !== undefined ? { lease_healthy: statusRow.lease_healthy } : {}),
+        ...(statusRow?.progress !== undefined ? { progress: statusRow.progress } : {}),
         ...(statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
         addressable: false,
         affordances: { can_send_message: false },

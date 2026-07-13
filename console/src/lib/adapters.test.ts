@@ -85,6 +85,66 @@ test("buildSidebarViewState preserves host-derived watch and degraded fields", (
   assert.equal(item?.meta?.[0]?.tone, "accent");
 });
 
+test("buildSidebarViewState surfaces an unhealthy liveness chip and stays silent when healthy", () => {
+  const agentBase = {
+    agent_id: "identity:net",
+    member_id: "member-net",
+    label: "Network",
+    kind: "domain",
+    state: "active",
+  };
+  const wedged = buildSidebarViewState({
+    selectedMemberId: "",
+    agents: [{
+      ...agentBase,
+      progress: {
+        run_state: "run_open",
+        in_flight_work: 3,
+        last_progress_at_ms: 1752300000000,
+        last_progress_event: "unchanged",
+        health: "wedged",
+      },
+    }],
+  });
+  const wedgedItem = wedged.blocks[1]?.sections?.[0]?.items?.[0];
+  const healthChip = wedgedItem?.meta?.find((chip) => chip.id === "health");
+  assert.equal(healthChip?.label, "wedged");
+  assert.equal(healthChip?.tone, "negative");
+
+  const degraded = buildSidebarViewState({
+    selectedMemberId: "",
+    agents: [{
+      ...agentBase,
+      progress: {
+        run_state: "idle",
+        in_flight_work: 0,
+        last_progress_at_ms: 0,
+        last_progress_event: "became_idle",
+        health: "degraded",
+      },
+    }],
+  });
+  const degradedChip = degraded.blocks[1]?.sections?.[0]?.items?.[0]?.meta?.find((chip) => chip.id === "health");
+  assert.equal(degradedChip?.label, "degraded");
+  assert.equal(degradedChip?.tone, "warning");
+
+  const healthy = buildSidebarViewState({
+    selectedMemberId: "",
+    agents: [{
+      ...agentBase,
+      progress: {
+        run_state: "idle",
+        in_flight_work: 0,
+        last_progress_at_ms: 0,
+        last_progress_event: "became_idle",
+        health: "healthy",
+      },
+    }],
+  });
+  const healthyItem = healthy.blocks[1]?.sections?.[0]?.items?.[0];
+  assert.equal(healthyItem?.meta?.some((chip) => chip.id === "health"), false);
+});
+
 test("buildRoutingSectionView projects runtime routing and delivery results without host invention", () => {
   const view = buildRoutingSectionView({
     routesResponse: {

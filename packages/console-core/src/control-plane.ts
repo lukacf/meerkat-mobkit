@@ -10,6 +10,35 @@ export interface ExperienceSectionMeta {
   capabilities?: string[];
 }
 
+/**
+ * Machine-owned liveness projection (meerkat 0.7.29+). All string
+ * vocabularies are open — tolerate values you don't recognize.
+ * `run_state`: idle | run_open | unknown; `health`: healthy | degraded |
+ * wedged | unknown; `last_progress_event`: execution_advanced | became_idle
+ * | unchanged.
+ */
+export interface MemberProgress {
+  run_state: string;
+  in_flight_work: number;
+  last_progress_at_ms: number;
+  last_progress_event: string;
+  health: string;
+}
+
+export function normalizeMemberProgress(value: unknown): MemberProgress | null {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (!record) {
+    return null;
+  }
+  return {
+    run_state: typeof record.run_state === "string" && record.run_state ? record.run_state : "unknown",
+    in_flight_work: typeof record.in_flight_work === "number" && Number.isFinite(record.in_flight_work) ? record.in_flight_work : 0,
+    last_progress_at_ms: typeof record.last_progress_at_ms === "number" && Number.isFinite(record.last_progress_at_ms) ? record.last_progress_at_ms : 0,
+    last_progress_event: typeof record.last_progress_event === "string" && record.last_progress_event ? record.last_progress_event : "unchanged",
+    health: typeof record.health === "string" && record.health ? record.health : "unknown",
+  };
+}
+
 export interface IdentityStatusRow {
   identity: string;
   display_name?: string;
@@ -20,6 +49,7 @@ export interface IdentityStatusRow {
   generation?: number;
   checkpoint_version?: number;
   lease_healthy?: boolean;
+  progress?: MemberProgress;
 }
 
 export interface IdentityInspectViewState extends IdentityStatusRow {
@@ -305,6 +335,10 @@ export function normalizeIdentityStatusRow(value: unknown): IdentityStatusRow | 
       ? { checkpoint_version: record.checkpoint_version }
       : {}),
     ...(typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}),
+    ...((): { progress?: MemberProgress } => {
+      const progress = normalizeMemberProgress(record.progress);
+      return progress ? { progress } : {};
+    })(),
   };
 }
 
