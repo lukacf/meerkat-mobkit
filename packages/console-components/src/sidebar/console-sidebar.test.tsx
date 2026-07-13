@@ -96,6 +96,8 @@ describe("ConsoleSidebar", () => {
     expect(onSelectItem).toHaveBeenCalled();
 
     expect(screen.getByText("archive:thread-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Extract the console sidebar" }))
+      .toBeInTheDocument();
   });
 
   test("emits optional item drag and drop callbacks", () => {
@@ -143,5 +145,58 @@ describe("ConsoleSidebar", () => {
 
     expect(onItemDragStart).toHaveBeenCalled();
     expect(onItemDrop).toHaveBeenCalled();
+  });
+
+  test("lets consumers add semantic item groups without rebuilding interactive rows", () => {
+    const onSelectItem = vi.fn();
+
+    render(
+      <ConsoleSidebar
+        onSelectItem={onSelectItem}
+        renderSectionItems={({ section, defaultItems }) => {
+          const agents = defaultItems.filter((_row, index) => section.items[index]?.id.startsWith("agent:"));
+          const threads = defaultItems.filter((_row, index) => !section.items[index]?.id.startsWith("agent:"));
+          return (
+            <>
+              <div aria-labelledby="agents-heading" role="group">
+                <h3 id="agents-heading">Agents</h3>
+                {agents}
+              </div>
+              <div aria-labelledby="threads-heading" role="group">
+                <h3 id="threads-heading">Threads</h3>
+                {threads}
+              </div>
+            </>
+          );
+        }}
+        viewState={{
+          blocks: [{
+            id: "projects",
+            kind: "list",
+            sections: [{
+              id: "workspace",
+              title: "workspace",
+              items: [
+                { id: "agent:desktop", title: "Desktop UI" },
+                { id: "thread-1", title: "Polish the sidebar" },
+              ],
+            }],
+          }],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Agents" })).toContainElement(
+      screen.getByRole("button", { name: "Desktop UI" }),
+    );
+    expect(screen.getByRole("group", { name: "Threads" })).toContainElement(
+      screen.getByRole("button", { name: "Polish the sidebar" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Desktop UI" }));
+    expect(onSelectItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "projects" }),
+      expect.objectContaining({ id: "workspace" }),
+      expect.objectContaining({ id: "agent:desktop" }),
+    );
   });
 });
