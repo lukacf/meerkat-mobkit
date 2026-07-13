@@ -213,6 +213,15 @@ function agentStateTone(state: string | undefined): ConsoleSidebarMetaTone {
   }
 }
 
+/** Machine-owned liveness (meerkat 0.7.29+): chip only when NOT healthy —
+ * a healthy member's liveness is noise; degraded/wedged is the signal. */
+export function agentHealthMeta(agent: ConsoleAgent): { id: string; label: string; tone: ConsoleSidebarMetaTone } | null {
+  const health = agent.progress?.health;
+  if (!health || health === "healthy") return null;
+  const tone: ConsoleSidebarMetaTone = health === "wedged" ? "negative" : health === "degraded" ? "warning" : "muted";
+  return { id: "health", label: health, tone };
+}
+
 function sectionIconForGroup(group: string): string | null {
   const lower = group.toLowerCase();
   if (lower.includes("coordinator") || lower.includes("system")) return "i-bolt";
@@ -287,6 +296,10 @@ export function buildSidebarViewState(args: {
         ...watchFields,
         meta: [
           ...(agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []),
+          ...((): Array<{ id: string; label: string; tone?: ConsoleSidebarMetaTone }> => {
+            const health = agentHealthMeta(agent);
+            return health ? [health] : [];
+          })(),
           ...(agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" as const }] : []),
         ],
         actions: [

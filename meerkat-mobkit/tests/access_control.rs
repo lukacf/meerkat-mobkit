@@ -89,6 +89,7 @@ fn member(identity: &str, role: &str, labels: &[(&str, &str)]) -> ConsoleMember 
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect(),
+        progress: None,
     }
 }
 

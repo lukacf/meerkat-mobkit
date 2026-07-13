@@ -4408,6 +4408,7 @@ fn console_member_from_runtime_alias(
             .map(|peer| crate::member_comms_id::runtime_alias_str(peer.as_str()).into_owned())
             .collect(),
         labels: alias.member.labels.clone(),
+        progress: None,
     }
 }
 
@@ -9207,6 +9208,7 @@ fn baseline_spec_visible_to_console(
         session_id: None,
         wired_to: Vec::new(),
         labels: record.labels.clone(),
+        progress: None,
     };
     visibility_policy.member_visible(&member) && visibility_policy.identity_visible(&record)
 }
@@ -9358,9 +9360,59 @@ async fn project_console_members_from_handle(
             session_id,
             wired_to,
             labels,
+            progress: None,
         });
     }
+    attach_member_progress(handle, &entries, &mut members).await;
     (members, session_owner_by_id)
+}
+
+/// Console progress projection cap: `member_status` is an actor-mailbox
+/// roundtrip per member, and the experience endpoint refreshes every ~15s
+/// (plus SSE-triggered refetches). Small durable rosters (HomeCore: 16) get
+/// liveness for free; whole-mob fan-out at OB3 scale (hundreds of members)
+/// would compete with real work on the mob actor mailbox, so large rosters
+/// skip the projection unless the operator raises the cap.
+/// `MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP` overrides; `0` disables entirely.
+const CONSOLE_PROGRESS_MEMBER_CAP: usize = 64;
+
+fn console_progress_member_cap() -> usize {
+    std::env::var("MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(CONSOLE_PROGRESS_MEMBER_CAP)
+}
+
+/// Attach the machine-owned liveness projection (meerkat 0.7.29+, ask 14) to
+/// non-final console members. Best-effort: a failed or absent snapshot leaves
+/// `progress: None` — the console renders nothing rather than a lie.
+async fn attach_member_progress(
+    handle: &MobHandle,
+    entries: &[meerkat_mob::runtime::MobMemberListEntry],
+    members: &mut [ConsoleMember],
+) {
+    let cap = console_progress_member_cap();
+    if entries.len() > cap {
+        tracing::debug!(
+            member_count = entries.len(),
+            cap,
+            "skipping console progress projection: roster exceeds \
+             MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP"
+        );
+        return;
+    }
+    for (entry, member) in entries.iter().zip(members.iter_mut()) {
+        if entry.is_final {
+            continue;
+        }
+        let Ok(snapshot) = handle.member_status(&entry.agent_identity).await else {
+            continue;
+        };
+        member.progress = snapshot
+            .progress
+            .as_ref()
+            .and_then(|progress| serde_json::to_value(progress).ok());
+    }
 }
 
 async fn build_aggregator_live_snapshot(
@@ -9393,6 +9445,7 @@ async fn build_aggregator_live_snapshot(
             session_id: identity.session_id.clone(),
             wired_to,
             labels,
+            progress: None,
         });
     }
     members.sort_by(|left, right| left.agent_identity.cmp(&right.agent_identity));
@@ -12925,6 +12978,7 @@ comms = true
                 session_id: None,
                 wired_to: Vec::new(),
                 labels: BTreeMap::new(),
+                progress: None,
             },
             ConsoleMember {
                 agent_identity: "qa-child".to_string(),
@@ -12938,6 +12992,7 @@ comms = true
                     "delegate_host_identity".to_string(),
                     "qa-parent".to_string(),
                 )]),
+                progress: None,
             },
             ConsoleMember {
                 agent_identity: "qa-child".to_string(),
@@ -12951,6 +13006,7 @@ comms = true
                     "delegate_host_identity".to_string(),
                     "qa-parent".to_string(),
                 )]),
+                progress: None,
             },
         ];
 
@@ -13016,6 +13072,7 @@ comms = true
                     session_id: None,
                     wired_to: Vec::new(),
                     labels: BTreeMap::new(),
+                    progress: None,
                 },
                 ConsoleMember {
                     agent_identity: "qa-child".to_string(),
@@ -13029,6 +13086,7 @@ comms = true
                         "source_mob_id".to_string(),
                         "implicit-qa-mob".to_string(),
                     )]),
+                    progress: None,
                 },
             ],
             true,

@@ -367,6 +367,13 @@ fn console_experience_projects_durable_identity_for_runtime_member_rows() {
                 ("agent_identity".to_string(), "review:singleton".to_string()),
                 ("display_name".to_string(), "Review Worker".to_string()),
             ]),
+            progress: Some(json!({
+                "run_state": "run_open",
+                "in_flight_work": 2,
+                "last_progress_at_ms": 1_752_300_000_000_u64,
+                "last_progress_event": "execution_advanced",
+                "health": "wedged",
+            })),
         }],
         true,
     );
@@ -389,6 +396,18 @@ fn console_experience_projects_durable_identity_for_runtime_member_rows() {
     assert_eq!(
         response.body["identity_status"]["rows"][0]["identity"],
         json!("review:singleton")
+    );
+    // Machine-owned liveness (meerkat 0.7.29+, ask 14) rides both the sidebar
+    // agent row and the identity_status row.
+    assert_eq!(agent["progress"]["health"], json!("wedged"));
+    assert_eq!(agent["progress"]["run_state"], json!("run_open"));
+    assert_eq!(
+        response.body["identity_status"]["rows"][0]["progress"]["health"],
+        json!("wedged")
+    );
+    assert_eq!(
+        response.body["identity_status"]["rows"][0]["progress"]["in_flight_work"],
+        json!(2)
     );
 }
 

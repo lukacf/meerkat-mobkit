@@ -160,6 +160,19 @@ function CopyButton({
 var import_jsx_runtime3 = require("react/jsx-runtime");
 
 // ../packages/console-core/src/control-plane.ts
+function normalizeMemberProgress(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record) {
+    return null;
+  }
+  return {
+    run_state: typeof record.run_state === "string" && record.run_state ? record.run_state : "unknown",
+    in_flight_work: typeof record.in_flight_work === "number" && Number.isFinite(record.in_flight_work) ? record.in_flight_work : 0,
+    last_progress_at_ms: typeof record.last_progress_at_ms === "number" && Number.isFinite(record.last_progress_at_ms) ? record.last_progress_at_ms : 0,
+    last_progress_event: typeof record.last_progress_event === "string" && record.last_progress_event ? record.last_progress_event : "unchanged",
+    health: typeof record.health === "string" && record.health ? record.health : "unknown"
+  };
+}
 function trimString(value) {
   if (typeof value !== "string") {
     return void 0;
@@ -243,7 +256,11 @@ function normalizeIdentityStatusRow(value) {
     ...trimString(record.role) ? { role: trimString(record.role) } : {},
     ...typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {},
     ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
-    ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}
+    ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {},
+    ...(() => {
+      const progress = normalizeMemberProgress(record.progress);
+      return progress ? { progress } : {};
+    })()
   };
 }
 function normalizeIdentityInspectViewState(value) {
@@ -3663,6 +3680,7 @@ function normalizeAgents(experience, modules) {
         ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
         ...statusRow?.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
         ...statusRow?.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...statusRow?.progress !== void 0 ? { progress: statusRow.progress } : {},
         ...responsePhase !== null && { response_phase: responsePhase },
         ...entry.wired_to !== void 0 && { wired_to: entry.wired_to },
         ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : entry.labels !== void 0 ? { labels: entry.labels } : {},
@@ -3692,6 +3710,7 @@ function normalizeAgents(experience, modules) {
         ...statusRow.generation !== void 0 ? { generation: statusRow.generation } : {},
         ...statusRow.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
         ...statusRow.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...statusRow.progress !== void 0 ? { progress: statusRow.progress } : {},
         ...statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
         ...statusRow.labels?.group ? { group: statusRow.labels.group } : {},
         ...statusRow.labels?.console_subgroup ? { subgroup: statusRow.labels.console_subgroup } : statusRow.labels?.org ? { subgroup: statusRow.labels.org } : {},
@@ -3721,6 +3740,7 @@ function normalizeAgents(experience, modules) {
         ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
         ...statusRow?.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
         ...statusRow?.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...statusRow?.progress !== void 0 ? { progress: statusRow.progress } : {},
         ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
         addressable: false,
         affordances: { can_send_message: false },
@@ -3867,6 +3887,12 @@ function agentStateTone(state) {
       return "muted";
   }
 }
+function agentHealthMeta(agent) {
+  const health = agent.progress?.health;
+  if (!health || health === "healthy") return null;
+  const tone = health === "wedged" ? "negative" : health === "degraded" ? "warning" : "muted";
+  return { id: "health", label: health, tone };
+}
 function sectionIconForGroup(group) {
   const lower = group.toLowerCase();
   if (lower.includes("coordinator") || lower.includes("system")) return "i-bolt";
@@ -3922,6 +3948,10 @@ function buildSidebarViewState2(args) {
         ...watchFields,
         meta: [
           ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : [],
+          ...(() => {
+            const health = agentHealthMeta(agent);
+            return health ? [health] : [];
+          })(),
           ...agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" }] : []
         ],
         actions: [
@@ -13171,6 +13201,7 @@ function RosterPanel({
             {
               className: `roster__row ${isSel ? "is-selected" : ""}`,
               "data-state": stateLabel(r2.state),
+              "data-health": r2.progress?.health || void 0,
               onClick: () => {
                 setSel(r2.member_id);
                 onSelect(r2);
@@ -13223,6 +13254,23 @@ function RosterPanel({
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { className: "mono", children: active.checkpoint_version ?? "\u2014" }),
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "Lease" }),
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { className: "mono", children: active.lease_healthy === false ? "unhealthy" : "ok" }),
+          active.progress && /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(import_jsx_runtime32.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "Health" }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
+              "span",
+              {
+                className: "roster__state",
+                "data-health": active.progress.health,
+                children: active.progress.health
+              }
+            ) }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "Run state" }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { className: "mono", children: active.progress.run_state }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "In flight" }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { className: "mono", children: active.progress.in_flight_work }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "Last progress" }),
+            /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { className: "mono dim", children: active.progress.last_progress_at_ms > 0 ? `${new Date(active.progress.last_progress_at_ms).toLocaleTimeString()} (${active.progress.last_progress_event})` : active.progress.last_progress_event })
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dt", { children: "Wired" }),
           /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("span", { className: "mono dim", children: "none" }) })
         ] }),

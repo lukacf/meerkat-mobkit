@@ -662,6 +662,13 @@ svg[data-svg="fit"],
 [data-cc-variant="terminal"] .roster__dot { border-radius: 0; }
 .roster__row[data-state="degraded"] .roster__dot { background: var(--warn); }
 .roster__row[data-state="retired"]  .roster__dot { background: var(--ink-faint); }
+/* Machine-owned liveness (meerkat 0.7.29+): health overrides the lifecycle
+   tint on the dot — wedged/degraded is the operator signal. */
+.roster__row[data-health="degraded"] .roster__dot { background: var(--warn); }
+.roster__row[data-health="wedged"]   .roster__dot { background: var(--crit); }
+.roster__state[data-health="degraded"] { color: var(--warn); background: color-mix(in oklch, var(--warn) 12%, transparent); }
+.roster__state[data-health="wedged"]   { color: var(--crit); background: color-mix(in oklch, var(--crit) 12%, transparent); }
+.roster__state[data-health="healthy"]  { color: var(--ok); background: color-mix(in oklch, var(--ok) 10%, transparent); }
 .roster__state {
   font-family: var(--mono); font-size: 10.5px;
   padding: 1px 6px; border-radius: 10px;
