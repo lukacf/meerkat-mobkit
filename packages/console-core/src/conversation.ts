@@ -335,15 +335,25 @@ export function groupConversationTimelineEntries(
   entries: ConversationTimelineEntry[],
 ): ConversationTimelineGroup[] {
   const groups: ConversationTimelineGroup[] = [];
+  let turnAnchor = "conversation-start";
+  const groupOrdinalsByIdentity = new Map<string, number>();
 
   for (const entry of entries) {
     const current = groups.at(-1);
-    if (
-      !current
-      || conversationIdentityGroupKey(current.identity) !== conversationIdentityGroupKey(entry.identity)
-    ) {
+    const identityKey = conversationIdentityGroupKey(entry.identity);
+    if (!current || conversationIdentityGroupKey(current.identity) !== identityKey) {
+      if (conversationIdentityPresentation(entry.identity) === "user") {
+        // A turn is the durable reconciliation boundary. Entries can arrive
+        // late or move ahead of an already-rendered assistant response (peer
+        // tool traffic is a common example), so a group cannot be keyed from
+        // whichever entry happens to be first on this render.
+        turnAnchor = entry.id;
+        groupOrdinalsByIdentity.clear();
+      }
+      const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
+      groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
       groups.push({
-        id: `${entry.identity.id}-${entry.id}`,
+        id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
         identity: entry.identity,
         entries: [entry],
         copyText: conversationEntryText(entry),
