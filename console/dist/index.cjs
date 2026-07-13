@@ -807,8 +807,21 @@ function parseConversationRichBlocks(content, options) {
   blocks.push(...parseConversationTextBlocks(source.slice(lastIndex), displayNormalization));
   return compactConversationBlocks(blocks);
 }
+var PARAGRAPH_BREAK_SENTINEL = "\uE000CCPARAGRAPHBREAK\uE001";
+function normalizeConversationTextForParsing(fragment) {
+  const protectedFragment = String(fragment || "").replace(
+    /\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/gu,
+    `
+${PARAGRAPH_BREAK_SENTINEL}
+`
+  );
+  return normalizeConversationDisplayText(protectedFragment).replace(
+    new RegExp(`(?:^|\\n)${PARAGRAPH_BREAK_SENTINEL}(?:\\n|$)`, "gu"),
+    "\n\n"
+  );
+}
 function parseConversationTextBlocks(fragment, displayNormalization = true) {
-  const source = (displayNormalization ? normalizeConversationDisplayText(String(fragment || "")) : String(fragment || "")).trim();
+  const source = (displayNormalization ? normalizeConversationTextForParsing(fragment) : String(fragment || "")).trim();
   if (!source) {
     return [];
   }
@@ -1094,8 +1107,38 @@ function conversationEntryText(entry) {
   }
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
 }
+function conversationGroupReconciliationAnchor(entries) {
+  const substantive = entries.filter((entry) => {
+    if (entry.kind === "summary") {
+      return true;
+    }
+    if (entry.kind !== "message" || entry.variant === "meta") {
+      return false;
+    }
+    const blocks = entry.blocks || [];
+    return !blocks.length || !blocks.every((block) => block.type === "tool-call");
+  });
+  for (const entry of [...substantive, ...entries.filter((entry2) => !substantive.includes(entry2))]) {
+    const reconciliationKey = entry.reconciliationKey?.trim();
+    if (reconciliationKey) {
+      return `reconciliation-${reconciliationKey}`;
+    }
+    const interactionId = entry.interactionId?.trim();
+    if (interactionId) {
+      return `interaction-${interactionId}`;
+    }
+    if (entry.kind === "message") {
+      const runId = entry.runId?.trim();
+      if (runId) {
+        return `run-${runId}`;
+      }
+    }
+  }
+  return null;
+}
 function groupConversationTimelineEntries(entries) {
   const groups = [];
+  const turnAnchorsByGroup = [];
   let turnAnchor = "conversation-start";
   const groupOrdinalsByIdentity = /* @__PURE__ */ new Map();
   for (const entry of entries) {
@@ -1108,6 +1151,7 @@ function groupConversationTimelineEntries(entries) {
       }
       const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
       groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
+      turnAnchorsByGroup.push(turnAnchor);
       groups.push({
         id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
         identity: entry.identity,
@@ -1120,7 +1164,16 @@ function groupConversationTimelineEntries(entries) {
     const nextCopyText = conversationEntryText(entry);
     current.copyText = [current.copyText, nextCopyText].filter(Boolean).join("\n\n");
   }
-  return groups;
+  return groups.map((group, index) => {
+    const reconciliationAnchor = conversationGroupReconciliationAnchor(group.entries);
+    if (!reconciliationAnchor) {
+      return group;
+    }
+    return {
+      ...group,
+      id: `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`
+    };
+  });
 }
 
 // ../packages/console-core/src/dock.ts

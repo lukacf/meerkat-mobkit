@@ -743,9 +743,28 @@ export function parseConversationRichBlocks(
   return compactConversationBlocks(blocks);
 }
 
+// Display normalization intentionally removes empty lines for compact labels
+// and protocol chatter. Rich-content parsing cannot lose those boundaries:
+// the streaming parser has already promoted text before the last blank line
+// into stable blocks, so collapsing the same break at finalization changes the
+// block topology and destroys the live tail node. Protect paragraph breaks
+// while the full-message normalizers run, then restore them before splitting.
+const PARAGRAPH_BREAK_SENTINEL = "\uE000CCPARAGRAPHBREAK\uE001";
+
+function normalizeConversationTextForParsing(fragment: string): string {
+  const protectedFragment = String(fragment || "").replace(
+    /\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/gu,
+    `\n${PARAGRAPH_BREAK_SENTINEL}\n`,
+  );
+  return normalizeConversationDisplayText(protectedFragment).replace(
+    new RegExp(`(?:^|\\n)${PARAGRAPH_BREAK_SENTINEL}(?:\\n|$)`, "gu"),
+    "\n\n",
+  );
+}
+
 function parseConversationTextBlocks(fragment: string, displayNormalization = true): ConversationRichBlock[] {
   const source = (displayNormalization
-    ? normalizeConversationDisplayText(String(fragment || ""))
+    ? normalizeConversationTextForParsing(fragment)
     : String(fragment || "")).trim();
   if (!source) {
     return [];
