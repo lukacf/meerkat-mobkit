@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.38] - 2026-07-13
+
+### Added
+
+- Console health affordance from the machine-owned member liveness
+  projection (ask 14 follow-up): sidebar rows show a `wedged`/`degraded`
+  chip (silent when healthy), the roster dot tints by health, and the
+  roster inspect pane gains Health / Run state / In flight / Last
+  progress rows. Progress is fetched per non-final member and capped at
+  64 members (`MOBKIT_CONSOLE_PROGRESS_MEMBER_CAP`; `0` disables) so
+  large rosters do not fan out against the mob actor mailbox.
+
+### Changed
+
+- meerkat family pinned to `=0.7.31` (from `=0.7.30`): delivery-time
+  mob member revival carries a machine-authorized
+  missing-live-materialization intent, and executor publication is
+  cancellation-safe (no false `Attached`/ready state without a live
+  executor) — the delivery-time sibling of the ask 34 boot-revival fix.
+
 ## [0.7.37] - 2026-07-13
 
 ### Changed
