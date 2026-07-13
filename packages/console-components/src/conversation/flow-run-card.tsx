@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties } from "react";
+import { useEffect, useId, useState, type CSSProperties } from "react";
 
 import {
   parseConversationRichBlocks,
@@ -23,6 +23,10 @@ const STATUS_LABEL: Record<FlowRunStatus, string> = {
 
 function statusDotClass(status: FlowRunStatus): string {
   return `cc-flow-run__dot is-${status}`;
+}
+
+function isTerminalStatus(status: FlowRunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "stopped";
 }
 
 function MemberRow({
@@ -119,19 +123,35 @@ export function FlowRunCard({
   // Message targeting needs a live member behind the row; paused (restorable)
   // crews only carry persisted job history, so the affordance is Resume.
   const memberMessageHandler = entry.restorable ? null : onMessageMember;
+  const headingId = useId();
+  const detailsId = useId();
+  const terminal = isTerminalStatus(entry.status);
+  const hasDetails = Boolean(entry.rows.length);
+  const [detailsExpanded, setDetailsExpanded] = useState(() => !terminal);
+
+  // Active work must remain inspectable without another click. Conversely,
+  // collapse a card when a live run reaches a terminal state so completed
+  // crews stop dominating the transcript. A user's choice is preserved for
+  // subsequent renders while the card remains in the same state class.
+  useEffect(() => {
+    setDetailsExpanded(!terminal);
+  }, [terminal]);
+
   return (
     <section
-      className={`cc-flow-run is-${entry.status}`}
+      className={`cc-flow-run is-${entry.status}${terminal && !detailsExpanded ? " is-compact" : " is-details-expanded"}`}
       data-flow-run-card=""
       data-helper-id={entry.helperId}
       data-status={entry.status}
+      data-details-expanded={detailsExpanded ? "true" : "false"}
+      aria-labelledby={headingId}
     >
       <header className="cc-flow-run__header">
         <span className="cc-flow-run__mark" aria-hidden="true">
           {Icon ? <Icon name="i-team" /> : "◇"}
         </span>
         <div className="cc-flow-run__heading">
-          <span className="cc-flow-run__name">{entry.flowName}</span>
+          <span id={headingId} className="cc-flow-run__name">{entry.flowName}</span>
           {entry.objective ? <span className="cc-flow-run__objective">{entry.objective}</span> : null}
         </div>
         {entry.restorable && onRestore ? (
@@ -147,19 +167,40 @@ export function FlowRunCard({
             Resume
           </button>
         ) : null}
+        {terminal && hasDetails ? (
+          <button
+            type="button"
+            className="cc-flow-run__disclosure"
+            aria-controls={detailsId}
+            aria-expanded={detailsExpanded}
+            onClick={() => setDetailsExpanded((value) => !value)}
+          >
+            {detailsExpanded ? "Hide details" : "Show details"}
+          </button>
+        ) : null}
         <span className={`cc-flow-run__badge is-${entry.status}`}>{STATUS_LABEL[entry.status]}</span>
       </header>
-      {entry.rows.length ? (
-        <ul className="cc-flow-run__members">
-          {entry.rows.map((row) => (
-            <MemberRow key={row.memberKey} row={row} Icon={Icon} onMessageMember={memberMessageHandler} />
-          ))}
-        </ul>
+      {hasDetails ? (
+        <div
+          id={detailsId}
+          className="cc-flow-run__details"
+          role="region"
+          aria-label={`${entry.flowName} details`}
+          hidden={!detailsExpanded}
+        >
+          {entry.rows.length ? (
+            <ul className="cc-flow-run__members">
+              {entry.rows.map((row) => (
+                <MemberRow key={row.memberKey} row={row} Icon={Icon} onMessageMember={memberMessageHandler} />
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {entry.outcome ? (
-        // Crew outcomes are markdown (headings, lists, fences) — a raw text
-        // node rendered them as an unformatted wall. Route through the same
-        // rich-block pipeline as assistant prose.
+        // The outcome is the conversation answer, not execution detail. Keep
+        // it visible when a terminal card compacts so the transcript never
+        // collapses into an empty status row.
         <div className="cc-flow-run__outcome">
           <ConversationRichContent blocks={parseConversationRichBlocks(entry.outcome)} Icon={Icon} />
         </div>
