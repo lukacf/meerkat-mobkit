@@ -1119,6 +1119,10 @@ function conversationGroupReconciliationAnchor(entries) {
     return !blocks.length || !blocks.every((block) => block.type === "tool-call");
   });
   for (const entry of [...substantive, ...entries.filter((entry2) => !substantive.includes(entry2))]) {
+    const groupReconciliationKey = entry.groupReconciliationKey?.trim();
+    if (groupReconciliationKey) {
+      return `group-reconciliation-${groupReconciliationKey}`;
+    }
     const reconciliationKey = entry.reconciliationKey?.trim();
     if (reconciliationKey) {
       return `reconciliation-${reconciliationKey}`;
