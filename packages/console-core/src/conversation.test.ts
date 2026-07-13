@@ -79,6 +79,56 @@ describe("conversation grouping", () => {
     expect(groups[0]?.identity.presentation).toBe("assistant");
     expect(groups[1]?.identity.presentation).toBe("system");
   });
+
+  test("keeps an assistant group anchored when an earlier same-identity entry arrives", () => {
+    const user: ConversationTimelineEntry = {
+      id: "user-message-1",
+      kind: "message",
+      variant: "plain",
+      identity: {
+        id: "user",
+        label: "You",
+        role: "user",
+        presentation: "user",
+      },
+      text: "Ask the peer for a critique.",
+    };
+    const response: ConversationTimelineEntry = {
+      id: "assistant-run-1",
+      kind: "message",
+      variant: "rich",
+      identity: {
+        id: "assistant",
+        label: "Assistant",
+        role: "assistant",
+        presentation: "assistant",
+      },
+      blocks: [{ type: "paragraph", text: "The peer recommends more breathing room." }],
+    };
+    const peerTool: ConversationTimelineEntry = {
+      id: "peer-tool-1",
+      kind: "message",
+      variant: "rich",
+      identity: response.identity,
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "peer-call-1",
+        name: "send_request",
+        arguments: "{}",
+        status: "success",
+      }],
+    };
+
+    const liveGroups = groupConversationTimelineEntries([user, response]);
+    const durableGroups = groupConversationTimelineEntries([user, peerTool, response]);
+
+    expect(durableGroups[0]?.id).toBe(liveGroups[0]?.id);
+    expect(durableGroups[1]?.id).toBe(liveGroups[1]?.id);
+    expect(durableGroups[1]?.entries.map((entry) => entry.id)).toEqual([
+      "peer-tool-1",
+      "assistant-run-1",
+    ]);
+  });
 });
 
 describe("system task entries", () => {

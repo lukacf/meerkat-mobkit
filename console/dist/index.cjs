@@ -1096,11 +1096,20 @@ function conversationEntryText(entry) {
 }
 function groupConversationTimelineEntries(entries) {
   const groups = [];
+  let turnAnchor = "conversation-start";
+  const groupOrdinalsByIdentity = /* @__PURE__ */ new Map();
   for (const entry of entries) {
     const current = groups.at(-1);
-    if (!current || conversationIdentityGroupKey(current.identity) !== conversationIdentityGroupKey(entry.identity)) {
+    const identityKey = conversationIdentityGroupKey(entry.identity);
+    if (!current || conversationIdentityGroupKey(current.identity) !== identityKey) {
+      if (conversationIdentityPresentation(entry.identity) === "user") {
+        turnAnchor = entry.id;
+        groupOrdinalsByIdentity.clear();
+      }
+      const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
+      groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
       groups.push({
-        id: `${entry.identity.id}-${entry.id}`,
+        id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
         identity: entry.identity,
         entries: [entry],
         copyText: conversationEntryText(entry)
