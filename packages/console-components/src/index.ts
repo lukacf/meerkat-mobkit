@@ -43,6 +43,7 @@ export type {
   ConsoleSidebarItemTrailingRenderArgs,
   ConsoleSidebarSectionContainerRenderArgs,
   ConsoleSidebarSectionHeaderRenderArgs,
+  ConsoleSidebarSectionItemsRenderArgs,
 } from "./sidebar/console-sidebar";
 export type { ConsoleWorkbenchProps } from "./workbench/console-workbench";
 export { ConsoleComposer } from "./composer/console-composer";

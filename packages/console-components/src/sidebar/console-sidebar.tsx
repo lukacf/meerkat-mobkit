@@ -32,6 +32,17 @@ export type ConsoleSidebarSectionContainerRenderArgs = {
   defaultSection: ReactNode;
 };
 
+export type ConsoleSidebarSectionItemsRenderArgs = {
+  block: ConsoleSidebarBlock;
+  section: ConsoleSidebarSection;
+  /**
+   * Fully wired row nodes in the same order as `section.items`.
+   * Consumers may group or annotate them without reimplementing row
+   * interaction, drag-and-drop, actions, or keyboard behavior.
+   */
+  defaultItems: ReactNode[];
+};
+
 export type ConsoleSidebarItemTrailingRenderArgs = {
   block: ConsoleSidebarBlock;
   section: ConsoleSidebarSection;
@@ -69,6 +80,7 @@ export type ConsoleSidebarProps = {
   getActionButtonProps?: (scope: ConsoleSidebarActionButtonScope) => SidebarActionButtonProps;
   renderSectionHeader?: (args: ConsoleSidebarSectionHeaderRenderArgs) => ReactNode;
   renderSectionContainer?: (args: ConsoleSidebarSectionContainerRenderArgs) => ReactNode;
+  renderSectionItems?: (args: ConsoleSidebarSectionItemsRenderArgs) => ReactNode;
   renderItemTrailing?: (args: ConsoleSidebarItemTrailingRenderArgs) => ReactNode;
   onBlockAction?: (block: ConsoleSidebarBlock, action: ConsoleSidebarAction) => void;
   onSelectSection?: (block: ConsoleSidebarBlock, section: ConsoleSidebarSection) => void;
@@ -396,6 +408,7 @@ function SidebarRow({
 
   return (
     <div
+      aria-label={item.title}
       className={clsx(
         "cc-sidebar-row",
         "thread-row",
@@ -501,6 +514,7 @@ function ListBlock({
   getActionButtonProps,
   renderSectionHeader,
   renderSectionContainer,
+  renderSectionItems,
   renderItemTrailing,
   onBlockAction,
   onSelectSection,
@@ -519,6 +533,7 @@ function ListBlock({
   getActionButtonProps?: (scope: ConsoleSidebarActionButtonScope) => SidebarActionButtonProps;
   renderSectionHeader?: (args: ConsoleSidebarSectionHeaderRenderArgs) => ReactNode;
   renderSectionContainer?: (args: ConsoleSidebarSectionContainerRenderArgs) => ReactNode;
+  renderSectionItems?: (args: ConsoleSidebarSectionItemsRenderArgs) => ReactNode;
   renderItemTrailing?: (args: ConsoleSidebarItemTrailingRenderArgs) => ReactNode;
   onBlockAction?: (block: ConsoleSidebarBlock, action: ConsoleSidebarAction) => void;
   onSelectSection?: (block: ConsoleSidebarBlock, section: ConsoleSidebarSection) => void;
@@ -585,29 +600,32 @@ function ListBlock({
           const header = renderSectionHeader
             ? renderSectionHeader({ block, section, defaultHeader })
             : defaultHeader;
+          const defaultItems = section.items.map((item) => (
+            <SidebarRow
+              Icon={Icon}
+              block={block}
+              getActionButtonProps={getActionButtonProps}
+              item={item}
+              isItemDraggable={isItemDraggable}
+              isItemDropTarget={isItemDropTarget}
+              key={item.id}
+              onItemAction={onItemAction}
+              onItemContextMenu={onItemContextMenu}
+              onItemDragEnd={onItemDragEnd}
+              onItemDragStart={onItemDragStart}
+              onItemDrop={onItemDrop}
+              onSelectItem={onSelectItem}
+              section={section}
+              trailingContent={renderItemTrailing?.({ block, section, item })}
+            />
+          ));
           const defaultSection = (
             <section className={clsx("cc-sidebar-section", hasVisibleSectionHeader(section) && "has-header")} key={section.id}>
               {header}
               <div className="cc-sidebar-section__rows">
-                {section.items.map((item) => (
-                  <SidebarRow
-                    Icon={Icon}
-                    block={block}
-                    getActionButtonProps={getActionButtonProps}
-                    item={item}
-                    isItemDraggable={isItemDraggable}
-                    isItemDropTarget={isItemDropTarget}
-                    key={item.id}
-                    onItemAction={onItemAction}
-                    onItemContextMenu={onItemContextMenu}
-                    onItemDragEnd={onItemDragEnd}
-                    onItemDragStart={onItemDragStart}
-                    onItemDrop={onItemDrop}
-                    onSelectItem={onSelectItem}
-                    section={section}
-                    trailingContent={renderItemTrailing?.({ block, section, item })}
-                  />
-                ))}
+                {renderSectionItems
+                  ? renderSectionItems({ block, section, defaultItems })
+                  : defaultItems}
               </div>
             </section>
           );
@@ -632,6 +650,7 @@ export function ConsoleSidebar({
   getActionButtonProps,
   renderSectionHeader,
   renderSectionContainer,
+  renderSectionItems,
   renderItemTrailing,
   onBlockAction,
   onSelectSection,
@@ -678,6 +697,7 @@ export function ConsoleSidebar({
             renderItemTrailing={renderItemTrailing}
             renderSectionHeader={renderSectionHeader}
             renderSectionContainer={renderSectionContainer}
+            renderSectionItems={renderSectionItems}
           />
         )
       ))}
