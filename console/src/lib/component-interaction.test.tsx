@@ -13,6 +13,7 @@ import {
 } from "@console-core";
 import {
   ConsoleActivityRail,
+  ConversationRichContent,
   ConversationTranscript,
   WorkGraphCard,
   __workGraphCardUiState,
@@ -24,6 +25,49 @@ import { Sidebar } from "../panels/Sidebar";
 import { MemoryLiveStrip } from "../panels/MemoryPanel";
 import { WorkGraphPanel, type WorkGraphPanelData } from "../panels/WorkGraphPanel";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
+
+test("ConversationRichContent preserves its rendered nodes when streaming becomes final", () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  const renderContent = (richStyle: "default" | "streaming", text: string) => {
+    flushSync(() => {
+      root.render(
+        <ConversationRichContent
+          blocks={[{ type: "paragraph", text }]}
+          richStyle={richStyle}
+        />,
+      );
+    });
+  };
+
+  try {
+    renderContent("streaming", "A response is still arriving");
+
+    const streamingTail = rootElement.querySelector(".cc-rich-paragraph");
+    assert.ok(streamingTail);
+    assert.strictEqual(rootElement.firstElementChild, streamingTail);
+    assert.ok(streamingTail.classList.contains("cc-rich-streaming"));
+
+    renderContent("default", "A response is now complete");
+
+    assert.strictEqual(rootElement.querySelector(".cc-rich-paragraph"), streamingTail);
+    assert.strictEqual(rootElement.firstElementChild, streamingTail);
+    assert.equal(streamingTail.textContent, "A response is now complete");
+    assert.ok(!streamingTail.classList.contains("cc-rich-streaming"));
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
 
 test("ConsoleActivityRail wires roster panel actions to host callbacks", async () => {
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
