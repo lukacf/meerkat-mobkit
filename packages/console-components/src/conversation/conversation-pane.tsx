@@ -24,6 +24,7 @@ export type ConversationPaneProps = {
   viewState: ConversationViewState;
   Icon?: IconRenderer | null;
   footer?: ReactNode;
+  scrollTail?: ReactNode;
   className?: string;
   scrollClassName?: string;
   bodyClassName?: string;
@@ -52,6 +53,7 @@ export function ConversationPane({
   viewState,
   Icon,
   footer = null,
+  scrollTail = null,
   className,
   scrollClassName,
   bodyClassName,
@@ -281,6 +283,7 @@ export function ConversationPane({
               viewState={viewState}
             />
           )}
+          {scrollTail}
         </div>
       </section>
       {footer ? <div className="cc-conversation-pane__footer">{footer}</div> : null}

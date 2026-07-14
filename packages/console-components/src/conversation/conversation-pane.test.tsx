@@ -15,6 +15,33 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationPane", () => {
+  test("renders the scroll tail inside the scrolling body and keeps it out of the footer", () => {
+    const viewState: ConversationViewState = {
+      conversationId: "thread-scroll-tail",
+      entries: [],
+      groups: [],
+      turnDiff: null,
+      emptyState: null,
+    };
+
+    render(
+      <ConversationPane
+        footer={<div data-testid="pane-footer-content">Footer</div>}
+        scrollTail={<div data-testid="pane-scroll-tail">Scroll tail</div>}
+        viewState={viewState}
+      />,
+    );
+
+    const scrollTail = screen.getByTestId("pane-scroll-tail");
+    const scrollContainer = scrollTail.closest(".cc-conversation-pane__scroll");
+    const body = scrollTail.closest(".cc-conversation-pane__body");
+    const footer = screen.getByTestId("pane-footer-content").closest(".cc-conversation-pane__footer");
+
+    expect(scrollContainer).toContainElement(scrollTail);
+    expect(body?.lastElementChild).toBe(scrollTail);
+    expect(footer).not.toContainElement(scrollTail);
+  });
+
   test("restores the specific flow-run card that was clicked", () => {
     const releaseCrew: ConversationFlowRunEntry = {
       id: "flow-run:release-crew",
