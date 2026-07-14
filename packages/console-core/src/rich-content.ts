@@ -127,9 +127,13 @@ const HIDDEN_PEER_DISPLAY_INTENTS = new Set([
 ]);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MACHINE_PEER_TOKEN_RE = /^peer[-_][a-z0-9][a-z0-9_-]*$/i;
-const MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_][a-z0-9][a-z0-9_-]*$/i;
-const EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_][a-z0-9][a-z0-9_-]*\b/gi;
+// `peer_message`, `peer_request`, and `peer_response` are public MobKit
+// message-kind names, not opaque peer ids. Keep them available to explanatory
+// prose (including inline code) while continuing to hide generated tokens such
+// as `peer-merge-123` and `peer_some-runtime-id`.
+const MACHINE_PEER_TOKEN_RE = /^peer[-_](?!(?:message|request|response)$)[a-z0-9][a-z0-9_-]*$/i;
+const MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*$/i;
+const EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*\b/gi;
 const EMBEDDED_PEER_ACK_TOKEN_RE = /\bACK_?FROM_?PEER_?peer[-_][a-z0-9][a-z0-9_-]*\b/gi;
 const EMBEDDED_PEER_RESPONSE_TOKEN_RE = /\bpeer[-_]merge[-_][a-z0-9][a-z0-9_-]*\b/gi;
 const LEGACY_INLINE_CODE_PLACEHOLDER_RE = /@@CODE\d+@@/g;

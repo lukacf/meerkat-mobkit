@@ -90,6 +90,19 @@ desktop/renderer/src/app/App.tsx +4 -3
     );
   });
 
+  test("preserves public MobKit peer message kinds in inline code", () => {
+    const text = "All are connected over **inproc** and support `peer_message`, `peer_request`, and `peer_response`.";
+    const blocks = parseConversationRichBlocks(text);
+
+    expect(blocks).toEqual([{ type: "paragraph", text }]);
+    expect(renderConversationInlineMarkdown(text)).toBe(
+      "All are connected over <strong>inproc</strong> and support "
+        + '<code class="cc-rich-inline-code">peer_message</code>, '
+        + '<code class="cc-rich-inline-code">peer_request</code>, and '
+        + '<code class="cc-rich-inline-code">peer_response</code>.',
+    );
+  });
+
   test("normalizes legacy leaked code placeholders before rich block parsing", () => {
     const blocks = parseConversationRichBlocks([
       "@@CODE0@@ — builds MobKit runtime, starts channels/connectors, exposes @@CODE1@@, @@CODE2@@, @@CODE3@@, and proxies stock console/runtime routes.",
