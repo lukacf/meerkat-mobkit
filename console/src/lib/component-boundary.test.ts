@@ -8,6 +8,7 @@ const root = path.basename(process.cwd()) === "console"
   : process.cwd();
 const componentsSrc = path.join(root, "packages", "console-components", "src");
 const coreActivitySource = path.join(root, "packages", "console-core", "src", "activity.ts");
+const activityStyles = path.join(componentsSrc, "styles", "activity.css");
 const componentIndex = path.join(componentsSrc, "index.ts");
 const coreIndex = path.join(root, "packages", "console-core", "src", "index.ts");
 const stockConsoleAppSource = path.join(root, "console", "src", "ConsoleApp.tsx");
@@ -89,6 +90,19 @@ test("activity rail roster actions are declared in the shared core model", () =>
   const rosterPanel = source.match(/export interface ConsoleActivityRosterPanel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body || "";
 
   assert.match(rosterPanel, /\bactions\?:\s*ConsoleActivityAction\[\]/);
+});
+
+test("activity feed previews remove the entire transcript action row", () => {
+  const source = fs.readFileSync(activityStyles, "utf8");
+
+  assert.match(
+    source,
+    /\.cc-activity-rail__feed-canvas\s+\.cc-message-group__actions\s*\{\s*display:\s*none;\s*\}/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\.cc-activity-rail__feed-canvas\s+\.cc-message-group__copy\s*\{\s*display:\s*none;\s*\}/,
+  );
 });
 
 test("stock console runtime path is backed by the headless controller", () => {
