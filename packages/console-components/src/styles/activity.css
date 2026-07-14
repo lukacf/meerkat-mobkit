@@ -450,7 +450,7 @@
   gap: 10px;
 }
 
-.cc-activity-rail__feed-canvas .cc-message-group__copy {
+.cc-activity-rail__feed-canvas .cc-message-group__actions {
   display: none;
 }
 
