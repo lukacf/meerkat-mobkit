@@ -20,7 +20,9 @@ import {
   systemNoticeClearsBusyState,
   WORKGRAPH_CARD_ITEM_ROW_LIMIT,
 } from "./adapters";
-import { describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
+import { mapFramesToTimelineEntries as mapFramesToTimelineEntriesShared } from "../../../packages/console-core/src/adapters";
+import {
+  groupConversationTimelineEntries, describeMemoryTimelineEvent as describeMemoryTimelineEventCore } from "@console-core";
 
 function typedCommsNotice(args: {
   peer: string;
@@ -245,6 +247,86 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
       ? entry.blocks[0].text
       : "";
   assert.equal(text, "Status is stable.");
+});
+
+test("mapFramesToTimelineEntries stamps the turn interactionId on streamed text entries (audit fix)", () => {
+  // Reversion detector for the finalization-remount fix: a streamed text
+  // entry without interactionId keys its group by entry-id fallback, then
+  // flips to the interaction anchor when the terminal entry joins —
+  // remounting the live response group. Stamping from the first frame keeps
+  // the group anchored throughout.
+  const iid = "11111111-2222-4333-8444-555555555555";
+  const streaming = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      { id: "evt-1", event: "interaction_started", interactionId: iid, data: {} },
+      { id: "evt-2", event: "text_delta", interactionId: iid, data: { delta: "Working on it" } },
+    ],
+  );
+  assert.equal(streaming.length, 1);
+  assert.equal(
+    streaming[0]?.kind === "message" ? streaming[0].interactionId : undefined,
+    iid,
+    "streamed text entry must carry the turn interactionId from the first frame",
+  );
+
+  const streamingGroups = groupConversationTimelineEntries(streaming);
+  const finalized = mapFramesToTimelineEntries(
+    { agent_id: "a", member_id: "a", label: "A", kind: "identity" },
+    [
+      { id: "evt-1", event: "interaction_started", interactionId: iid, data: {} },
+      { id: "evt-2", event: "text_delta", interactionId: iid, data: { delta: "Working on it" } },
+      { id: "evt-3", event: "interaction_complete", interactionId: iid, data: { text: "Working on it — done." } },
+    ],
+  );
+  const finalizedGroups = groupConversationTimelineEntries(finalized);
+  assert.equal(
+    finalizedGroups[0]?.id,
+    streamingGroups[0]?.id,
+    "the response group id must not flip when the terminal entry joins",
+  );
+});
+
+test("streamed reasoning entries carry the turn interactionId (audit fix, both adapters)", () => {
+  // Reversion detectors for the three stamp sites the text-delta test does
+  // not reach: the bundled REASONING stamp, and the SHARED package adapter's
+  // text + reasoning stamps (embedders consume the shared mapper — a silent
+  // revert there ships the finalization-remount bug to every embedder while
+  // the bundled console stays green).
+  const iid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const agent = { agent_id: "a", member_id: "a", label: "A", kind: "identity" };
+  const frames = [
+    { id: "evt-1", event: "interaction_started", interactionId: iid, data: {} },
+    { id: "evt-2", event: "reasoning_delta", interactionId: iid, data: { delta: "thinking hard" } },
+    { id: "evt-3", event: "text_delta", interactionId: iid, data: { delta: "answer" } },
+  ];
+  for (const [name, mapper] of [
+    ["bundled", mapFramesToTimelineEntries],
+    ["shared", mapFramesToTimelineEntriesShared],
+  ] as const) {
+    const entries = mapper(agent, frames as never);
+    const reasoning = entries.find(
+      (entry) => entry.kind === "message" && "blocks" in entry
+        && entry.blocks?.some((block) => block.type === "thinking"),
+    );
+    assert.ok(reasoning, `${name}: reasoning entry rendered`);
+    assert.equal(
+      reasoning?.kind === "message" ? reasoning.interactionId : undefined,
+      iid,
+      `${name}: streamed reasoning entry must carry the turn interactionId`,
+    );
+    const text = entries.find(
+      (entry) => entry.kind === "message"
+        && (("text" in entry && entry.text) || ("blocks" in entry
+          && entry.blocks?.some((block) => block.type === "paragraph"))),
+    );
+    assert.ok(text, `${name}: text entry rendered`);
+    assert.equal(
+      text?.kind === "message" ? text.interactionId : undefined,
+      iid,
+      `${name}: streamed text entry must carry the turn interactionId`,
+    );
+  }
 });
 
 test("mapFramesToTimelineEntries keeps timestamp-less reasoning before the answer text", () => {

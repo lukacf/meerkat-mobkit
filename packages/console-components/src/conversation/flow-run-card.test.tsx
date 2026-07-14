@@ -1,3 +1,11 @@
+// NOTE (2026-07-14 audit): this file is written against vitest globals and
+// @testing-library/react, NEITHER of which is a dependency of this repo — it
+// has never executed in any CI lane or local runner. Runnable coverage for
+// these behaviors lives in console/src/lib/component-interaction.test.tsx
+// (repo-standard esbuild + node --test) and, for the pure grouping/parsing
+// logic, in packages/console-core/src/*.test.ts via the node:test-backed
+// shim (test-support/vitest-shim.ts). If you add vitest + RTL as real
+// dependencies, wire this file into CI before trusting it.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
 
@@ -63,7 +71,11 @@ describe("FlowRunCard", () => {
     },
   );
 
-  test.each(["completed", "failed", "stopped"] as const)(
+  // Audit fix: only COMPLETED runs compact by default — failed/stopped runs
+  // keep details expanded (per-member failure detail matters most at the
+  // moment of failure). See component-interaction.test.tsx for the runnable
+  // pin of that behavior.
+  test.each(["completed"] as const)(
     "defaults %s work to a compact accessible summary and reveals details on request",
     (status) => {
       const onMessageMember = vi.fn();

@@ -132,15 +132,19 @@ export function FlowRunCard({
   const detailsId = useId();
   const terminal = isTerminalStatus(entry.status);
   const hasDetails = Boolean(entry.rows.length);
-  const [detailsExpanded, setDetailsExpanded] = useState(() => !terminal);
+  const [detailsExpanded, setDetailsExpanded] = useState(
+    () => !terminal || entry.status !== "completed",
+  );
 
   // Active work must remain inspectable without another click. Conversely,
-  // collapse a card when a live run reaches a terminal state so completed
-  // crews stop dominating the transcript. A user's choice is preserved for
-  // subsequent renders while the card remains in the same state class.
+  // collapse a card when a live run COMPLETES so finished crews stop
+  // dominating the transcript — but failed/stopped runs keep their details
+  // open: per-member failure detail matters most at the moment of failure.
+  // A user's choice is preserved for subsequent renders while the card
+  // remains in the same state class.
   useEffect(() => {
-    setDetailsExpanded(!terminal);
-  }, [terminal]);
+    setDetailsExpanded(!terminal || entry.status !== "completed");
+  }, [terminal, entry.status]);
 
   return (
     <section

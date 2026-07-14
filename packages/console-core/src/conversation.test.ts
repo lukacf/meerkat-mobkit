@@ -1,3 +1,4 @@
+import { describe, expect, test } from "./test-support/vitest-shim";
 import {
   conversationEntryText,
   conversationIdentityGroupKey,
@@ -355,5 +356,101 @@ describe("workgraph entry text", () => {
       "  Console card — completed",
       "pursue: active → sess-42",
     ].join("\n"));
+  });
+});
+
+describe("group id contract (PRs #281-#290 audit regressions)", () => {
+  const user = (id: string): ConversationTimelineEntry => ({
+    id,
+    kind: "message",
+    variant: "plain",
+    identity: { id: "user", label: "You", role: "user", presentation: "user", showLabel: false },
+    text: "hello",
+  });
+  const assistant = (
+    id: string,
+    extra: Partial<ConversationTimelineEntry> = {},
+  ): ConversationTimelineEntry => ({
+    id,
+    kind: "message",
+    variant: "plain",
+    identity: { id: "assistant", label: "Agent", role: "assistant", presentation: "assistant", showLabel: false },
+    text: `text-${id}`,
+    ...extra,
+  } as ConversationTimelineEntry);
+  const systemMeta = (id: string): ConversationTimelineEntry => ({
+    id,
+    kind: "message",
+    variant: "meta",
+    identity: { id: "system", label: "System", role: "other", presentation: "participant", showLabel: true },
+    text: "meta",
+  });
+
+  test("two same-identity groups sharing an interaction id never collide (React keys)", () => {
+    const groups = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("a-tool", { interactionId: "interaction-x" }),
+      systemMeta("meta-1"),
+      assistant("a-response", { interactionId: "interaction-x" }),
+    ]);
+    const ids = groups.map((group) => group.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test("host groupReconciliationKey beats an earlier entry's provisional interactionId", () => {
+    const groups = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("a-thinking", { interactionId: "live-provisional-1" }),
+      assistant("a-response", { groupReconciliationKey: "turn-7-response" }),
+    ]);
+    expect(groups[1]?.id).toContain("group-reconciliation-turn-7-response");
+  });
+
+  test("keyless group ids survive a late-inserted earlier sibling group", () => {
+    const before = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("a-response"),
+    ]);
+    const after = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("a-late-peer", {
+        variant: "rich",
+        blocks: [{ type: "tool-call", name: "send_message", state: "complete" }],
+      } as Partial<ConversationTimelineEntry>),
+      systemMeta("meta-1"),
+      assistant("a-response"),
+    ]);
+    const responseBefore = before.at(-1);
+    const responseAfter = after.at(-1);
+    expect(responseAfter?.id).toBe(responseBefore?.id);
+  });
+
+  test("user-less conversations key groups without positional drift", () => {
+    const before = groupConversationTimelineEntries([
+      assistant("a-1"),
+      systemMeta("m-1"),
+      assistant("a-2"),
+    ]);
+    const after = groupConversationTimelineEntries([
+      assistant("a-0"),
+      systemMeta("m-0"),
+      assistant("a-1"),
+      systemMeta("m-1"),
+      assistant("a-2"),
+    ]);
+    expect(after.at(-1)?.id).toBe(before.at(-1)?.id);
+  });
+
+  test("an anchored streaming group keeps its id when the terminal entry joins", () => {
+    const streaming = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("live-text-1", { interactionId: "interaction-x" }),
+    ]);
+    const finalized = groupConversationTimelineEntries([
+      user("u-1"),
+      assistant("live-text-1", { interactionId: "interaction-x" }),
+      assistant("terminal-1", { interactionId: "interaction-x" }),
+    ]);
+    expect(finalized[1]?.id).toBe(streaming[1]?.id);
   });
 });

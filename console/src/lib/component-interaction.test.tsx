@@ -13,12 +13,14 @@ import {
 } from "@console-core";
 import {
   ConsoleActivityRail,
+  ConsoleSidebar,
   ConversationRichContent,
   ConversationTranscript,
   WorkGraphCard,
   __workGraphCardUiState,
 } from "@console-components";
-import { buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
+import { groupCopyText } from "../../../packages/console-components/src/conversation/conversation-message-group";
+import { buildSidebarViewState, buildWorkGraphOperatorResultFrame, mapFramesToTimelineEntries } from "./adapters";
 import { CONSOLE_COMMAND_NAMES } from "./headless";
 import { resolveWorkGraphGoalItemRevision, type WorkGraphCommandRunner } from "./workgraph-actions";
 import { Sidebar } from "../panels/Sidebar";
@@ -934,3 +936,199 @@ test("WorkGraphPanel attention actions split CAS tokens the same way and gate re
     dom.window.close();
   }
 });
+
+test("FlowRunCard keeps failed/stopped details expanded, collapses only completed (audit fix)", async () => {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousActEnv = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+  const flowEntry = (status: ConversationFlowRunEntry["status"]): ConversationFlowRunEntry => ({
+    id: "flow-run:release-crew",
+    kind: "flow_run",
+    identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+    helperId: "helper-1",
+    flowName: "Release crew",
+    status,
+    rows: [],
+  });
+  const transcriptFor = (status: ConversationFlowRunEntry["status"]) => {
+    const entries: ConversationTimelineEntry[] = [flowEntry(status)];
+    return (
+      <ConversationTranscript
+        viewState={{
+          conversationId: "flow-audit",
+          entries,
+          groups: groupConversationTimelineEntries(entries),
+          turnDiff: null,
+          emptyState: null,
+        }}
+      />
+    );
+  };
+  const expanded = (host: Element) =>
+    host.querySelector("[data-flow-run-card]")?.getAttribute("data-details-expanded");
+
+  try {
+    // Initial mounts (useState initializer): failure/stop keep detail open.
+    for (const [status, expectedState] of [
+      ["running", "true"],
+      ["failed", "true"],
+      ["stopped", "true"],
+      ["completed", "false"],
+    ] as const) {
+      const host = dom.window.document.createElement("div");
+      dom.window.document.body.appendChild(host);
+      const root = createRoot(host);
+      await React.act(async () => {
+        root.render(transcriptFor(status));
+      });
+      assert.equal(expanded(host), expectedState, `initial ${status}`);
+      await React.act(async () => {
+        root.unmount();
+      });
+      host.remove();
+    }
+
+    // Live transitions on one mounted card: completion collapses, failure
+    // does not (the moment per-member failure detail matters most).
+    const host = dom.window.document.createElement("div");
+    dom.window.document.body.appendChild(host);
+    const root = createRoot(host);
+    await React.act(async () => {
+      root.render(transcriptFor("running"));
+    });
+    await React.act(async () => {
+      root.render(transcriptFor("failed"));
+    });
+    assert.equal(expanded(host), "true", "running -> failed stays expanded");
+    await React.act(async () => {
+      root.render(transcriptFor("running"));
+    });
+    await React.act(async () => {
+      root.render(transcriptFor("completed"));
+    });
+    assert.equal(expanded(host), "false", "running -> completed collapses");
+    await React.act(async () => {
+      root.unmount();
+    });
+  } finally {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnv;
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+
+test("group copy text keeps peer-message bodies mixed with prose (audit fix)", () => {
+  const entries: ConversationTimelineEntry[] = [
+    {
+      id: "peer-send",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Agent", role: "assistant" },
+      blocks: [
+        {
+          type: "tool-call",
+          name: "send_message",
+          state: "complete",
+          peerTarget: "domain:network",
+          peerBody: "restart the collector",
+        } as never,
+      ],
+    },
+    {
+      id: "prose",
+      kind: "message",
+      variant: "plain",
+      identity: { id: "assistant", label: "Agent", role: "assistant" },
+      text: "Done — collector restarted.",
+    },
+  ];
+  const [group] = groupConversationTimelineEntries(entries);
+  assert.ok(group);
+  const copy = groupCopyText(group);
+  assert.ok(copy.includes("Done — collector restarted."));
+  assert.ok(
+    copy.includes("restart the collector"),
+    `peer body must copy with the group; got: ${copy}`,
+  );
+
+  // The #289 exclusion still holds for NON-peer tool chatter: a plain tool
+  // invocation renders "$ <name>" but must not copy with the response.
+  const withChatter: ConversationTimelineEntry[] = [
+    {
+      id: "tool-chatter",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "assistant", label: "Agent", role: "assistant" },
+      blocks: [{ type: "tool-call", name: "list_files", state: "complete" } as never],
+    },
+    entries[1]!,
+  ];
+  const [chatterGroup] = groupConversationTimelineEntries(withChatter);
+  assert.ok(chatterGroup);
+  const chatterCopy = groupCopyText(chatterGroup);
+  assert.ok(chatterCopy.includes("Done — collector restarted."));
+  assert.ok(
+    !chatterCopy.includes("list_files"),
+    `plain tool chatter must stay excluded from group copy; got: ${chatterCopy}`,
+  );
+});
+
+test("ConsoleSidebar rows expose content-derived accessible names (no aria-label narrowing)", () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>");
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+
+  const rootElement = dom.window.document.getElementById("root");
+  assert.ok(rootElement);
+  const root = createRoot(rootElement);
+  try {
+    const viewState = buildSidebarViewState({
+      selectedMemberId: "",
+      agents: [
+        {
+          agent_id: "identity:net",
+          member_id: "member-net",
+          label: "Network",
+          kind: "domain",
+          state: "active",
+          addressable: true,
+          progress: {
+            run_state: "run_open",
+            in_flight_work: 1,
+            last_progress_at_ms: 0,
+            last_progress_event: "unchanged",
+            health: "wedged",
+          },
+        } as ConsoleAgent,
+      ],
+    });
+    flushSync(() => {
+      root.render(<ConsoleSidebar viewState={viewState} />);
+    });
+    const row = dom.window.document.querySelector(".cc-sidebar-row");
+    assert.ok(row, "ConsoleSidebar must render the agent row");
+    // aria-label would REPLACE the content-derived accessible name and
+    // silence subtitle/badges/meta chips (incl. the member-health chip) for
+    // assistive tech — the row's own text must be the name source.
+    assert.equal(row.getAttribute("aria-label"), null);
+    assert.ok(
+      (row.textContent || "").includes("wedged"),
+      `health meta chip must be part of the row content; got: ${row.textContent}`,
+    );
+    assert.ok((row.textContent || "").includes("Network"));
+  } finally {
+    root.unmount();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    dom.window.close();
+  }
+});
+

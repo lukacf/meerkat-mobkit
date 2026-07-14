@@ -66,6 +66,10 @@
   /* Rams-orange member accent */
   --_cc-member-accent-default:     oklch(0.72 0.15 30);
   --_cc-member-accent:             var(--cc-member-accent, var(--_cc-member-accent-default));
+  /* Keyboard focus ring (rethemable via --cc-focus-ring; themes.css overrides
+     per variant). Consumed by the flow-card :focus-visible rules. */
+  --_cc-focus-ring-default:        oklch(0.72 0.12 250 / 0.72);
+  --_cc-focus-ring:                var(--cc-focus-ring, var(--_cc-focus-ring-default));
   --_cc-member-accent-soft-default: oklch(0.32 0.08 30);
   --_cc-member-accent-soft:        var(--cc-member-accent-soft, var(--_cc-member-accent-soft-default));
   --_cc-member-surface-default:    oklch(0.24 0.06 30);

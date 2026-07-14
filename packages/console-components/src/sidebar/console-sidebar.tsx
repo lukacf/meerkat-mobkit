@@ -408,7 +408,9 @@ function SidebarRow({
 
   return (
     <div
-      aria-label={item.title}
+      // No aria-label: per accname rules it would REPLACE the content-derived
+      // accessible name, silencing subtitle, unread badge, and meta chips
+      // (including the member-health chip) for screen readers.
       className={clsx(
         "cc-sidebar-row",
         "thread-row",

@@ -338,10 +338,10 @@ export function conversationMessageHasIntrinsicCopyAction(
   return Boolean(entry.blocks?.some((block) => conversationRichBlockHasCopyAction(block)));
 }
 
-function conversationGroupReconciliationAnchor(
+function conversationGroupSubstantiveEntries(
   entries: ConversationTimelineEntry[],
-): string | null {
-  const substantive = entries.filter((entry) => {
+): ConversationTimelineEntry[] {
+  return entries.filter((entry) => {
     if (entry.kind === "summary") {
       return true;
     }
@@ -351,21 +351,42 @@ function conversationGroupReconciliationAnchor(
     const blocks = entry.blocks || [];
     return !blocks.length || !blocks.every((block) => block.type === "tool-call");
   });
+}
+
+function conversationGroupReconciliationAnchor(
+  entries: ConversationTimelineEntry[],
+): string | null {
+  const substantive = conversationGroupSubstantiveEntries(entries);
   // A late peer tool can carry its own interaction/run id. It must not steal
   // the group key from the substantive response that was already mounted.
-  for (const entry of [...substantive, ...entries.filter((entry) => !substantive.includes(entry))]) {
+  const scanOrder = [...substantive, ...entries.filter((entry) => !substantive.includes(entry))];
+  // Strongest key ACROSS the group wins, not the first key in entry order: a
+  // host that stamps `groupReconciliationKey` only on the response entry must
+  // not have it shadowed by a provisional interactionId on an earlier
+  // thinking/summary entry (that provisional id changes when the durable twin
+  // lands, remounting the group the host keyed precisely to keep stable).
+  for (const entry of scanOrder) {
     const groupReconciliationKey = entry.groupReconciliationKey?.trim();
     if (groupReconciliationKey) {
       return `group-reconciliation-${groupReconciliationKey}`;
     }
+  }
+  for (const entry of scanOrder) {
     const reconciliationKey = entry.reconciliationKey?.trim();
     if (reconciliationKey) {
       return `reconciliation-${reconciliationKey}`;
     }
+  }
+  // interaction/run anchors are read from SUBSTANTIVE entries only: a
+  // tool-call/meta entry carrying its own interaction id (a late peer tool)
+  // joining an otherwise keyless group must not re-key it.
+  for (const entry of substantive) {
     const interactionId = entry.interactionId?.trim();
     if (interactionId) {
       return `interaction-${interactionId}`;
     }
+  }
+  for (const entry of substantive) {
     if (entry.kind === "message") {
       const runId = entry.runId?.trim();
       if (runId) {
@@ -382,7 +403,6 @@ export function groupConversationTimelineEntries(
   const groups: ConversationTimelineGroup[] = [];
   const turnAnchorsByGroup: string[] = [];
   let turnAnchor = "conversation-start";
-  const groupOrdinalsByIdentity = new Map<string, number>();
 
   for (const entry of entries) {
     const current = groups.at(-1);
@@ -392,15 +412,19 @@ export function groupConversationTimelineEntries(
         // A turn is the durable reconciliation boundary. Entries can arrive
         // late or move ahead of an already-rendered assistant response (peer
         // tool traffic is a common example), so a group cannot be keyed from
-        // whichever entry happens to be first on this render.
-        turnAnchor = entry.id;
-        groupOrdinalsByIdentity.clear();
+        // whichever entry happens to be first on this render. Prefer the
+        // host's reconciliation key: a provisional user entry whose id swaps
+        // at the durable pass must not re-key every group in its turn.
+        turnAnchor =
+          entry.groupReconciliationKey?.trim()
+          || entry.reconciliationKey?.trim()
+          || entry.id;
       }
-      const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
-      groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
       turnAnchorsByGroup.push(turnAnchor);
       groups.push({
-        id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
+        // Placeholder id; every group is re-keyed in the post-pass once its
+        // entry list is complete.
+        id: `${turnAnchor}-group-${identityKey}-entry-${entry.id}`,
         identity: entry.identity,
         entries: [entry],
         copyText: conversationEntryText(entry),
@@ -413,19 +437,45 @@ export function groupConversationTimelineEntries(
     current.copyText = [current.copyText, nextCopyText].filter(Boolean).join("\n\n");
   }
 
+  // A live response and its durable twin carry the same interaction/run
+  // identity even when a late peer tool creates another assistant group
+  // earlier in the turn. Prefer that source identity over the first-entry
+  // fallback. Anchored ids are NOT guaranteed unique (two same-identity
+  // groups split by an interleaved entry can share the turn's interaction
+  // id when the host sets no reconciliationKey), and React keys must be:
+  // suffix repeat occurrences deterministically by document order — the
+  // first occurrence keeps the unsuffixed id, so the common single-group
+  // case stays stable across live/durable passes.
+  const seenIds = new Set<string>();
   return groups.map((group, index) => {
-    // A live response and its durable twin carry the same interaction/run
-    // identity even when a late peer tool creates another assistant group
-    // earlier in the turn. Prefer that source identity over the positional
-    // ordinal; the ordinal remains the compatibility fallback for entries
-    // without a reconciliation identity.
     const reconciliationAnchor = conversationGroupReconciliationAnchor(group.entries);
-    if (!reconciliationAnchor) {
-      return group;
+    // Fallback: the first SUBSTANTIVE entry's id — structurally unique,
+    // immune to late-inserted sibling groups (a positional ordinal shifts
+    // every later keyless group's id; in user-less conversations an ordinal
+    // sequence never resets), and stable when a tool-call/meta entry is
+    // prepended into the group (the late-peer-tool case). Known limitation:
+    // a group that STARTS with only tool-call entries re-keys once when its
+    // first substantive entry arrives, and a fully keyless group re-keys
+    // once if a keyed terminal entry later joins — hosts wanting stability
+    // through those transitions should supply reconciliation keys (or
+    // interaction ids from the first frame, as the bundled adapter does).
+    const anchorEntry = conversationGroupSubstantiveEntries(group.entries)[0] || group.entries[0];
+    const base = reconciliationAnchor
+      ? `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`
+      : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.id}`;
+    let id = base;
+    // React keys must be unique. Same-anchor twins keep the unsuffixed id on
+    // the FIRST occurrence — the common single-group case stays stable across
+    // live/durable passes — and later twins get a suffix keyed by their own
+    // anchor entry (position-independent, so a reordered twin keeps its
+    // suffix instead of stealing a sibling's). The loop also guards anchors
+    // that literally collide with a previously-issued suffixed id.
+    let discriminator = anchorEntry.id;
+    while (seenIds.has(id)) {
+      id = `${base}-dup-${discriminator}`;
+      discriminator = `${discriminator}x`;
     }
-    return {
-      ...group,
-      id: `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`,
-    };
+    seenIds.add(id);
+    return { ...group, id };
   });
 }

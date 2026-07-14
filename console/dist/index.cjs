@@ -421,8 +421,8 @@ var HIDDEN_PEER_DISPLAY_INTENTS = /* @__PURE__ */ new Set([
 ]);
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var MACHINE_PEER_TOKEN_RE = /^peer[-_](?!(?:message|request|response)$)[a-z0-9][a-z0-9_-]*$/i;
-var MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*$/i;
-var EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*\b/gi;
+var MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)(?![a-z0-9_-]))[a-z0-9][a-z0-9_-]*$/i;
+var EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)(?![a-z0-9_-]))[a-z0-9][a-z0-9_-]*\b/gi;
 var EMBEDDED_PEER_ACK_TOKEN_RE = /\bACK_?FROM_?PEER_?peer[-_][a-z0-9][a-z0-9_-]*\b/gi;
 var EMBEDDED_PEER_RESPONSE_TOKEN_RE = /\bpeer[-_]merge[-_][a-z0-9][a-z0-9_-]*\b/gi;
 var LEGACY_INLINE_CODE_PLACEHOLDER_RE = /@@CODE\d+@@/g;
@@ -808,15 +808,24 @@ function parseConversationRichBlocks(content, options) {
   return compactConversationBlocks(blocks);
 }
 var PARAGRAPH_BREAK_SENTINEL = "\uE000CCPARAGRAPHBREAK\uE001";
+var PARAGRAPH_BREAK_SENTINEL_ESCAPED = PARAGRAPH_BREAK_SENTINEL.replace(
+  /[.*+?^${}()|[\]\\]/gu,
+  "\\$&"
+);
+var PARAGRAPH_BREAK_SENTINEL_RUN = new RegExp(
+  `[ \\t]*(?:${PARAGRAPH_BREAK_SENTINEL_ESCAPED}[ \\t]*(?:\\r?\\n)?[ \\t]*)+`,
+  "gu"
+);
 function normalizeConversationTextForParsing(fragment) {
-  const protectedFragment = String(fragment || "").replace(
+  const raw = String(fragment || "").replace(PARAGRAPH_BREAK_SENTINEL_RUN, " ");
+  const protectedFragment = raw.replace(
     /\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/gu,
     `
 ${PARAGRAPH_BREAK_SENTINEL}
 `
   );
   return normalizeConversationDisplayText(protectedFragment).replace(
-    new RegExp(`(?:^|\\n)${PARAGRAPH_BREAK_SENTINEL}(?:\\n|$)`, "gu"),
+    PARAGRAPH_BREAK_SENTINEL_RUN,
     "\n\n"
   );
 }
@@ -1107,8 +1116,8 @@ function conversationEntryText(entry) {
   }
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
 }
-function conversationGroupReconciliationAnchor(entries) {
-  const substantive = entries.filter((entry) => {
+function conversationGroupSubstantiveEntries(entries) {
+  return entries.filter((entry) => {
     if (entry.kind === "summary") {
       return true;
     }
@@ -1118,19 +1127,29 @@ function conversationGroupReconciliationAnchor(entries) {
     const blocks = entry.blocks || [];
     return !blocks.length || !blocks.every((block) => block.type === "tool-call");
   });
-  for (const entry of [...substantive, ...entries.filter((entry2) => !substantive.includes(entry2))]) {
+}
+function conversationGroupReconciliationAnchor(entries) {
+  const substantive = conversationGroupSubstantiveEntries(entries);
+  const scanOrder = [...substantive, ...entries.filter((entry) => !substantive.includes(entry))];
+  for (const entry of scanOrder) {
     const groupReconciliationKey = entry.groupReconciliationKey?.trim();
     if (groupReconciliationKey) {
       return `group-reconciliation-${groupReconciliationKey}`;
     }
+  }
+  for (const entry of scanOrder) {
     const reconciliationKey = entry.reconciliationKey?.trim();
     if (reconciliationKey) {
       return `reconciliation-${reconciliationKey}`;
     }
+  }
+  for (const entry of substantive) {
     const interactionId = entry.interactionId?.trim();
     if (interactionId) {
       return `interaction-${interactionId}`;
     }
+  }
+  for (const entry of substantive) {
     if (entry.kind === "message") {
       const runId = entry.runId?.trim();
       if (runId) {
@@ -1144,20 +1163,18 @@ function groupConversationTimelineEntries(entries) {
   const groups = [];
   const turnAnchorsByGroup = [];
   let turnAnchor = "conversation-start";
-  const groupOrdinalsByIdentity = /* @__PURE__ */ new Map();
   for (const entry of entries) {
     const current = groups.at(-1);
     const identityKey = conversationIdentityGroupKey(entry.identity);
     if (!current || conversationIdentityGroupKey(current.identity) !== identityKey) {
       if (conversationIdentityPresentation(entry.identity) === "user") {
-        turnAnchor = entry.id;
-        groupOrdinalsByIdentity.clear();
+        turnAnchor = entry.groupReconciliationKey?.trim() || entry.reconciliationKey?.trim() || entry.id;
       }
-      const groupOrdinal = groupOrdinalsByIdentity.get(identityKey) || 0;
-      groupOrdinalsByIdentity.set(identityKey, groupOrdinal + 1);
       turnAnchorsByGroup.push(turnAnchor);
       groups.push({
-        id: `${turnAnchor}-group-${identityKey}-${groupOrdinal}`,
+        // Placeholder id; every group is re-keyed in the post-pass once its
+        // entry list is complete.
+        id: `${turnAnchor}-group-${identityKey}-entry-${entry.id}`,
         identity: entry.identity,
         entries: [entry],
         copyText: conversationEntryText(entry)
@@ -1168,15 +1185,19 @@ function groupConversationTimelineEntries(entries) {
     const nextCopyText = conversationEntryText(entry);
     current.copyText = [current.copyText, nextCopyText].filter(Boolean).join("\n\n");
   }
+  const seenIds = /* @__PURE__ */ new Set();
   return groups.map((group, index) => {
     const reconciliationAnchor = conversationGroupReconciliationAnchor(group.entries);
-    if (!reconciliationAnchor) {
-      return group;
+    const anchorEntry = conversationGroupSubstantiveEntries(group.entries)[0] || group.entries[0];
+    const base = reconciliationAnchor ? `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}` : `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-entry-${anchorEntry.id}`;
+    let id = base;
+    let discriminator = anchorEntry.id;
+    while (seenIds.has(id)) {
+      id = `${base}-dup-${discriminator}`;
+      discriminator = `${discriminator}x`;
     }
-    return {
-      ...group,
-      id: `${turnAnchorsByGroup[index] || "conversation-start"}-group-${conversationIdentityGroupKey(group.identity)}-${reconciliationAnchor}`
-    };
+    seenIds.add(id);
+    return { ...group, id };
   });
 }
 
@@ -6868,6 +6889,10 @@ function mapFramesToTimelineEntries2(agent, frames, options = {}) {
       id: pendingReasoningId,
       identity: agentIdentity(agent),
       variant: "rich",
+      // Reconciliation identity from the first frame: a group keyed only at
+      // finalization flips its id when the terminal entry joins, remounting
+      // the live response group (the #282/#283 failure mode).
+      ...pendingReasoningInteractionId ? { interactionId: pendingReasoningInteractionId } : {},
       ...pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {},
       blocks: [thinkingBlock]
     });
@@ -6904,6 +6929,8 @@ ${text.trimStart()}`;
       id: pendingId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      // Reconciliation identity from the first frame (see flushPendingReasoning).
+      ...streamedInteractionId ? { interactionId: streamedInteractionId } : {},
       ...pendingCreatedAt ? { createdAt: pendingCreatedAt } : {},
       ...blocks.length > 0 ? { blocks } : { text: pendingText }
     });

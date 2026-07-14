@@ -308,6 +308,11 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-message-group__actions {
   display: flex;
   align-items: center;
+}
+/* Sizing lives on the button, not the row: an embedder hiding
+   .cc-message-group__copy (the pre-#289 overlay contract) must collapse the
+   row instead of keeping an empty reserved band under every group. */
+.cc-message-group__actions .cc-message-group__copy {
   min-height: 24px;
   margin-top: 5px;
 }
@@ -1662,7 +1667,7 @@ span.cc-conversation-turn-preview__file-icon::after {
 .cc-flow-run__disclosure:focus-visible,
 .cc-flow-run__restore:focus-visible,
 .cc-flow-run__member-message:focus-visible {
-  outline: 2px solid var(--_cc-focus-ring, rgba(120, 170, 255, 0.72));
+  outline: 2px solid var(--_cc-focus-ring);
   outline-offset: 2px;
 }
 .cc-flow-run__details[hidden] {
@@ -1811,7 +1816,7 @@ span.cc-conversation-turn-preview__file-icon::after {
   scrollbar-gutter: stable;
 }
 .cc-flow-run__member-detail:focus-visible {
-  outline: 2px solid var(--_cc-focus-ring, rgba(120, 170, 255, 0.72));
+  outline: 2px solid var(--_cc-focus-ring);
   outline-offset: -2px;
 }
 .cc-flow-run__outcome {
