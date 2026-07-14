@@ -278,6 +278,22 @@ fn mobkit_gateway_emits_tracing_on_stderr() {
     writeln!(stdin, "{}", serde_json::to_string(&init).unwrap()).expect("write init");
     stdin.flush().expect("flush");
 
+    // Drain stderr CONCURRENTLY from spawn. Leaving the pipe unread until
+    // after init deadlocks under kernel pipe-buffer pressure: when the
+    // machine-wide pipe pool is exhausted (macOS degrades fresh pipes to
+    // 512-byte buffers; observed with ~1.5k pipes leaked by a co-located
+    // agent), the gateway's ~576 bytes of bootstrap tracing overflow the
+    // buffer and its 4th stderr write blocks BEFORE the init response is
+    // printed — the test then times out on stdout with an almost-empty pipe.
+    let stderr_pipe = child.stderr.take().expect("stderr");
+    let stderr_drain = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        use std::io::Read;
+        let mut reader = stderr_pipe;
+        let _ = reader.read_to_end(&mut buffer);
+        buffer
+    });
+
     // Wait for the init response so bootstrap tracing has happened.
     let stdout = child.stdout.take().expect("stdout");
     let (tx, rx) = mpsc::channel();
@@ -293,8 +309,9 @@ fn mobkit_gateway_emits_tracing_on_stderr() {
 
     let _ = stdin;
     let _ = child.kill();
-    let output = child.wait_with_output().expect("gateway output");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let _ = child.wait().expect("gateway exit");
+    let stderr_bytes = stderr_drain.join().expect("stderr drain thread");
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     assert!(
         stderr.contains("INFO") || stderr.contains("WARN"),
         "mobkit_gateway must emit tracing on stderr (RUST_LOG=info); \
