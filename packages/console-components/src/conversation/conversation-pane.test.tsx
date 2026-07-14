@@ -3,6 +3,7 @@ import { vi } from "vitest";
 
 import {
   groupConversationTimelineEntries,
+  type ConversationFlowRunEntry,
   type ConversationTimelineEntry,
   type ConversationViewState,
 } from "@console-core";
@@ -14,6 +15,53 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationPane", () => {
+  test("restores the specific flow-run card that was clicked", () => {
+    const releaseCrew: ConversationFlowRunEntry = {
+      id: "flow-run:release-crew",
+      kind: "flow_run",
+      identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+      helperId: "helper-release",
+      flowName: "Release crew",
+      status: "stopped",
+      restorable: true,
+      rows: [],
+    };
+    const reviewCrew: ConversationFlowRunEntry = {
+      id: "flow-run:review-crew",
+      kind: "flow_run",
+      identity: { id: "coordinator", label: "Coordinator", role: "assistant" },
+      helperId: "helper-review",
+      flowName: "Review crew",
+      status: "stopped",
+      restorable: true,
+      rows: [],
+    };
+    const entries: ConversationTimelineEntry[] = [releaseCrew, reviewCrew];
+    const onFlowRunRestore = vi.fn();
+
+    render(
+      <ConversationPane
+        onFlowRunRestore={onFlowRunRestore}
+        viewState={{
+          conversationId: "thread-restorable-crews",
+          entries,
+          groups: groupConversationTimelineEntries(entries),
+          turnDiff: null,
+          emptyState: null,
+        }}
+      />,
+    );
+
+    const restoreButtons = screen.getAllByRole("button", { name: "Resume" });
+    expect(restoreButtons).toHaveLength(2);
+
+    fireEvent.click(restoreButtons[0]);
+    fireEvent.click(restoreButtons[1]);
+
+    expect(onFlowRunRestore).toHaveBeenNthCalledWith(1, "helper-release", releaseCrew);
+    expect(onFlowRunRestore).toHaveBeenNthCalledWith(2, "helper-review", reviewCrew);
+  });
+
   test("falls back to the empty state when turn diffs cannot be rendered", () => {
     const viewState: ConversationViewState = {
       conversationId: "thread-1",

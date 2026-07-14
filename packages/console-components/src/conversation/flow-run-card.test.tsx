@@ -135,7 +135,9 @@ describe("FlowRunCard", () => {
   });
 
   test("keeps Resume available on a compact restorable card without exposing Message", () => {
-    const onRestore = vi.fn();
+    // A legacy no-argument callback remains assignable; JavaScript safely
+    // ignores the new helper and entry arguments supplied by FlowRunCard.
+    const onRestore: () => void = vi.fn();
     const onMessageMember = vi.fn();
     render(
       <FlowRunCard

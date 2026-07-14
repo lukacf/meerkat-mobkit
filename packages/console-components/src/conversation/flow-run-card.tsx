@@ -11,6 +11,11 @@ import { ConversationRichContent } from "./conversation-rich-content";
 import { ConversationTranscript } from "./conversation-transcript";
 import type { IconRenderer } from "../shared";
 
+export type FlowRunRestoreHandler = (
+  helperId: string | null,
+  entry: ConversationFlowRunEntry,
+) => void;
+
 const STATUS_LABEL: Record<FlowRunStatus, string> = {
   idle: "Idle",
   queued: "Queued",
@@ -118,7 +123,7 @@ export function FlowRunCard({
   entry: ConversationFlowRunEntry;
   Icon?: IconRenderer | null;
   onMessageMember?: ((memberKey: string) => void) | null;
-  onRestore?: (() => void) | null;
+  onRestore?: FlowRunRestoreHandler | null;
 }) {
   // Message targeting needs a live member behind the row; paused (restorable)
   // crews only carry persisted job history, so the affordance is Resume.
@@ -161,7 +166,7 @@ export function FlowRunCard({
             title="Resume this crew's helpers"
             onClick={(event) => {
               event.stopPropagation();
-              onRestore();
+              onRestore(entry.helperId || null, entry);
             }}
           >
             Resume

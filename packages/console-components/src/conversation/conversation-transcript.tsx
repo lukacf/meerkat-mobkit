@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { ConversationViewState } from "@console-core";
 
 import { ConversationMessageGroup } from "./conversation-message-group";
+import type { FlowRunRestoreHandler } from "./flow-run-card";
 import type { WorkGraphCardActions } from "./work-graph-card";
 import { groupConversationTranscriptTurns } from "./conversation-turns";
 import { TurnDiffCard } from "./turn-diff-card";
@@ -18,7 +19,7 @@ export type ConversationTranscriptProps = {
   Icon?: IconRenderer | null;
   className?: string;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
-  onFlowRunRestore?: (() => void) | null;
+  onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
 };
 
