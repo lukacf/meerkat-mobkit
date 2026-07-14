@@ -4,7 +4,7 @@ import {
   conversationEntryText,
   conversationIdentityPresentation,
   conversationIdentityShowsLabel,
-  conversationMessageHasIntrinsicCopyAction,
+  conversationRichBlockHasCopyAction,
   type ConversationTimelineGroup,
 } from "@console-core";
 
@@ -35,7 +35,26 @@ function initialsForIdentity(group: ConversationTimelineGroup): string {
 }
 
 function groupHasNestedCopyButton(group: ConversationTimelineGroup): boolean {
-  return group.entries.some((entry) => conversationMessageHasIntrinsicCopyAction(entry));
+  return group.entries.length > 0 && group.entries.every((entry) => (
+    entry.kind === "message"
+    && entry.variant === "rich"
+    && Boolean(entry.blocks?.length)
+    && entry.blocks?.every((block) => conversationRichBlockHasCopyAction(block))
+  ));
+}
+
+function groupCopyText(group: ConversationTimelineGroup): string {
+  const substantiveEntries = group.entries.filter((entry) => !(
+    entry.kind === "message"
+    && entry.variant === "rich"
+    && entry.blocks?.length
+    && entry.blocks.every((block) => block.type === "tool-call")
+  ));
+  const copyEntries = substantiveEntries.length ? substantiveEntries : group.entries;
+  if (copyEntries.length === group.entries.length && group.copyText) {
+    return group.copyText;
+  }
+  return copyEntries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
 }
 
 type ConversationMessageGroupProps = {
@@ -76,8 +95,7 @@ export function ConversationMessageGroup({
     );
   }
 
-  const copyText = group.copyText
-    || group.entries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
+  const copyText = groupCopyText(group);
   const showGroupCopy = !compact && !groupHasNestedCopyButton(group);
   const showIdentity = conversationIdentityShowsLabel(group.identity);
 
@@ -100,15 +118,6 @@ export function ConversationMessageGroup({
           </span>
         </div>
       ) : null}
-      {showGroupCopy ? (
-        <CopyButton
-          className="cc-message-group__copy"
-          copiedLabel="Copied response"
-          Icon={Icon}
-          label="Copy response"
-          text={copyText}
-        />
-      ) : null}
       <div className="cc-message-group__body">
         {group.entries.map((entry) => (
           <ConversationMessageView
@@ -122,6 +131,17 @@ export function ConversationMessageGroup({
           />
         ))}
       </div>
+      {showGroupCopy ? (
+        <div className="cc-message-group__actions">
+          <CopyButton
+            className="cc-message-group__copy"
+            copiedLabel="Copied response"
+            Icon={Icon}
+            label="Copy response"
+            text={copyText}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }

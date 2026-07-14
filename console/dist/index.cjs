@@ -420,9 +420,9 @@ var HIDDEN_PEER_DISPLAY_INTENTS = /* @__PURE__ */ new Set([
   "peer"
 ]);
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-var MACHINE_PEER_TOKEN_RE = /^peer[-_][a-z0-9][a-z0-9_-]*$/i;
-var MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_][a-z0-9][a-z0-9_-]*$/i;
-var EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_][a-z0-9][a-z0-9_-]*\b/gi;
+var MACHINE_PEER_TOKEN_RE = /^peer[-_](?!(?:message|request|response)$)[a-z0-9][a-z0-9_-]*$/i;
+var MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*$/i;
+var EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*\b/gi;
 var EMBEDDED_PEER_ACK_TOKEN_RE = /\bACK_?FROM_?PEER_?peer[-_][a-z0-9][a-z0-9_-]*\b/gi;
 var EMBEDDED_PEER_RESPONSE_TOKEN_RE = /\bpeer[-_]merge[-_][a-z0-9][a-z0-9_-]*\b/gi;
 var LEGACY_INLINE_CODE_PLACEHOLDER_RE = /@@CODE\d+@@/g;
