@@ -9,6 +9,7 @@ import {
 } from "@console-core";
 
 import { ConversationMessageView } from "./conversation-message-view";
+import type { FlowRunRestoreHandler } from "./flow-run-card";
 import type { WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
 import { toneStyle, type IconRenderer } from "../shared";
@@ -42,7 +43,7 @@ type ConversationMessageGroupProps = {
   compact?: boolean;
   Icon?: IconRenderer | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
-  onFlowRunRestore?: (() => void) | null;
+  onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
 };
 

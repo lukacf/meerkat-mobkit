@@ -8,7 +8,7 @@ import {
 } from "@console-core";
 
 import { ConversationRichContent } from "./conversation-rich-content";
-import { FlowRunCard } from "./flow-run-card";
+import { FlowRunCard, type FlowRunRestoreHandler } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
 import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
 import { CopyButton } from "../copy-button";
@@ -38,7 +38,7 @@ type ConversationMessageViewProps = {
   compact?: boolean;
   Icon?: IconRenderer | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
-  onFlowRunRestore?: (() => void) | null;
+  onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
 };
 

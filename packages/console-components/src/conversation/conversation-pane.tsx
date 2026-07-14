@@ -12,6 +12,7 @@ import type { ConversationViewState } from "@console-core";
 
 import { ConversationEmptyState } from "./conversation-empty-state";
 import { ConversationTranscript } from "./conversation-transcript";
+import type { FlowRunRestoreHandler } from "./flow-run-card";
 import type { WorkGraphCardActions } from "./work-graph-card";
 import {
   conversationTurnPreview,
@@ -33,7 +34,7 @@ export type ConversationPaneProps = {
   onApplySuggestion?: (value: string) => void;
   onToggleDiffFile?: ((filePath: string) => void) | null;
   onFlowRunMessageMember?: ((memberKey: string) => void) | null;
-  onFlowRunRestore?: (() => void) | null;
+  onFlowRunRestore?: FlowRunRestoreHandler | null;
   workGraphActions?: WorkGraphCardActions | null;
   // The jump-to-turn rail on the pane's edge. Default true (the MobKit
   // console ships it); meerkat-studio opts out until it adopts the rail
