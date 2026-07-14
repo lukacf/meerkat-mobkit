@@ -4377,6 +4377,10 @@ export function mapFramesToTimelineEntries(
       id: pendingReasoningId,
       identity: agentIdentity(agent),
       variant: "rich",
+      // Reconciliation identity from the first frame: a group keyed only at
+      // finalization flips its id when the terminal entry joins, remounting
+      // the live response group (the #282/#283 failure mode).
+      ...(pendingReasoningInteractionId ? { interactionId: pendingReasoningInteractionId } : {}),
       ...(pendingReasoningCreatedAt ? { createdAt: pendingReasoningCreatedAt } : {}),
       blocks: [thinkingBlock],
     });
@@ -4415,6 +4419,8 @@ export function mapFramesToTimelineEntries(
       id: pendingId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      // Reconciliation identity from the first frame (see flushPendingReasoning).
+      ...(streamedInteractionId ? { interactionId: streamedInteractionId } : {}),
       ...(pendingCreatedAt ? { createdAt: pendingCreatedAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text: pendingText }),
     });

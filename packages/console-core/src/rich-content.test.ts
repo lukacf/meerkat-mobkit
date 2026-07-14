@@ -1,3 +1,4 @@
+import { describe, expect, test } from "./test-support/vitest-shim";
 import assert from "node:assert/strict";
 
 import {
@@ -12,6 +13,7 @@ import {
   parseStreamingConversationRichBlocks,
   renderConversationInlineMarkdown,
   safeConsoleHref,
+  normalizeConversationDisplayText,
 } from "./rich-content";
 
 describe("inline markdown", () => {
@@ -407,5 +409,40 @@ describe("splitMixedProseSection via parseConversationRichBlocks", () => {
   test("list markers in mixed sections render as bullets", () => {
     const blocks = parseConversationRichBlocks("## Plan\n- first\n- second");
     expect(blocks[1]).toMatchObject({ type: "paragraph", text: "\u2022 first\n\u2022 second" });
+  });
+});
+
+describe("display-normalization sentinel (PRs #281-#290 audit regressions)", () => {
+  test("a markdown rule between paragraphs never leaks sentinel text", () => {
+    const blocks = parseConversationRichBlocks("para one\n\n---\n\npara two");
+    const rendered = JSON.stringify(blocks);
+    expect(rendered).not.toContain("CCPARAGRAPHBREAK");
+    expect(rendered).toContain("para one");
+    expect(rendered).toContain("para two");
+  });
+
+  test("a punctuation-only line between paragraphs never leaks sentinel text", () => {
+    const blocks = parseConversationRichBlocks("intro\n\n...\n\ndetails");
+    expect(JSON.stringify(blocks)).not.toContain("CCPARAGRAPHBREAK");
+  });
+
+  test("content literally containing the private-use sentinel cannot forge breaks", () => {
+    const blocks = parseConversationRichBlocks("safe \uE000CCPARAGRAPHBREAK\uE001 text");
+    const rendered = JSON.stringify(blocks);
+    expect(rendered).not.toContain("\uE000");
+    expect(rendered).toContain("safe");
+    expect(rendered).toContain("text");
+  });
+});
+
+describe("machine peer-token boundary (audit regression)", () => {
+  test("generated tokens continuing a kind word are still scrubbed", () => {
+    const scrubbed = normalizeConversationDisplayText("routed via peer_response-1a2b just now");
+    expect(scrubbed).not.toContain("peer_response-1a2b");
+  });
+
+  test("the public kind words survive in prose", () => {
+    const scrubbed = normalizeConversationDisplayText("use peer_message to reach a member");
+    expect(scrubbed).toContain("peer_message");
   });
 });

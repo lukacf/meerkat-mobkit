@@ -104,6 +104,7 @@
 .cc-theme-scope[data-cc-variant="terminal"][data-cc-theme="dark"] {
   color-scheme: dark;
 
+  --_cc-focus-ring-default:          rgba(126, 231, 135, 0.85);
   --_cc-foreground-strong-default:   #e6ebef;
   --_cc-foreground-default:          #c9d1d9;
   --_cc-foreground-muted-default:    #8b949e;
@@ -145,6 +146,7 @@
 .cc-theme-scope[data-cc-variant="terminal"][data-cc-theme="light"] {
   color-scheme: light;
 
+  --_cc-focus-ring-default:          rgba(20, 110, 45, 0.85);
   --_cc-foreground-strong-default:   #0a0a0a;
   --_cc-foreground-default:          #1a1a1a;
   --_cc-foreground-muted-default:    #555;

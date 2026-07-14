@@ -132,8 +132,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // prose (including inline code) while continuing to hide generated tokens such
 // as `peer-merge-123` and `peer_some-runtime-id`.
 const MACHINE_PEER_TOKEN_RE = /^peer[-_](?!(?:message|request|response)$)[a-z0-9][a-z0-9_-]*$/i;
-const MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*$/i;
-const EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)\b)[a-z0-9][a-z0-9_-]*\b/gi;
+// The kind-word exemption must require the token to END after the kind word
+// ([-_a-z0-9] continues the token): `\b` alone exempts generated tokens like
+// `peer_response-1a2b`, leaking them into prose.
+const MACHINE_PEER_TOKEN_SUFFIX_RE = /\s+peer[-_](?!(?:message|request|response)(?![a-z0-9_-]))[a-z0-9][a-z0-9_-]*$/i;
+const EMBEDDED_MACHINE_PEER_TOKEN_RE = /\bpeer[-_](?!(?:message|request|response)(?![a-z0-9_-]))[a-z0-9][a-z0-9_-]*\b/gi;
 const EMBEDDED_PEER_ACK_TOKEN_RE = /\bACK_?FROM_?PEER_?peer[-_][a-z0-9][a-z0-9_-]*\b/gi;
 const EMBEDDED_PEER_RESPONSE_TOKEN_RE = /\bpeer[-_]merge[-_][a-z0-9][a-z0-9_-]*\b/gi;
 const LEGACY_INLINE_CODE_PLACEHOLDER_RE = /@@CODE\d+@@/g;
@@ -754,14 +757,31 @@ export function parseConversationRichBlocks(
 // block topology and destroys the live tail node. Protect paragraph breaks
 // while the full-message normalizers run, then restore them before splitting.
 const PARAGRAPH_BREAK_SENTINEL = "\uE000CCPARAGRAPHBREAK\uE001";
+const PARAGRAPH_BREAK_SENTINEL_ESCAPED = PARAGRAPH_BREAK_SENTINEL.replace(
+  /[.*+?^${}()|[\]\\]/gu,
+  "\\$&",
+);
+// Restore matches RUNS of sentinels with any whitespace/newlines between:
+// the display normalizers can delete an entire line separating two breaks
+// (a markdown `---` rule, a punctuation-only line, a machine-token-only
+// line), leaving sentinels adjacent — a newline-anchored single-sentinel
+// pattern consumes the shared newline on the first match and leaks the
+// literal sentinel text into the rendered paragraph.
+const PARAGRAPH_BREAK_SENTINEL_RUN = new RegExp(
+  `[ \\t]*(?:${PARAGRAPH_BREAK_SENTINEL_ESCAPED}[ \\t]*(?:\\r?\\n)?[ \\t]*)+`,
+  "gu",
+);
 
 function normalizeConversationTextForParsing(fragment: string): string {
-  const protectedFragment = String(fragment || "").replace(
+  // Content that literally contains the private-use sentinel (adversarial or
+  // binary-ish text) must not forge paragraph breaks or corrupt restoration.
+  const raw = String(fragment || "").replace(PARAGRAPH_BREAK_SENTINEL_RUN, " ");
+  const protectedFragment = raw.replace(
     /\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*/gu,
     `\n${PARAGRAPH_BREAK_SENTINEL}\n`,
   );
   return normalizeConversationDisplayText(protectedFragment).replace(
-    new RegExp(`(?:^|\\n)${PARAGRAPH_BREAK_SENTINEL}(?:\\n|$)`, "gu"),
+    PARAGRAPH_BREAK_SENTINEL_RUN,
     "\n\n",
   );
 }

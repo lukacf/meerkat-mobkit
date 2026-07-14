@@ -43,12 +43,25 @@ function groupHasNestedCopyButton(group: ConversationTimelineGroup): boolean {
   ));
 }
 
-function groupCopyText(group: ConversationTimelineGroup): string {
+// Exported for unit tests (not re-exported from the package index).
+export function groupCopyText(group: ConversationTimelineGroup): string {
+  // Tool-call-only entries are excluded from "Copy response" (the #289
+  // tool-chatter exclusion) UNLESS they carry peer conversation: peer
+  // send_message/send_request cards are tool-call blocks whose bodies are
+  // legitimate displayed conversational content and must copy with the group
+  // (suppressing peer traffic content is a repo anti-goal). A text-emptiness
+  // probe cannot make this distinction — plain tool calls always render
+  // "$ <name>".
   const substantiveEntries = group.entries.filter((entry) => !(
     entry.kind === "message"
     && entry.variant === "rich"
     && entry.blocks?.length
     && entry.blocks.every((block) => block.type === "tool-call")
+    && !entry.blocks.some(
+      (block) =>
+        block.type === "tool-call"
+        && (block.peerBody?.trim() || block.peerTarget?.trim() || block.peerIncoming),
+    )
   ));
   const copyEntries = substantiveEntries.length ? substantiveEntries : group.entries;
   if (copyEntries.length === group.entries.length && group.copyText) {
