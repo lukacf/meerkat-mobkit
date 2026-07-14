@@ -1131,4 +1131,3 @@ test("ConsoleSidebar rows expose content-derived accessible names (no aria-label
     dom.window.close();
   }
 });
-
