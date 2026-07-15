@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.39] - 2026-07-15
+
 ### Added
 
 - Optional topology control plane, disabled by default: authorized operators
@@ -18,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   JSON-RPC surface fails cross-process mutation closed. The stock MobKit
   console gains a capability-gated Connections picker with pairwise actions
   and no implicit bulk-connect behavior.
+
+### Changed
+
+- The stock console now groups sidebar items semantically, keeps completed
+  flow cards compact, targets flow restoration to the selected run, and gives
+  long conversation tails their own scrollable region.
+
+### Fixed
+
+- Stabilized streamed conversation reconciliation: rich-content nodes retain
+  their identity, conversation groups stay mounted, and group/message updates
+  no longer replace or overwrite the active streaming tail.
+- Restored canonical peer labels and transcript copy actions, and tightened
+  activity-preview copy-action spacing across the shared console components.
+- Hardened gateway test process draining and the stock Incident Commander
+  acceptance path, including durable editable-topology state, replay-safe test
+  sessions, and cold Cargo-lane fixture discovery.
 
 ## [0.7.38] - 2026-07-13
 
