@@ -536,19 +536,24 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   suggestTargets,
 }: BuildConsoleDockPresetStateOptions<TTarget>): ConsoleDockPresetState<TTarget> {
   const requestedCount = presetId === "grid" ? 4 : presetId === "single" ? 1 : 2;
-  const [firstTarget, ...remainingTargets] = suggestDockTargets({
-    count: requestedCount,
-    preferred: preferredTarget,
-    excludedIds: [],
-    suggestTargets,
-  });
+  const reservedPrimaryTarget = preferredTarget ?? preferredPanel?.target ?? null;
+  const suggestionCount = requestedCount - (reservedPrimaryTarget ? 1 : 0);
+  const suggestedTargets = suggestionCount > 0
+    ? suggestDockTargets({
+      count: suggestionCount,
+      preferred: reservedPrimaryTarget ? null : preferredTarget,
+      excludedIds: reservedPrimaryTarget ? [reservedPrimaryTarget.id] : [],
+      suggestTargets,
+    })
+    : [];
+  const [firstTarget, ...remainingTargets] = reservedPrimaryTarget
+    ? [reservedPrimaryTarget, ...suggestedTargets]
+    : suggestedTargets;
   const [secondTarget, thirdTarget, suggestedFourthTarget] = remainingTargets.filter(
     (target): target is TTarget => Boolean(target),
   );
-  const fourthTarget = suggestedFourthTarget
-    || (presetId === "grid" && thirdTarget && preferredTarget && thirdTarget.id !== preferredTarget.id
-      ? preferredTarget
-      : null);
+  const fourthTarget = suggestedFourthTarget || null;
+  const createEmptyFourthSlot = presetId === "grid" && Boolean(thirdTarget) && !fourthTarget;
 
   const primary = createPanelState({
     target: preferredPanel ? (preferredTarget ?? preferredPanel.target) : (firstTarget || null),
@@ -624,7 +629,7 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   }
 
   const leftBottom = createPanelState({ target: thirdTarget, sourcePanel: preferredPanel || primary });
-  if (!fourthTarget) {
+  if (!fourthTarget && !createEmptyFourthSlot) {
     return {
       presetId,
       layout: {
@@ -647,7 +652,10 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
     };
   }
 
-  const rightBottom = createPanelState({ target: fourthTarget, sourcePanel: preferredPanel || primary });
+  const rightBottom = createPanelState({
+    target: fourthTarget,
+    sourcePanel: preferredPanel || primary,
+  });
 
   return {
     presetId,
