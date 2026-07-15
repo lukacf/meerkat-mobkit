@@ -137,7 +137,7 @@ pub use memory::{
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
     MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,
-    send_message_on_mob,
+    send_message_on_mob, send_message_on_mob_with_mode, send_message_on_mob_with_mode_and_overlay,
 };
 pub use mobpack::{
     MOBPACK_MEDIA_TYPE, MOBPACK_SCHEMA_VERSION, MobpackDeployCommandResult, MobpackDiagnostic,

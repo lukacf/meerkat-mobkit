@@ -1982,6 +1982,9 @@ delegate_mob_session_service!(PreBuildMobSessionService);
 struct AfterCreateMobSessionService {
     inner: Arc<dyn MobSessionService>,
     after_hook: AfterCreateHook,
+    #[cfg(test)]
+    applied_turn_overlays:
+        Option<Arc<std::sync::Mutex<Vec<Option<meerkat_core::service::TurnToolOverlay>>>>>,
 }
 
 #[async_trait]
@@ -2292,6 +2295,13 @@ impl MobSessionService for AfterCreateMobSessionService {
         boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
         contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
     ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+        #[cfg(test)]
+        if let Some(overlays) = self.applied_turn_overlays.as_ref() {
+            overlays
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(req.runtime.turn_tool_overlay.clone());
+        }
         self.inner
             .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
             .await
@@ -2612,6 +2622,8 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(AfterCreateMobSessionService {
             inner: self.session_service,
             after_hook: hook,
+            #[cfg(test)]
+            applied_turn_overlays: None,
         });
         self
     }
@@ -3816,11 +3828,12 @@ pub async fn send_message_on_mob(
     member_id: &str,
     content: impl Into<meerkat_core::ContentInput>,
 ) -> Result<String, MobRuntimeError> {
-    send_message_on_mob_with_mode(
+    send_message_on_mob_with_mode_and_overlay(
         handle,
         member_id,
         content,
         meerkat_core::types::HandlingMode::Queue,
+        None,
     )
     .await
 }
@@ -3832,6 +3845,21 @@ pub async fn send_message_on_mob_with_mode(
     member_id: &str,
     content: impl Into<meerkat_core::ContentInput>,
     handling_mode: meerkat_core::types::HandlingMode,
+) -> Result<String, MobRuntimeError> {
+    send_message_on_mob_with_mode_and_overlay(handle, member_id, content, handling_mode, None).await
+}
+
+/// Variant that attaches an optional host-neutral per-turn tool overlay.
+///
+/// The overlay is enforced by Meerkat's turn-driven member path. A present
+/// overlay sent to an autonomous-host member is rejected by the owning mob
+/// runtime rather than silently dropped.
+pub async fn send_message_on_mob_with_mode_and_overlay(
+    handle: &MobHandle,
+    member_id: &str,
+    content: impl Into<meerkat_core::ContentInput>,
+    handling_mode: meerkat_core::types::HandlingMode,
+    turn_tool_overlay: Option<meerkat_core::service::TurnToolOverlay>,
 ) -> Result<String, MobRuntimeError> {
     if member_id.trim().is_empty() {
         return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
@@ -3850,7 +3878,7 @@ pub async fn send_message_on_mob_with_mode(
     let _receipt = handle
         .member(&mid)
         .await?
-        .send(content, handling_mode)
+        .send_with_turn_tool_overlay(content, handling_mode, turn_tool_overlay)
         .await?;
     if let Some(session_id) = handle.resolve_bridge_session_id(&mid).await {
         return Ok(session_id.to_string());
@@ -3870,6 +3898,109 @@ pub async fn send_message_on_mob_with_mode(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn send_message_overlay_helper_preserves_exact_context_and_plain_none() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "overlay-helper-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+builtins = true
+comms = true
+"#,
+        )
+        .expect("parse turn-driven test mob");
+        let dir = tempfile::tempdir().expect("test state dir");
+        let mut spec = MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            dir.path().to_path_buf(),
+            4,
+            None,
+        );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let after_hook: AfterCreateHook = Arc::new(|_, _| Box::pin(async {}));
+        spec.session_service = Arc::new(AfterCreateMobSessionService {
+            inner: Arc::clone(&spec.session_service),
+            after_hook,
+            applied_turn_overlays: Some(Arc::clone(&captured)),
+        });
+
+        let runtime = MobRuntime::bootstrap(spec).await.expect("bootstrap mob");
+        let member_id = "worker-one";
+        let roster_id = crate::member_comms_id::mob_member_id(member_id);
+        Box::pin(runtime.handle.spawn_spec(meerkat_mob::SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from("worker"),
+            roster_id,
+        )))
+        .await
+        .expect("spawn worker");
+
+        let overlay = meerkat_core::service::TurnToolOverlay {
+            allowed_tools: Some(vec!["host_tool_alpha".into(), "host_tool_beta".into()]),
+            blocked_tools: Some(vec!["shell".into()]),
+            dispatch_context: std::collections::BTreeMap::from([(
+                "host_tool_connection".to_string(),
+                serde_json::json!({
+                    "connection_id": "host-1",
+                    "run_id": "run-1",
+                    "witness": "opaque-witness-1"
+                }),
+            )]),
+        };
+        send_message_on_mob_with_mode_and_overlay(
+            &runtime.handle(),
+            member_id,
+            "use the host tools",
+            meerkat_core::types::HandlingMode::Queue,
+            Some(overlay.clone()),
+        )
+        .await
+        .expect("overlay send");
+        send_message_on_mob_with_mode(
+            &runtime.handle(),
+            member_id,
+            "plain follow-up",
+            meerkat_core::types::HandlingMode::Queue,
+        )
+        .await
+        .expect("plain send");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let seen = captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if seen.iter().any(Option::is_none) {
+                assert_eq!(seen.last(), Some(&None));
+                assert!(
+                    !seen[..seen.len() - 1].is_empty()
+                        && seen[..seen.len() - 1]
+                            .iter()
+                            .all(|applied| applied.as_ref() == Some(&overlay)),
+                    "every application of the overlay-bearing turn must preserve the exact overlay; saw {seen:?}"
+                );
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the exact overlay turn and plain None turn must reach the recording service; saw {seen:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        runtime.handle().stop().await.expect("stop mob");
+    }
 
     struct EmptyDispatcher;
 
