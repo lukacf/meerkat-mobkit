@@ -35,8 +35,8 @@ use meerkat_mobkit::runtime::{
 use meerkat_mobkit::unified_runtime::{DesiredPeerEdge, EdgeDiscovery, UnifiedRuntime};
 use meerkat_mobkit::{
     AgentMemoryConfig, DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeDecisionState, SqliteAgentMemoryStore, TrustedOidcRuntimeConfig,
-    build_runtime_decision_state,
+    RuntimeDecisionInputs, RuntimeDecisionState, SqliteAgentMemoryStore, TopologyControlPolicy,
+    TrustedOidcRuntimeConfig, build_runtime_decision_state,
 };
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
@@ -52,6 +52,10 @@ pub struct IncidentScenario {
     pub identities: Vec<IncidentIdentity>,
     #[serde(default)]
     pub links: Vec<IncidentLink>,
+    /// Optional operator topology control. The MobKit default is disabled;
+    /// this stock example opts in explicitly in scenario.yaml.
+    #[serde(default)]
+    pub topology_control: TopologyControlPolicy,
     #[serde(default)]
     pub routes: Vec<IncidentRouteSeed>,
     #[serde(default)]
@@ -228,6 +232,14 @@ async fn build_runtime_bundle_with_client(
             },
         )
         .timeout(Duration::from_mins(1));
+    builder = builder
+        .topology_control(scenario.topology_control.clone())
+        .context("configure incident topology control")?;
+    if let Ok(state_dir) = std::env::var("INCIDENT_COMMAND_CENTER_STATE_DIR")
+        && !state_dir.trim().is_empty()
+    {
+        builder = builder.persistent_state(state_dir);
+    }
     if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
     }
@@ -281,7 +293,7 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
     runtime
         .reconcile_modules(
             vec!["router".to_string(), "delivery".to_string()],
-            Duration::from_secs(5),
+            incident_module_reconcile_timeout(),
         )
         .await
         .context("reconcile incident modules")?;
@@ -355,6 +367,33 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
     Ok(())
 }
 
+fn incident_module_reconcile_timeout() -> Duration {
+    let configured = std::env::var("INCIDENT_COMMAND_CENTER_MODULE_RECONCILE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0);
+    Duration::from_secs(configured.unwrap_or_else(|| {
+        // The deterministic topology lane may need to compile its generated
+        // module binaries on first boot. The live example keeps its tight
+        // operational timeout; the offline acceptance gives that cold build a
+        // bounded readiness window instead of failing after compilation.
+        if incident_env_flag("INCIDENT_COMMAND_CENTER_OFFLINE") {
+            600
+        } else {
+            5
+        }
+    }))
+}
+
+fn incident_env_flag(key: &str) -> bool {
+    std::env::var(key).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLink]) -> Result<()> {
     if links.is_empty() {
         return Ok(());
@@ -379,7 +418,17 @@ async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLin
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        last_missing = missing_scenario_links(links, &wired_to);
+        let suppressed = runtime
+            .topology_runtime_handle()
+            .query()
+            .await
+            .context("query topology intent while waiting for incident wiring")?
+            .edges
+            .into_iter()
+            .filter(|edge| edge.suppressed)
+            .map(|edge| canonical_incident_edge(&edge.edge.a.identity, &edge.edge.b.identity))
+            .collect::<BTreeSet<_>>();
+        last_missing = missing_scenario_links(links, &wired_to, &suppressed);
         if last_missing.is_empty() {
             return Ok(());
         }
@@ -399,9 +448,11 @@ async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLin
 fn missing_scenario_links(
     links: &[IncidentLink],
     wired_to: &BTreeMap<String, BTreeSet<String>>,
+    suppressed: &BTreeSet<(String, String)>,
 ) -> Vec<String> {
     links
         .iter()
+        .filter(|link| !suppressed.contains(&canonical_incident_edge(&link.from, &link.to)))
         .filter_map(|link| {
             let from_has_to = wired_to
                 .get(&link.from)
@@ -416,6 +467,14 @@ fn missing_scenario_links(
             }
         })
         .collect()
+}
+
+fn canonical_incident_edge(left: &str, right: &str) -> (String, String) {
+    if left < right {
+        (left.to_string(), right.to_string())
+    } else {
+        (right.to_string(), left.to_string())
+    }
 }
 
 pub async fn seed_escalation_chain(

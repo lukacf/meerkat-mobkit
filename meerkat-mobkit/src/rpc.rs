@@ -32,6 +32,7 @@ mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
 mod subscribe_methods;
+pub(crate) mod topology_methods;
 pub(crate) mod workgraph_methods;
 
 pub use console_ingress::handle_console_ingress_json;
@@ -1499,6 +1500,10 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/cross_mob/send",
                 ]);
             }
+            let topology = runtime.topology_runtime_handle();
+            let (topology_methods, topology_capabilities) =
+                topology_methods::capability_projection(&topology, None, false);
+            methods.extend(topology_methods);
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
@@ -1522,9 +1527,37 @@ async fn handle_unified_rpc_json_inner(
                         "available_spawn_modes": ["module", "profile"],
                     },
                     "authoring_capabilities": mobpack_authoring_capabilities(),
+                    "topology_control": topology_capabilities,
                 })),
                 error: None,
             }
+        }
+        topology_methods::TOPOLOGY_QUERY_METHOD => {
+            let topology = runtime.topology_runtime_handle();
+            topology_methods::handle_query(&topology, response_id, None, false).await
+        }
+        topology_methods::TOPOLOGY_PLAN_METHOD => {
+            let topology = runtime.topology_runtime_handle();
+            topology_methods::handle_plan(&topology, response_id, &request.params, None).await
+        }
+        topology_methods::TOPOLOGY_APPLY_METHOD => {
+            let topology = runtime.topology_runtime_handle();
+            topology_methods::handle_apply(
+                &topology,
+                response_id,
+                &request.params,
+                None,
+                Some("local-host"),
+            )
+            .await
+        }
+        topology_methods::TOPOLOGY_OPERATION_METHOD => {
+            let topology = runtime.topology_runtime_handle();
+            topology_methods::handle_operation(&topology, response_id, &request.params, None).await
+        }
+        topology_methods::TOPOLOGY_AUDIT_METHOD => {
+            let topology = runtime.topology_runtime_handle();
+            topology_methods::handle_audit(&topology, response_id, &request.params, None).await
         }
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {

@@ -50,6 +50,7 @@ fs2 = "0.4"
 object_store = { version = "0.13", features = ["fs"] }
 meerkat-core = "=0.7.31"
 meerkat-client = "=0.7.31"
+meerkat-comms = "=0.7.31"
 meerkat-contracts = "=0.7.31"
 meerkat-mob = "=0.7.31"
 meerkat-mob-mcp = "=0.7.31"
@@ -123,7 +124,6 @@ futures = "0.3"
 tower = { version = "0.5", features = ["util"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
-meerkat-comms = "=0.7.31"
 meerkat-schedule = "=0.7.31"
 # `schema` feature (test-only) exposes `meerkat_mob::adaptive::layer_decision_schema()`
 # so a parity guard can assert the bundled adaptive layer-decision schema stays

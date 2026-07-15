@@ -109,6 +109,7 @@ pub struct UnifiedRuntimeBuilder {
     contact_directory: Option<ContactDirectory>,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
     access_controller: Option<crate::access::AccessController>,
+    topology_control_policy: crate::topology_control::TopologyControlPolicy,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -460,6 +461,17 @@ impl UnifiedRuntimeBuilder {
         Ok(self)
     }
 
+    /// Configure the optional topology control plane. The default policy is
+    /// disabled, single-operation, local-authority only.
+    pub fn topology_control(
+        mut self,
+        policy: crate::topology_control::TopologyControlPolicy,
+    ) -> Result<Self, crate::topology_control::TopologyControlError> {
+        policy.validate()?;
+        self.topology_control_policy = policy;
+        Ok(self)
+    }
+
     // -----------------------------------------------------------------------
     // Build
     // -----------------------------------------------------------------------
@@ -762,6 +774,25 @@ impl UnifiedRuntimeBuilder {
             Some(bridge)
         };
 
+        // Construct the durable control-plane authority before identity
+        // restore. TopologyProvider output is only a declaration; the
+        // IdentityRuntime composes this controller's additions/suppressions
+        // under the same admission lock before it touches peer wiring.
+        let topology_controller = if let Some(state_path) = self.persistent_state_path.as_ref() {
+            crate::topology_control::TopologyController::load_or_default(
+                self.topology_control_policy.clone(),
+                state_path.join("topology-control.json"),
+            )
+            .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?
+        } else {
+            crate::topology_control::TopologyController::new(self.topology_control_policy.clone())
+                .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?
+        };
+        topology_controller
+            .bind_authority(runtime.mob_id())
+            .await
+            .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?;
+
         let identity_first_context = if wants_identity_first {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
@@ -835,6 +866,7 @@ impl UnifiedRuntimeBuilder {
                 .set_agent_memory(agent_memory_injector.clone())
                 .await;
             identity_runtime.set_error_hook(self.error_hook.clone());
+            identity_runtime.set_topology_controller(topology_controller.clone());
 
             let roster_specs = roster_provider
                 .roster(&RosterContext {
@@ -948,6 +980,7 @@ impl UnifiedRuntimeBuilder {
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
             access_controller: self.access_controller,
+            topology_controller,
             post_spawn_hook: self.post_spawn_hook,
             post_reconcile_hook: self.post_reconcile_hook,
             error_hook: self.error_hook,
@@ -956,7 +989,10 @@ impl UnifiedRuntimeBuilder {
             // A custom embedder policy overrides the definition-derived
             // default `bootstrap_with_options` installed (HomeCore,
             // 2026-07-09); with none supplied the default is preserved.
-            edge_discovery: self.edge_discovery.or(runtime.edge_discovery),
+            edge_discovery: self
+                .edge_discovery
+                .map(std::sync::Arc::<dyn EdgeDiscovery>::from)
+                .or(runtime.edge_discovery),
             contact_directory: self.contact_directory,
             session_bridge,
             identity_first_context,
@@ -1067,7 +1103,10 @@ impl UnifiedRuntimeBuilder {
         }
 
         // Run initial edge reconciliation after spawn completes
-        if runtime.edge_discovery.is_some() {
+        if runtime.edge_discovery.is_some()
+            || runtime.topology_controller.revision().await > 0
+            || runtime.topology_controller.has_pending().await
+        {
             let report = runtime.reconcile_edges().await;
             *runtime.bootstrap_edges_report.write().await = Some(report);
         }

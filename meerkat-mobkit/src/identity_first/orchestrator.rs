@@ -1253,6 +1253,10 @@ pub async fn restore_flow(
         "identity restore completed"
     );
 
+    // Persist the provider declaration on eager restore too. Lazy bootstrap
+    // already did this; without parity, later generation repair/materialize
+    // read an empty desired set and could not reapply overlay topology.
+    runtime.set_desired_peer_edges(managed_edges.clone()).await;
     if let Err(err) = runtime.reconcile_managed_peer_edges(&managed_edges).await {
         tracing::warn!(
             error = %err,

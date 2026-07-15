@@ -187,11 +187,7 @@ impl UnifiedRuntime {
     /// Refreshes the roster, runs edge discovery if configured, diffs
     /// desired vs managed edges, and calls wire/unwire as needed.
     pub async fn reconcile_edges(&self) -> UnifiedRuntimeReconcileEdgesReport {
-        if self.edge_discovery.is_none() {
-            return UnifiedRuntimeReconcileEdgesReport::default();
-        }
-        let active_members = self.mob_handle().list_members_including_retiring().await;
-        let report = self.reconcile_edges_from_members(active_members).await;
+        let report = self.topology_runtime_handle().reconcile().await;
         if !report.is_complete() {
             self.fire_error(super::types::ErrorEvent::ReconcileIncomplete {
                 failures: report.failures.len(),
@@ -205,17 +201,30 @@ impl UnifiedRuntime {
         &self,
         active_members: Vec<MobMemberListEntry>,
     ) -> UnifiedRuntimeReconcileEdgesReport {
-        let edge_discovery = match &self.edge_discovery {
-            Some(d) => d,
-            None => return UnifiedRuntimeReconcileEdgesReport::default(),
-        };
-        reconcile_edges_over_members(
+        // Member reconcile and public edge reconcile must share the same
+        // admission lock as operator topology mutation. Otherwise an ordinary
+        // reconcile can observe and overwrite a half-applied intent journal.
+        let _admission = self.topology_controller.mutation_guard().await;
+        if let Err(error) = self.topology_controller.prepare_pending_recovery().await {
+            tracing::error!(error = %error, "failed to prepare topology recovery rollback");
+            return crate::topology_control::recovery_failure_report(error);
+        }
+        let report = reconcile_edges_over_members(
             &self.mob_handle(),
-            edge_discovery.as_ref(),
+            self.edge_discovery.as_deref(),
             &self.managed_dynamic_edges,
+            Some(&self.topology_controller),
             active_members,
         )
-        .await
+        .await;
+        if let Err(error) = self
+            .topology_controller
+            .finalize_recovered_pending(report.is_complete())
+            .await
+        {
+            tracing::error!(error = %error, "failed to finalize recovered topology operation");
+        }
+        report
     }
 
     pub(super) async fn reconcile_routing_wiring(
@@ -292,13 +301,48 @@ impl UnifiedRuntime {
 pub async fn reconcile_definition_edges(
     runtime: &crate::MobRuntime,
 ) -> UnifiedRuntimeReconcileEdgesReport {
-    let handle = runtime.handle();
-    let Some(policy) = DefinitionWiringEdgeDiscovery::from_definition(handle.definition()) else {
-        return UnifiedRuntimeReconcileEdgesReport::default();
+    reconcile_definition_edges_with_topology(runtime, None).await
+}
+
+/// Definition-driven reconciliation composed with the optional durable
+/// topology overlay. Console routers use this form so a suppression tombstone
+/// cannot be undone by an old `reconcile_edges` call.
+pub async fn reconcile_definition_edges_with_topology(
+    runtime: &crate::MobRuntime,
+    topology: Option<&crate::topology_control::TopologyController>,
+) -> UnifiedRuntimeReconcileEdgesReport {
+    let _admission = match topology {
+        Some(controller) => Some(controller.mutation_guard().await),
+        None => None,
     };
+    if let Some(controller) = topology
+        && let Err(error) = controller.prepare_pending_recovery().await
+    {
+        tracing::error!(error = %error, "failed to prepare topology recovery rollback");
+        return crate::topology_control::recovery_failure_report(error);
+    }
+    let handle = runtime.handle();
+    let policy = DefinitionWiringEdgeDiscovery::from_definition(handle.definition());
     let active_members = handle.list_members_including_retiring().await;
     let managed = tokio::sync::RwLock::new(BTreeSet::new());
-    reconcile_edges_over_members(&handle, &policy, &managed, active_members).await
+    let report = reconcile_edges_over_members(
+        &handle,
+        policy
+            .as_ref()
+            .map(|value| value as &dyn super::edge_types::EdgeDiscovery),
+        &managed,
+        topology,
+        active_members,
+    )
+    .await;
+    if let Some(controller) = topology
+        && let Err(error) = controller
+            .finalize_recovered_pending(report.is_complete())
+            .await
+    {
+        tracing::error!(error = %error, "failed to finalize recovered topology operation");
+    }
+    report
 }
 
 /// The reconcile body, shared by [`UnifiedRuntime::reconcile_edges`] and the
@@ -307,8 +351,9 @@ pub async fn reconcile_definition_edges(
 /// and never unwires anything it did not itself manage).
 pub(crate) async fn reconcile_edges_over_members(
     mob_handle: &meerkat_mob::runtime::MobHandle,
-    edge_discovery: &dyn super::edge_types::EdgeDiscovery,
+    edge_discovery: Option<&dyn super::edge_types::EdgeDiscovery>,
     managed_dynamic_edges: &tokio::sync::RwLock<BTreeSet<(String, String)>>,
+    topology: Option<&crate::topology_control::TopologyController>,
     active_members: Vec<MobMemberListEntry>,
 ) -> UnifiedRuntimeReconcileEdgesReport {
     // Everything in this function speaks the public alias space: roster
@@ -352,7 +397,14 @@ pub(crate) async fn reconcile_edges_over_members(
         .collect();
 
     // Run edge discovery
-    let raw_desired = edge_discovery.discover_edges(member_views).await;
+    let discovered = match edge_discovery {
+        Some(edge_discovery) => edge_discovery.discover_edges(member_views).await,
+        None => Vec::new(),
+    };
+    let raw_desired = match topology {
+        Some(topology) => topology.compose_declared(discovered).await,
+        None => discovered,
+    };
 
     // Deduplicate and defensively validate (DesiredPeerEdge enforces
     // invariants at construction, but we still canonicalize the key set)

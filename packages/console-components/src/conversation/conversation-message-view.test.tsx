@@ -9,6 +9,66 @@ function Icon({ name }: { name: string; className?: string }) {
 }
 
 describe("ConversationMessageView", () => {
+  test("renders typed connection history as a compact immutable peer snapshot", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "connection-1",
+      kind: "message",
+      variant: "meta",
+      identity: { id: "system", label: "System", role: "system" },
+      text: "Connected to 2 agents.",
+      connectionEvent: {
+        action: "connected",
+        peers: [
+          {
+            id: "runtime",
+            label: "Runtime",
+            scopeId: "operations",
+            scopeLabel: "Operations",
+            crossScope: false,
+          },
+          {
+            id: "database",
+            label: "Database",
+            scopeId: "platform",
+            scopeLabel: "Platform",
+            crossScope: true,
+          },
+        ],
+      },
+    };
+
+    const { container } = render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(container.querySelector('[data-connection-action="connected"]')).toBeInTheDocument();
+    expect(screen.getByText(/Connected to 2 endpoints/)).toBeInTheDocument();
+    expect(screen.getByText("Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Database")).toBeInTheDocument();
+    expect(screen.getByText("· Platform")).toBeInTheDocument();
+    expect(container.querySelectorAll(".cc-connection-event__peer")).toHaveLength(2);
+    expect(container.querySelectorAll(".cc-connection-event__peer.is-cross-scope")).toHaveLength(1);
+  });
+
+  test("renders partial reconnect audit state without host ontology", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "connection-2",
+      kind: "message",
+      variant: "meta",
+      identity: { id: "system", label: "System", role: "system" },
+      connectionEvent: {
+        action: "reconnected",
+        status: "partial",
+        message: "One endpoint still needs reconciliation",
+        peers: [{ id: "responder", label: "Responder", caption: "Incident response" }],
+      },
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText(/Reconnected to Responder/)).toBeInTheDocument();
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
+    expect(screen.getByText(/needs reconciliation/)).toBeInTheDocument();
+  });
+
   test("adds a copy affordance to user messages", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {

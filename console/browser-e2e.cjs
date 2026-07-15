@@ -11,6 +11,10 @@ const { chromium } = require("playwright");
 
 const repoRoot = path.resolve(__dirname, "..");
 
+function stockTopologyEndpointId(authority, identity) {
+  return `mk1|${encodeURIComponent(authority)}|${encodeURIComponent(identity)}`;
+}
+
 function waitForExit(child, timeoutMs = 5_000) {
   return new Promise((resolve) => {
     if (child.exitCode !== null) {
@@ -221,6 +225,9 @@ function startMockConsoleServer(port, options = {}) {
   const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
   const includeLifecycleActions = options.includeLifecycleActions === true;
   const collapseWorkersSection = options.collapseWorkersSection === true;
+  const topologyControl = options.topologyControl && typeof options.topologyControl === "object"
+    ? options.topologyControl
+    : null;
   const identityAffordances = includeLifecycleActions
     ? { can_send_message: true, can_respawn: true, can_retire: true }
     : { can_send_message: true };
@@ -518,9 +525,27 @@ function startMockConsoleServer(port, options = {}) {
                 "mobkit/gating/pending",
                 "mobkit/gating/audit",
                 "mobkit/gating/decide",
+                ...(topologyControl ? topologyControl.methods || [] : []),
               ],
+              ...(topologyControl ? { topology_control: topologyControl.capabilities || {} } : {}),
             },
           }));
+          return;
+        }
+        if (payload.method === "mobkit/topology/query" && topologyControl) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: topologyControl.query,
+          }));
+          return;
+        }
+        if (
+          topologyControl
+          && typeof topologyControl.handleRpc === "function"
+          && topologyControl.handleRpc(payload, res)
+        ) {
           return;
         }
         if (payload.method === "mobkit/console/query_timeline") {
@@ -2820,7 +2845,291 @@ async function runHeadlessControlSurfaceBrowserProof() {
   }
 }
 
+async function runTopologyUnavailableBrowserProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port);
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.getByTestId("nav:topology").click();
+    await page.getByTestId("topology-panel").waitFor({ timeout: 10_000 });
+    assert.equal(
+      await page.getByTestId("topology-view:connections").count(),
+      0,
+      "a topology-unaware runtime must retain the passive graph without mutation controls",
+    );
+    assert.equal(await page.getByText(/connect all/i).count(), 0);
+    assert.equal(
+      rpcMethodsFromRequests(server.requests).includes("mobkit/topology/query"),
+      false,
+      "the console must not probe an unadvertised topology RPC",
+    );
+    process.stdout.write("browser topology unavailable fail-closed ok\n");
+  } finally {
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
+async function runTopologyDeniedPairBrowserProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port, {
+    topologyControl: {
+      methods: [
+        "mobkit/topology/query",
+        "mobkit/topology/plan",
+        "mobkit/topology/apply",
+        "mobkit/topology/operation/get",
+      ],
+      capabilities: {
+        mode: "editable",
+        can_query: true,
+        can_plan: true,
+        can_apply: true,
+        can_bulk: false,
+        max_batch_size: 1,
+        can_cross_authority: false,
+      },
+      query: {
+        authority: "mock-mob",
+        revision: 1,
+        policy: {
+          mode: "editable",
+          allow_bulk: false,
+          max_batch_size: 1,
+          allow_cross_authority: false,
+        },
+        nodes: [
+          {
+            endpoint: { identity: "identity:luka" },
+            role: "lead",
+            labels: {},
+            affordances: {
+              can_connect: true,
+              can_disconnect: true,
+              can_reconnect: true,
+              can_bulk: false,
+              can_cross_authority: false,
+            },
+          },
+          {
+            endpoint: { identity: "legacy-router" },
+            role: "router",
+            labels: {},
+            affordances: {
+              can_connect: false,
+              can_disconnect: false,
+              can_reconnect: false,
+              can_bulk: false,
+              can_cross_authority: false,
+            },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.getByTestId("nav:topology").click();
+    await page.getByTestId("topology-view:connections").waitFor({ timeout: 10_000 });
+    await page.getByTestId("topology-view:connections").click();
+    const sourceId = stockTopologyEndpointId("mock-mob", "identity:luka");
+    const targetId = stockTopologyEndpointId("mock-mob", "legacy-router");
+    const source = page.getByTestId(`connection-picker-row:${sourceId}`);
+    await source.locator(".topo-edit__identity").click();
+    await page.getByTestId(`connection-picker-source:${sourceId}`).waitFor({ timeout: 10_000 });
+    const connect = page
+      .getByTestId(`connection-picker-row:${targetId}`)
+      .locator(".topo-edit__toggle");
+    await connect.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(await connect.isDisabled(), true, "one denied endpoint must disable the pair action");
+    assert.match((await connect.getAttribute("aria-label")) || "", /Legacy Router.*Identity Luka/i);
+    assert.match((await connect.getAttribute("title")) || "", /both endpoints|denied/i);
+    assert.equal(await page.getByText(/connect all/i).count(), 0);
+    assert.equal(
+      rpcMethodsFromRequests(server.requests).some((method) =>
+        method === "mobkit/topology/plan" || method === "mobkit/topology/apply"
+      ),
+      false,
+      "disabled pair controls must never emit a mutation RPC",
+    );
+    process.stdout.write("browser topology bilateral denial ok\n");
+  } finally {
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
+async function runTopologyAmbiguousCommitBrowserProof() {
+  const port = await reservePort();
+  const committedByKey = new Map();
+  const applyPayloads = [];
+  let physicalMutations = 0;
+  const query = {
+    authority: "mock-mob",
+    revision: 1,
+    policy: {
+      mode: "editable",
+      allow_bulk: false,
+      max_batch_size: 1,
+      allow_cross_authority: false,
+    },
+    nodes: ["identity:luka", "legacy-router"].map((identity) => ({
+      endpoint: { identity },
+      role: identity === "identity:luka" ? "lead" : "router",
+      labels: {},
+      affordances: {
+        can_connect: true,
+        can_disconnect: true,
+        can_reconnect: true,
+        can_bulk: false,
+        can_cross_authority: false,
+      },
+    })),
+    edges: [],
+  };
+  const sendResult = (res, id, result) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  };
+  const topologyControl = {
+    methods: [
+      "mobkit/topology/query",
+      "mobkit/topology/plan",
+      "mobkit/topology/apply",
+      "mobkit/topology/operation/get",
+    ],
+    capabilities: {
+      mode: "editable",
+      can_query: true,
+      can_plan: true,
+      can_apply: true,
+      can_bulk: false,
+      max_batch_size: 1,
+      can_cross_authority: false,
+    },
+    query,
+    handleRpc(payload, res) {
+      if (payload.method === "mobkit/topology/plan") {
+        sendResult(res, payload.id, {
+          authority: "mock-mob",
+          base_revision: payload.params.expected_revision,
+          operations: payload.params.operations,
+        });
+        return true;
+      }
+      if (payload.method === "mobkit/topology/operation/get") {
+        const receipt = [...committedByKey.values()].find((candidate) => (
+          candidate.operation_id === payload.params.operation_id
+        ));
+        assert.ok(receipt, "operation/get must resolve the committed operation");
+        sendResult(res, payload.id, receipt);
+        return true;
+      }
+      if (payload.method !== "mobkit/topology/apply") return false;
+
+      applyPayloads.push(structuredClone(payload.params));
+      const key = String(payload.params.idempotency_key || "");
+      const existing = committedByKey.get(key);
+      if (existing) {
+        sendResult(res, payload.id, existing);
+        return true;
+      }
+
+      physicalMutations += 1;
+      const receipt = {
+        operation_id: "operation-browser-stable",
+        idempotency_key: key,
+        actor: "browser-proof",
+        status: "applied",
+        base_revision: 1,
+        revision: 2,
+        created_at: "2026-07-15T12:00:00Z",
+        results: [{
+          action: "connect",
+          edge: {
+            a: { authority: "mock-mob", identity: "identity:luka" },
+            b: { authority: "mock-mob", identity: "legacy-router" },
+          },
+          status: "applied",
+          actual_before: false,
+          actual_after: true,
+        }],
+      };
+      committedByKey.set(key, receipt);
+      query.revision = 2;
+      query.edges = [{
+        edge: receipt.results[0].edge,
+        actual: true,
+        declared: false,
+        operator_added: true,
+        suppressed: false,
+        desired: true,
+      }];
+      // The server has committed and journaled the idempotency key, but an
+      // intermediary truncates the HTTP response before the receipt arrives.
+      // A syntactically incomplete 200 is deterministic and, unlike a socket
+      // reset, cannot be transparently replayed by Chromium's network stack.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"jsonrpc":"2.0","id":');
+      return true;
+    },
+  };
+  const server = await startMockConsoleServer(port, { topologyControl });
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.getByTestId("nav:topology").click();
+    await page.getByTestId("topology-view:connections").click();
+    const sourceId = stockTopologyEndpointId("mock-mob", "identity:luka");
+    const targetId = stockTopologyEndpointId("mock-mob", "legacy-router");
+    await page
+      .getByTestId(`connection-picker-row:${sourceId}`)
+      .locator(".topo-edit__identity")
+      .click();
+    await page.getByTestId(`connection-picker-source:${sourceId}`).waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Connect Legacy Router to Identity Luka" }).click();
+
+    const resolve = page.getByRole("button", { name: "Resolve Legacy Router to Identity Luka" });
+    await resolve.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(physicalMutations, 1);
+    assert.equal(committedByKey.size, 1);
+    await resolve.click();
+    await waitForRpcMethod(server, "mobkit/topology/operation/get");
+    await page.getByRole("button", { name: "Disconnect Legacy Router from Identity Luka" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+
+    assert.equal(physicalMutations, 1, "ambiguous recovery must not actuate twice");
+    assert.equal(committedByKey.size, 1, "ambiguous recovery must retain one logical operation");
+    assert.equal(applyPayloads.length, 2);
+    assert.deepEqual(applyPayloads[1], applyPayloads[0], "Resolve must replay the exact apply payload");
+    assert.equal(
+      rpcMethodsFromRequests(server.requests).filter((method) => method === "mobkit/topology/plan").length,
+      1,
+      "Resolve must not silently replan or rebase",
+    );
+    process.stdout.write("browser topology ambiguous commit resolution ok\n");
+  } finally {
+    if (browser) await browser.close();
+    await server.close();
+  }
+}
+
 async function main() {
+  if (process.argv.includes("--topology-only")) {
+    await runTopologyUnavailableBrowserProof();
+    await runTopologyDeniedPairBrowserProof();
+    await runTopologyAmbiguousCommitBrowserProof();
+    return;
+  }
   const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
   if (fs.existsSync(repoCargo)) {
     await runReferenceBrowserProof();
@@ -2848,6 +3157,9 @@ async function main() {
   await runLiveSystemNoticeAppearsInOpenChatProof();
   await runConsoleMountsWithoutCryptoRandomUuidProof();
   await runHeadlessControlSurfaceBrowserProof();
+  await runTopologyUnavailableBrowserProof();
+  await runTopologyDeniedPairBrowserProof();
+  await runTopologyAmbiguousCommitBrowserProof();
 }
 
 main().catch((error) => {

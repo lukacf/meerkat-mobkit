@@ -55,6 +55,26 @@ pub const ACTION_WORKGRAPH_MANAGE: &str = "workgraph.manage";
 pub const ACTION_MOB_OBSERVE: &str = "mob.observe";
 /// Operate runtime plumbing: routing tables, labels, wiring, reconcile.
 pub const ACTION_RUNTIME_ADMIN: &str = "runtime.admin";
+/// Inspect topology for an agent. Query results require this and
+/// `agent.view` on every visible endpoint.
+pub const ACTION_TOPOLOGY_VIEW: &str = "topology.view";
+/// Read durable topology mutation audit records, including actor/principal
+/// attribution. Kept separate from topology.view because operator identity is
+/// more sensitive than graph shape.
+pub const ACTION_TOPOLOGY_AUDIT: &str = "topology.audit";
+/// Add a desired peer edge. Evaluated independently against both endpoints.
+pub const ACTION_TOPOLOGY_CONNECT: &str = "topology.connect";
+/// Suppress and remove a peer edge. Evaluated against both endpoints.
+pub const ACTION_TOPOLOGY_DISCONNECT: &str = "topology.disconnect";
+/// Remove a suppression and repair the desired edge. Kept distinct from
+/// connect so deployments can gate restoration more tightly.
+pub const ACTION_TOPOLOGY_RECONNECT: &str = "topology.reconnect";
+/// Submit more than one explicit topology operation in one transaction.
+pub const ACTION_TOPOLOGY_BULK: &str = "topology.bulk";
+/// Mutate an edge spanning two authorities through the explicit same-process
+/// bilateral host coordinator. Authority-local RPC never advertises or
+/// accepts this operation.
+pub const ACTION_TOPOLOGY_CROSS_AUTHORITY: &str = "topology.cross_authority";
 /// Author mobpacks in the Flow Editor: drafts, authoring operations,
 /// validation, source rendering, export/import, and authoring catalogs.
 pub const ACTION_MOBPACK_AUTHOR: &str = "mobpack.author";
@@ -86,6 +106,13 @@ pub const ACCESS_ACTIONS: &[&str] = &[
     ACTION_WORKGRAPH_MANAGE,
     ACTION_MOB_OBSERVE,
     ACTION_RUNTIME_ADMIN,
+    ACTION_TOPOLOGY_VIEW,
+    ACTION_TOPOLOGY_AUDIT,
+    ACTION_TOPOLOGY_CONNECT,
+    ACTION_TOPOLOGY_DISCONNECT,
+    ACTION_TOPOLOGY_RECONNECT,
+    ACTION_TOPOLOGY_BULK,
+    ACTION_TOPOLOGY_CROSS_AUTHORITY,
     ACTION_MOBPACK_AUTHOR,
     ACTION_MOBPACK_DEPLOY,
     ACTION_ACCESS_ADMIN,

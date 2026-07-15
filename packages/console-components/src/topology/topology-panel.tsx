@@ -1,22 +1,62 @@
 import React from "react";
-import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "./types";
+
+import {
+  topologyEdgeKey,
+  topologyMutationIntent,
+  topologyOperationIsPending,
+  type TopologyEndpoint,
+  type TopologyManagementState,
+  type TopologyMutationIntent,
+  type TopologyMutationKind,
+  type TopologyMutationOrigin,
+  type TopologyOperationReceipt,
+} from "@console-core";
+
+import type {
+  ConsoleAgent,
+  ConsoleFrame,
+  ConsoleTopologyNode,
+  TopologyEdgeRef,
+  TopologyPanelView,
+} from "./types";
 import { RoleTree } from "./role-tree";
 import { DenseGraphMap } from "./dense-graph-map";
 import { buildGraph, useTopologyActivity } from "./data";
+import {
+  ConnectionPicker,
+  type TopologyBoundedAction,
+} from "./connection-picker";
 
-interface TopologyPanelProps {
+export interface TopologyPanelProps {
   nodes: ConsoleTopologyNode[];
   agents: ConsoleAgent[];
   activity: ConsoleFrame[];
+  title?: React.ReactNode;
+  view?: TopologyPanelView;
+  defaultView?: TopologyPanelView;
+  onViewChange?: (view: TopologyPanelView) => void;
+  /**
+   * Trusted host/server state. Without it the topology remains passive even if
+   * mutation callbacks are supplied.
+   */
+  management?: TopologyManagementState | null;
+  connectionSourceId?: string | null;
+  defaultConnectionSourceId?: string | null;
+  onConnectionSourceChange?: (sourceId: string | null) => void;
+  onRequestMutation?: (intent: TopologyMutationIntent) => void | Promise<void>;
+  onRequestPairInspection?: (edge: TopologyEdgeRef) => void | Promise<void>;
+  onRetryOperation?: (receipt: TopologyOperationReceipt) => void | Promise<void>;
+  bulkActions?: readonly TopologyBoundedAction[];
+  onRequestBulkAction?: (action: TopologyBoundedAction) => void | Promise<void>;
 }
 
-type View = "graph" | "roles";
 type EdgeMode = "all" | "focus";
 const VIEW_STORAGE = "mobkit-console-topology-view";
 const EDGE_STORAGE = "mobkit-console-topology-edges";
-const VIEWS: Array<{ id: View; label: string; help: string }> = [
+const VIEWS: Array<{ id: TopologyPanelView; label: string; help: string }> = [
   { id: "graph", label: "Graph", help: "Dense canvas graph with every node in one view" },
-  { id: "roles", label: "Roles", help: "Flat mob · agents grouped by role" },
+  { id: "roles", label: "Roles", help: "Flat roster grouped by role" },
+  { id: "connections", label: "Connections", help: "Search-first connection roster" },
 ];
 const EDGE_MODES: Array<{ id: EdgeMode; label: string; help: string }> = [
   { id: "all", label: "All", help: "Draw all graph edges persistently" },
@@ -27,20 +67,42 @@ export function TopologyPanel({
   nodes,
   agents,
   activity,
+  title = "Topology",
+  view: controlledView,
+  defaultView,
+  onViewChange,
+  management,
+  connectionSourceId,
+  defaultConnectionSourceId,
+  onConnectionSourceChange,
+  onRequestMutation,
+  onRequestPairInspection,
+  onRetryOperation,
+  bulkActions,
+  onRequestBulkAction,
 }: TopologyPanelProps): React.JSX.Element {
-  const [view, setView] = React.useState<View>(() => {
+  const hasConnectionView = Boolean(management && management.policy.mode !== "disabled");
+  const [uncontrolledView, setUncontrolledView] = React.useState<TopologyPanelView>(() => {
+    if (defaultView && (defaultView !== "connections" || hasConnectionView)) return defaultView;
     try {
       const stored = localStorage.getItem(VIEW_STORAGE);
-      if (stored === "summary") return "graph";
-      if (stored === "force") return "graph";
-      if (stored === "bullseye") return "graph";
-      if (stored === "graph" || stored === "roles") return stored;
+      if (stored === "edit" && hasConnectionView) return "connections";
+      if (stored === "summary" || stored === "force" || stored === "bullseye") return "graph";
+      if (stored === "graph" || stored === "roles" || (stored === "connections" && hasConnectionView)) {
+        return stored;
+      }
     } catch { /* ignore */ }
     return "graph";
   });
-  const pickView = (next: View) => {
-    setView(next);
-    try { localStorage.setItem(VIEW_STORAGE, next); } catch { /* ignore */ }
+  const requestedView = controlledView ?? uncontrolledView;
+  const view = requestedView === "connections" && !hasConnectionView ? "graph" : requestedView;
+  const pickView = (next: TopologyPanelView) => {
+    if (next === "connections" && !hasConnectionView) return;
+    if (controlledView == null) {
+      setUncontrolledView(next);
+      try { localStorage.setItem(VIEW_STORAGE, next); } catch { /* ignore */ }
+    }
+    onViewChange?.(next);
   };
 
   const [edgeMode, setEdgeMode] = React.useState<EdgeMode>(() => {
@@ -56,9 +118,55 @@ export function TopologyPanel({
   };
 
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
+  const endpoints = React.useMemo<TopologyEndpoint[]>(() => graph.agents.map((agent) => ({
+    ref: agent.ref,
+    presentation: {
+      label: agent.presentation?.label || agent.label,
+      caption: agent.presentation?.caption || agent.role,
+      section: agent.presentation?.section || agent.group,
+      scopeId: agent.presentation?.scopeId,
+      scopeLabel: agent.presentation?.scopeLabel,
+      crossScope: agent.presentation?.crossScope,
+      accent: agent.presentation?.accent,
+      searchTerms: [
+        ...(agent.presentation?.searchTerms || []),
+        agent.role,
+        agent.group,
+        agent.subgroup || "",
+      ].filter(Boolean),
+    },
+    state: agent.state,
+    tags: agent.labels,
+  })), [graph.agents]);
   const live = useTopologyActivity(activity, graph, { life: 8000 });
   const liveCount = Object.keys(live.active).length;
   const busyCount = Object.values(live.busy).filter(Boolean).length;
+  const pendingEdgeKeys = React.useMemo(() => new Set(
+    (management?.operations || [])
+      .filter((operation) => operation.edge && topologyOperationIsPending(operation))
+      .map((operation) => topologyEdgeKey(operation.edge!)),
+  ), [management?.operations]);
+
+  const resolveMutation = React.useCallback((
+    action: TopologyMutationKind,
+    edge: TopologyEdgeRef,
+    origin: TopologyMutationOrigin,
+  ): TopologyMutationIntent | null => (
+    management ? topologyMutationIntent(management, action, edge, origin) : null
+  ), [management]);
+  const canRequestGraphMutation = React.useMemo(() => {
+    if (!management || management.policy.mode !== "editable" || !onRequestMutation) return false;
+    const connectedEdgeKeys = new Set(graph.edges.map((edge) => topologyEdgeKey(edge)));
+    return management.affordances.some((affordance) => {
+      const action = connectedEdgeKeys.has(topologyEdgeKey(affordance.edge))
+        ? "disconnect"
+        : affordance.state === "disconnected"
+          ? "connect"
+          : null;
+      return action !== null
+        && topologyMutationIntent(management, action, affordance.edge, "graph") !== null;
+    });
+  }, [graph.edges, management, onRequestMutation]);
 
   return (
     <div
@@ -67,55 +175,82 @@ export function TopologyPanel({
       data-activity-count={activity.length}
       data-busy-count={busyCount}
       data-live-count={liveCount}
+      data-management-mode={management?.policy.mode || "unavailable"}
     >
       <div className="topo__head">
-        <h2>Topology</h2>
+        <h2>{title}</h2>
         <span className="topo__head-meta">
-          {graph.agents.length} agents · {graph.edges.length} edges
+          {graph.agents.length} agents · {graph.edges.length} links
           {busyCount > 0 ? ` · ${busyCount} working` : ""}
           {liveCount > 0 && busyCount === 0 ? ` · ${liveCount} live` : ""}
+          {management?.policy.mode === "read_only" ? " · read-only" : ""}
         </span>
-        {view === "graph" && (
+        {view === "graph" ? (
           <div className="topo__viewbar topo__viewbar--labels" role="group" aria-label="Edges">
             <span className="topo__viewbar-tag">Edges</span>
-            {EDGE_MODES.map((m) => (
+            {EDGE_MODES.map((mode) => (
               <button
-                key={m.id}
+                key={mode.id}
                 type="button"
-                className={`topo__viewbtn ${edgeMode === m.id ? "is-active" : ""}`}
-                onClick={() => pickEdgeMode(m.id)}
-                title={m.help}
-                data-testid={`topology-edges:${m.id}`}
+                className={`topo__viewbtn ${edgeMode === mode.id ? "is-active" : ""}`}
+                onClick={() => pickEdgeMode(mode.id)}
+                title={mode.help}
+                data-testid={`topology-edges:${mode.id}`}
               >
-                {m.label}
+                {mode.label}
               </button>
             ))}
           </div>
-        )}
+        ) : null}
         <div className="topo__viewbar">
-          {VIEWS.map((v) => (
+          {VIEWS.filter((candidate) => candidate.id !== "connections" || hasConnectionView).map((candidate) => (
             <button
-              key={v.id}
+              key={candidate.id}
               type="button"
-              className={`topo__viewbtn ${view === v.id ? "is-active" : ""}`}
-              onClick={() => pickView(v.id)}
-              title={v.help}
-              data-testid={`topology-view:${v.id}`}
+              className={`topo__viewbtn ${view === candidate.id ? "is-active" : ""}`}
+              onClick={() => pickView(candidate.id)}
+              title={candidate.help}
+              data-testid={`topology-view:${candidate.id}`}
             >
-              {v.label}
+              {candidate.label}
             </button>
           ))}
         </div>
       </div>
       <div className="topo__body">
-        {view === "graph" && <DenseGraphMap graph={graph} edgeMode={edgeMode} activity={live} />}
-        {view === "roles" && (
+        {view === "graph" ? (
+          <DenseGraphMap
+            graph={graph}
+            edgeMode={edgeMode}
+            activity={live}
+            pendingEdgeKeys={pendingEdgeKeys}
+            canRequestMutation={canRequestGraphMutation}
+            resolveMutation={management?.policy.mode === "editable" ? resolveMutation : undefined}
+            onRequestMutation={onRequestMutation}
+          />
+        ) : null}
+        {view === "roles" ? (
           <RoleTree
             nodes={nodes}
             agents={agents}
             activity={activity}
           />
-        )}
+        ) : null}
+        {view === "connections" && management ? (
+          <ConnectionPicker
+            endpoints={endpoints}
+            edges={graph.edges}
+            management={management}
+            sourceId={connectionSourceId}
+            defaultSourceId={defaultConnectionSourceId}
+            onSourceChange={onConnectionSourceChange}
+            onRequestMutation={onRequestMutation}
+            onRequestPairInspection={onRequestPairInspection}
+            onRetryOperation={onRetryOperation}
+            bulkActions={bulkActions}
+            onRequestBulkAction={onRequestBulkAction}
+          />
+        ) : null}
       </div>
     </div>
   );

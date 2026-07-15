@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { migrateConsoleWorkbenchTarget, type ConsoleWorkbenchTarget } from "@console-core";
+import {
+  CONSOLE_RPC_METHODS as SHARED_CONSOLE_RPC_METHODS,
+} from "../../../packages/console-core/src/contract";
+import {
+  CONSOLE_COMMAND_NAMES as SHARED_CONSOLE_COMMAND_NAMES,
+  consoleCommandMethod as sharedConsoleCommandMethod,
+  createMobKitConsoleController as createSharedMobKitConsoleController,
+} from "../../../packages/console-core/src/headless";
 import { CONSOLE_REST_PATHS, CONSOLE_RPC_METHODS, CONSOLE_RPC_PATHS } from "./contract";
 import {
   CONSOLE_COMMAND_NAMES,
@@ -35,7 +43,7 @@ function hostTarget(): ConsoleWorkbenchTarget {
   return target;
 }
 
-function controlTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
+function controlTarget(kind: "routing" | "gating" | "topology"): ConsoleWorkbenchTarget {
   const target = migrateConsoleWorkbenchTarget({
     id: kind,
     kind,
@@ -54,6 +62,7 @@ function createFakeTransport(options: {
   live?: (frame: ConsoleFrame) => void;
   sends: unknown[];
   subscriptions: unknown[];
+  commands: unknown[];
 } {
   const queryPages = [...(options.queryPages || [])];
   const capabilitiesQueue = Array.isArray(options.capabilities)
@@ -63,6 +72,7 @@ function createFakeTransport(options: {
     capabilityCalls: 0,
     sends: [] as unknown[],
     subscriptions: [] as unknown[],
+    commands: [] as unknown[],
     loadExperience: async () => ({ contract_version: "fake" }),
     capabilities: async () => {
       fake.capabilityCalls += 1;
@@ -89,11 +99,14 @@ function createFakeTransport(options: {
         cursor: "console:2",
       };
     },
-    executeCommand: async (input) => ({
-      command: input.command,
-      accepted: true,
-      result: { ok: true },
-    }),
+    executeCommand: async (input) => {
+      fake.commands.push(input);
+      return {
+        command: input.command,
+        accepted: true,
+        result: { ok: true },
+      };
+    },
     upload: async () => ({ blob_id: "blob-1" }),
     blobUrl: (blobId) => `/blobs/${blobId}`,
   } satisfies MobKitConsoleTransport & {
@@ -101,6 +114,7 @@ function createFakeTransport(options: {
     live?: (frame: ConsoleFrame) => void;
     sends: unknown[];
     subscriptions: unknown[];
+    commands: unknown[];
   };
   return fake;
 }
@@ -439,6 +453,110 @@ test("headless command execution models lifecycle, routing, and gating commands 
       /cannot execute command/i,
     );
   }
+});
+
+test("headless command execution models the optional topology control surface", async () => {
+  const methods = [
+    CONSOLE_RPC_METHODS.topologyQuery,
+    CONSOLE_RPC_METHODS.topologyPlan,
+    CONSOLE_RPC_METHODS.topologyApply,
+    CONSOLE_RPC_METHODS.topologyOperationGet,
+    CONSOLE_RPC_METHODS.topologyAuditQuery,
+  ];
+  const transport = createFakeTransport({ capabilities: { methods, version: "topology-v1" } });
+  const controller = createMobKitConsoleController({ transport });
+  const target = controlTarget("topology");
+
+  for (const command of [
+    CONSOLE_COMMAND_NAMES.topologyQuery,
+    CONSOLE_COMMAND_NAMES.topologyPlan,
+    CONSOLE_COMMAND_NAMES.topologyApply,
+    CONSOLE_COMMAND_NAMES.topologyOperationGet,
+    CONSOLE_COMMAND_NAMES.topologyAuditQuery,
+  ]) {
+    assert.equal((await controller.commands.execute({ command, target })).accepted, true);
+  }
+  assert.deepEqual(
+    transport.commands.map((entry) => (entry as { command: string }).command),
+    [
+      CONSOLE_COMMAND_NAMES.topologyQuery,
+      CONSOLE_COMMAND_NAMES.topologyPlan,
+      CONSOLE_COMMAND_NAMES.topologyApply,
+      CONSOLE_COMMAND_NAMES.topologyOperationGet,
+      CONSOLE_COMMAND_NAMES.topologyAuditQuery,
+    ],
+  );
+
+  await assert.rejects(
+    () => controller.commands.execute({
+      command: CONSOLE_COMMAND_NAMES.topologyApply,
+      target: controlTarget("routing"),
+    }),
+    /cannot execute command topologyApply/,
+  );
+
+  const disabled = createMobKitConsoleController({
+    transport: createFakeTransport({
+      capabilities: {
+        methods: [CONSOLE_RPC_METHODS.topologyQuery, CONSOLE_RPC_METHODS.topologyOperationGet],
+        topologyControl: {
+          mode: "disabled",
+          can_query: true,
+          can_plan: false,
+          can_apply: false,
+        },
+      },
+    }),
+  });
+  await assert.rejects(
+    () => disabled.commands.execute({ command: CONSOLE_COMMAND_NAMES.topologyApply, target }),
+    /capability missing.*mobkit\/topology\/apply/i,
+  );
+});
+
+test("stock and shared-core headless topology contracts cannot drift", async () => {
+  assert.deepEqual(SHARED_CONSOLE_RPC_METHODS, CONSOLE_RPC_METHODS);
+  assert.deepEqual(SHARED_CONSOLE_COMMAND_NAMES, CONSOLE_COMMAND_NAMES);
+
+  const methods = [
+    SHARED_CONSOLE_RPC_METHODS.topologyQuery,
+    SHARED_CONSOLE_RPC_METHODS.topologyPlan,
+    SHARED_CONSOLE_RPC_METHODS.topologyApply,
+    SHARED_CONSOLE_RPC_METHODS.topologyOperationGet,
+    SHARED_CONSOLE_RPC_METHODS.topologyAuditQuery,
+  ];
+  const commands = [
+    SHARED_CONSOLE_COMMAND_NAMES.topologyQuery,
+    SHARED_CONSOLE_COMMAND_NAMES.topologyPlan,
+    SHARED_CONSOLE_COMMAND_NAMES.topologyApply,
+    SHARED_CONSOLE_COMMAND_NAMES.topologyOperationGet,
+    SHARED_CONSOLE_COMMAND_NAMES.topologyAuditQuery,
+  ];
+  assert.deepEqual(commands.map(sharedConsoleCommandMethod), methods);
+
+  const transport = createFakeTransport({
+    capabilities: {
+      methods,
+      version: "shared-topology-v1",
+      topologyControl: {
+        mode: "editable",
+        can_query: true,
+        can_plan: true,
+        can_apply: true,
+      },
+    },
+  });
+  const controller = createSharedMobKitConsoleController({ transport });
+  const target = controlTarget("topology");
+  for (const command of commands) {
+    assert.equal((await controller.commands.execute({ command, target })).accepted, true);
+  }
+  assert.deepEqual(
+    transport.commands.slice(-commands.length).map((entry) =>
+      (entry as { command: string }).command
+    ),
+    commands,
+  );
 });
 
 test("headless transport keeps uploads and blob URLs typed optional hooks", async () => {

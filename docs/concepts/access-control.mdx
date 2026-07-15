@@ -34,6 +34,11 @@ There are no roles. Every check evaluates the caller's attributes (subject, grou
 | `gating.view` / `gating.decide` | Read and decide approval gates |
 | `mob.observe` | Subscribe to whole-mob raw event streams |
 | `runtime.admin` | Routing tables, labels, wiring, reconcile |
+| `topology.view` | Inspect topology state for an agent; also requires `agent.view` |
+| `topology.connect` / `topology.disconnect` / `topology.reconnect` | Plan or apply the corresponding edge action; required independently on both endpoints |
+| `topology.bulk` | Submit more than one explicit topology operation in a bounded transaction |
+| `topology.cross_authority` | Use the same-process bilateral host coordinator for an edge spanning two authorities; never enables authority-local JSON-RPC cross-mutation |
+| `topology.audit` | Read durable topology mutation attempts and actor/principal attribution; required on every endpoint returned |
 | `mobpack.author` | Author mobpacks in the Flow Editor: drafts, authoring operations, validation, source rendering, export/import, authoring catalogs |
 | `mobpack.deploy` | Execute a mobpack flow run on the host (`rkat mob run`); also unlocks the editor's deploy affordances |
 | `access.admin` | Read and edit this configuration |
@@ -148,6 +153,15 @@ All write methods require `access.admin` (or admin standing) and return the new 
 - `mobkit/agent_memory/remember` and `mobkit/agent_memory/forget` — require `agent.memory.write` and `agent.memory.delete` respectively on the target identity. `mobkit/agent_memory/recall` and `mobkit/agent_memory/manifest` require **both** `agent.memory.read` and `agent.view` on the identity.
 - `mobkit/memory/panel/*` (the console Memory panel, read-only) — every returned record is filtered by its scope: identity-scoped records need `agent.memory.read` + `agent.view` on that identity, mob-scoped records need `mob.memory.read`, operator-scoped records need `operator.memory.read`, realm-scoped records and `mobkit/memory/panel/dreams` need an unscoped `agent.memory.read` grant, and quarantined records plus `mobkit/memory/panel/quarantine` need `memory.quarantine.review`. The review grant only opens the quarantine surface — each queue record and pending promotion is still filtered by the per-scope read grants above on its (target) scope. Memory content is more sensitive than roster visibility — plain `agent.view` alone no longer reads any of it.
 - Lifecycle and runtime RPCs — mapped to `agent.retire` / `agent.respawn` / `agent.reset` / `agent.spawn` / `runtime.admin` per method.
+- Topology control — query visibility requires `agent.view` and
+  `topology.view` per endpoint. Connect, disconnect, and reconnect require the
+  matching `topology.*` grant on both endpoint identities for planning as well
+  as applying. Multi-operation requests also require `topology.bulk`; the
+  runtime still enforces its finite batch ceiling. Durable mutation audit and
+  actor/principal attribution require the separate `topology.audit` grant on
+  every endpoint in a returned record. Cross-authority mutation is separately
+  gated and is available only to a same-process host coordinating both
+  runtimes; the authority-local JSON-RPC surface fails it closed.
 - `/agents/{id}/events` — requires `agent.view` on that agent. `/mob/events` and `/mobkit/mob_events/stream` require `mob.observe` to open and additionally filter each event by `agent.view` on its source (see below).
 
 Label- and role-based rules resolve against an attribute cache the runtime refreshes from every roster projection, so selectors keep working on surfaces that only carry an identity string.

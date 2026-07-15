@@ -104,7 +104,7 @@ describe("ConsoleSidebar", () => {
     expect(onSelectItem).toHaveBeenCalled();
 
     expect(screen.getByText("archive:thread-1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Extract the console sidebar" }))
+    expect(screen.getByRole("button", { name: /^Extract the console sidebar/ }))
       .toBeInTheDocument();
   });
 

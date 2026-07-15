@@ -3,6 +3,15 @@ namespace: incident-command-center
 listen_addr: 127.0.0.1:63210
 approver_id: console-ops-lead
 
+# Topology mutation is a deliberate, bounded opt-in. Other MobKit consumers
+# retain the disabled default and never see connection-management controls.
+topology_control:
+  mode: editable
+  allow_bulk: false
+  max_batch_size: 1
+  allow_cross_authority: false
+  receipt_limit: 64
+
 identities:
   - identity: incident-commander
     profile: commander

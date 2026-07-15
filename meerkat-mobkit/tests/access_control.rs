@@ -19,8 +19,9 @@ use meerkat_mobkit::{
     AccessControlConfig, AccessController, AccessGroup, AccessRule, AuthPolicy, BigQueryNaming,
     ConsoleAccessRequest, ConsoleLiveSnapshot, ConsoleModelCapabilities, ConsolePolicy,
     ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    build_runtime_decision_state, handle_console_rest_json_route_with_snapshot_and_access,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, TopologyControlMode, TopologyControlPolicy,
+    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    handle_console_rest_json_route_with_snapshot_and_access,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -702,6 +703,107 @@ async fn http_router_enforces_access_end_to_end() {
     assert_eq!(
         get_status(&app, "/agents/delivery/events").await,
         StatusCode::OK
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn topology_plan_and_audit_capabilities_follow_endpoint_scoped_grants() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    runtime
+        .set_topology_control_policy(TopologyControlPolicy {
+            mode: TopologyControlMode::ReadOnly,
+            ..TopologyControlPolicy::default()
+        })
+        .expect("read-only topology policy");
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![AccessRule {
+            id: "anonymous-topology-view".to_string(),
+            actions: vec!["agent.view".to_string(), "topology.view".to_string()],
+            agents: vec!["*".to_string()],
+            ..AccessRule::default()
+        }],
+        ..AccessControlConfig::default()
+    })
+    .expect("topology controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    let capabilities = rpc(&app, "mobkit/capabilities", json!({})).await;
+    let methods = capabilities["result"]["methods"]
+        .as_array()
+        .expect("capability methods");
+    assert!(
+        methods
+            .iter()
+            .any(|method| method == "mobkit/topology/query")
+    );
+    assert!(
+        !methods
+            .iter()
+            .any(|method| method == "mobkit/topology/plan"),
+        "view-only callers must not be offered a planning oracle: {capabilities:#?}"
+    );
+    assert!(
+        !methods
+            .iter()
+            .any(|method| method == "mobkit/topology/audit/query"),
+        "audit is an independent sensitive permission: {capabilities:#?}"
+    );
+
+    let query = rpc(&app, "mobkit/topology/query", json!({})).await;
+    let revision = query["result"]["revision"]
+        .as_u64()
+        .expect("topology revision");
+    let connect = json!({
+        "expected_revision": revision,
+        "operations": [{
+            "action": "connect",
+            "edge": {
+                "a": {"identity": "router"},
+                "b": {"identity": "delivery"}
+            }
+        }]
+    });
+    let denied_without_action = rpc(&app, "mobkit/topology/plan", connect.clone()).await;
+    assert_eq!(denied_without_action["error"]["code"], json!(-32030));
+    assert_eq!(
+        denied_without_action["error"]["data"]["action"],
+        json!("topology.connect")
+    );
+    let denied_audit = rpc(&app, "mobkit/topology/audit/query", json!({})).await;
+    assert_eq!(denied_audit["error"]["code"], json!(-32030));
+    assert_eq!(
+        denied_audit["error"]["data"]["action"],
+        json!("topology.audit")
+    );
+
+    // A broad capability flag is not enough: granting connect only on one
+    // endpoint advertises planning but the concrete pair still fails closed.
+    controller
+        .upsert_rule(AccessRule {
+            id: "connect-router-only".to_string(),
+            actions: vec!["topology.connect".to_string()],
+            agents: vec!["router".to_string()],
+            ..AccessRule::default()
+        })
+        .expect("live connect grant");
+    let capabilities = rpc(&app, "mobkit/capabilities", json!({})).await;
+    assert!(
+        capabilities["result"]["methods"]
+            .as_array()
+            .expect("capability methods")
+            .iter()
+            .any(|method| method == "mobkit/topology/plan")
+    );
+    let denied_other_endpoint = rpc(&app, "mobkit/topology/plan", connect).await;
+    assert_eq!(denied_other_endpoint["error"]["code"], json!(-32030));
+    assert_eq!(
+        denied_other_endpoint["error"]["data"]["resource"],
+        json!("delivery")
     );
 
     let _ = runtime.mob_handle().stop().await;

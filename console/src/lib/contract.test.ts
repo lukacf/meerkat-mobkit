@@ -134,6 +134,7 @@ test("console contract documents live REST, SSE, and send RPC error shapes", () 
   const gatingPendingCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingPending]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const gatingAuditCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingAudit]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const gatingDecideCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingDecide]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const topologyAuditCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.topologyAuditQuery]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const blobUploadErrors = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.blobUpload]?.errors || [];
   const blobUploadCodes = blobUploadErrors.flatMap((entry) => entry.codes || []);
   const rpcEndpointErrors = schema.surfaces.rpc.console_rpc_endpoint.errors || [];
@@ -167,6 +168,7 @@ test("console contract documents live REST, SSE, and send RPC error shapes", () 
   assert.deepEqual([-32004, -32000, -32601].filter((code) => !gatingPendingCodes.includes(code)), []);
   assert.deepEqual([-32004, -32000, -32601].filter((code) => !gatingAuditCodes.includes(code)), []);
   assert.deepEqual([-32004, -32602, -32000, -32601].filter((code) => !gatingDecideCodes.includes(code)), []);
+  assert.deepEqual([-32030, -32009, -32001, -32602, -32000].filter((code) => !topologyAuditCodes.includes(code)), []);
   assert.equal(queryTimelineCodes.includes(-32003), false);
   assert.equal(queryTimelineCodes.includes(-32603), false);
   assert.deepEqual([-32600, -32602, -32000].filter((code) => !blobUploadCodes.includes(code)), []);
@@ -198,6 +200,19 @@ test("console contract route and method names stay synchronized with Rust http c
       "utf8",
     );
     for (const method of parseWorkGraphMethodLists(workGraphSource)) {
+      dispatchedRpcMethods.add(method);
+    }
+  }
+  // Topology dispatch uses named constants so the same method identities are
+  // shared by stdio and HTTP. Resolve those constants when the HTTP dispatcher
+  // references the topology module instead of weakening the source contract
+  // with duplicated string literals.
+  if (/topology_methods::TOPOLOGY_[A-Z_]+_METHOD/.test(rustSource)) {
+    const topologySource = readFileSync(
+      resolve(process.cwd(), "../meerkat-mobkit/src/rpc/topology_methods.rs"),
+      "utf8",
+    );
+    for (const method of parseTopologyMethods(topologySource)) {
       dispatchedRpcMethods.add(method);
     }
   }
@@ -285,6 +300,15 @@ function parseWorkGraphMethodLists(source: string): Set<string> {
     for (const entry of list[1]!.matchAll(/"([^"]+)"/g)) {
       methods.add(entry[1]!);
     }
+  }
+  return methods;
+}
+
+function parseTopologyMethods(source: string): Set<string> {
+  const methods = new Set<string>();
+  const constantPattern = /const TOPOLOGY_[A-Z_]+_METHOD: &str = "([^"]+)"/g;
+  for (const match of source.matchAll(constantPattern)) {
+    methods.add(match[1]!);
   }
   return methods;
 }

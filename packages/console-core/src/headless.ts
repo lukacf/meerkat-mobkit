@@ -23,6 +23,7 @@ import type {
   ConsoleTimelineAccepted,
   ConsoleTimelinePage,
 } from "./runtime-types";
+import type { ConsoleTopologyControlCapabilities } from "./topology";
 
 export type ConsoleFactSource =
   | "mobkit-protocol"
@@ -49,6 +50,7 @@ export interface ConsoleCapabilities {
   readOnly?: boolean;
   runtime_capabilities?: unknown;
   method_capabilities?: unknown;
+  topologyControl?: ConsoleTopologyControlCapabilities;
 }
 
 export interface ConsoleTimelineQueryInput {
@@ -128,6 +130,11 @@ export const CONSOLE_COMMAND_NAMES = {
   workgraphAttentionPause: "workgraphAttentionPause",
   workgraphAttentionResume: "workgraphAttentionResume",
   workgraphAttentionReassign: "workgraphAttentionReassign",
+  topologyQuery: "topologyQuery",
+  topologyPlan: "topologyPlan",
+  topologyApply: "topologyApply",
+  topologyOperationGet: "topologyOperationGet",
+  topologyAuditQuery: "topologyAuditQuery",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -313,7 +320,32 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
     method: CONSOLE_RPC_METHODS.workgraphAttentionReassign,
     targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/workgraph"]),
   },
+  [CONSOLE_COMMAND_NAMES.topologyQuery]: {
+    method: CONSOLE_RPC_METHODS.topologyQuery,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/topology"]),
+  },
+  [CONSOLE_COMMAND_NAMES.topologyPlan]: {
+    method: CONSOLE_RPC_METHODS.topologyPlan,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/topology"]),
+  },
+  [CONSOLE_COMMAND_NAMES.topologyApply]: {
+    method: CONSOLE_RPC_METHODS.topologyApply,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/topology"]),
+  },
+  [CONSOLE_COMMAND_NAMES.topologyOperationGet]: {
+    method: CONSOLE_RPC_METHODS.topologyOperationGet,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/topology"]),
+  },
+  [CONSOLE_COMMAND_NAMES.topologyAuditQuery]: {
+    method: CONSOLE_RPC_METHODS.topologyAuditQuery,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/topology"]),
+  },
 };
+
+/** Return the typed RPC method for a modeled console command. */
+export function consoleCommandMethod(command: ConsoleCommandName): string {
+  return CONSOLE_COMMAND_SPECS[command].method;
+}
 
 export interface ConsoleCommandRequest {
   command: ConsoleCommandName;
@@ -669,6 +701,9 @@ function normalizeCapabilities(value: unknown): ConsoleCapabilities {
     ...(typeof record.read_only === "boolean" ? { readOnly: record.read_only } : {}),
     runtime_capabilities: record.runtime_capabilities,
     method_capabilities: record.method_capabilities,
+    ...(record.topology_control && typeof record.topology_control === "object"
+      ? { topologyControl: record.topology_control as ConsoleTopologyControlCapabilities }
+      : {}),
   };
 }
 

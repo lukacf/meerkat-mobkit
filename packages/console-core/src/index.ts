@@ -33,6 +33,8 @@ export {
 export type {
   ConversationEmptyStateSpec,
   ConversationEmptySuggestion,
+  ConversationConnectionEvent,
+  ConversationConnectionPeer,
   ConversationFlowRunEntry,
   ConversationFlowRunMemberRow,
   ConversationIdentity,
@@ -63,6 +65,47 @@ export {
   conversationMessageHasIntrinsicCopyAction,
   groupConversationTimelineEntries,
 } from "./conversation";
+
+export type {
+  ConsoleTopologyControlCapabilities,
+  TopologyActionCapability,
+  TopologyActorRef,
+  TopologyAuditEvent,
+  TopologyAuthorityRevisionTransition,
+  TopologyCasScope,
+  TopologyCanonicalEdge,
+  TopologyCapabilityState,
+  TopologyConnectionState,
+  TopologyEdgeAffordance,
+  TopologyEdgeRef,
+  TopologyEndpoint,
+  TopologyEndpointPresentation,
+  TopologyEndpointRef,
+  TopologyManagementHealth,
+  TopologyManagementMode,
+  TopologyManagementState,
+  TopologyMutationCapabilities,
+  TopologyMutationIntent,
+  TopologyMutationKind,
+  TopologyMutationOrigin,
+  TopologyMutationPolicy,
+  TopologyOperationEdgeResult,
+  TopologyOperationReceipt,
+  TopologyOperationStatus,
+  TopologyRevision,
+} from "./topology";
+export {
+  canonicalTopologyEdge,
+  topologyAffordanceFor,
+  topologyAuthorityRevisionToken,
+  topologyCapabilityAllowsRequest,
+  topologyEdgeKey,
+  topologyEdgeFromKey,
+  topologyIsBilateralAuthorityRevisionMap,
+  topologyMutationIntent,
+  topologyOperationFor,
+  topologyOperationIsPending,
+} from "./topology";
 
 export type {
   ConsoleDockAction,
@@ -313,6 +356,7 @@ export type {
 } from "./headless";
 export {
   CONSOLE_COMMAND_NAMES,
+  consoleCommandMethod,
   createHttpConsoleTransport,
   createMobKitConsoleController,
 } from "./headless";

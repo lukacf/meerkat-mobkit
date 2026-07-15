@@ -1,4 +1,5 @@
 import React from "react";
+import { topologyEdgeFromKey } from "@console-core";
 import {
   colourForRole,
   edgeKey,
@@ -7,11 +8,26 @@ import {
   type TopoActivity,
   type TopoGraph,
 } from "./data";
+import type {
+  TopologyEdgeRef,
+  TopologyMutationIntent,
+  TopologyMutationKind,
+  TopologyMutationOrigin,
+} from "./types";
 
 interface DenseGraphMapProps {
   graph: TopoGraph;
   edgeMode?: "all" | "focus";
   activity?: TopoActivity;
+  pendingEdgeKeys?: ReadonlySet<string>;
+  /** Trusted host decision that at least one graph gesture is actionable. */
+  canRequestMutation?: boolean;
+  resolveMutation?: (
+    action: TopologyMutationKind,
+    edge: TopologyEdgeRef,
+    origin: TopologyMutationOrigin,
+  ) => TopologyMutationIntent | null;
+  onRequestMutation?: (intent: TopologyMutationIntent) => void | Promise<void>;
 }
 
 interface LayoutNode {
@@ -35,7 +51,6 @@ interface Layout {
   nodes: LayoutNode[];
   byId: Map<string, LayoutNode>;
   groups: GroupAnchor[];
-  edgeById: Map<string, TopoGraph["edges"][number][]>;
   width: number;
   height: number;
 }
@@ -46,8 +61,23 @@ interface Viewport {
   y: number;
 }
 
+type GraphDrag =
+  | { kind: "pan"; clientX: number; clientY: number; viewport: Viewport }
+  | { kind: "node"; sourceId: string; x: number; y: number; targetId: string | null }
+  | {
+      kind: "edge";
+      edge: TopoGraph["edges"][number];
+      key: string;
+      startX: number;
+      startY: number;
+      x: number;
+      y: number;
+      torn: boolean;
+    };
+
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const EMPTY_ACTIVITY: TopoActivity = { active: {}, busy: {}, calls: {}, pulses: [] };
+const EMPTY_EDGE_KEYS: ReadonlySet<string> = new Set<string>();
 const ACTIVITY_LIFE_MS = 8000;
 const SMALL_GRAPH_NODE_LIMIT = 16;
 const SMALL_GRAPH_EDGE_LIMIT = 80;
@@ -136,13 +166,21 @@ function isSmallGraph(graph: TopoGraph): boolean {
   return graph.agents.length <= SMALL_GRAPH_NODE_LIMIT && graph.edges.length <= SMALL_GRAPH_EDGE_LIMIT;
 }
 
+function isSmallLayout(graph: TopoGraph): boolean {
+  return graph.agents.length <= SMALL_GRAPH_NODE_LIMIT;
+}
+
+function layoutNodeRadius(graph: TopoGraph): number {
+  return isSmallLayout(graph) ? 14 : 8.5;
+}
+
 function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   const groupIndex = new Map<string, number>();
   graph.groups.forEach((group, index) => groupIndex.set(group, index));
   const cx = width / 2;
   const cy = height / 2;
   const groupCount = Math.max(1, graph.groups.length);
-  const smallGraph = isSmallGraph(graph);
+  const smallGraph = isSmallLayout(graph);
   const marginX = smallGraph ? Math.max(82, width * 0.12) : Math.max(155, width * 0.23);
   const marginY = smallGraph ? Math.max(76, height * 0.13) : Math.max(150, height * 0.3);
   const compactR = Math.max(72, Math.min(width, height) * 0.18);
@@ -184,6 +222,13 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   }
   const rx = smallGraph ? compactR : Math.max(180, width * 0.34);
   const ry = smallGraph ? compactR * 0.78 : Math.max(130, height * 0.31);
+  const groupedAgents = new Map<number, TopoAgent[]>();
+  for (const agent of graph.agents) {
+    const gi = groupIndex.get(agent.group) ?? 0;
+    const entry = groupedAgents.get(gi) || [];
+    entry.push(agent);
+    groupedAgents.set(gi, entry);
+  }
   const groups = graph.groups.map((name, index) => {
     const fallbackT = (index / groupCount) * Math.PI * 2 - Math.PI / 2;
     const anchor = explicitAnchors[index] || {
@@ -194,24 +239,15 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
       name,
       x: anchor.x,
       y: anchor.y,
-      count: graph.agents.filter((a) => a.group === name).length,
+      count: groupedAgents.get(index)?.length || 0,
       colour: groupPalette(index),
     };
   });
 
-  const groupedAgents = new Map<number, TopoAgent[]>();
-  for (const agent of graph.agents) {
-    const gi = groupIndex.get(agent.group) ?? 0;
-    const entry = groupedAgents.get(gi) || [];
-    entry.push(agent);
-    groupedAgents.set(gi, entry);
-  }
   for (const entry of groupedAgents.values()) {
     entry.sort((a, b) => {
-      const da = graph.degree[a.id] || 0;
-      const db = graph.degree[b.id] || 0;
-      if (da !== db) return db - da;
-      return a.label.localeCompare(b.label);
+      const labelOrder = a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
+      return labelOrder || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     });
   }
 
@@ -228,31 +264,19 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
       const theta = count === 1
         ? -Math.PI / 2
         : -Math.PI / 2 + (index / count) * Math.PI * 2;
-      const degree = graph.degree[agent.id] || 0;
-      const emphasis = degree > 1 ? 1.03 : 1;
       nodes.push({
         id: agent.id,
         agent,
         groupIndex: gi,
-        radius: nodeRadius(graph, agent.id),
-        x: count === 1 ? cx : cx + Math.cos(theta) * ringX * emphasis,
-        y: count === 1 ? cy : cy + Math.sin(theta) * ringY * emphasis,
+        radius: layoutNodeRadius(graph),
+        x: count === 1 ? cx : cx + Math.cos(theta) * ringX,
+        y: count === 1 ? cy : cy + Math.sin(theta) * ringY,
       });
     });
     fitLayout(nodes, groups, width, height);
 
     const byId = new Map(nodes.map((node) => [node.id, node]));
-    const edgeById = new Map<string, TopoGraph["edges"][number][]>();
-    for (const edge of graph.edges) {
-      if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
-      const from = edgeById.get(edge.from) || [];
-      from.push(edge);
-      edgeById.set(edge.from, from);
-      const to = edgeById.get(edge.to) || [];
-      to.push(edge);
-      edgeById.set(edge.to, to);
-    }
-    return { nodes, byId, edgeById, groups, width, height };
+    return { nodes, byId, groups, width, height };
   }
 
   for (const [gi, entry] of groupedAgents.entries()) {
@@ -275,7 +299,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
         id: agent.id,
         agent,
         groupIndex: gi,
-        radius: nodeRadius(graph, agent.id),
+        radius: layoutNodeRadius(graph),
         x: anchor.x + Math.cos(theta) * radial * spiralBias,
         y: anchor.y + Math.sin(theta) * radial * (1.02 - ((seed % 11) / 120)),
       });
@@ -284,17 +308,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   fitLayout(nodes, groups, width, height);
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const edgeById = new Map<string, TopoGraph["edges"][number][]>();
-  for (const edge of graph.edges) {
-    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
-    const from = edgeById.get(edge.from) || [];
-    from.push(edge);
-    edgeById.set(edge.from, from);
-    const to = edgeById.get(edge.to) || [];
-    to.push(edge);
-    edgeById.set(edge.to, to);
-  }
-  return { nodes, byId, edgeById, groups, width, height };
+  return { nodes, byId, groups, width, height };
 }
 
 function screenToGraph(clientX: number, clientY: number, canvas: HTMLCanvasElement, viewport: Viewport): { x: number; y: number } {
@@ -303,6 +317,131 @@ function screenToGraph(clientX: number, clientY: number, canvas: HTMLCanvasEleme
     x: (clientX - rect.left - viewport.x) / viewport.scale,
     y: (clientY - rect.top - viewport.y) / viewport.scale,
   };
+}
+
+export interface DenseGraphPoint {
+  x: number;
+  y: number;
+}
+
+export interface DenseGraphHitNode extends DenseGraphPoint {
+  id: string;
+}
+
+export interface DenseGraphHitCurve {
+  key: string;
+  pointAt: (t: number) => DenseGraphPoint;
+}
+
+export function denseGraphNodeAtPoint(
+  nodes: readonly DenseGraphHitNode[],
+  point: DenseGraphPoint,
+  scale: number,
+): string | null {
+  let best: { id: string; d2: number } | null = null;
+  const threshold = Math.max(12, 18 / scale);
+  for (const node of nodes) {
+    const dx = node.x - point.x;
+    const dy = node.y - point.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > threshold * threshold) continue;
+    if (!best || d2 < best.d2) best = { id: node.id, d2 };
+  }
+  return best?.id || null;
+}
+
+export function denseGraphEdgeAtPoint(
+  curves: readonly DenseGraphHitCurve[],
+  point: DenseGraphPoint,
+  scale: number,
+): string | null {
+  const threshold = Math.max(6, 9 / scale);
+  let best: { key: string; d2: number } | null = null;
+  for (const curve of curves) {
+    for (let sample = 0; sample <= 24; sample += 1) {
+      const curvePoint = curve.pointAt(sample / 24);
+      const dx = curvePoint.x - point.x;
+      const dy = curvePoint.y - point.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > threshold * threshold) continue;
+      if (!best || d2 < best.d2) best = { key: curve.key, d2 };
+    }
+  }
+  return best?.key || null;
+}
+
+export function denseGraphEdgeIsTorn(start: DenseGraphPoint, current: DenseGraphPoint): boolean {
+  return Math.hypot(current.x - start.x, current.y - start.y) > 26;
+}
+
+export function denseGraphEdgeFingerprint(edges: readonly { from: string; to: string }[]): string {
+  return JSON.stringify(edges.map((edge) => edgeKey(edge.from, edge.to)).sort());
+}
+
+export function denseGraphLayoutFingerprint(
+  graph: Pick<TopoGraph, "agents" | "groups">,
+): string {
+  return JSON.stringify({
+    groups: graph.groups,
+    agents: graph.agents.map((agent) => [
+      agent.id,
+      agent.label,
+      agent.group,
+    ]).sort((left, right) => {
+      const leftKey = JSON.stringify(left);
+      const rightKey = JSON.stringify(right);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    }),
+  });
+}
+
+export function denseGraphPendingNodeIds(
+  agentIds: readonly string[],
+  pendingEdgeKeys: ReadonlySet<string>,
+): Set<string> {
+  const pendingNodeIds = new Set<string>();
+  if (pendingEdgeKeys.size === 0) return pendingNodeIds;
+  const knownAgentIds = new Set(agentIds);
+  for (const key of pendingEdgeKeys) {
+    const edge = topologyEdgeFromKey(key);
+    if (!edge) continue;
+    if (knownAgentIds.has(edge.from)) pendingNodeIds.add(edge.from);
+    if (knownAgentIds.has(edge.to)) pendingNodeIds.add(edge.to);
+  }
+  return pendingNodeIds;
+}
+
+export function denseGraphConnectEdge(
+  sourceId: string,
+  targetId: string | null,
+  existingEdgeKeys: ReadonlySet<string>,
+  pendingEdgeKeys: ReadonlySet<string> = EMPTY_EDGE_KEYS,
+  pendingNodeIds: ReadonlySet<string> = EMPTY_EDGE_KEYS,
+): TopologyEdgeRef | null {
+  if (!targetId || sourceId === targetId) return null;
+  const key = edgeKey(sourceId, targetId);
+  if (
+    existingEdgeKeys.has(key)
+    || pendingEdgeKeys.has(key)
+    || pendingNodeIds.has(sourceId)
+    || pendingNodeIds.has(targetId)
+  ) return null;
+  return { from: sourceId, to: targetId };
+}
+
+export function denseGraphDisconnectEdge(
+  edge: { from: string; to: string },
+  torn: boolean,
+  pendingEdgeKeys: ReadonlySet<string> = EMPTY_EDGE_KEYS,
+  pendingNodeIds: ReadonlySet<string> = EMPTY_EDGE_KEYS,
+): TopologyEdgeRef | null {
+  if (
+    !torn
+    || pendingEdgeKeys.has(edgeKey(edge.from, edge.to))
+    || pendingNodeIds.has(edge.from)
+    || pendingNodeIds.has(edge.to)
+  ) return null;
+  return { from: edge.from, to: edge.to };
 }
 
 function applyViewport(ctx: CanvasRenderingContext2D, viewport: Viewport): void {
@@ -408,6 +547,62 @@ function drawBundledCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: Layou
   ctx.bezierCurveTo(c1x, c1y, c2x, c2y, bx, by);
 }
 
+function cubicPoint(
+  a: DenseGraphPoint,
+  c1: DenseGraphPoint,
+  c2: DenseGraphPoint,
+  b: DenseGraphPoint,
+  t: number,
+): DenseGraphPoint {
+  const mt = 1 - t;
+  return {
+    x: mt ** 3 * a.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t ** 3 * b.x,
+    y: mt ** 3 * a.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t ** 3 * b.y,
+  };
+}
+
+function smallGraphEdgeBend(a: LayoutNode, b: LayoutNode): number {
+  const seed = hash(edgeKey(a.id, b.id));
+  return a.groupIndex === b.groupIndex
+    ? (seed % 13) - 6
+    : (seed % 2 === 0 ? 1 : -1) * (8 + (seed % 14));
+}
+
+function edgePointAt(
+  graph: TopoGraph,
+  layout: Layout,
+  edge: TopoGraph["edges"][number],
+  t: number,
+): DenseGraphPoint {
+  const a = layout.byId.get(edge.from);
+  const b = layout.byId.get(edge.to);
+  if (!a || !b) return { x: 0, y: 0 };
+  if (isSmallGraph(graph)) return curvePoint(a, b, smallGraphEdgeBend(a, b), t);
+  if (a.groupIndex === b.groupIndex) {
+    const seed = hash(edgeKey(a.id, b.id));
+    return curvePoint(a, b, (seed % 15) - 7, t);
+  }
+  const ga = layout.groups[a.groupIndex];
+  const gb = layout.groups[b.groupIndex];
+  const ax = a.x || 0;
+  const ay = a.y || 0;
+  const bx = b.x || 0;
+  const by = b.y || 0;
+  return cubicPoint(
+    { x: ax, y: ay },
+    {
+      x: ga ? ga.x + (gb.x - ga.x) * 0.36 : (ax + bx) / 2,
+      y: ga ? ga.y + (gb.y - ga.y) * 0.36 : (ay + by) / 2,
+    },
+    {
+      x: gb ? gb.x + (ga.x - gb.x) * 0.36 : (ax + bx) / 2,
+      y: gb ? gb.y + (ga.y - gb.y) * 0.36 : (ay + by) / 2,
+    },
+    { x: bx, y: by },
+    t,
+  );
+}
+
 function nodeRadius(graph: TopoGraph, id: string): number {
   if (isSmallGraph(graph)) {
     return Math.min(14, 5.6 + Math.sqrt(graph.degree[id] || 0) * 1.55);
@@ -419,27 +614,70 @@ export function DenseGraphMap({
   graph,
   edgeMode = "all",
   activity = EMPTY_ACTIVITY,
+  pendingEdgeKeys = EMPTY_EDGE_KEYS,
+  canRequestMutation = false,
+  resolveMutation,
+  onRequestMutation,
 }: DenseGraphMapProps): React.JSX.Element {
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const staticRef = React.useRef<HTMLCanvasElement | null>(null);
-  const dragRef = React.useRef<{ x: number; y: number; viewport: Viewport } | null>(null);
+  const dragRef = React.useRef<GraphDrag | null>(null);
+  const [drag, setDrag] = React.useState<GraphDrag | null>(null);
   const [size, setSize] = React.useState({ width: 900, height: 420 });
   const [viewport, setViewport] = React.useState<Viewport>({ scale: 1, x: 0, y: 0 });
   const viewportRef = React.useRef(viewport);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
-  const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
+  const roleFingerprint = JSON.stringify(graph.roles);
+  const roleIndex = React.useMemo(
+    () => roleIndexFor(graph.roles),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roleFingerprint],
+  );
+  const edgeFingerprint = React.useMemo(
+    () => denseGraphEdgeFingerprint(graph.edges),
+    [graph.edges],
+  );
   const layoutFingerprint = React.useMemo(
-    () => [
-      graph.agents.length,
-      graph.groups.join("|"),
-      graph.agents.map((a) => a.id).join("|"),
-    ].join("::"),
-    [graph],
+    () => denseGraphLayoutFingerprint(graph),
+    [graph.agents, graph.groups],
+  );
+  const nodeRoleFingerprint = React.useMemo(
+    () => JSON.stringify(
+      graph.agents
+        .map((agent) => [agent.id, agent.role])
+        .sort((left, right) => {
+          const leftKey = JSON.stringify(left);
+          const rightKey = JSON.stringify(right);
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        }),
+    ),
+    [graph.agents],
+  );
+  const responsePhaseFingerprint = JSON.stringify(
+    graph.agents
+      .map((agent) => [agent.id, agent.responsePhase || ""])
+      .sort((left, right) => {
+        const leftKey = JSON.stringify(left);
+        const rightKey = JSON.stringify(right);
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      }),
+  );
+  const pendingFingerprint = JSON.stringify(Array.from(pendingEdgeKeys).sort());
+  const pendingNodeIds = React.useMemo(
+    () => denseGraphPendingNodeIds(graph.agents.map((agent) => agent.id), pendingEdgeKeys),
+    // Equivalent host-owned pending sets should not restart graph gestures.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layoutFingerprint, pendingFingerprint],
   );
   const drawFingerprint = React.useMemo(
-    () => `${layoutFingerprint}::edges=${graph.edges.length}::edgeMode=${edgeMode}`,
-    [layoutFingerprint, graph.edges.length, edgeMode],
+    () => JSON.stringify([
+      layoutFingerprint,
+      nodeRoleFingerprint,
+      edgeFingerprint,
+      edgeMode,
+    ]),
+    [edgeFingerprint, edgeMode, layoutFingerprint, nodeRoleFingerprint],
   );
   const layout = React.useMemo(
     () => buildLayout(graph, size.width, size.height),
@@ -449,16 +687,67 @@ export function DenseGraphMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layoutFingerprint, size.width, size.height],
   );
+  const edgeById = React.useMemo(() => {
+    const result = new Map<string, TopoGraph["edges"]>();
+    for (const agent of graph.agents) result.set(agent.id, []);
+    for (const edge of graph.edges) {
+      result.get(edge.from)?.push(edge);
+      result.get(edge.to)?.push(edge);
+    }
+    return result;
+  // Edge identities are intentionally keyed through the stable fingerprint.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edgeFingerprint, layoutFingerprint]);
+  const edgeByKey = React.useMemo(
+    () => new Map(graph.edges.map((edge) => [edgeKey(edge.from, edge.to), edge])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [edgeFingerprint],
+  );
+  const edgeCurves = React.useMemo<DenseGraphHitCurve[]>(
+    () => graph.edges.flatMap((edge) => (
+      layout.byId.has(edge.from) && layout.byId.has(edge.to)
+        ? [{
+            key: edgeKey(edge.from, edge.to),
+            pointAt: (t: number) => edgePointAt(graph, layout, edge, t),
+          }]
+        : []
+    )),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [edgeFingerprint, layout],
+  );
+  const setCurrentDrag = React.useCallback((next: GraphDrag | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  }, []);
 
   React.useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
 
   React.useEffect(() => {
-    dragRef.current = null;
+    setCurrentDrag(null);
     setHoverId(null);
     setViewport({ scale: 1, x: 0, y: 0 });
-  }, [layoutFingerprint, size.width, size.height]);
+  }, [layoutFingerprint, setCurrentDrag, size.width, size.height]);
+
+  React.useEffect(() => {
+    const current = dragRef.current;
+    if (!current) return;
+    const becamePending = current.kind === "node"
+      ? pendingNodeIds.has(current.sourceId)
+        || Boolean(current.targetId && pendingNodeIds.has(current.targetId))
+      : current.kind === "edge" && (
+        pendingEdgeKeys.has(current.key)
+        || pendingNodeIds.has(current.edge.from)
+        || pendingNodeIds.has(current.edge.to)
+      );
+    if (!becamePending) return;
+    setCurrentDrag(null);
+    setHoverId(null);
+  // Pending collections are keyed by content so equivalent host sets do not
+  // interrupt a gesture, while a newly pending edge cancels it immediately.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFingerprint, pendingNodeIds, setCurrentDrag]);
 
   React.useEffect(() => {
     const el = wrapRef.current;
@@ -475,7 +764,7 @@ export function DenseGraphMap({
     return () => ro.disconnect();
   }, []);
 
-  const drawStatic = React.useCallback(() => {
+  const drawStatic = React.useCallback((hiddenEdgeKey: string | null = null) => {
     const host = wrapRef.current;
     if (!host) return null;
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -507,15 +796,15 @@ export function DenseGraphMap({
       ctx.lineCap = "round";
       ctx.lineWidth = 1.35;
       for (const edge of graph.edges) {
+        if (edgeKey(edge.from, edge.to) === hiddenEdgeKey) continue;
         const a = layout.byId.get(edge.from);
         const b = layout.byId.get(edge.to);
         if (!a || !b) continue;
         const sameGroup = a.groupIndex === b.groupIndex;
-        const seed = hash(edgeKey(a.id, b.id));
         ctx.strokeStyle = sameGroup ? (layout.groups[a.groupIndex]?.colour || faint) : faint;
         ctx.globalAlpha = sameGroup ? edgeAlpha * 0.92 : edgeAlpha * 0.68;
         ctx.beginPath();
-        drawCurve(ctx, a, b, sameGroup ? (seed % 13) - 6 : (seed % 2 === 0 ? 1 : -1) * (8 + (seed % 14)));
+        drawCurve(ctx, a, b, smallGraphEdgeBend(a, b));
         ctx.stroke();
       }
     } else if (edgeMode === "all") {
@@ -523,11 +812,19 @@ export function DenseGraphMap({
       ctx.strokeStyle = faint;
       ctx.globalAlpha = edgeAlpha * 0.92;
       ctx.beginPath();
+      const intraGroupEdges: Array<Array<{ from: string; to: string }>> = Array.from(
+        { length: layout.groups.length },
+        () => [],
+      );
       for (const edge of graph.edges) {
+        if (edgeKey(edge.from, edge.to) === hiddenEdgeKey) continue;
         const a = layout.byId.get(edge.from);
         const b = layout.byId.get(edge.to);
         if (!a || !b) continue;
-        if (a.agent.group === b.agent.group) continue;
+        if (a.agent.group === b.agent.group) {
+          intraGroupEdges[a.groupIndex]?.push(edge);
+          continue;
+        }
         drawBundledCurve(ctx, a, b, layout.groups);
       }
       ctx.stroke();
@@ -536,10 +833,10 @@ export function DenseGraphMap({
       for (let gi = 0; gi < layout.groups.length; gi += 1) {
         ctx.strokeStyle = layout.groups[gi]?.colour || faint;
         ctx.beginPath();
-        for (const edge of graph.edges) {
+        for (const edge of intraGroupEdges[gi] || []) {
           const a = layout.byId.get(edge.from);
           const b = layout.byId.get(edge.to);
-          if (!a || !b || a.groupIndex !== gi || b.groupIndex !== gi) continue;
+          if (!a || !b) continue;
           drawBundledCurve(ctx, a, b, layout.groups);
         }
         ctx.stroke();
@@ -550,7 +847,8 @@ export function DenseGraphMap({
       const x = node.x || 0;
       const y = node.y || 0;
       ctx.globalAlpha = 0.86;
-      ctx.fillStyle = layout.groups[node.groupIndex]?.colour || colourForRole(node.agent.role, roleIndex);
+      const agent = graph.byId.get(node.id) || node.agent;
+      ctx.fillStyle = layout.groups[node.groupIndex]?.colour || colourForRole(agent.role, roleIndex);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
@@ -558,13 +856,13 @@ export function DenseGraphMap({
 
     ctx.globalAlpha = 1;
     return off;
-  // `graph` is intentionally keyed through `graphFingerprint` here; fresh
+  // `graph` is intentionally keyed through `drawFingerprint` here; fresh
   // poll objects with the same shape should reuse the same static layer.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawFingerprint, layout, roleIndex]);
 
   React.useEffect(() => {
-    staticRef.current = drawStatic();
+    staticRef.current = drawStatic(null);
   }, [drawStatic]);
 
   React.useEffect(() => {
@@ -591,6 +889,17 @@ export function DenseGraphMap({
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  React.useEffect(() => {
+    if (!drag) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setCurrentDrag(null);
+      setHoverId(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [drag, setCurrentDrag]);
+
   const drawFrame = React.useCallback(() => {
     const canvas = canvasRef.current;
     const host = wrapRef.current;
@@ -605,17 +914,41 @@ export function DenseGraphMap({
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, layout.width, layout.height);
-    const staticCanvas = staticRef.current || drawStatic();
+    const tearingEdgeKey = drag?.kind === "edge" && drag.torn ? drag.key : null;
+    const staticCanvas = tearingEdgeKey
+      ? drawStatic(tearingEdgeKey)
+      : staticRef.current || drawStatic(null);
     ctx.save();
     applyViewport(ctx, viewport);
     if (staticCanvas) ctx.drawImage(staticCanvas, 0, 0, layout.width, layout.height);
 
     const focus = cssVar(host, "--focus", "rgb(90, 160, 255)");
     const ink = cssVar(host, "--ink", "rgb(235, 238, 245)");
-    const selected = layout.byId.get(hoverId || "");
+    const selectedId = drag?.kind === "node" ? drag.sourceId : hoverId;
+    const selected = layout.byId.get(selectedId || "");
     const ok = cssVar(host, "--ok", "rgb(72, 200, 150)");
     const warn = cssVar(host, "--warn", "rgb(245, 178, 76)");
+    const danger = cssVar(host, "--danger", "rgb(240, 96, 96)");
     const now = Date.now();
+
+    if (pendingEdgeKeys.size > 0) {
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.82;
+      ctx.strokeStyle = ok;
+      ctx.lineWidth = Math.max(1.3, 2 / Math.sqrt(viewport.scale));
+      ctx.setLineDash([Math.max(4, 6 / viewport.scale), Math.max(3, 5 / viewport.scale)]);
+      for (const edge of graph.edges) {
+        if (!pendingEdgeKeys.has(edgeKey(edge.from, edge.to))) continue;
+        const a = layout.byId.get(edge.from);
+        const b = layout.byId.get(edge.to);
+        if (!a || !b) continue;
+        ctx.beginPath();
+        if (isSmallGraph(graph)) drawCurve(ctx, a, b, smallGraphEdgeBend(a, b));
+        else drawBundledCurve(ctx, a, b, layout.groups);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
 
     if (activity.pulses.length > 0) {
       ctx.lineCap = "round";
@@ -652,7 +985,7 @@ export function DenseGraphMap({
 
     for (const node of layout.nodes) {
       const activeTs = activity.active[node.id] || activity.calls[node.id] || 0;
-      const isBusy = activity.busy[node.id] || node.agent.responsePhase != null;
+      const isBusy = activity.busy[node.id] || graph.byId.get(node.id)?.responsePhase != null;
       if (!activeTs && !isBusy) continue;
       const age = activeTs ? Math.max(0, Math.min(1, (now - activeTs) / ACTIVITY_LIFE_MS)) : 0;
       const alpha = activeTs ? Math.max(0.15, 1 - age) : 0.34;
@@ -685,7 +1018,7 @@ export function DenseGraphMap({
     }
 
     if (selected) {
-      const selectedEdges = layout.edgeById.get(selected.id) || [];
+      const selectedEdges = edgeById.get(selected.id) || [];
       const peerSet = new Set<string>();
       for (const edge of selectedEdges) peerSet.add(edge.from === selected.id ? edge.to : edge.from);
       ctx.globalAlpha = edgeMode === "all" ? 0.52 : 0.78;
@@ -731,73 +1064,259 @@ export function DenseGraphMap({
       ctx.stroke();
       ctx.shadowBlur = 0;
     }
+
+    if (drag?.kind === "node") {
+      const source = layout.byId.get(drag.sourceId);
+      const target = drag.targetId ? layout.byId.get(drag.targetId) : null;
+      if (source) {
+        ctx.globalAlpha = 0.96;
+        ctx.strokeStyle = ok;
+        ctx.lineWidth = Math.max(1.5, 2.2 / Math.sqrt(viewport.scale));
+        ctx.setLineDash([Math.max(4, 6 / viewport.scale), Math.max(3, 5 / viewport.scale)]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target?.x ?? drag.x, target?.y ?? drag.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (target) {
+          ctx.globalAlpha = 0.16;
+          ctx.fillStyle = ok;
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, nodeRadius(graph, target.id) + 11 / Math.sqrt(viewport.scale), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 0.96;
+          ctx.strokeStyle = ok;
+          ctx.lineWidth = Math.max(2, 3 / Math.sqrt(viewport.scale));
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, nodeRadius(graph, target.id) + 11 / Math.sqrt(viewport.scale), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    } else if (drag?.kind === "edge" && drag.torn) {
+      const a = layout.byId.get(drag.edge.from);
+      const b = layout.byId.get(drag.edge.to);
+      if (a && b) {
+        ctx.globalAlpha = 0.94;
+        ctx.strokeStyle = danger;
+        ctx.lineWidth = Math.max(1.4, 2.1 / Math.sqrt(viewport.scale));
+        ctx.setLineDash([Math.max(4, 6 / viewport.scale), Math.max(3, 5 / viewport.scale)]);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(drag.x, drag.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = danger;
+        ctx.beginPath();
+        ctx.arc(drag.x, drag.y, Math.max(3, 4.5 / Math.sqrt(viewport.scale)), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
     ctx.restore();
   // `graph` is keyed through drawFingerprint so equivalent polling payloads
   // do not restart expensive work.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activity, drawStatic, drawFingerprint, hoverId, layout, viewport]);
+  }, [
+    activity,
+    drag,
+    drawStatic,
+    drawFingerprint,
+    edgeById,
+    hoverId,
+    layout,
+    pendingEdgeKeys,
+    responsePhaseFingerprint,
+    viewport,
+  ]);
 
   React.useEffect(() => {
     drawFrame();
   }, [drawFrame]);
 
-  const nearestId = React.useCallback((clientX: number, clientY: number): string | null => {
+  const nodeIdAtPoint = React.useCallback((clientX: number, clientY: number): string | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
-    const pos = screenToGraph(clientX, clientY, canvas, viewport);
-    let best: { id: string; d2: number } | null = null;
-    const threshold = Math.max(12, 18 / viewport.scale);
-    for (const node of layout.nodes) {
-      const dx = (node.x || 0) - pos.x;
-      const dy = (node.y || 0) - pos.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > threshold * threshold) continue;
-      if (!best || d2 < best.d2) best = { id: node.id, d2 };
+    const current = viewportRef.current;
+    return denseGraphNodeAtPoint(
+      layout.nodes,
+      screenToGraph(clientX, clientY, canvas, current),
+      current.scale,
+    );
+  }, [layout.nodes]);
+
+  const edgeKeyAtPoint = React.useCallback((clientX: number, clientY: number): string | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const current = viewportRef.current;
+    return denseGraphEdgeAtPoint(
+      edgeCurves,
+      screenToGraph(clientX, clientY, canvas, current),
+      current.scale,
+    );
+  }, [edgeCurves]);
+
+  const pointerGraphPoint = React.useCallback((clientX: number, clientY: number): DenseGraphPoint | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    return screenToGraph(clientX, clientY, canvas, viewportRef.current);
+  }, []);
+
+  const finishPointerCapture = (element: HTMLDivElement, pointerId: number) => {
+    try {
+      if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    } catch {
+      // Pointer capture can already be gone when the OS cancels a gesture.
     }
-    return best?.id || null;
-  }, [layout, viewport]);
+  };
 
   const hover = hoverId ? graph.byId.get(hoverId) : null;
-  const hoverBusy = hoverId ? activity.busy[hoverId] || layout.byId.get(hoverId)?.agent.responsePhase != null : false;
+  const hoverBusy = hoverId ? activity.busy[hoverId] || graph.byId.get(hoverId)?.responsePhase != null : false;
   const hoverCalls = hoverId ? activity.pulses.filter((pulse) => pulse.from === hoverId || pulse.to === hoverId).length : 0;
   const showNodeLabels = graph.agents.length <= 12;
   const showGroupLabels = !showNodeLabels;
   const labelCenter = { x: layout.width / 2, y: layout.height / 2 };
+  const canEdit = Boolean(canRequestMutation && resolveMutation && onRequestMutation);
+  let editHint = "Drag an agent onto an authorized peer to connect · drag an authorized link away to disconnect";
+  if (drag?.kind === "node") {
+    const target = drag.targetId ? graph.byId.get(drag.targetId) : null;
+    editHint = target ? `Release to connect to ${target.label}` : "Drop on an agent to connect";
+  } else if (drag?.kind === "edge") {
+    editHint = drag.torn ? "Release to disconnect" : "Drag farther to tear this link";
+  }
 
   return (
     <div
       ref={wrapRef}
       className="topo-dense"
       data-testid="topology-dense-map"
+      data-drag-kind={drag?.kind || "none"}
+      data-topology-editable={canEdit ? "true" : "false"}
       onPointerDown={(event) => {
-        dragRef.current = { x: event.clientX, y: event.clientY, viewport };
-        event.currentTarget.setPointerCapture(event.pointerId);
+        if (!event.isPrimary || event.button !== 0) return;
+        const currentViewport = viewportRef.current;
+        const point = pointerGraphPoint(event.clientX, event.clientY);
+        if (!point) return;
+        if (canEdit) {
+          const nodeId = nodeIdAtPoint(event.clientX, event.clientY);
+          if (nodeId) {
+            if (pendingNodeIds.has(nodeId)) {
+              setHoverId(nodeId);
+              return;
+            }
+            setHoverId(null);
+            setCurrentDrag({ kind: "node", sourceId: nodeId, x: point.x, y: point.y, targetId: null });
+          } else {
+            const hitEdgeKey = edgeKeyAtPoint(event.clientX, event.clientY);
+            const edge = hitEdgeKey ? edgeByKey.get(hitEdgeKey) : null;
+            if (edge && hitEdgeKey) {
+              if (pendingEdgeKeys.has(hitEdgeKey)
+                || pendingNodeIds.has(edge.from)
+                || pendingNodeIds.has(edge.to)
+                || !resolveMutation?.("disconnect", edge, "graph")) return;
+              setHoverId(null);
+              setCurrentDrag({
+                kind: "edge",
+                edge,
+                key: hitEdgeKey,
+                startX: point.x,
+                startY: point.y,
+                x: point.x,
+                y: point.y,
+                torn: false,
+              });
+            } else {
+              setCurrentDrag({ kind: "pan", clientX: event.clientX, clientY: event.clientY, viewport: currentViewport });
+            }
+          }
+        } else {
+          setCurrentDrag({ kind: "pan", clientX: event.clientX, clientY: event.clientY, viewport: currentViewport });
+        }
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
       }}
       onPointerMove={(event) => {
-        if (dragRef.current) {
-          const dx = event.clientX - dragRef.current.x;
-          const dy = event.clientY - dragRef.current.y;
+        const currentDrag = dragRef.current;
+        if (currentDrag?.kind === "pan") {
+          const dx = event.clientX - currentDrag.clientX;
+          const dy = event.clientY - currentDrag.clientY;
           setViewport({
-            ...dragRef.current.viewport,
-            x: dragRef.current.viewport.x + dx,
-            y: dragRef.current.viewport.y + dy,
+            ...currentDrag.viewport,
+            x: currentDrag.viewport.x + dx,
+            y: currentDrag.viewport.y + dy,
           });
           return;
         }
-        setHoverId(nearestId(event.clientX, event.clientY));
+        const point = pointerGraphPoint(event.clientX, event.clientY);
+        if (currentDrag?.kind === "node" && point) {
+          const hit = nodeIdAtPoint(event.clientX, event.clientY);
+          setCurrentDrag({
+            ...currentDrag,
+            x: point.x,
+            y: point.y,
+            targetId: hit
+              && hit !== currentDrag.sourceId
+              && !pendingNodeIds.has(hit)
+              && Boolean(resolveMutation?.(
+                "connect",
+                { from: currentDrag.sourceId, to: hit },
+                "graph",
+              ))
+              ? hit
+              : null,
+          });
+          return;
+        }
+        if (currentDrag?.kind === "edge" && point) {
+          setCurrentDrag({
+            ...currentDrag,
+            x: point.x,
+            y: point.y,
+            torn: denseGraphEdgeIsTorn(
+              { x: currentDrag.startX, y: currentDrag.startY },
+              point,
+            ),
+          });
+          return;
+        }
+        setHoverId(nodeIdAtPoint(event.clientX, event.clientY));
       }}
       onPointerUp={(event) => {
-        dragRef.current = null;
-        setHoverId(nearestId(event.clientX, event.clientY));
-        event.currentTarget.releasePointerCapture(event.pointerId);
+        const completedDrag = dragRef.current;
+        if (completedDrag?.kind === "node") {
+          const edge = denseGraphConnectEdge(
+            completedDrag.sourceId,
+            completedDrag.targetId,
+            new Set(edgeByKey.keys()),
+            pendingEdgeKeys,
+            pendingNodeIds,
+          );
+          const intent = edge ? resolveMutation?.("connect", edge, "graph") : null;
+          if (intent) void onRequestMutation?.(intent);
+        } else if (completedDrag?.kind === "edge") {
+          const edge = denseGraphDisconnectEdge(
+            completedDrag.edge,
+            completedDrag.torn,
+            pendingEdgeKeys,
+            pendingNodeIds,
+          );
+          const intent = edge ? resolveMutation?.("disconnect", edge, "graph") : null;
+          if (intent) void onRequestMutation?.(intent);
+        }
+        setCurrentDrag(null);
+        setHoverId(nodeIdAtPoint(event.clientX, event.clientY));
+        finishPointerCapture(event.currentTarget, event.pointerId);
       }}
       onPointerCancel={(event) => {
-        dragRef.current = null;
-        event.currentTarget.releasePointerCapture(event.pointerId);
+        setCurrentDrag(null);
+        setHoverId(null);
+        finishPointerCapture(event.currentTarget, event.pointerId);
       }}
-      onPointerLeave={() => setHoverId(null)}
+      onPointerLeave={() => {
+        if (!dragRef.current) setHoverId(null);
+      }}
     >
-      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology graph" />
+      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology graph" role="img" />
       <div className="topo-dense__labels" aria-hidden="true">
         {showGroupLabels && layout.groups.map((g) => (
           <div
@@ -833,6 +1352,9 @@ export function DenseGraphMap({
           );
         })}
       </div>
+      {canEdit ? (
+        <div className="topo-dense__edit-hint" aria-live="polite">{editHint}</div>
+      ) : null}
       {hover && (
         <>
         <div
@@ -848,7 +1370,7 @@ export function DenseGraphMap({
         <div className="topo-dense__inspector">
           <strong>{hover.label}</strong>
           <span>{hover.group}</span>
-          <span>{layout.edgeById.get(hover.id)?.length || 0} peers</span>
+          <span>{edgeById.get(hover.id)?.length || 0} peers</span>
           {hoverBusy && <span>working</span>}
           {hoverCalls > 0 && <span>{hoverCalls} live calls</span>}
         </div>

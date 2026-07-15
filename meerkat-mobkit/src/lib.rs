@@ -32,6 +32,7 @@ pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
 pub mod tool_compose;
+pub mod topology_control;
 pub mod types;
 pub mod unified_runtime;
 pub mod workgraph_admission;
@@ -182,6 +183,17 @@ pub use runtime::{
     run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
     start_mobkit_runtime_with_options,
+};
+pub use topology_control::{
+    SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,
+    TopologyBilateralApplyRequest, TopologyBilateralPlan, TopologyBilateralPlanRequest,
+    TopologyBilateralSnapshot, TopologyBootstrapConfig, TopologyControlError, TopologyControlMode,
+    TopologyControlPolicy, TopologyController, TopologyEdge, TopologyEdgeResult,
+    TopologyEdgeResultStatus, TopologyEdgeSnapshot, TopologyEndpoint, TopologyMutation,
+    TopologyNodeAffordances, TopologyNodeSnapshot, TopologyOperationReceipt,
+    TopologyOperationRecord, TopologyOperationRecordStatus, TopologyOperationStatus, TopologyPlan,
+    TopologyPlanRequest, TopologyPlannedEdge, TopologyRevisionTransition, TopologyRuntimeHandle,
+    TopologySnapshot,
 };
 pub use types::{
     AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope,
