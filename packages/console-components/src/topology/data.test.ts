@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
   buildGraph,
   deriveTopologyActivity,
@@ -7,6 +8,7 @@ import {
   groupMatrix,
   groupSummaries,
   sampleEdges,
+  useTopologyActivity,
 } from "./data";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "./types";
 
@@ -293,4 +295,113 @@ test("topology activity derives pulses from typed incoming comms notices", () =>
   );
   assert.equal(activity.calls["review-worker-daily-candy"], 2_000);
   assert.equal(activity.calls["review:singleton"], 2_000);
+});
+
+describe("topology activity heartbeat", () => {
+  const originalDocumentHidden = Object.getOwnPropertyDescriptor(document, "hidden");
+  const graph = buildGraph([], [{
+    identity: "commander",
+    agent_id: "commander",
+    member_id: "commander",
+    label: "Commander",
+    kind: "agent",
+    role: "coordinator",
+    state: "active",
+    wired_to: [],
+  }]);
+  const freshFrames: ConsoleFrame[] = [{
+    id: "started",
+    event: "interaction_started",
+    identity: "commander",
+    timestampMs: 10_000,
+    data: {},
+  }];
+
+  const setDocumentHidden = (hidden: boolean) => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: hidden,
+    });
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    setDocumentHidden(false);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    if (originalDocumentHidden) {
+      Object.defineProperty(document, "hidden", originalDocumentHidden);
+    } else {
+      Reflect.deleteProperty(document, "hidden");
+    }
+  });
+
+  test("does not schedule or rerender when there is no transient activity", () => {
+    let renderCount = 0;
+    const { result, unmount } = renderHook(() => {
+      renderCount += 1;
+      return useTopologyActivity([], graph, { life: 1_000 });
+    });
+
+    assert.deepEqual(result.current, {
+      active: {},
+      pulses: [],
+      busy: {},
+      calls: {},
+    });
+    assert.equal(vi.getTimerCount(), 0);
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    assert.equal(renderCount, 1);
+    assert.equal(vi.getTimerCount(), 0);
+    unmount();
+  });
+
+  test("expires transient activity and stops while sticky busy state remains", () => {
+    const { result, unmount } = renderHook(() => (
+      useTopologyActivity(freshFrames, graph, { life: 1_000 })
+    ));
+
+    assert.equal(result.current.active.commander, 10_000);
+    assert.equal(result.current.busy.commander, true);
+    assert.equal(vi.getTimerCount(), 1);
+
+    act(() => {
+      vi.advanceTimersByTime(1_100);
+    });
+
+    assert.deepEqual(result.current.active, {});
+    assert.equal(result.current.busy.commander, true);
+    assert.equal(vi.getTimerCount(), 0);
+    unmount();
+  });
+
+  test("pauses while hidden, resumes when visible, and cancels on unmount", () => {
+    const { unmount } = renderHook(() => (
+      useTopologyActivity(freshFrames, graph, { life: 1_000 })
+    ));
+    assert.equal(vi.getTimerCount(), 1);
+
+    act(() => {
+      setDocumentHidden(true);
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    assert.equal(vi.getTimerCount(), 0);
+
+    act(() => {
+      setDocumentHidden(false);
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    assert.equal(vi.getTimerCount(), 1);
+
+    unmount();
+    assert.equal(vi.getTimerCount(), 0);
+  });
 });

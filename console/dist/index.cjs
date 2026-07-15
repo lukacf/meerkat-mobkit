@@ -4418,27 +4418,46 @@ function roleIndexFor(roles) {
 function useTopologyActivity(frames, graph, options = {}) {
   const life = options.life ?? 1500;
   const [now, setNow] = import_react12.default.useState(() => Date.now());
-  const ticking = import_react12.default.useRef(false);
-  import_react12.default.useEffect(() => {
-    if (ticking.current) return;
-    let raf = 0;
-    let stopped = false;
-    ticking.current = true;
-    const step = () => {
-      if (stopped) return;
-      setNow(Date.now());
-      raf = requestAnimationFrame(step);
-    };
-    raf = requestAnimationFrame(step);
-    return () => {
-      stopped = true;
-      ticking.current = false;
-      cancelAnimationFrame(raf);
-    };
-  }, []);
-  return import_react12.default.useMemo(() => {
+  const activity = import_react12.default.useMemo(() => {
     return deriveTopologyActivity(frames, graph, now, life);
   }, [frames, graph, life, now]);
+  const hasTransientActivity = activity.pulses.length > 0 || Object.keys(activity.active).length > 0 || Object.keys(activity.calls).length > 0;
+  import_react12.default.useEffect(() => {
+    if (!hasTransientActivity) return void 0;
+    let heartbeat = null;
+    const clearHeartbeat = () => {
+      if (heartbeat === null) return;
+      clearTimeout(heartbeat);
+      heartbeat = null;
+    };
+    const scheduleHeartbeat = () => {
+      if (heartbeat !== null) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      heartbeat = setTimeout(() => {
+        heartbeat = null;
+        setNow(Date.now());
+        scheduleHeartbeat();
+      }, 100);
+    };
+    const handleVisibilityChange = () => {
+      clearHeartbeat();
+      if (!document.hidden) {
+        setNow(Date.now());
+        scheduleHeartbeat();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+    scheduleHeartbeat();
+    return () => {
+      clearHeartbeat();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
+  }, [hasTransientActivity]);
+  return activity;
 }
 function deriveTopologyActivity(frames, graph, now, life = 1500) {
   const active = {};
