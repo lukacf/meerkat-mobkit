@@ -13,6 +13,7 @@ import type {
   SidebarWatchFields,
   ToolCallAccumulatorState,
 } from "./control-plane";
+import type { TopologyEndpointRef } from "./topology";
 
 export interface ConsoleFrame {
   id: string;
@@ -219,6 +220,8 @@ export interface ConsolePolicyConfig {
 
 export interface ConsoleTopologyNode {
   identity?: string;
+  /** Optional canonical endpoint metadata for topology-aware hosts. */
+  ref?: TopologyEndpointRef;
   label?: string;
   role?: string;
   state?: string;

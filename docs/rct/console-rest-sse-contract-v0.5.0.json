@@ -1422,6 +1422,139 @@
               ]
             }
           ]
+        },
+        "mobkit/topology/query": {
+          "success": {
+            "required_fields": [
+              "authority",
+              "revision",
+              "policy",
+              "nodes",
+              "edges"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32004,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/topology/plan": {
+          "request": {
+            "required_fields": [
+              "expected_revision",
+              "operations"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "authority",
+              "base_revision",
+              "operations"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32009,
+                -32004,
+                -32001,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/topology/apply": {
+          "request": {
+            "required_fields": [
+              "expected_revision",
+              "idempotency_key",
+              "operations"
+            ],
+            "optional_fields": [
+              "reason",
+              "risk_tier"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "operation_id",
+              "status",
+              "revision",
+              "results"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32009,
+                -32004,
+                -32001,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/topology/operation/get": {
+          "request": {
+            "required_fields": [
+              "operation_id"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "operation_id",
+              "status",
+              "revision",
+              "results"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32001,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/topology/audit/query": {
+          "request": {
+            "optional_fields": [
+              "after_seq",
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "records",
+              "next_after_seq",
+              "oldest_available_seq",
+              "latest_seq",
+              "has_more"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32030,
+                -32009,
+                -32001,
+                -32602,
+                -32000
+              ]
+            }
+          ]
         }
       }
     },

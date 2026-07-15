@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional topology control plane, disabled by default: authorized operators
+  can explicitly connect, disconnect, or reconnect agent pairs through
+  revision-pinned, idempotent, durably journaled operations with recoverable
+  receipts and a separately permissioned audit cursor. Cross-authority changes
+  are supported only by the same-process bilateral coordinator, which checks
+  both runtime authorities and rolls back partial physical changes; the local
+  JSON-RPC surface fails cross-process mutation closed. The stock MobKit
+  console gains a capability-gated Connections picker with pairwise actions
+  and no implicit bulk-connect behavior.
+
 ## [0.7.38] - 2026-07-13
 
 ### Added

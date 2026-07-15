@@ -28,7 +28,7 @@ use super::types::{
     CheckpointVersion, ContinuityGeneration, ContinuityHealth, ContinuityRecord,
     ContinuityStoreError, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
     IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
-    RosterContext, SessionSnapshot,
+    RosterContext, SessionSnapshot, TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
@@ -291,6 +291,39 @@ pub struct IdentityFirstRuntimeContext {
 }
 
 impl IdentityFirstRuntimeContext {
+    pub(crate) async fn topology_snapshot_inputs(
+        &self,
+    ) -> Result<(Vec<DurableAgentSpec>, Vec<ManagedPeerEdge>), IdentityRuntimeError> {
+        let previous_identities = self.runtime.registered_identities().await;
+        let roster = self
+            .roster_provider
+            .roster(&RosterContext {
+                mob_definition: self.mob_definition.clone(),
+                previous_identities,
+            })
+            .await
+            .map_err(|error| IdentityRuntimeError::Internal(format!("roster provider: {error}")))?;
+        let identities = roster
+            .iter()
+            .map(|spec| spec.identity.clone())
+            .collect::<Vec<_>>();
+        let declared = match self.topology_provider.as_deref() {
+            Some(provider) => provider
+                .compute_edges(
+                    &identities,
+                    &TopologyContext {
+                        roster: roster.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology provider: {error}"))
+                })?,
+            None => self.runtime.desired_peer_edges.read().await.clone(),
+        };
+        Ok((roster, declared))
+    }
+
     pub fn new(
         runtime: Arc<IdentityRuntime>,
         roster_provider: Arc<dyn RosterProvider>,
@@ -458,6 +491,7 @@ pub struct IdentityRuntime {
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     managed_peer_reconcile_lock: Mutex<()>,
     desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
+    topology_controller: StdRwLock<Option<crate::topology_control::TopologyController>>,
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     best_effort_materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
@@ -498,6 +532,7 @@ impl IdentityRuntime {
             managed_peer_edges: RwLock::new(BTreeSet::new()),
             managed_peer_reconcile_lock: Mutex::new(()),
             desired_peer_edges: RwLock::new(Vec::new()),
+            topology_controller: StdRwLock::new(None),
             materialization_locks: RwLock::new(BTreeMap::new()),
             best_effort_materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
@@ -894,8 +929,41 @@ impl IdentityRuntime {
         *self.desired_peer_edges.write().await = edges;
     }
 
+    pub(crate) fn set_topology_controller(
+        &self,
+        controller: crate::topology_control::TopologyController,
+    ) {
+        *self
+            .topology_controller
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controller);
+    }
+
+    fn topology_controller(&self) -> Option<crate::topology_control::TopologyController> {
+        self.topology_controller
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub async fn desired_peer_edges(&self) -> Vec<ManagedPeerEdge> {
-        self.desired_peer_edges.read().await.clone()
+        let declared = self.desired_peer_edges.read().await.clone();
+        match self.topology_controller() {
+            Some(controller) => {
+                // Materialization/console reads must not observe the target
+                // intent while a topology transaction is between WAL and
+                // terminal commit/rollback.
+                let _admission = controller.mutation_guard().await;
+                match controller.compose_managed_peer_edges(&declared).await {
+                    Ok(edges) => edges,
+                    Err(error) => {
+                        tracing::error!(error = %error, "failed to compose identity topology overlay");
+                        Vec::new()
+                    }
+                }
+            }
+            None => declared,
+        }
     }
 
     async fn registered_identities(&self) -> Vec<AgentIdentity> {
@@ -903,8 +971,7 @@ impl IdentityRuntime {
     }
 
     async fn reachable_peer_identities(&self, identity: &AgentIdentity) -> Vec<AgentIdentity> {
-        self.desired_peer_edges
-            .read()
+        self.desired_peer_edges()
             .await
             .iter()
             .filter_map(|edge| {
@@ -926,6 +993,129 @@ impl IdentityRuntime {
         self.bridge.is_some()
     }
 
+    pub(crate) async fn logical_peer_edges(
+        &self,
+    ) -> Result<Vec<ManagedPeerEdge>, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter_map(|(identity, entry)| {
+                entry
+                    .continuity
+                    .as_ref()
+                    .map(|record| (record.agent_runtime_id.clone(), identity.clone()))
+            })
+            .collect();
+        let runtime_edges = bridge.current_member_wires().await.map_err(|error| {
+            IdentityRuntimeError::Internal(format!("bridge current_member_wires: {error}"))
+        })?;
+        Ok(runtime_edges
+            .into_iter()
+            .filter_map(|(runtime_a, runtime_b)| {
+                let a = runtime_identities.get(&runtime_a)?.clone();
+                let b = runtime_identities.get(&runtime_b)?.clone();
+                ManagedPeerEdge::new(a, b).ok()
+            })
+            .collect())
+    }
+
+    pub(crate) async fn managed_peer_edges_snapshot(
+        &self,
+    ) -> BTreeSet<(AgentIdentity, AgentIdentity)> {
+        self.managed_peer_edges.read().await.clone()
+    }
+
+    /// Logical identity actuator used only while the shared topology
+    /// controller's admission lock is already held by TopologyRuntimeHandle.
+    pub(crate) async fn mutate_managed_peer_edge_admitted(
+        &self,
+        action: crate::topology_control::TopologyAction,
+        edge: &ManagedPeerEdge,
+    ) -> Result<(), IdentityRuntimeError> {
+        let _guard = self.managed_peer_reconcile_lock.lock().await;
+        let Some(bridge) = self.bridge.clone() else {
+            return Ok(());
+        };
+        let (runtime_a, runtime_b) = {
+            let entries = self.entries.read().await;
+            let resolve = |identity: &AgentIdentity| {
+                entries
+                    .get(identity)
+                    .filter(|entry| entry.state == IdentityLifecycleState::Active)
+                    .and_then(|entry| entry.continuity.as_ref())
+                    .map(|record| record.agent_runtime_id.clone())
+                    .ok_or_else(|| {
+                        IdentityRuntimeError::Internal(format!(
+                            "topology endpoint is not active: {identity}"
+                        ))
+                    })
+            };
+            (resolve(edge.a())?, resolve(edge.b())?)
+        };
+        let key = (edge.a().clone(), edge.b().clone());
+        let current = bridge.current_member_wires().await.map_err(|error| {
+            IdentityRuntimeError::Internal(format!("bridge current_member_wires: {error}"))
+        })?;
+        let actual = current.iter().any(|(a, b)| {
+            (a == &runtime_a && b == &runtime_b) || (a == &runtime_b && b == &runtime_a)
+        });
+        let any_half = bridge
+            .current_member_wires_any_half()
+            .await
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "bridge current_member_wires_any_half: {error}"
+                ))
+            })?
+            .iter()
+            .any(|(a, b)| {
+                (a == &runtime_a && b == &runtime_b) || (a == &runtime_b && b == &runtime_a)
+            });
+        match action {
+            crate::topology_control::TopologyAction::Connect if !actual => bridge
+                .wire_peers_batch(&[(runtime_a, runtime_b)])
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {error}"))
+                })?,
+            crate::topology_control::TopologyAction::Reconnect => {
+                if any_half {
+                    bridge
+                        .unwire_peer(&runtime_a, &runtime_b)
+                        .await
+                        .map_err(|error| {
+                            IdentityRuntimeError::Internal(format!("bridge unwire_peer: {error}"))
+                        })?;
+                }
+                bridge
+                    .wire_peers_batch(&[(runtime_a, runtime_b)])
+                    .await
+                    .map_err(|error| {
+                        IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {error}"))
+                    })?;
+            }
+            crate::topology_control::TopologyAction::Disconnect if any_half => bridge
+                .unwire_peer(&runtime_a, &runtime_b)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("bridge unwire_peer: {error}"))
+                })?,
+            _ => {}
+        }
+        let mut managed = self.managed_peer_edges.write().await;
+        if matches!(action, crate::topology_control::TopologyAction::Disconnect) {
+            managed.remove(&key);
+        } else {
+            managed.insert(key);
+        }
+        Ok(())
+    }
+
     /// Apply identity-first managed topology to the concrete mob graph.
     ///
     /// Topology providers return stable logical identities. The mob comms graph
@@ -935,8 +1125,43 @@ impl IdentityRuntime {
         &self,
         desired_edges: &[ManagedPeerEdge],
     ) -> Result<(), IdentityRuntimeError> {
+        let topology_controller = self.topology_controller();
+        let _topology_guard = match topology_controller.as_ref() {
+            Some(controller) => Some(controller.mutation_guard().await),
+            None => None,
+        };
+        if let Some(controller) = topology_controller.as_ref() {
+            controller
+                .prepare_pending_recovery()
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology recovery journal: {error}"))
+                })?;
+        }
         let _guard = self.managed_peer_reconcile_lock.lock().await;
+        let composed_edges;
+        let desired_edges = if let Some(controller) = topology_controller.as_ref() {
+            composed_edges = controller
+                .compose_managed_peer_edges(desired_edges)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology overlay: {error}"))
+                })?;
+            composed_edges.as_slice()
+        } else {
+            desired_edges
+        };
         let Some(bridge) = self.bridge.clone() else {
+            if let Some(controller) = topology_controller.as_ref() {
+                controller
+                    .finalize_recovered_pending(true)
+                    .await
+                    .map_err(|error| {
+                        IdentityRuntimeError::Internal(format!(
+                            "topology recovery receipt: {error}"
+                        ))
+                    })?;
+            }
             return Ok(());
         };
 
@@ -979,6 +1204,30 @@ impl IdentityRuntime {
                     tracing::debug!(
                         error = %err,
                         "identity-first topology reconcile could not inspect current member wires"
+                    );
+                    None
+                }
+            };
+        let current_any_half_edges: Option<BTreeSet<(AgentIdentity, AgentIdentity)>> =
+            match bridge.current_member_wires_any_half().await {
+                Ok(current_runtime_edges) => Some(
+                    current_runtime_edges
+                        .iter()
+                        .filter_map(|(runtime_a, runtime_b)| {
+                            let a = runtime_identities.get(runtime_a)?;
+                            let b = runtime_identities.get(runtime_b)?;
+                            if a <= b {
+                                Some((a.clone(), b.clone()))
+                            } else {
+                                Some((b.clone(), a.clone()))
+                            }
+                        })
+                        .collect(),
+                ),
+                Err(error) => {
+                    tracing::debug!(
+                        %error,
+                        "identity-first topology reconcile could not inspect orphan wire halves"
                     );
                     None
                 }
@@ -1033,7 +1282,7 @@ impl IdentityRuntime {
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
                 let runtime_b = active_runtimes.get(b)?;
-                if current_logical_edges
+                if current_any_half_edges
                     .as_ref()
                     .is_some_and(|edges| !edges.contains(&(a.clone(), b.clone())))
                 {
@@ -1100,6 +1349,14 @@ impl IdentityRuntime {
             managed.remove(&(a, b));
         }
 
+        if let Some(controller) = topology_controller.as_ref() {
+            controller
+                .finalize_recovered_pending(true)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology recovery receipt: {error}"))
+                })?;
+        }
         Ok(())
     }
 

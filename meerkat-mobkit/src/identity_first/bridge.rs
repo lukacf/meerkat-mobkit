@@ -390,6 +390,16 @@ pub trait SessionBridge: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Return edges with either directed half present. The healthy
+    /// `current_member_wires` projection intentionally reports reciprocal
+    /// edges only; mutation/recovery needs this stronger diagnostic surface
+    /// to remove orphan halves.
+    async fn current_member_wires_any_half(
+        &self,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        self.current_member_wires().await
+    }
+
     /// Unwire two active same-mob members by their concrete runtime IDs.
     async fn unwire_peer(
         &self,
@@ -591,6 +601,60 @@ impl MobSessionBridge {
             // The recompute fallback must mint the same comms-safe roster id
             // as the spawn path (meerkat 0.7 MemberCommsName rejects `:`).
             .unwrap_or_else(|| crate::member_comms_id::mob_member_id(runtime_id.as_str()))
+    }
+
+    async fn member_wires(
+        &self,
+        require_reciprocal: bool,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        let members = self.handle.list_members_including_retiring().await;
+        let runtime_members = self.runtime_members.read().await;
+        let member_runtimes = runtime_members
+            .iter()
+            .map(|(runtime, member)| (member.clone(), runtime.clone()))
+            .collect::<HashMap<_, _>>();
+        let active_ids = members
+            .iter()
+            .map(|member| member.agent_identity.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut directed = std::collections::BTreeSet::new();
+        for member in &members {
+            let a = member.agent_identity.to_string();
+            for peer in &member.wired_to {
+                let b = peer.to_string();
+                if active_ids.contains(&b) {
+                    directed.insert((a.clone(), b));
+                }
+            }
+        }
+        let edges = directed
+            .iter()
+            .filter(|(a, b)| !require_reciprocal || directed.contains(&(b.clone(), a.clone())))
+            .map(|(a, b)| {
+                if a <= b {
+                    (a.clone(), b.clone())
+                } else {
+                    (b.clone(), a.clone())
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(edges
+            .into_iter()
+            .filter_map(|(a, b)| {
+                let a = member_runtimes
+                    .get(&a)
+                    .cloned()
+                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&a).into_owned());
+                let b = member_runtimes
+                    .get(&b)
+                    .cloned()
+                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&b).into_owned());
+                Some((
+                    AgentRuntimeId::parse(&a).ok()?,
+                    AgentRuntimeId::parse(&b).ok()?,
+                ))
+            })
+            .collect())
     }
 
     async fn runtime_session_id(
@@ -1476,51 +1540,13 @@ impl SessionBridge for MobSessionBridge {
     async fn current_member_wires(
         &self,
     ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
-        let members = self.handle.list_members_including_retiring().await;
-        let runtime_members = self.runtime_members.read().await;
-        let member_runtimes = runtime_members
-            .iter()
-            .map(|(runtime, member)| (member.clone(), runtime.clone()))
-            .collect::<HashMap<_, _>>();
-        let active_ids = members
-            .iter()
-            .map(|member| member.agent_identity.to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut edges = std::collections::BTreeSet::new();
-        for member in &members {
-            let a = member.agent_identity.to_string();
-            for peer in &member.wired_to {
-                let b = peer.to_string();
-                if !active_ids.contains(&b) {
-                    continue;
-                }
-                let key = if a <= b {
-                    (a.clone(), b)
-                } else {
-                    (b, a.clone())
-                };
-                edges.insert(key);
-            }
-        }
-        Ok(edges
-            .into_iter()
-            .filter_map(|(a, b)| {
-                // Fallback for members not in the in-memory map: the roster id
-                // is the comms-safe encoding of the runtime alias; decode it.
-                let a = member_runtimes
-                    .get(&a)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&a).into_owned());
-                let b = member_runtimes
-                    .get(&b)
-                    .cloned()
-                    .unwrap_or_else(|| crate::member_comms_id::runtime_alias_str(&b).into_owned());
-                Some((
-                    AgentRuntimeId::parse(&a).ok()?,
-                    AgentRuntimeId::parse(&b).ok()?,
-                ))
-            })
-            .collect())
+        self.member_wires(true).await
+    }
+
+    async fn current_member_wires_any_half(
+        &self,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        self.member_wires(false).await
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {

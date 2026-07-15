@@ -61,6 +61,11 @@ export const CONSOLE_RPC_METHODS = {
   workgraphAttentionPause: "mobkit/workgraph/attention/pause",
   workgraphAttentionResume: "mobkit/workgraph/attention/resume",
   workgraphAttentionReassign: "mobkit/workgraph/attention/reassign",
+  topologyQuery: "mobkit/topology/query",
+  topologyPlan: "mobkit/topology/plan",
+  topologyApply: "mobkit/topology/apply",
+  topologyOperationGet: "mobkit/topology/operation/get",
+  topologyAuditQuery: "mobkit/topology/audit/query",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

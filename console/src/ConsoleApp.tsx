@@ -7,6 +7,7 @@ import {
   ConsoleComposer,
   ConsoleDock,
   ConsoleSidebar,
+  TopologyPanel,
   ConsoleWorkbench,
   useConsoleDockController,
 } from "@console-components";
@@ -17,11 +18,14 @@ import type {
   ConversationTimelineEntry,
   IdentityInspectViewState,
   IdentityStatusRow,
+  TopologyMutationIntent,
+  TopologyOperationReceipt,
 } from "@console-core";
 import {
   migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
+  topologyMutationIntent,
 } from "@console-core";
 
 import { canonicalConsoleIdentity, normalizeAgents } from "./lib/agents";
@@ -67,6 +71,16 @@ import {
   type WorkGraphCommandRunner,
 } from "./lib/workgraph-actions";
 import { createConsoleId } from "./lib/id";
+import {
+  createConsoleTopologyMutationRequest,
+  executeConsoleTopologyMutation,
+  normalizeConsoleTopologyQuery,
+  mergeTopologyOperationReceipt,
+  pendingTopologyReceipt,
+  resolveAmbiguousConsoleTopologyMutation,
+  type ConsoleTopologyControlCapabilities,
+  type ConsoleTopologyRpcOperation,
+} from "./lib/topology";
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { resolveConsoleReadOnlyOverride } from "./lib/read-only-override";
 import { Icon, SpriteSheet } from "./icon";
@@ -81,7 +95,6 @@ import type {
   ConsoleGatingActionPayload,
   ConsoleReplayUnavailablePayload,
   ConsoleTimelinePage,
-  ConsoleTopologyNode,
   MemoryAuditVerdictEntry,
   MemoryDreamRun,
   MemoryDreamRunSheet,
@@ -105,7 +118,6 @@ import type {
   WorkGraphSnapshotResult,
   WorkGraphWireEvent,
 } from "./types";
-import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { AccessPanel, type AccessPreviewResult } from "./panels/AccessPanel";
@@ -676,6 +688,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     denied: false,
     error: null,
   });
+  const [topologyQueryResult, setTopologyQueryResult] = React.useState<unknown>(null);
+  const [topologyCapabilities, setTopologyCapabilities] =
+    React.useState<ConsoleTopologyControlCapabilities | null>(null);
+  const [topologyOperations, setTopologyOperations] =
+    React.useState<TopologyOperationReceipt[]>([]);
+  const [topologyConnectionSourceId, setTopologyConnectionSourceId] =
+    React.useState<string | null>(null);
   const [activeActivityPresetId, setActiveActivityPresetId] =
     React.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] =
@@ -852,7 +871,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function controlWorkbenchTarget(kind: "routing" | "gating" | "access" | "memory" | "workgraph"): ConsoleWorkbenchTarget {
+  function controlWorkbenchTarget(kind: "routing" | "gating" | "access" | "memory" | "workgraph" | "topology"): ConsoleWorkbenchTarget {
     return requireWorkbenchTarget(buildControlTarget(kind));
   }
 
@@ -2007,6 +2026,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       experience?.runtime_capabilities?.can_send_messages === false);
   const consoleReadOnlyRef = React.useRef(false);
   consoleReadOnlyRef.current = consoleReadOnly;
+  const normalizedTopology = React.useMemo(
+    () => normalizeConsoleTopologyQuery(topologyQueryResult, {
+      agents,
+      fallbackNodes: experience?.topology?.live_snapshot?.nodes || [],
+      capabilities: topologyCapabilities,
+      connectionSourceId: topologyConnectionSourceId,
+      operations: topologyOperations,
+      consoleReadOnly,
+    }),
+    [
+      agents,
+      consoleReadOnly,
+      experience?.topology?.live_snapshot?.nodes,
+      topologyCapabilities,
+      topologyConnectionSourceId,
+      topologyOperations,
+      topologyQueryResult,
+    ],
+  );
   const visibleControls = React.useMemo<NavKind[]>(() => {
     const runtimeControls: NavKind[] = hasMobControlSurface
       ? [
@@ -2493,6 +2531,32 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     [baseUrl, refreshAccessData, loadExperience],
   );
 
+  const refreshTopologyData = React.useCallback(async () => {
+    try {
+      const capabilities = await consoleTransport.capabilities();
+      setTopologyCapabilities(capabilities.topologyControl || null);
+      const queryMethod = consoleCommandMethod(CONSOLE_COMMAND_NAMES.topologyQuery);
+      if (!capabilities.methods.includes(queryMethod)) {
+        // Older and topology-unaware runtimes retain the passive graph/roles
+        // console. Mutation UI is never inferred from generic wiring support.
+        setTopologyQueryResult(null);
+        return;
+      }
+      const result = await executeHeadlessCommand(
+        CONSOLE_COMMAND_NAMES.topologyQuery,
+        controlWorkbenchTarget("topology"),
+      );
+      setTopologyQueryResult(result);
+    } catch (error) {
+      // Capability loss, an authorization change, or a failed refresh must
+      // revoke stale edit affordances immediately. The passive topology view
+      // remains available from the experience snapshot.
+      setTopologyCapabilities(null);
+      setTopologyQueryResult(null);
+      throw error;
+    }
+  }, [consoleTransport]);
+
   const refreshPanelData = React.useCallback(async () => {
     const openPanels = dock.viewState.panels
       .map((p) => p.target)
@@ -2532,6 +2596,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (openPanels.some((t) => t.kind === "workgraph")) {
       await refreshWorkGraphData();
     }
+    if (openPanels.some((t) => t.kind === "topology")) {
+      await refreshTopologyData();
+    }
     if (
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
@@ -2548,7 +2615,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
-  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshWorkGraphData]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface, refreshAccessData, refreshMemoryData, refreshTopologyData, refreshWorkGraphData]);
 
   React.useEffect(() => {
     void refreshPanelData().catch(() => {});
@@ -3361,6 +3428,77 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
+  function upsertTopologyOperation(receipt: TopologyOperationReceipt) {
+    setTopologyOperations((current) => mergeTopologyOperationReceipt(current, receipt));
+  }
+
+  function executeTopologyRpc(
+    operation: ConsoleTopologyRpcOperation,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const command = operation === "plan"
+      ? CONSOLE_COMMAND_NAMES.topologyPlan
+      : operation === "apply"
+        ? CONSOLE_COMMAND_NAMES.topologyApply
+        : CONSOLE_COMMAND_NAMES.topologyOperationGet;
+    return executeHeadlessCommand(command, controlWorkbenchTarget("topology"), params);
+  }
+
+  async function refreshTopologySurfaces() {
+    await Promise.all([
+      refreshTopologyData(),
+      loadExperience(),
+    ]);
+  }
+
+  async function onTopologyMutation(intent: TopologyMutationIntent) {
+    const idempotencyKey = createConsoleId("topology");
+    const request = createConsoleTopologyMutationRequest(intent, idempotencyKey);
+    const pending = pendingTopologyReceipt(request.intent, request.idempotencyKey);
+    upsertTopologyOperation(pending);
+    setActionError("");
+    const attempt = await executeConsoleTopologyMutation(request, executeTopologyRpc);
+    upsertTopologyOperation(attempt.receipt);
+    setActionError(attempt.error || "");
+    try {
+      await refreshTopologySurfaces();
+    } catch (refreshError) {
+      if (!attempt.error) setActionError(errorMessage(refreshError));
+    }
+  }
+
+  async function onRetryTopologyOperation(receipt: TopologyOperationReceipt) {
+    if (receipt.retryMode === "revision_rebase") {
+      if (!receipt.edge || !normalizedTopology) {
+        setActionError("Refresh topology before rebasing this operation.");
+        return;
+      }
+      const rebased = topologyMutationIntent(
+        normalizedTopology.management,
+        receipt.action,
+        receipt.edge,
+        "host_action",
+      );
+      if (!rebased) {
+        setActionError("MobKit no longer permits this topology change.");
+        return;
+      }
+      await onTopologyMutation({
+        ...rebased,
+        reason: receipt.request?.reason || rebased.reason,
+      });
+      return;
+    }
+    const attempt = await resolveAmbiguousConsoleTopologyMutation(receipt, executeTopologyRpc);
+    upsertTopologyOperation(attempt.receipt);
+    setActionError(attempt.error || "");
+    try {
+      await refreshTopologySurfaces();
+    } catch (refreshError) {
+      if (!attempt.error) setActionError(errorMessage(refreshError));
+    }
+  }
+
   // =========================================================================
   // WORKGRAPH OPERATOR ACTIONS (inline card + panel)
   // =========================================================================
@@ -4081,9 +4219,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (target.kind === "topology")
       return (
         <TopologyPanel
-          nodes={experience?.topology?.live_snapshot?.nodes || []}
+          nodes={normalizedTopology?.nodes || experience?.topology?.live_snapshot?.nodes || []}
           agents={agents}
           activity={liveFrames}
+          management={normalizedTopology?.management || null}
+          connectionSourceId={topologyConnectionSourceId}
+          onConnectionSourceChange={setTopologyConnectionSourceId}
+          onRequestMutation={(intent) => onTopologyMutation(intent)}
+          onRetryOperation={(receipt) => onRetryTopologyOperation(receipt)}
         />
       );
     if (target.kind === "health")

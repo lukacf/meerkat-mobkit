@@ -114,6 +114,8 @@ test("stock console runtime path is backed by the headless controller", () => {
   assert.match(source, /\bconsoleController\.timeline\.subscribeWithBackfill\b/);
   assert.match(source, /\bconsoleController\.commands\.sendMessage\b/);
   assert.match(source, /\bconsoleController\.commands\.execute\b/);
+  assert.match(source, /TopologyPanel[\s\S]*from\s+["']@console-components["']/);
+  assert.doesNotMatch(source, /from\s+["']\.\/panels\/TopologyPanel["']/);
   for (const rawHelper of [
     "fetchJson",
     "queryTimeline",

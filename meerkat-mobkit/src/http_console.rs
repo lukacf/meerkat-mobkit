@@ -118,6 +118,10 @@ pub struct ConsoleJsonState {
     /// always serialize their check-then-act windows against the SAME
     /// instance whatever constructed the service.
     pub(crate) workgraph: Option<meerkat::WorkGraphService>,
+    /// Optional topology control-plane handle. Thin/aggregator-only routers
+    /// leave this absent; unified runtimes always pass their handle, even
+    /// while policy mode is disabled, so query remains available.
+    pub(crate) topology: Option<crate::topology_control::TopologyRuntimeHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +268,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         operator_resolver: None,
         identity_roster: None,
         workgraph: None,
+        topology: None,
     })
 }
 
@@ -298,6 +303,7 @@ pub fn console_json_router_with_aggregator_and_access(
         operator_resolver: None,
         identity_roster: None,
         workgraph: None,
+        topology: None,
     })
 }
 
@@ -354,6 +360,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -376,6 +383,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<meerkat::WorkGraphService>,
+    topology: Option<crate::topology_control::TopologyRuntimeHandle>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -426,6 +434,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         operator_resolver,
         identity_roster,
         workgraph,
+        topology,
     })
 }
 
@@ -638,6 +647,7 @@ pub async fn console_rpc_handler(
         state.memory_panel.as_ref(),
         state.identity_roster.clone(),
         state.workgraph.as_ref(),
+        state.topology.as_ref(),
     ))
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
@@ -1409,6 +1419,9 @@ fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::r
 }
 
 fn is_console_mutating_rpc_method(method: &str) -> bool {
+    if crate::rpc::topology_methods::is_topology_mutating_method(method) {
+        return true;
+    }
     if crate::rpc::workgraph_methods::is_workgraph_mutating_method(method) {
         return true;
     }
@@ -3134,6 +3147,7 @@ pub async fn console_rpc_multipart_handler(
                 state.memory_panel.as_ref(),
                 state.identity_roster.clone(),
                 state.workgraph.as_ref(),
+                state.topology.as_ref(),
             ))
             .await
         };
@@ -5005,6 +5019,7 @@ async fn handle_console_runtime_rpc(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -5030,6 +5045,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<&meerkat::WorkGraphService>,
+    topology: Option<&crate::topology_control::TopologyRuntimeHandle>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
     let can_mutate = is_authenticated && !read_only;
@@ -5198,6 +5214,16 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
             }
+            let topology_capabilities = topology.map(|topology| {
+                let (topology_methods, capabilities) =
+                    crate::rpc::topology_methods::capability_projection(
+                        topology,
+                        access_view,
+                        !can_mutate,
+                    );
+                methods.extend(topology_methods);
+                capabilities
+            });
             // Intersect the advertised methods with the caller's grants, the
             // same way `/console/experience` does, so a non-admin doesn't get
             // a method list its panels act on only to hit `-32030`. A probe
@@ -5246,10 +5272,127 @@ async fn handle_console_runtime_rpc_with_visibility(
                         "can_send_messages": cap(ACTION_AGENT_SEND),
                         "can_retire_members": cap(ACTION_AGENT_RETIRE),
                         "can_spawn_members": cap(ACTION_AGENT_SPAWN),
-                    }
+                    },
+                    "topology_control": topology_capabilities,
                 })),
                 None,
             )
+        }
+        crate::rpc::topology_methods::TOPOLOGY_QUERY_METHOD => {
+            let Some(topology) = topology else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            serde_json::to_value(
+                crate::rpc::topology_methods::handle_query(
+                    topology,
+                    response_id,
+                    access_view,
+                    !can_mutate,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null)
+        }
+        crate::rpc::topology_methods::TOPOLOGY_PLAN_METHOD => {
+            let Some(topology) = topology else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            serde_json::to_value(
+                crate::rpc::topology_methods::handle_plan(
+                    topology,
+                    response_id,
+                    &request.params,
+                    access_view,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null)
+        }
+        crate::rpc::topology_methods::TOPOLOGY_APPLY_METHOD => {
+            let Some(topology) = topology else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            serde_json::to_value(
+                crate::rpc::topology_methods::handle_apply(
+                    topology,
+                    response_id,
+                    &request.params,
+                    access_view,
+                    authenticated_principal,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null)
+        }
+        crate::rpc::topology_methods::TOPOLOGY_OPERATION_METHOD => {
+            let Some(topology) = topology else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            serde_json::to_value(
+                crate::rpc::topology_methods::handle_operation(
+                    topology,
+                    response_id,
+                    &request.params,
+                    access_view,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null)
+        }
+        crate::rpc::topology_methods::TOPOLOGY_AUDIT_METHOD => {
+            let Some(topology) = topology else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            serde_json::to_value(
+                crate::rpc::topology_methods::handle_audit(
+                    topology,
+                    response_id,
+                    &request.params,
+                    access_view,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null)
         }
         "mobkit/agent_memory/remember" => {
             let Some(identity_runtime) = &identity_runtime else {
@@ -6975,10 +7118,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                         // Converge declared definition wiring after every
                         // materialization — upstream spawn-time wiring is
                         // bring-up-order dependent (HomeCore, 2026-07-09).
-                        let _ = crate::unified_runtime::edge_reconcile::reconcile_definition_edges(
-                            runtime,
-                        )
-                        .await;
+                        let _ = reconcile_console_topology(runtime, topology).await;
                         let outcome = match result.outcomes.get(&identity) {
                             Some(crate::identity_first::RestoreOutcome::Created { .. }) => {
                                 "created"
@@ -7043,9 +7183,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             let mid = spec.identity.clone();
             match handle.ensure_member(spec).await {
                 Ok(_outcome) => {
-                    let _ =
-                        crate::unified_runtime::edge_reconcile::reconcile_definition_edges(runtime)
-                            .await;
+                    let _ = reconcile_console_topology(runtime, topology).await;
                     let body = match lookup_member_with_session(&handle, &mid).await {
                         Some((entry, _sid)) => member_entry_to_json(&entry),
                         None => Value::Null,
@@ -7260,8 +7398,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             // to MobRuntime") — which left declared definition wiring
             // unreconcilable from the console surface while the stdin
             // surface had the real handler (HomeCore, 2026-07-09).
-            let report =
-                crate::unified_runtime::edge_reconcile::reconcile_definition_edges(runtime).await;
+            let report = reconcile_console_topology(runtime, topology).await;
             response_value(
                 response_id,
                 Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
@@ -7911,6 +8048,16 @@ async fn handle_console_runtime_rpc_with_visibility(
                 data: None,
             }),
         ),
+    }
+}
+
+async fn reconcile_console_topology(
+    runtime: &MobRuntime,
+    topology: Option<&crate::topology_control::TopologyRuntimeHandle>,
+) -> crate::unified_runtime::UnifiedRuntimeReconcileEdgesReport {
+    match topology {
+        Some(topology) => topology.reconcile().await,
+        None => crate::unified_runtime::edge_reconcile::reconcile_definition_edges(runtime).await,
     }
 }
 
@@ -10545,6 +10692,7 @@ comms = true
                 None,
                 None,
                 None,
+                None,
             ))
             .await;
             assert_ne!(
@@ -10656,6 +10804,7 @@ comms = true
                     None,
                     None,
                     None,
+                    None,
                 ))
                 .await;
                 assert_eq!(
@@ -10726,6 +10875,7 @@ comms = true
                 rpc_request_with_params(method, json!({ "identity": "review:singleton" })),
                 true,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -11000,6 +11150,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11095,6 +11246,7 @@ comms = true
             rpc_request("mobkit/reset_all"),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -11216,6 +11368,7 @@ comms = true
             rpc_request_with_params("mobkit/retire", json!({ "identity": "review:singleton" })),
             true,
             false,
+            None,
             None,
             None,
             None,
@@ -11581,6 +11734,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11636,6 +11790,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11672,6 +11827,7 @@ comms = true
             None,
             Some(&send_only_controller),
             Some(&send_only_view),
+            None,
             None,
             None,
             None,
@@ -11749,6 +11905,7 @@ comms = true
             None,
             None,
             None,
+            None,
         ))
         .await;
         assert_eq!(
@@ -11785,6 +11942,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
             None,
             None,
@@ -11826,6 +11984,7 @@ comms = true
             None,
             Some(&wildcard_allow_exact_deny_controller),
             Some(&wildcard_allow_exact_deny_view),
+            None,
             None,
             None,
             None,

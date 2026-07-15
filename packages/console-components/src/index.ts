@@ -12,7 +12,10 @@ export { ConsoleDock } from "./dock/console-dock";
 export { ConsolePendingStack } from "./pending/console-pending-stack";
 export { useConsoleDockController } from "./dock/use-console-dock-controller";
 export { ConsoleSidebar } from "./sidebar/console-sidebar";
+export { ConnectionPicker } from "./topology/connection-picker";
 export { TopologyPanel } from "./topology/topology-panel";
+export { edgeKey as topologyEdgeKey } from "./topology/data";
+export { topologyAuthorityRevisionToken } from "@console-core";
 export { ConsoleWorkbench } from "./workbench/console-workbench";
 export type { IconRenderer } from "./shared";
 export type { ConsoleActivityRailProps } from "./activity/console-activity-rail";
@@ -36,8 +39,29 @@ export type {
 export type {
   ConsoleAgent,
   ConsoleFrame,
+  ConsoleTopologyNodePresentation,
   ConsoleTopologyNode,
+  TopologyActionCapability,
+  TopologyAuthorityRevisionTransition,
+  TopologyCanonicalEdge,
+  TopologyConnectionState,
+  TopologyEdgeAffordance,
+  TopologyEdgeRef,
+  TopologyEndpoint,
+  TopologyEndpointPresentation,
+  TopologyEndpointRef,
+  TopologyManagementState,
+  TopologyMutationIntent,
+  TopologyMutationKind,
+  TopologyMutationOrigin,
+  TopologyOperationReceipt,
+  TopologyPanelView,
 } from "./topology/types";
+export type {
+  ConnectionPickerProps,
+  TopologyBoundedAction,
+} from "./topology/connection-picker";
+export type { TopologyPanelProps } from "./topology/topology-panel";
 export type {
   ConsoleSidebarProps,
   ConsoleSidebarActionButtonScope,

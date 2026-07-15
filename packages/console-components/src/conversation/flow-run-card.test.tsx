@@ -146,7 +146,7 @@ describe("FlowRunCard", () => {
     expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
   });
 
-  test("keeps Resume available on a compact restorable card without exposing Message", () => {
+  test("keeps Resume available on an expanded restorable card without exposing Message", () => {
     // A legacy no-argument callback remains assignable; JavaScript safely
     // ignores the new helper and entry arguments supplied by FlowRunCard.
     const onRestore: () => void = vi.fn();
@@ -162,7 +162,9 @@ describe("FlowRunCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(onRestore).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    expect(screen.getByRole("region", { name: "Release crew details" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide details" }));
+    expect(screen.queryByRole("region", { name: "Release crew details" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Message Builder" })).toBeNull();
     expect(onMessageMember).not.toHaveBeenCalled();
   });

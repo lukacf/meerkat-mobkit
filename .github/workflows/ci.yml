@@ -90,12 +90,24 @@ jobs:
       - run: npm --prefix console run contracts:console --silent
       - run: npm --prefix console run phase1:targets --silent
       - run: npm --prefix console run headless:transport --silent
+      - run: npm --prefix console run topology:adapter --silent
+      - run: npm --prefix console run topology:components --silent
       - run: npm --prefix console run components:reuse --silent
       - run: npm --prefix console run fixtures:console-customization --silent
       - run: npm --prefix console run embedded:freshness --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent
+      - name: Stock incident topology acceptance
+        run: examples/001-incident-command-center-pack/topology_examples.sh
+      - name: Upload incident topology screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-topology-${{ github.run_id }}
+          path: output/playwright/incident-topology-*.png
+          if-no-files-found: warn
+          retention-days: 7
       # Seeded memory-console lane (deterministic; the LIVE lane
       # e2e:memory:live is creds-gated acceptance and never runs in CI).
       # CARGO_INCREMENTAL=0 guards the known rustc ICE, same as flow-editor.

@@ -18,11 +18,21 @@
 // No synthetic event bus, no fabricated traffic.
 
 import React from "react";
-import type { ResponsePhase } from "@console-core";
-import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "./types";
+import {
+  topologyEdgeKey,
+  type ResponsePhase,
+  type TopologyEndpointRef,
+} from "@console-core";
+import type {
+  ConsoleAgent,
+  ConsoleFrame,
+  ConsoleTopologyNode,
+  ConsoleTopologyNodePresentation,
+} from "./types";
 
 export interface TopoAgent {
   id: string;
+  ref: TopologyEndpointRef;
   label: string;
   role: string;
   state: string;
@@ -30,6 +40,7 @@ export interface TopoAgent {
   group: string;
   subgroup?: string;
   labels: Record<string, string>;
+  presentation?: ConsoleTopologyNodePresentation;
   memberId?: string;
   responsePhase?: ResponsePhase;
 }
@@ -352,9 +363,11 @@ export function buildGraph(
   const byId = new Map<string, TopoAgent>();
   const list: TopoAgent[] = [];
   for (const n of source) {
-    const id = (n.identity || n.label || "").trim();
+    const id = (n.ref?.id || n.identity || n.label || "").trim();
     if (!id || byId.has(id)) continue;
-    const registry = agentByIdentity.get(id);
+    const registry = agentByIdentity.get(id)
+      || (n.ref?.identity ? agentByIdentity.get(n.ref.identity) : undefined)
+      || (n.identity ? agentByIdentity.get(n.identity) : undefined);
     const labels = {
       ...(registry?.labels || {}),
       ...(n.labels || {}),
@@ -371,6 +384,7 @@ export function buildGraph(
     ).trim();
     const agent: TopoAgent = {
       id,
+      ref: n.ref ? { ...n.ref, id } : { id },
       label: (n.label || registry?.label || labels.display_name || id).trim(),
       role: (n.role || registry?.role || labels.role || "agent").trim(),
       state: (n.state || registry?.state || "").toLowerCase(),
@@ -378,6 +392,7 @@ export function buildGraph(
       group,
       subgroup: n.subgroup || registry?.subgroup || labels.shard || undefined,
       labels,
+      presentation: n.presentation,
       memberId: registry?.member_id,
       responsePhase: registry?.response_phase,
     };
@@ -394,7 +409,7 @@ export function buildGraph(
   for (const a of list) {
     for (const t of a.wiredTo) {
       if (!byId.has(t) || t === a.id) continue;
-      const key = a.id < t ? `${a.id}|${t}` : `${t}|${a.id}`;
+      const key = topologyEdgeKey(a.id, t);
       if (seen.has(key)) continue;
       seen.add(key);
       edges.push({ from: a.id, to: t });
@@ -556,7 +571,7 @@ export function deriveTopologyActivity(
 /// Convenience: per-edge "is this edge currently carrying a pulse?"
 /// derivative. Useful for emphasising hot edges in any layout.
 export function edgeKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
+  return topologyEdgeKey(a, b);
 }
 
 export function graphStats(graph: TopoGraph): TopoGraphStats {

@@ -347,6 +347,45 @@ Primary RPC methods:
 - `mobkit/blob/upload` - multipart blob upload
 - `mobkit/retire`, `mobkit/respawn`, and `mobkit/reset` - operator lifecycle actions
 - `mobkit/send_message` - legacy member-addressed send path
+- `mobkit/topology/query`, `mobkit/topology/plan`, `mobkit/topology/apply`,
+  `mobkit/topology/operation/get`, and `mobkit/topology/audit/query` - optional,
+  revisioned connection management and separately permissioned durable audit
+
+Topology management is opt-in at the runtime. With the default disabled
+policy, the stock console remains a passive topology viewer and does not show
+the Connections tab. Read-only mode exposes searchable connection state with
+server-provided denial reasons. Editable mode offers only pairwise actions
+authorized for both endpoints; bulk controls appear only when a host supplies
+an explicitly bounded action and the runtime advertises `topology.bulk`.
+
+The reusable `TopologyPanel` keeps the authority-local and bilateral CAS
+contracts distinct. Stock JSON-RPC hosts supply the scalar query `revision`.
+Same-process coordinator hosts also supply the exact
+`authority_revisions` map as `authorityRevisions`; mutation callbacks receive
+that map as `expectedAuthorityRevisions` and must pass it to the bilateral
+coordinator as `expected_revisions`. Cross-authority hosts must never collapse
+that map to the scalar local revision or route the intent through the local
+JSON-RPC adapter. They may use `topologyAuthorityRevisionToken` as the
+component's scalar view token when the coordinator snapshot has no scalar
+revision, but never as the coordinator CAS value.
+
+Editable mode requires a durable runtime state path; MobKit fails closed
+rather than accepting reconnect/suppression intent that would disappear on
+restart:
+
+```rust
+let runtime = UnifiedRuntimeBuilder::new(...)
+    .persistent_state(app_state_dir)
+    .topology_control(TopologyControlPolicy {
+        mode: TopologyControlMode::Editable,
+        allow_bulk: false,
+        max_batch_size: 1,
+        allow_cross_authority: false,
+        ..TopologyControlPolicy::default()
+    })?
+    .build()
+    .await?;
+```
 
 ## Authentication
 

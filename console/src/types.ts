@@ -11,6 +11,7 @@ import type {
   RoutingSectionView,
   SidebarWatchFields,
   ToolCallAccumulatorState,
+  TopologyEndpointRef,
 } from "@console-core";
 
 export interface ConsoleFrame {
@@ -219,6 +220,8 @@ export interface ConsolePolicyConfig {
 
 export interface ConsoleTopologyNode {
   identity?: string;
+  /** Optional canonical endpoint metadata for topology-aware hosts. */
+  ref?: TopologyEndpointRef;
   label?: string;
   role?: string;
   state?: string;

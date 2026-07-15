@@ -35,8 +35,8 @@ use meerkat_mobkit::runtime::{
 use meerkat_mobkit::unified_runtime::{DesiredPeerEdge, EdgeDiscovery, UnifiedRuntime};
 use meerkat_mobkit::{
     AgentMemoryConfig, DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeDecisionState, SqliteAgentMemoryStore, TrustedOidcRuntimeConfig,
-    build_runtime_decision_state,
+    RuntimeDecisionInputs, RuntimeDecisionState, SqliteAgentMemoryStore, TopologyControlPolicy,
+    TrustedOidcRuntimeConfig, build_runtime_decision_state,
 };
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
@@ -52,6 +52,10 @@ pub struct IncidentScenario {
     pub identities: Vec<IncidentIdentity>,
     #[serde(default)]
     pub links: Vec<IncidentLink>,
+    /// Optional operator topology control. The MobKit default is disabled;
+    /// this stock example opts in explicitly in scenario.yaml.
+    #[serde(default)]
+    pub topology_control: TopologyControlPolicy,
     #[serde(default)]
     pub routes: Vec<IncidentRouteSeed>,
     #[serde(default)]
@@ -228,6 +232,19 @@ async fn build_runtime_bundle_with_client(
             },
         )
         .timeout(Duration::from_mins(1));
+    builder = builder
+        .topology_control(scenario.topology_control.clone())
+        .context("configure incident topology control")?;
+    // Editable topology is intentionally a durable control plane. Keep the
+    // stock example valid even when it is embedded by tests or launched
+    // directly without the browser-smoke environment wrapper. Operators can
+    // still choose an explicit restart-stable location through the env var.
+    let state_dir = std::env::var("INCIDENT_COMMAND_CENTER_STATE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_incident_state_dir);
+    builder = builder.persistent_state(state_dir);
     if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
     }
@@ -281,7 +298,7 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
     runtime
         .reconcile_modules(
             vec!["router".to_string(), "delivery".to_string()],
-            Duration::from_secs(5),
+            incident_module_reconcile_timeout(),
         )
         .await
         .context("reconcile incident modules")?;
@@ -355,6 +372,33 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
     Ok(())
 }
 
+fn incident_module_reconcile_timeout() -> Duration {
+    let configured = std::env::var("INCIDENT_COMMAND_CENTER_MODULE_RECONCILE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0);
+    Duration::from_secs(configured.unwrap_or_else(|| {
+        // The deterministic topology lane may need to compile its generated
+        // module binaries on first boot. The live example keeps its tight
+        // operational timeout; the offline acceptance gives that cold build a
+        // bounded readiness window instead of failing after compilation.
+        if incident_env_flag("INCIDENT_COMMAND_CENTER_OFFLINE") {
+            600
+        } else {
+            5
+        }
+    }))
+}
+
+fn incident_env_flag(key: &str) -> bool {
+    std::env::var(key).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLink]) -> Result<()> {
     if links.is_empty() {
         return Ok(());
@@ -379,7 +423,17 @@ async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLin
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        last_missing = missing_scenario_links(links, &wired_to);
+        let suppressed = runtime
+            .topology_runtime_handle()
+            .query()
+            .await
+            .context("query topology intent while waiting for incident wiring")?
+            .edges
+            .into_iter()
+            .filter(|edge| edge.suppressed)
+            .map(|edge| canonical_incident_edge(&edge.edge.a.identity, &edge.edge.b.identity))
+            .collect::<BTreeSet<_>>();
+        last_missing = missing_scenario_links(links, &wired_to, &suppressed);
         if last_missing.is_empty() {
             return Ok(());
         }
@@ -399,9 +453,11 @@ async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLin
 fn missing_scenario_links(
     links: &[IncidentLink],
     wired_to: &BTreeMap<String, BTreeSet<String>>,
+    suppressed: &BTreeSet<(String, String)>,
 ) -> Vec<String> {
     links
         .iter()
+        .filter(|link| !suppressed.contains(&canonical_incident_edge(&link.from, &link.to)))
         .filter_map(|link| {
             let from_has_to = wired_to
                 .get(&link.from)
@@ -416,6 +472,14 @@ fn missing_scenario_links(
             }
         })
         .collect()
+}
+
+fn canonical_incident_edge(left: &str, right: &str) -> (String, String) {
+    if left < right {
+        (left.to_string(), right.to_string())
+    } else {
+        (right.to_string(), left.to_string())
+    }
 }
 
 pub async fn seed_escalation_chain(
@@ -763,56 +827,185 @@ fn example_module_config(scenario: &IncidentScenario) -> Result<MobKitConfig> {
     })
 }
 
-fn fixture_binary_path() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
-        return Ok(PathBuf::from(path));
+fn default_incident_state_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // `cargo test` may build both runtime-bundle tests inside one process,
+        // while nextest runs them in separate processes. A process id plus a
+        // local sequence keeps both execution models isolated without
+        // weakening the example's durable-state requirement.
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "incident-command-center-state-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
-    // Resolve next to the running example binary first: the example lives at
-    // <target>/debug/examples/<name> and mcp_fixture at <target>/debug/
-    // mcp_fixture, so this keeps repo-cargo's isolated CARGO_TARGET_DIR
-    // working without any env plumbing (and without falling through to the
-    // raw `cargo build` below, which would create a stray ./target).
-    if let Ok(current_exe) = std::env::current_exe() {
+    #[cfg(not(test))]
+    std::env::temp_dir().join("incident-command-center-state")
+}
+
+fn fixture_binary_path() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
+        let binary_path = PathBuf::from(path);
+        if binary_path.is_file() {
+            return Ok(binary_path);
+        }
+        bail!(
+            "CARGO_BIN_EXE_mcp_fixture points to missing fixture binary: {}",
+            binary_path.display()
+        );
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().context("workspace root")?;
+    let target_dir = incident_fixture_target_dir(
+        workspace_root,
+        std::env::var_os("CARGO_TARGET_DIR"),
+        std::env::current_exe().ok(),
+    );
+    let binary_path = fixture_binary_in_target(&target_dir);
+    if binary_path.is_file() {
+        return Ok(binary_path);
+    }
+
+    // Keep the fallback build and the returned path on the exact same target
+    // root. `repo-cargo` exports an isolated CARGO_TARGET_DIR; inheriting it
+    // for the build but returning `<workspace>/target/...` made a cold lane
+    // appear to build successfully and then fail module reconciliation with a
+    // nonexistent command path.
+    let status = Command::new("cargo")
+        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
+        .current_dir(workspace_root)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .status()
+        .context("build mcp_fixture")?;
+    if !status.success() {
+        bail!("building mcp_fixture must succeed");
+    }
+    if !binary_path.is_file() {
+        bail!(
+            "building mcp_fixture did not produce expected binary: {}",
+            binary_path.display()
+        );
+    }
+    Ok(binary_path)
+}
+
+fn incident_fixture_target_dir(
+    workspace_root: &Path,
+    configured_target_dir: Option<std::ffi::OsString>,
+    current_exe: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(configured_target_dir) = configured_target_dir
+        && !configured_target_dir.is_empty()
+    {
+        let configured_target_dir = PathBuf::from(configured_target_dir);
+        return if configured_target_dir.is_absolute() {
+            configured_target_dir
+        } else {
+            workspace_root.join(configured_target_dir)
+        };
+    }
+
+    // Direct execution of a prebuilt example may not preserve Cargo's env.
+    // Infer `<target>` from `<target>/<profile>/examples/<example>` before
+    // falling back to the workspace-local Cargo default.
+    if let Some(current_exe) = current_exe {
         let mut dir = current_exe.parent();
         while let Some(candidate_dir) = dir {
-            let candidate = candidate_dir.join("mcp_fixture");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-            if candidate_dir.ends_with("debug") || candidate_dir.ends_with("release") {
+            if candidate_dir
+                .file_name()
+                .is_some_and(|name| name == "debug" || name == "release")
+            {
+                if let Some(target_dir) = candidate_dir.parent() {
+                    return target_dir.to_path_buf();
+                }
                 break;
             }
             dir = candidate_dir.parent();
         }
     }
 
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        let binary_path = PathBuf::from(target_dir).join("debug").join("mcp_fixture");
-        if binary_path.exists() {
-            return Ok(binary_path);
-        }
-    }
+    workspace_root.join("target")
+}
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir.parent().context("workspace root")?;
-    let binary_path = workspace_root
-        .join("target")
+fn fixture_binary_in_target(target_dir: &Path) -> PathBuf {
+    target_dir
         .join("debug")
-        .join("mcp_fixture");
-    if binary_path.exists() {
-        return Ok(binary_path);
+        .join(format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX))
+}
+
+#[cfg(test)]
+mod fixture_binary_path_tests {
+    use super::{fixture_binary_in_target, incident_fixture_target_dir};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn configured_target_dir_is_the_fixture_build_and_lookup_root() {
+        let workspace_root = Path::new("/workspace/mobkit");
+        let target_dir = PathBuf::from("/isolated/cargo-target");
+
+        let resolved = incident_fixture_target_dir(
+            workspace_root,
+            Some(target_dir.clone().into_os_string()),
+            Some(PathBuf::from(
+                "/stale/target/debug/examples/incident_command_center",
+            )),
+        );
+
+        assert_eq!(resolved, target_dir);
+        assert_eq!(
+            fixture_binary_in_target(&resolved),
+            target_dir
+                .join("debug")
+                .join(format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX))
+        );
     }
 
-    let status = Command::new("cargo")
-        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
-        .current_dir(workspace_root)
-        .status()
-        .context("build mcp_fixture")?;
-    if !status.success() {
-        bail!("building mcp_fixture must succeed");
+    #[test]
+    fn relative_target_dir_is_resolved_like_the_fallback_cargo_build() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(
+                workspace_root,
+                Some(OsString::from(".cargo-target")),
+                None,
+            ),
+            workspace_root.join(".cargo-target")
+        );
     }
-    Ok(binary_path)
+
+    #[test]
+    fn direct_example_execution_infers_its_target_root_without_env() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(
+                workspace_root,
+                None,
+                Some(PathBuf::from(
+                    "/isolated/cargo-target/debug/examples/incident_command_center",
+                )),
+            ),
+            PathBuf::from("/isolated/cargo-target")
+        );
+    }
+
+    #[test]
+    fn workspace_target_is_the_cargo_default_without_other_context() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(workspace_root, None, None),
+            workspace_root.join("target")
+        );
+    }
 }
 
 fn fixture_module(id: &str, fixture_binary: &Path) -> ModuleConfig {

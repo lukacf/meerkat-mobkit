@@ -430,6 +430,92 @@ span.cc-conversation-turn-preview__file-icon::after {
   font-size: var(--_cc-text-xs);
 }
 
+.cc-connection-event {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: rgba(196, 201, 210, 0.76);
+  font-size: var(--_cc-text-xs);
+}
+
+.cc-connection-event__summary {
+  margin: 0;
+  color: rgba(196, 201, 210, 0.78);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.cc-connection-event__cross-count,
+.cc-connection-event__scope,
+.cc-connection-event__status {
+  color: #c0aee6;
+}
+
+.cc-connection-event__message {
+  color: rgba(196, 201, 210, 0.62);
+}
+
+.cc-connection-event__peers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cc-connection-event__peer {
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--cc-connection-color) 38%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cc-connection-color) 11%, transparent);
+  color: rgba(226, 230, 236, 0.92);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.cc-connection-event__peer.is-cross-scope {
+  border-style: dashed;
+  border-color: rgba(192, 174, 230, 0.45);
+}
+
+.cc-connection-event__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--cc-connection-color);
+  flex: 0 0 auto;
+}
+
+.cc-connection-event__scope {
+  font-family: var(--_cc-font-mono);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.cc-connection-event__check {
+  color: color-mix(in srgb, var(--cc-connection-color) 84%, white);
+  font-size: 10px;
+}
+
+.cc-connection-event.is-disconnected .cc-connection-event__peer {
+  border-color: var(--_cc-border-soft);
+  background: transparent;
+  color: rgba(155, 160, 169, 0.8);
+}
+
+.cc-connection-event.is-disconnected .cc-connection-event__dot {
+  opacity: 0.35;
+}
+
+.cc-connection-event__struck {
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+}
+
 .cc-message--system {
   color: rgba(219, 223, 228, 0.86);
 }

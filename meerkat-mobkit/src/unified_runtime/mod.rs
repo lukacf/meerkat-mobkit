@@ -125,11 +125,11 @@ pub struct UnifiedRuntime {
     error_hook: Option<ErrorHook>,
     drain_timeout: Duration,
     discovery: Option<Box<dyn Discovery>>,
-    edge_discovery: Option<Box<dyn EdgeDiscovery>>,
+    edge_discovery: Option<Arc<dyn EdgeDiscovery>>,
 
     // Fine-grained interior mutability
     module_runtime: Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>,
-    managed_dynamic_edges: tokio::sync::RwLock<BTreeSet<(String, String)>>,
+    managed_dynamic_edges: Arc<tokio::sync::RwLock<BTreeSet<(String, String)>>>,
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
@@ -159,6 +159,11 @@ pub struct UnifiedRuntime {
 
     // Optional ABAC enforcement shared by the console/SSE surfaces.
     access_controller: Option<crate::access::AccessController>,
+
+    // Optional product-level topology authority. The controller always
+    // exists so query can remain available, but its policy defaults to
+    // disabled and mutation methods are then absent/denied.
+    topology_controller: crate::topology_control::TopologyController,
 
     // Optional bundled-store handle backing the console Memory panel's
     // read-only RPCs (§9.3). Interior-mutable so gateways can wire it after
@@ -240,7 +245,7 @@ impl UnifiedRuntime {
             edge_reconcile::DefinitionWiringEdgeDiscovery::from_definition(
                 mob_runtime.handle().definition(),
             )
-            .map(|policy| Box::new(policy) as Box<dyn EdgeDiscovery>);
+            .map(|policy| Arc::new(policy) as Arc<dyn EdgeDiscovery>);
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -257,7 +262,7 @@ impl UnifiedRuntime {
             // embedder-supplied policies (builder) override it.
             edge_discovery: definition_edge_discovery,
             module_runtime: Arc::new(tokio::sync::Mutex::new(module_runtime)),
-            managed_dynamic_edges: tokio::sync::RwLock::new(BTreeSet::new()),
+            managed_dynamic_edges: Arc::new(tokio::sync::RwLock::new(BTreeSet::new())),
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
@@ -275,6 +280,7 @@ impl UnifiedRuntime {
             session_bridge: None,
             identity_first_context: None,
             access_controller: None,
+            topology_controller: crate::topology_control::TopologyController::default(),
             memory_panel_store: std::sync::RwLock::new(None),
             workgraph_service,
             console_identity_roster: std::sync::RwLock::new(None),
@@ -331,6 +337,70 @@ impl UnifiedRuntime {
         options: RuntimeOptions,
         persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        Self::bootstrap_with_options_and_topology(
+            mob_spec,
+            module_config,
+            module_agent_events,
+            timeout,
+            options,
+            persistent_metadata,
+            crate::topology_control::TopologyBootstrapConfig::default(),
+        )
+        .await
+    }
+
+    /// Bootstrap the legacy runtime with the ordinary defaults plus an
+    /// explicit optional topology-control configuration.
+    ///
+    /// This is the concise opt-in for embedders that do not otherwise need
+    /// custom module events, runtime options, or metadata storage.
+    pub async fn bootstrap_with_topology(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        timeout: Duration,
+        topology: crate::topology_control::TopologyBootstrapConfig,
+    ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        Self::bootstrap_with_options_and_topology(
+            mob_spec,
+            module_config,
+            Vec::new(),
+            timeout,
+            RuntimeOptions::default(),
+            Arc::new(InMemoryMetadataStore::new()),
+            topology,
+        )
+        .await
+    }
+
+    /// Legacy bootstrap with an explicit optional topology-control seam.
+    ///
+    /// The default remains query-only with mutation disabled. Supplying an
+    /// editable policy does not bypass console authentication or ABAC; every
+    /// RPC mutation is still authorized against both endpoint resources.
+    /// Supplying `state_path` makes desired additions, suppression tombstones,
+    /// revisions, idempotency records, and recovery journals durable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bootstrap_with_options_and_topology(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
+        timeout: Duration,
+        options: RuntimeOptions,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
+        topology: crate::topology_control::TopologyBootstrapConfig,
+    ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        let topology_authority = mob_spec.definition.id.to_string();
+        let topology_controller = match topology.state_path {
+            Some(path) => {
+                crate::topology_control::TopologyController::load_or_default(topology.policy, path)
+            }
+            None => crate::topology_control::TopologyController::new(topology.policy),
+        }
+        .map_err(|error| UnifiedRuntimeBootstrapError::Topology(error.to_string()))?;
+        topology_controller
+            .bind_authority(topology_authority)
+            .await
+            .map_err(|error| UnifiedRuntimeBootstrapError::Topology(error.to_string()))?;
         let mob_runtime = MobRuntime::bootstrap(mob_spec)
             .await
             .map_err(UnifiedRuntimeBootstrapError::Mob)?;
@@ -342,11 +412,19 @@ impl UnifiedRuntime {
 
         match module_start_result {
             Ok(Ok(module_runtime)) => {
-                let runtime =
+                let mut runtime =
                     Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await;
+                runtime.topology_controller = topology_controller;
                 runtime
                     .configure_implicit_delegate_retirement(&runtime_options)
                     .await;
+                if runtime.edge_discovery.is_some()
+                    || runtime.topology_controller.revision().await > 0
+                    || runtime.topology_controller.has_pending().await
+                {
+                    let report = runtime.reconcile_edges().await;
+                    *runtime.bootstrap_edges_report.write().await = Some(report);
+                }
                 Ok(runtime)
             }
             Ok(Err(error)) => {
@@ -703,6 +781,32 @@ impl UnifiedRuntime {
     /// Borrow the shared access controller if one was installed.
     pub fn access_controller(&self) -> Option<&crate::access::AccessController> {
         self.access_controller.as_ref()
+    }
+
+    /// Optional topology control-plane policy and durable intent store.
+    pub fn topology_controller(&self) -> &crate::topology_control::TopologyController {
+        &self.topology_controller
+    }
+
+    /// Cloneable topology seam for HTTP/RPC routers.
+    pub fn topology_runtime_handle(&self) -> crate::topology_control::TopologyRuntimeHandle {
+        crate::topology_control::TopologyRuntimeHandle::new(
+            self.mob_handle(),
+            self.edge_discovery.clone(),
+            Arc::clone(&self.managed_dynamic_edges),
+            self.topology_controller.clone(),
+            self.identity_first_context.clone(),
+        )
+    }
+
+    /// Replace the topology policy at runtime. Existing additions and
+    /// suppression tombstones remain authoritative; disabling hides/denies
+    /// mutation rather than silently discarding desired state.
+    pub fn set_topology_control_policy(
+        &self,
+        policy: crate::topology_control::TopologyControlPolicy,
+    ) -> Result<(), crate::topology_control::TopologyControlError> {
+        self.topology_controller.set_policy(policy)
     }
 
     /// Return the persistent metadata adapter — used by the

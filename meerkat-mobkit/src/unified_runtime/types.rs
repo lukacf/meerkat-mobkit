@@ -47,6 +47,7 @@ pub enum UnifiedRuntimeBootstrapError {
     },
     PreSpawnHook(String),
     IdentityFirst(String),
+    Topology(String),
 }
 
 impl Display for UnifiedRuntimeBootstrapError {
@@ -66,6 +67,7 @@ impl Display for UnifiedRuntimeBootstrapError {
             Self::IdentityFirst(err) => {
                 write!(f, "identity-first bootstrap failed: {err}")
             }
+            Self::Topology(err) => write!(f, "topology-control bootstrap failed: {err}"),
             Self::ModuleStartupRollbackFailed {
                 startup_error,
                 rollback_error,

@@ -20,7 +20,8 @@
 mod incident_command_center;
 
 use incident_command_center::{
-    build_runtime_bundle, incident_image_model, incident_model, scenario_path,
+    build_runtime_bundle, build_runtime_bundle_with_default_client, incident_image_model,
+    incident_model, scenario_path,
 };
 
 fn main() {
@@ -42,7 +43,7 @@ fn main() {
                 .build()
                 .expect("build tokio runtime");
             if let Err(error) = runtime.block_on(run()) {
-                eprintln!("incident command center failed: {error}");
+                eprintln!("incident command center failed: {error:#}");
                 std::process::exit(1);
             }
         })
@@ -62,15 +63,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
-    let _ = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "Set OPENAI_API_KEY to run the live incident command center example")?;
-    println!(
-        "incident command center model={} image_model={}",
-        incident_model(),
-        incident_image_model()
-    );
-
-    let bundle = Box::pin(build_runtime_bundle(&scenario_path()?)).await?;
+    let offline = env_flag("INCIDENT_COMMAND_CENTER_OFFLINE");
+    let bundle = if offline {
+        println!("incident command center mode=offline-topology");
+        Box::pin(build_runtime_bundle_with_default_client(
+            &scenario_path()?,
+            std::sync::Arc::new(meerkat_client::TestClient::default()),
+        ))
+        .await?
+    } else {
+        let _ = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| "Set OPENAI_API_KEY to run the live incident command center example")?;
+        println!(
+            "incident command center model={} image_model={}",
+            incident_model(),
+            incident_image_model()
+        );
+        Box::pin(build_runtime_bundle(&scenario_path()?)).await?
+    };
     let listen_addr = std::env::var("INCIDENT_COMMAND_CENTER_LISTEN_ADDR")
         .unwrap_or_else(|_| bundle.scenario.listen_addr.clone());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
@@ -84,4 +94,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("GET  /console/timeline/stream");
     bundle.runtime.serve(listener, bundle.decisions).await?;
     Ok(())
+}
+
+fn env_flag(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }

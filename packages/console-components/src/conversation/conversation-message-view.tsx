@@ -8,6 +8,7 @@ import {
 } from "@console-core";
 
 import { ConversationRichContent } from "./conversation-rich-content";
+import { ConversationConnectionEventView } from "./conversation-connection-event";
 import { FlowRunCard, type FlowRunRestoreHandler } from "./flow-run-card";
 import { SummaryCard } from "./summary-card";
 import { WorkGraphCard, type WorkGraphCardActions } from "./work-graph-card";
@@ -120,6 +121,9 @@ export function ConversationMessageView({
   }
 
   if (entry.variant === "meta") {
+    if (entry.connectionEvent?.peers?.length) {
+      return <ConversationConnectionEventView event={entry.connectionEvent} />;
+    }
     return <article className={`${assistantClassName} cc-message--meta`}><p>{entry.text}</p></article>;
   }
 

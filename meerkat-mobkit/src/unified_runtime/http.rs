@@ -61,6 +61,7 @@ impl UnifiedRuntime {
             self.console_operator_resolver(),
             self.console_identity_roster(),
             self.workgraph_service(),
+            Some(self.topology_runtime_handle()),
         )
     }
 

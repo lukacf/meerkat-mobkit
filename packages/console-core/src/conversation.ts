@@ -23,6 +23,24 @@ export interface ConversationIdentity {
   tone?: ConversationTone | null;
 }
 
+export interface ConversationConnectionPeer {
+  /** Stable endpoint identity; never inferred from the display label. */
+  id: string;
+  label: string;
+  caption?: string | null;
+  scopeId?: string | null;
+  scopeLabel?: string | null;
+  crossScope?: boolean;
+}
+
+export interface ConversationConnectionEvent {
+  action: "connected" | "disconnected" | "reconnected";
+  peers: ConversationConnectionPeer[];
+  status?: "succeeded" | "partial" | "degraded" | "conflict";
+  operationId?: string | null;
+  message?: string | null;
+}
+
 export interface ConversationEmptySuggestion {
   id: string;
   label: string;
@@ -73,6 +91,7 @@ export interface ConversationMessageEntry extends ConversationTimelineEntryBase 
   taskId?: string;
   taskStatus?: string;
   runId?: string | null;
+  connectionEvent?: ConversationConnectionEvent | null;
 }
 
 export interface ConversationSummaryFile {

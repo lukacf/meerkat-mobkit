@@ -78,6 +78,123 @@ so they are not mistaken for mob-events ledger cursor errors.
 
 ---
 
+## Topology control
+
+Topology mutation is an optional MobKit control plane. It is disabled by
+default; a host must explicitly configure `TopologyControlPolicy` as
+`read_only` or `editable`. The stock console only shows its **Connections**
+view when the runtime advertises topology management, and it never invents a
+`connect all` operation.
+
+Every mutation is evaluated against both endpoint identities. With access
+control enabled, callers need `agent.view` plus `topology.view` to inspect an
+endpoint, and the action-specific `topology.connect`,
+`topology.disconnect`, or `topology.reconnect` grant on **both** endpoints.
+Planning requires the same action-specific endpoint grants as applying; it is
+side-effect free, not an authorization oracle. Durable mutation history and
+actor/principal attribution require the separate `topology.audit` grant on
+every endpoint in the returned record.
+Requests containing multiple explicit operations additionally require
+`topology.bulk` and remain bounded by the policy's finite `max_batch_size`.
+
+### `mobkit/topology/query`
+
+Return the logical roster, observed/declared/operator topology, durable
+suppression tombstones, current revision, and caller-specific per-endpoint
+affordances. A disconnected declared edge remains in the response with
+`suppressed: true`; this is how operator intent survives reconciliation and
+restart.
+
+### `mobkit/topology/plan`
+
+Validate a side-effect-free, revision-pinned set of explicit operations.
+
+```json
+{
+  "expected_revision": 7,
+  "operations": [{
+    "action": "disconnect",
+    "edge": {
+      "a": {"identity": "incident-commander"},
+      "b": {"identity": "payments-sre"}
+    }
+  }]
+}
+```
+
+### `mobkit/topology/apply`
+
+Apply a previously valid shape of request. `expected_revision` provides
+compare-and-swap protection and `idempotency_key` is mandatory. Exact replay
+is durable only across the configured retention horizon: `receipt_limit`
+keeps full operation receipts, then `idempotency_history_limit` keeps bounded
+key fingerprints that reject ambiguous reuse after a receipt ages out.
+Replaying a retained key whose receipt is unavailable returns `-32009` with
+`data.kind = "topology_idempotency_receipt_expired"`; replaying a key whose
+fingerprint is still in the compacted ring returns `-32009` with
+`data.kind = "topology_idempotency_history_compacted"`. Once both bounded
+horizons have expired, that key is contractually new and normal revision and
+policy validation applies—clients must not assume keys are reserved forever.
+`connect`, `disconnect`, and `reconnect` are distinct policy actions:
+reconnect removes a suppression and repairs an absent or one-sided desired
+edge, while disconnect records a tombstone before removing physical wiring.
+
+```json
+{
+  "expected_revision": 7,
+  "idempotency_key": "console:disconnect:incident-commander:payments-sre:7",
+  "operations": [{
+    "action": "disconnect",
+    "edge": {
+      "a": {"identity": "incident-commander"},
+      "b": {"identity": "payments-sre"}
+    }
+  }]
+}
+```
+
+### `mobkit/topology/operation/get`
+
+Look up a durable operation receipt by `operation_id`. The endpoint is useful
+after a client reconnect or an ambiguous transport failure; clients should
+not infer success from a dropped HTTP response. The `actor` field is omitted
+unless the caller has `topology.audit` on every endpoint in the receipt. This
+lookup is also bounded by `receipt_limit`; persist the original request and
+idempotency key so an ambiguous response can be replayed while its exact
+receipt remains retained.
+
+### `mobkit/topology/audit/query`
+
+Read the durable, versioned mutation-attempt ledger. This includes denied,
+invalid, interrupted, recovered, applied, and rolled-back attempts, so it is
+more sensitive than graph inspection and is advertised only to callers with a
+`topology.audit` grant. Returned records additionally require `agent.view`,
+`topology.view`, and `topology.audit` on every endpoint in that record.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `after_seq` | `u64` | no | Resume strictly after this forward-only cursor. `0` always starts at the first retained record. |
+| `limit` | `usize` | no | Maximum visible records to return (default `100`, bounded to `1..=1024`). |
+
+Persist `next_after_seq` after every response, including an empty one. If a
+non-zero cursor is older than `oldest_available_seq - 1`, MobKit returns
+`-32009` with `data.kind = "topology_audit_cursor_expired"`, `after_seq`, and
+`oldest_available_seq`; restart from `after_seq: 0` only when replaying from
+the retained frontier is acceptable. A cursor equal to
+`oldest_available_seq - 1` remains valid.
+
+ABAC filtering advances the cursor across records the caller cannot see. This
+can leave gaps in visible `seq` values and reveals only that retained topology
+activity existed at those sequence positions—not its endpoints, actor,
+principal, operations, or result. That aggregate activity-volume metadata is
+an intentional trade-off for a stable, non-duplicating forward cursor.
+
+Cross-authority JSON-RPC mutation currently fails closed. Same-process hosts
+that control both runtimes can use MobKit's bilateral host API, which checks
+both runtime policies and endpoint grants before changing either side.
+
+---
+
 ## Mob events
 
 ### `mob_events/query`
