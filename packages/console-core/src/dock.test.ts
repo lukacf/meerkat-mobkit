@@ -173,6 +173,11 @@ describe("dock helpers", () => {
     let panelIdCounter = 0;
     let tabIdCounter = 0;
     let splitIdCounter = 0;
+    const suggestionCalls: Array<{
+      count: number;
+      preferredId: string | null;
+      excludedIds: string[];
+    }> = [];
 
     const alpha: TestTarget = {
       id: "thread:alpha",
@@ -206,6 +211,11 @@ describe("dock helpers", () => {
       preferred: TestTarget | null;
       excludedIds: string[];
     }) => {
+      suggestionCalls.push({
+        count,
+        preferredId: preferred?.id || null,
+        excludedIds: [...excludedIds],
+      });
       const pool = [preferred, alpha, beta, gamma].filter(Boolean) as TestTarget[];
       const results: Array<TestTarget | null> = [];
       for (const target of pool) {
@@ -269,7 +279,23 @@ describe("dock helpers", () => {
       suggestTargets,
     });
 
-    expect(collectConsoleDockPanelIds(state.tabs.find((tab) => tab.id === state.activeTabId)?.layout || null)).toHaveLength(4);
+    const gridPanelIds = collectConsoleDockPanelIds(
+      state.tabs.find((tab) => tab.id === state.activeTabId)?.layout || null,
+    );
+    expect(gridPanelIds).toHaveLength(4);
+    const gridPanels = gridPanelIds.map((panelId) => state.panels.find((panel) => panel.id === panelId)!);
+    expect(gridPanels.map((panel) => panel.target?.id || null)).toEqual([
+      "thread:gamma",
+      "thread:beta",
+      "thread:alpha",
+      null,
+    ]);
+    expect(gridPanels.filter((panel) => panel.target?.id === "thread:gamma")).toHaveLength(1);
+    expect(suggestionCalls.at(-1)).toEqual({
+      count: 3,
+      preferredId: null,
+      excludedIds: ["thread:gamma"],
+    });
   });
 
   test("splitting a focused panel clones its target when no alternate suggestion is available", () => {
