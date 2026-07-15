@@ -235,11 +235,16 @@ async fn build_runtime_bundle_with_client(
     builder = builder
         .topology_control(scenario.topology_control.clone())
         .context("configure incident topology control")?;
-    if let Ok(state_dir) = std::env::var("INCIDENT_COMMAND_CENTER_STATE_DIR")
-        && !state_dir.trim().is_empty()
-    {
-        builder = builder.persistent_state(state_dir);
-    }
+    // Editable topology is intentionally a durable control plane. Keep the
+    // stock example valid even when it is embedded by tests or launched
+    // directly without the browser-smoke environment wrapper. Operators can
+    // still choose an explicit restart-stable location through the env var.
+    let state_dir = std::env::var("INCIDENT_COMMAND_CENTER_STATE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_incident_state_dir);
+    builder = builder.persistent_state(state_dir);
     if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
     }
@@ -820,6 +825,27 @@ fn example_module_config(scenario: &IncidentScenario) -> Result<MobKitConfig> {
             },
         ],
     })
+}
+
+fn default_incident_state_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // `cargo test` may build both runtime-bundle tests inside one process,
+        // while nextest runs them in separate processes. A process id plus a
+        // local sequence keeps both execution models isolated without
+        // weakening the example's durable-state requirement.
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "incident-command-center-state-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[cfg(not(test))]
+    std::env::temp_dir().join("incident-command-center-state")
 }
 
 fn fixture_binary_path() -> Result<PathBuf> {

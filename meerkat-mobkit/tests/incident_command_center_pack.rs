@@ -38,6 +38,13 @@ use incident_command_center::{
 struct IncidentPackTestClient;
 
 impl meerkat_client::LlmClient for IncidentPackTestClient {
+    fn project_replay_messages(
+        &self,
+        messages: &[meerkat_core::Message],
+    ) -> Result<Vec<meerkat_core::Message>, LlmError> {
+        Ok(messages.to_vec())
+    }
+
     fn stream<'a>(
         &'a self,
         _request: &'a LlmRequest,

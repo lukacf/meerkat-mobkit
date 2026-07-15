@@ -59,4 +59,7 @@ checkout can compile generated module binaries on first boot; override it with
 
 The scenario opts into editable topology explicitly. MobKit's default remains
 disabled, so existing consumers retain the passive Graph and Roles views and
-do not receive mutation controls.
+do not receive mutation controls. Editable mode always uses durable runtime
+state: set `INCIDENT_COMMAND_CENTER_STATE_DIR` to choose its location, or the
+standalone example defaults to the platform temporary directory under
+`incident-command-center-state`.
