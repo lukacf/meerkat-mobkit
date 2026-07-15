@@ -13,6 +13,13 @@ export interface ConsoleDockTarget {
   badgeLabel?: string | null;
 }
 
+export type BrowserDockTarget = ConsoleDockTarget & {
+  id: `browser-panel:${string}`;
+  kind: "browser";
+  title: "Browser";
+  browserPanelId: string;
+};
+
 export interface ConsoleDockPanelState<TTarget extends ConsoleDockTarget = ConsoleDockTarget> {
   id: string;
   target: TTarget | null;

@@ -21,6 +21,7 @@
 - conversation timeline-entry, grouping, and view-state helpers
 - composer view-state types
 - dock state, presets, reducer-style operations, and view-state builders
+- placement-only browser dock targets
 - sidebar schema normalization
 - activity-rail view-model types
 - MobKit console target/adapters, contract constants, headless controller, network client, and runtime frame types
