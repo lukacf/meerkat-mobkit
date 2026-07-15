@@ -824,54 +824,162 @@ fn example_module_config(scenario: &IncidentScenario) -> Result<MobKitConfig> {
 
 fn fixture_binary_path() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
-        return Ok(PathBuf::from(path));
+        let binary_path = PathBuf::from(path);
+        if binary_path.is_file() {
+            return Ok(binary_path);
+        }
+        bail!(
+            "CARGO_BIN_EXE_mcp_fixture points to missing fixture binary: {}",
+            binary_path.display()
+        );
     }
 
-    // Resolve next to the running example binary first: the example lives at
-    // <target>/debug/examples/<name> and mcp_fixture at <target>/debug/
-    // mcp_fixture, so this keeps repo-cargo's isolated CARGO_TARGET_DIR
-    // working without any env plumbing (and without falling through to the
-    // raw `cargo build` below, which would create a stray ./target).
-    if let Ok(current_exe) = std::env::current_exe() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().context("workspace root")?;
+    let target_dir = incident_fixture_target_dir(
+        workspace_root,
+        std::env::var_os("CARGO_TARGET_DIR"),
+        std::env::current_exe().ok(),
+    );
+    let binary_path = fixture_binary_in_target(&target_dir);
+    if binary_path.is_file() {
+        return Ok(binary_path);
+    }
+
+    // Keep the fallback build and the returned path on the exact same target
+    // root. `repo-cargo` exports an isolated CARGO_TARGET_DIR; inheriting it
+    // for the build but returning `<workspace>/target/...` made a cold lane
+    // appear to build successfully and then fail module reconciliation with a
+    // nonexistent command path.
+    let status = Command::new("cargo")
+        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
+        .current_dir(workspace_root)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .status()
+        .context("build mcp_fixture")?;
+    if !status.success() {
+        bail!("building mcp_fixture must succeed");
+    }
+    if !binary_path.is_file() {
+        bail!(
+            "building mcp_fixture did not produce expected binary: {}",
+            binary_path.display()
+        );
+    }
+    Ok(binary_path)
+}
+
+fn incident_fixture_target_dir(
+    workspace_root: &Path,
+    configured_target_dir: Option<std::ffi::OsString>,
+    current_exe: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(configured_target_dir) = configured_target_dir
+        && !configured_target_dir.is_empty()
+    {
+        let configured_target_dir = PathBuf::from(configured_target_dir);
+        return if configured_target_dir.is_absolute() {
+            configured_target_dir
+        } else {
+            workspace_root.join(configured_target_dir)
+        };
+    }
+
+    // Direct execution of a prebuilt example may not preserve Cargo's env.
+    // Infer `<target>` from `<target>/<profile>/examples/<example>` before
+    // falling back to the workspace-local Cargo default.
+    if let Some(current_exe) = current_exe {
         let mut dir = current_exe.parent();
         while let Some(candidate_dir) = dir {
-            let candidate = candidate_dir.join("mcp_fixture");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-            if candidate_dir.ends_with("debug") || candidate_dir.ends_with("release") {
+            if candidate_dir
+                .file_name()
+                .is_some_and(|name| name == "debug" || name == "release")
+            {
+                if let Some(target_dir) = candidate_dir.parent() {
+                    return target_dir.to_path_buf();
+                }
                 break;
             }
             dir = candidate_dir.parent();
         }
     }
 
-    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
-        let binary_path = PathBuf::from(target_dir).join("debug").join("mcp_fixture");
-        if binary_path.exists() {
-            return Ok(binary_path);
-        }
-    }
+    workspace_root.join("target")
+}
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir.parent().context("workspace root")?;
-    let binary_path = workspace_root
-        .join("target")
+fn fixture_binary_in_target(target_dir: &Path) -> PathBuf {
+    target_dir
         .join("debug")
-        .join("mcp_fixture");
-    if binary_path.exists() {
-        return Ok(binary_path);
+        .join(format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX))
+}
+
+#[cfg(test)]
+mod fixture_binary_path_tests {
+    use super::{fixture_binary_in_target, incident_fixture_target_dir};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn configured_target_dir_is_the_fixture_build_and_lookup_root() {
+        let workspace_root = Path::new("/workspace/mobkit");
+        let target_dir = PathBuf::from("/isolated/cargo-target");
+
+        let resolved = incident_fixture_target_dir(
+            workspace_root,
+            Some(target_dir.clone().into_os_string()),
+            Some(PathBuf::from(
+                "/stale/target/debug/examples/incident_command_center",
+            )),
+        );
+
+        assert_eq!(resolved, target_dir);
+        assert_eq!(
+            fixture_binary_in_target(&resolved),
+            target_dir
+                .join("debug")
+                .join(format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX))
+        );
     }
 
-    let status = Command::new("cargo")
-        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
-        .current_dir(workspace_root)
-        .status()
-        .context("build mcp_fixture")?;
-    if !status.success() {
-        bail!("building mcp_fixture must succeed");
+    #[test]
+    fn relative_target_dir_is_resolved_like_the_fallback_cargo_build() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(
+                workspace_root,
+                Some(OsString::from(".cargo-target")),
+                None,
+            ),
+            workspace_root.join(".cargo-target")
+        );
     }
-    Ok(binary_path)
+
+    #[test]
+    fn direct_example_execution_infers_its_target_root_without_env() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(
+                workspace_root,
+                None,
+                Some(PathBuf::from(
+                    "/isolated/cargo-target/debug/examples/incident_command_center",
+                )),
+            ),
+            PathBuf::from("/isolated/cargo-target")
+        );
+    }
+
+    #[test]
+    fn workspace_target_is_the_cargo_default_without_other_context() {
+        let workspace_root = Path::new("/workspace/mobkit");
+
+        assert_eq!(
+            incident_fixture_target_dir(workspace_root, None, None),
+            workspace_root.join("target")
+        );
+    }
 }
 
 fn fixture_module(id: &str, fixture_binary: &Path) -> ModuleConfig {

@@ -93,7 +93,8 @@ echo "[incident-topology] ensuring Playwright dependencies"
 
 echo "[incident-topology] building the deterministic Rust example"
 (cd "$ROOT" && RUST_LANE_ID="$RUST_LANE_ID" CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
-  ./scripts/repo-cargo build -p meerkat-mobkit --example incident_command_center)
+  ./scripts/repo-cargo build -p meerkat-mobkit \
+    --example incident_command_center --bin mcp_fixture)
 
 mkdir -p "$ARTIFACT_DIR"
 echo "[incident-topology] browser artifacts: $ARTIFACT_DIR"
