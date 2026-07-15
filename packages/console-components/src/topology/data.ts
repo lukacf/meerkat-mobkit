@@ -460,32 +460,58 @@ export function useTopologyActivity(
 ): TopoActivity {
   const life = options.life ?? 1500;
   const [now, setNow] = React.useState(() => Date.now());
-
-  // Heartbeat that drives pulse-fade animation. Stops when no pulses are
-  // in flight — checked via the ref to avoid pinning re-renders.
-  const ticking = React.useRef(false);
-  React.useEffect(() => {
-    if (ticking.current) return;
-    let raf = 0;
-    let stopped = false;
-    ticking.current = true;
-    const step = () => {
-      if (stopped) return;
-      setNow(Date.now());
-      raf = requestAnimationFrame(step);
-    };
-    raf = requestAnimationFrame(step);
-    return () => {
-      stopped = true;
-      ticking.current = false;
-      cancelAnimationFrame(raf);
-    };
-  }, []);
-
-  return React.useMemo(() => {
+  const activity = React.useMemo(() => {
     return deriveTopologyActivity(frames, graph, now, life);
   // `now` triggers re-fade; `frames`/`graph` trigger re-derivation.
   }, [frames, graph, life, now]);
+  const hasTransientActivity = activity.pulses.length > 0
+    || Object.keys(activity.active).length > 0
+    || Object.keys(activity.calls).length > 0;
+
+  // Ten frames per second is enough for the activity fade while avoiding an
+  // unbounded React/canvas render loop. Busy state is sticky rather than
+  // animated, so it intentionally does not keep the heartbeat alive.
+  React.useEffect(() => {
+    if (!hasTransientActivity) return undefined;
+
+    let heartbeat: ReturnType<typeof setTimeout> | null = null;
+    const clearHeartbeat = () => {
+      if (heartbeat === null) return;
+      clearTimeout(heartbeat);
+      heartbeat = null;
+    };
+    const scheduleHeartbeat = () => {
+      if (heartbeat !== null) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      heartbeat = setTimeout(() => {
+        heartbeat = null;
+        setNow(Date.now());
+        scheduleHeartbeat();
+      }, 100);
+    };
+
+    const handleVisibilityChange = () => {
+      clearHeartbeat();
+      if (!document.hidden) {
+        setNow(Date.now());
+        scheduleHeartbeat();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+    scheduleHeartbeat();
+
+    return () => {
+      clearHeartbeat();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
+  }, [hasTransientActivity]);
+
+  return activity;
 }
 
 export function deriveTopologyActivity(
