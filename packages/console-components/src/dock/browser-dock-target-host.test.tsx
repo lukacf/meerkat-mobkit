@@ -5,7 +5,7 @@ import type { BrowserDockTarget } from "@console-core";
 import { BrowserDockTargetHost } from "@console-components";
 
 describe("BrowserDockTargetHost", () => {
-  test("renders host-owned content without acquiring browser behavior", () => {
+  test("forwards trusted host props while target identity remains controlled", () => {
     const target = {
       id: "browser-panel:panel-a",
       kind: "browser",
@@ -14,13 +14,22 @@ describe("BrowserDockTargetHost", () => {
     } satisfies BrowserDockTarget;
 
     const { container } = render(
-      <BrowserDockTargetHost className="host-layout" target={target}>
+      <BrowserDockTargetHost
+        aria-busy="true"
+        className="host-layout"
+        data-browser-dock-target-id="browser-panel:forged"
+        data-browser-panel-id="forged"
+        data-trusted-host-state="ready"
+        target={target}
+      >
         <div data-testid="host-browser-content">Trusted chrome and viewport marker</div>
       </BrowserDockTargetHost>,
     );
 
     const host = container.firstElementChild;
     expect(host).toHaveClass("host-layout");
+    expect(host).toHaveAttribute("aria-busy", "true");
+    expect(host).toHaveAttribute("data-trusted-host-state", "ready");
     expect(host).toHaveAttribute("data-browser-dock-target-id", "browser-panel:panel-a");
     expect(host).toHaveAttribute("data-browser-panel-id", "panel-a");
     expect(screen.getByTestId("host-browser-content")).toHaveTextContent(
