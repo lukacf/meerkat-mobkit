@@ -101,11 +101,8 @@ pub struct ConsoleLiveSnapshot {
 }
 
 fn console_member_console_identity(member: &ConsoleMember) -> &str {
-    member
-        .labels
-        .get("agent_identity")
-        .filter(|value| !value.trim().is_empty())
-        .map_or(member.agent_identity.as_str(), String::as_str)
+    crate::member_comms_id::durable_identity_label(&member.labels)
+        .unwrap_or(member.agent_identity.as_str())
 }
 
 impl ConsoleLiveSnapshot {

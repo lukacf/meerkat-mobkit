@@ -113,6 +113,14 @@ impl UnifiedRuntime {
         &self,
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
+        if self.identity_runtime().is_some() {
+            return Err(UnifiedRuntimeReconcileError::Mob(
+                crate::mob_handle_runtime::MobRuntimeError::InvalidConfig(
+                    "whole-mob reconcile is unavailable with identity-first authority; use refresh_desired_topology or identity topology reconcile"
+                        .to_string(),
+                ),
+            ));
+        }
         self.mob_runtime
             .set_baseline_member_specs(desired_specs.clone())
             .await;
@@ -426,6 +434,19 @@ pub(crate) async fn reconcile_edges_over_members(
 
     // Classify desired edges
     for (a, b) in &desired {
+        if crate::member_comms_id::is_reserved_generated_alias(a)
+            || crate::member_comms_id::is_reserved_generated_alias(b)
+        {
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                report.failures.push(EdgeReconcileFailure {
+                    edge,
+                    operation: "wire".to_string(),
+                    error: "generated aliases require IdentityRuntime topology authority"
+                        .to_string(),
+                });
+            }
+            continue;
+        }
         // Skip if either endpoint is missing from the active roster
         if !active_ids.contains(a) || !active_ids.contains(b) {
             if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
@@ -463,6 +484,19 @@ pub(crate) async fn reconcile_edges_over_members(
         .cloned()
     {
         let key = (a.clone(), b.clone());
+        if crate::member_comms_id::is_reserved_generated_alias(&a)
+            || crate::member_comms_id::is_reserved_generated_alias(&b)
+        {
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                report.failures.push(EdgeReconcileFailure {
+                    edge,
+                    operation: "unwire".to_string(),
+                    error: "generated aliases require IdentityRuntime topology authority"
+                        .to_string(),
+                });
+            }
+            continue;
+        }
         // If either endpoint is gone, just prune from managed set
         if !active_ids.contains(&a) || !active_ids.contains(&b) {
             stale_pruned.push((a, b));

@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Exposed identity-first startup materialization through the SDK gateway and
+  Python builder. Deployments can keep eager compatibility, register lazily,
+  or return after metadata registration and warm the roster in a tracked,
+  bounded background task. Typed status and wait RPCs report per-identity
+  `dormant`, `warming`, `active`, and `broken` progress and support an exact
+  startup-readiness barrier.
+
+### Changed
+
+- Explicit identity bootstrap modes now consistently declare identity-first
+  intent and require a roster provider, including explicit eager mode; an
+  omitted mode still preserves the classic gateway when no roster is present.
+- Identity bootstrap and reconcile now share one mode-aware controller;
+  background work is cancelled during shutdown and the concrete Mob bridge
+  skips unused checkpoint payload reads without weakening custom bridge
+  contracts.
+- Identity continuity persistence now serializes mutations per session,
+  short-circuits provenance-identical snapshot saves, and runs bundled SQLite
+  work on blocking workers with one writer and a bounded WAL read pool.
+- Gateway and console identity operations are now runtime-owned through their
+  commit or rollback boundary. EOF, Ctrl-C, callback closure, HTTP draining,
+  and the Python/TypeScript host transports preserve that cleanup ordering
+  before escalating to bounded process termination.
+- Persistent SDK shutdown now negotiates the stock gateway's explicit
+  335-second bounded horizon and positively attests every cleanup boundary,
+  including mob quiescence, exact authority release, event draining, and child
+  process termination. Provider operations retain their public 120-second
+  contract, with a 125-second SDK completion deadline and a 130-second gateway
+  wire deadline; Python cancels the event-loop future and TypeScript exposes an
+  abort signal while suppressing late responses. Older/custom gateways retain
+  EOF compatibility.
+- Destructive identity reset now retains exact old-generation cleanup debt
+  after the replacement continuity head commits. MobKit captures memory first,
+  quiesces the superseded member, CAS-deletes only its stale session snapshot,
+  verifies structural roster absence, and retries the debt during shutdown
+  before attesting cleanup or releasing identity authority.
+- Machine-authorized boundary cancellation now treats typed missing-session and
+  no-running-turn observations as already quiesced, while preserving every
+  other cancellation error as a strict shutdown failure.
+- Hosts embedding an `Arc<UnifiedRuntime>` can use
+  `handle_unified_rpc_json_arc`; the gateway uses its live-handler counterpart
+  so identity-owned cross-mob mutations remain supervised if the requesting
+  connection disappears. The borrowed dispatcher fails those mutations
+  closed because it cannot transfer runtime ownership into the supervisor.
+
+### Fixed
+
+- Quiesced session persistence before lease rotation, retained exact committed
+  grants across failed authority publication, reused live grants during eager
+  reconcile, and drained identity-scoped orphan grants before direct lazy retry.
+- Bound merged and protected structural event authorization to the emitting
+  member's exact runtime incarnation and fence token, preventing a later
+  public respawn of the same alias from disclosing an earlier secret event.
+- Failed gateway identity bootstrap now installs runtime authority before
+  materialization and runs the full ordered shutdown before returning the init
+  error, releasing exact grants held by members that activated before a later
+  eager-roster member failed.
+- Serialized continuity generation changes with foreground materialization and
+  reconcile, physically retired removed or changed roster members, and kept
+  typed bootstrap readiness synchronized with lifecycle transitions.
+- Hardened identity authority at raw member, RPC, console, SSE, and cross-mob
+  boundaries: reserved aliases cannot be forged or preclaimed, policy checks
+  use canonical targets, and operations resolve the current durable generation
+  instead of a stale reset-era roster row.
+- Prevented same-generation session rebinds from rewinding the durable
+  checkpoint head, rejected continuity-generation regressions even under a
+  newer fencing token, and moved persistent SQLite initialization and fencing
+  floor reads off async executor workers.
+
 ## [0.7.39] - 2026-07-15
 
 ### Added

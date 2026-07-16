@@ -179,6 +179,84 @@ struct CountingContinuityStore {
     load_snapshot_calls: AtomicUsize,
 }
 
+struct TransientBrokenContinuityStore {
+    broken: AtomicBool,
+}
+
+impl TransientBrokenContinuityStore {
+    fn new_broken() -> Self {
+        Self {
+            broken: AtomicBool::new(true),
+        }
+    }
+
+    fn recover(&self) {
+        self.broken.store(false, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for TransientBrokenContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                let state = if self.broken.load(Ordering::SeqCst) {
+                    ContinuityResolveState::Broken {
+                        failure: ContinuityFailure {
+                            identity: identity.clone(),
+                            kind: ContinuityFailureKind::StoreUnavailable,
+                            record: None,
+                            detail: "transient store outage".to_string(),
+                        },
+                    }
+                } else {
+                    ContinuityResolveState::Uninitialized
+                };
+                (identity.clone(), state)
+            })
+            .collect())
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        Ok(None)
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        _identity: &AgentIdentity,
+        _session_id: &meerkat_core::types::SessionId,
+        _generation: ContinuityGeneration,
+        _version: CheckpointVersion,
+        _fencing_token: FencingToken,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        _record: &ContinuityRecord,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        _identity: &AgentIdentity,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct MissingLeaseProvider;
 
@@ -200,6 +278,196 @@ impl LeaseProvider for MissingLeaseProvider {
     }
 
     async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FailingReleaseLeaseProvider {
+    inner: LocalLeaseProvider,
+}
+
+#[async_trait]
+impl LeaseProvider for FailingReleaseLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        runtime_instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        self.inner
+            .acquire_leases(identities, runtime_instance)
+            .await
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        self.inner.renew_leases(grants).await
+    }
+
+    async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        Err(LeaseError::Io("synthetic release failure".to_string()))
+    }
+}
+
+struct StrictHeldLease {
+    holder: String,
+    grant: LeaseGrant,
+    same_holder_refresh_used: bool,
+}
+
+struct FailOnceStrictReleaseLeaseProvider {
+    held: Mutex<BTreeMap<AgentIdentity, StrictHeldLease>>,
+    next_token: AtomicUsize,
+    fail_first_release: AtomicBool,
+    allow_same_holder_refresh: bool,
+    release_attempts: Mutex<Vec<LeaseGrant>>,
+}
+
+impl Default for FailOnceStrictReleaseLeaseProvider {
+    fn default() -> Self {
+        Self {
+            held: Mutex::new(BTreeMap::new()),
+            next_token: AtomicUsize::new(1),
+            fail_first_release: AtomicBool::new(true),
+            allow_same_holder_refresh: true,
+            release_attempts: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FailOnceStrictReleaseLeaseProvider {
+    fn without_same_holder_refresh() -> Self {
+        Self {
+            allow_same_holder_refresh: false,
+            ..Self::default()
+        }
+    }
+
+    fn fail_next_release(&self) {
+        self.fail_first_release.store(true, Ordering::SeqCst);
+    }
+
+    fn held_grant(&self, identity: &AgentIdentity) -> Option<LeaseGrant> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity)
+            .map(|held| held.grant.clone())
+    }
+
+    fn release_attempts(&self) -> Vec<LeaseGrant> {
+        self.release_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn next_grant(&self, identity: &AgentIdentity) -> LeaseGrant {
+        LeaseGrant {
+            identity: identity.clone(),
+            fencing_token: FencingToken::new(self.next_token.fetch_add(1, Ordering::SeqCst) as u64),
+            ttl: Duration::from_mins(5),
+        }
+    }
+}
+
+#[async_trait]
+impl LeaseProvider for FailOnceStrictReleaseLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        runtime_instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut results = BTreeMap::new();
+        for identity in identities {
+            match held.get_mut(identity) {
+                Some(current)
+                    if self.allow_same_holder_refresh
+                        && current.holder == runtime_instance
+                        && !current.same_holder_refresh_used =>
+                {
+                    let grant = self.next_grant(identity);
+                    current.grant = grant.clone();
+                    current.same_holder_refresh_used = true;
+                    results.insert(identity.clone(), LeaseAcquireResult::Acquired(grant));
+                }
+                Some(current) => {
+                    results.insert(
+                        identity.clone(),
+                        LeaseAcquireResult::AlreadyHeld {
+                            identity: identity.clone(),
+                            holder: current.holder.clone(),
+                        },
+                    );
+                }
+                None => {
+                    let grant = self.next_grant(identity);
+                    held.insert(
+                        identity.clone(),
+                        StrictHeldLease {
+                            holder: runtime_instance.to_string(),
+                            grant: grant.clone(),
+                            same_holder_refresh_used: false,
+                        },
+                    );
+                    results.insert(identity.clone(), LeaseAcquireResult::Acquired(grant));
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut results = BTreeMap::new();
+        for grant in grants {
+            let result = match held.get(&grant.identity) {
+                Some(current) if current.grant.fencing_token == grant.fencing_token => {
+                    LeaseRenewResult::Renewed(current.grant.clone())
+                }
+                _ => LeaseRenewResult::Lost {
+                    identity: grant.identity.clone(),
+                },
+            };
+            results.insert(grant.identity.clone(), result);
+        }
+        Ok(results)
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        self.release_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(grants);
+        if self.fail_first_release.swap(false, Ordering::SeqCst) {
+            return Err(LeaseError::Io(
+                "synthetic first release failure".to_string(),
+            ));
+        }
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants {
+            if held
+                .get(&grant.identity)
+                .is_some_and(|current| current.grant.fencing_token == grant.fencing_token)
+            {
+                held.remove(&grant.identity);
+            }
+        }
         Ok(())
     }
 }
@@ -553,12 +821,123 @@ impl ContinuityStore for CountingContinuityStore {
     }
 }
 
+/// Returns one continuity snapshot only after the caller releases a gate.
+/// The snapshot is captured before waiting, so a concurrent delete would make
+/// it stale if lazy registration did not hold the identity lifecycle lock
+/// across both resolve and publication.
+struct GatedStaleResolveContinuityStore {
+    inner: Arc<LocalContinuityStore>,
+    gate_next_resolve: AtomicBool,
+    stale_resolve_started: tokio::sync::Notify,
+    release_stale_resolve: tokio::sync::Notify,
+}
+
+impl GatedStaleResolveContinuityStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+            gate_next_resolve: AtomicBool::new(false),
+            stale_resolve_started: tokio::sync::Notify::new(),
+            release_stale_resolve: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn gate_next_resolve(&self) {
+        self.gate_next_resolve.store(true, Ordering::SeqCst);
+    }
+
+    async fn wait_for_stale_resolve(&self) {
+        self.stale_resolve_started.notified().await;
+    }
+
+    fn release_stale_resolve(&self) {
+        self.release_stale_resolve.notify_one();
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for GatedStaleResolveContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        let resolved = self.inner.resolve_many(identities).await?;
+        if self.gate_next_resolve.swap(false, Ordering::SeqCst) {
+            self.stale_resolve_started.notify_one();
+            self.release_stale_resolve.notified().await;
+        }
+        Ok(resolved)
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await
+    }
+
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &ContinuityRecord,
+        previous: Option<&ContinuityRecord>,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .rollback_continuity_record(expected_attempt, previous, fencing_token)
+            .await
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &AgentIdentity,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await
+    }
+}
+
 struct FaultyContinuityStore {
     inner: Arc<LocalContinuityStore>,
     fail_upsert: AtomicBool,
     fail_upsert_once: AtomicBool,
     fail_delete: AtomicBool,
     allow_upserts: AtomicUsize,
+    gate_upsert_failure: AtomicBool,
+    upsert_failure_started: tokio::sync::Notify,
+    release_upsert_failure: tokio::sync::Notify,
 }
 
 impl FaultyContinuityStore {
@@ -569,6 +948,9 @@ impl FaultyContinuityStore {
             fail_upsert_once: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
             allow_upserts: AtomicUsize::new(0),
+            gate_upsert_failure: AtomicBool::new(false),
+            upsert_failure_started: tokio::sync::Notify::new(),
+            release_upsert_failure: tokio::sync::Notify::new(),
         }
     }
 
@@ -590,6 +972,19 @@ impl FaultyContinuityStore {
         self.allow_upserts.store(count, Ordering::SeqCst);
         self.fail_upsert_once.store(false, Ordering::SeqCst);
         self.fail_upsert();
+    }
+
+    fn gate_next_upsert_failure_after_successes(&self, count: usize) {
+        self.gate_upsert_failure.store(true, Ordering::SeqCst);
+        self.fail_next_upsert_after_successes(count);
+    }
+
+    async fn wait_for_gated_upsert_failure(&self) {
+        self.upsert_failure_started.notified().await;
+    }
+
+    fn release_gated_upsert_failure(&self) {
+        self.release_upsert_failure.notify_one();
     }
 }
 
@@ -747,6 +1142,10 @@ impl ContinuityStore for FaultyContinuityStore {
             if allowed > 0 {
                 self.allow_upserts.fetch_sub(1, Ordering::SeqCst);
             } else {
+                if self.gate_upsert_failure.swap(false, Ordering::SeqCst) {
+                    self.upsert_failure_started.notify_one();
+                    self.release_upsert_failure.notified().await;
+                }
                 if self.fail_upsert_once.swap(false, Ordering::SeqCst) {
                     self.fail_upsert.store(false, Ordering::SeqCst);
                 }
@@ -755,6 +1154,17 @@ impl ContinuityStore for FaultyContinuityStore {
         }
         self.inner
             .upsert_continuity_record(record, fencing_token)
+            .await
+    }
+
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &ContinuityRecord,
+        previous: Option<&ContinuityRecord>,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .rollback_continuity_record(expected_attempt, previous, fencing_token)
             .await
     }
 
@@ -1199,6 +1609,24 @@ async fn assert_status_lease_is_renewable(
         renewed.get(identity),
         Some(LeaseRenewResult::Renewed(_))
     ));
+}
+
+async fn assert_other_holder_can_acquire(
+    lease_provider: &LocalLeaseProvider,
+    identity: &AgentIdentity,
+    holder: &str,
+) {
+    let acquired = lease_provider
+        .acquire_leases(std::slice::from_ref(identity), holder)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            acquired.get(identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ),
+        "Broken/no-lease rollback must release external ownership for {holder}: {acquired:?}"
+    );
 }
 
 async fn assert_old_token_snapshot_write_rejected(
@@ -1811,6 +2239,7 @@ async fn identity_first_runtime_retire_unregister_failure_fences_stale_session_s
             .map_or(true, |lease| lease.fencing_token > old_grant.fencing_token),
         "runtime status must not expose the stale pre-retire lease token"
     );
+    assert_other_holder_can_acquire(&lease, &id, "retire-unregister-failover").await;
 }
 
 #[tokio::test]
@@ -1850,6 +2279,158 @@ async fn identity_first_runtime_retire_returns_advanced_fencing_token() {
     );
     assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &record, old_grant.fencing_token)
         .await;
+    assert_other_holder_can_acquire(&lease, &id, "retire-success-failover").await;
+}
+
+#[tokio::test]
+async fn identity_first_runtime_retire_surfaces_success_path_lease_release_failure() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailingReleaseLeaseProvider::default());
+    let runtime = make_runtime(store.clone(), lease.clone());
+    let id = make_identity("triage:main");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    let err = runtime.retire(&id).await.unwrap_err();
+    assert!(matches!(err, IdentityRuntimeError::Lease(_)));
+    assert!(err.to_string().contains("synthetic release failure"));
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reconcile_releases_pending_broken_retire_grant_before_reacquire() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::default());
+    let runtime = Arc::new(make_runtime(store.clone(), lease.clone()));
+    let id = make_identity("triage:pending-release");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record(id.as_str(), 0, 0);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    let spec = make_spec(id.as_str());
+    runtime
+        .register(
+            spec.clone(),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant.clone()),
+        )
+        .await;
+
+    let retire_error = runtime
+        .retire(&id)
+        .await
+        .expect_err("the first provider release must fail");
+    assert!(
+        retire_error
+            .to_string()
+            .contains("synthetic first release failure")
+    );
+    let broken = runtime.status(&id).await.unwrap();
+    assert_eq!(broken.state, IdentityLifecycleState::Broken);
+    assert!(
+        broken.lease.is_none(),
+        "pending release authority is internal and must not look active"
+    );
+    let held_after_failure = lease
+        .held_grant(&id)
+        .expect("the failed release must leave provider authority held");
+    assert!(held_after_failure.fencing_token > initial_grant.fencing_token);
+    let first_attempts = lease.release_attempts();
+    assert_eq!(first_attempts.len(), 1);
+    assert_eq!(
+        first_attempts[0].fencing_token, held_after_failure.fencing_token,
+        "retire must preserve the exact failed grant for repair"
+    );
+
+    let context = meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+        runtime.clone(),
+        Arc::new(StaticRosterProvider::new(vec![spec])),
+        None,
+        None,
+        None,
+    );
+    lease.fail_next_release();
+    let retry_error = context
+        .refresh_desired_topology()
+        .await
+        .expect_err("a failed pending-release retry must abort before reacquire");
+    assert!(
+        retry_error
+            .to_string()
+            .contains("synthetic first release failure")
+    );
+    let still_broken = runtime.status(&id).await.unwrap();
+    assert_eq!(still_broken.state, IdentityLifecycleState::Broken);
+    assert!(still_broken.lease.is_none());
+    assert_eq!(
+        lease.held_grant(&id).map(|grant| grant.fencing_token),
+        Some(held_after_failure.fencing_token),
+        "a failed retry must keep the exact pending authority parked"
+    );
+    let failed_retry_attempts = lease.release_attempts();
+    assert_eq!(failed_retry_attempts.len(), 2);
+    assert!(
+        failed_retry_attempts
+            .iter()
+            .all(|grant| grant.fencing_token == held_after_failure.fencing_token)
+    );
+
+    context
+        .refresh_desired_topology()
+        .await
+        .expect("reconcile must release the pending grant before reacquiring");
+
+    let recovered = runtime.status(&id).await.unwrap();
+    assert_eq!(recovered.state, IdentityLifecycleState::Active);
+    let recovered_lease = recovered
+        .lease
+        .expect("reconcile must install the newly acquired grant");
+    assert!(recovered_lease.fencing_token > held_after_failure.fencing_token);
+    let release_attempts = lease.release_attempts();
+    assert_eq!(release_attempts.len(), 3);
+    assert_eq!(
+        release_attempts[2].fencing_token, held_after_failure.fencing_token,
+        "reconcile must retry the exact grant whose first release failed"
+    );
+    assert_eq!(
+        lease.held_grant(&id).map(|grant| grant.fencing_token),
+        Some(recovered_lease.fencing_token),
+        "repair must recover instead of remaining permanently AlreadyHeld"
+    );
 }
 
 // ===========================================================================
@@ -2061,6 +2642,7 @@ async fn identity_first_runtime_rebind_bridge_register_failure_unregisters_new_s
         Some(live_session_id),
         "failed rebind must not restore stale pre-respawn session as active"
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "rebind-register-failover").await;
 }
 
 #[tokio::test]
@@ -2099,6 +2681,7 @@ async fn identity_first_runtime_rebind_initial_upsert_failure_marks_rebound_sess
         Some(record.session_id),
         "failed pre-rebind fence must leave the old session marked Broken instead of claiming the rebound session"
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "rebind-fence-failover").await;
 }
 
 #[tokio::test]
@@ -2206,6 +2789,44 @@ async fn identity_first_runtime_respawn_fences_old_owner_before_resolve() {
     );
 }
 
+#[tokio::test]
+async fn identity_first_runtime_respawn_fence_failure_releases_fresh_lease() {
+    let store = Arc::new(FaultyContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = make_runtime(store.clone(), lease.clone());
+    let id = make_identity("triage:main");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record("triage:main", 0, 2);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+    store.fail_upsert();
+
+    let err = runtime.respawn(&id).await.unwrap_err();
+    assert!(err.to_string().contains("upsert failed"));
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert!(status.lease.is_none());
+    assert_other_holder_can_acquire(&lease, &id, "respawn-fence-failover").await;
+}
+
 // ===========================================================================
 // Task 2.9 — reset(identity) (REQ-10)
 // ===========================================================================
@@ -2272,7 +2893,7 @@ async fn identity_first_runtime_reset_advances_generation_creates_fresh() {
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_preserves_superseded_bridge_session_runtime_state() {
+async fn identity_first_runtime_reset_cleans_superseded_bridge_session_after_commit() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -2304,15 +2925,22 @@ async fn identity_first_runtime_reset_preserves_superseded_bridge_session_runtim
     let new_record = runtime.reset(&id).await.unwrap();
 
     assert_ne!(new_record.session_id, record.session_id);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while bridge.unregister_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reset cleanup did not unregister the superseded bridge session");
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
-        !unregistered.contains(&record.session_id.to_string()),
-        "successful reset must leave superseded bridge session state registered; unregistered={unregistered:?}"
+        unregistered.contains(&record.session_id.to_string()),
+        "successful reset cleanup must unregister the exact superseded bridge session; unregistered={unregistered:?}"
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
-        0,
-        "successful reset should not unregister the old bridge session on the critical path"
+        1,
+        "successful reset should unregister the old bridge session exactly once"
     );
 }
 
@@ -2438,6 +3066,72 @@ async fn identity_first_runtime_reset_create_failure_preserves_old_continuity() 
 }
 
 #[tokio::test]
+async fn identity_first_runtime_reset_rollback_failure_projects_authoritative_generation() {
+    // This wrapper intentionally inherits ContinuityStore's compatibility
+    // rollback. Its inner LocalContinuityStore rejects the default method's
+    // generation-regressing upsert, exercising the fail-closed projection
+    // required for external stores whose rollback CAS fails.
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.fail_create();
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge);
+
+    let id = make_identity("triage:main");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(grant) => grant.clone(),
+        other => panic!("expected acquired lease, got {other:?}"),
+    };
+    let previous = make_record("triage:main", 0, 5);
+    store
+        .upsert_continuity_record(&previous, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(previous),
+            Some(initial_grant),
+        )
+        .await;
+
+    let error = runtime
+        .reset(&id)
+        .await
+        .expect_err("bridge creation and compatibility rollback should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("tentative continuity cleanup failed"),
+        "rollback failure must remain observable: {error}"
+    );
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let Some(ContinuityResolveState::Ready {
+        record: authoritative,
+    }) = resolved.get(&id)
+    else {
+        panic!("tentative reset generation should remain authoritative: {resolved:?}");
+    };
+    assert_eq!(authoritative.generation, ContinuityGeneration::new(1));
+
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert_eq!(status.generation, Some(authoritative.generation));
+    assert_eq!(
+        status.agent_runtime_id.as_ref(),
+        Some(&authoritative.agent_runtime_id)
+    );
+    assert_eq!(status.session_id.as_ref(), Some(&authoritative.session_id));
+    assert!(status.lease.is_none());
+    assert_other_holder_can_acquire(&lease_prov, &id, "rollback-failure-failover").await;
+}
+
+#[tokio::test]
 async fn identity_first_runtime_reset_failure_preserves_original_dormant_state() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
@@ -2498,6 +3192,14 @@ async fn identity_first_runtime_reset_failure_preserves_original_dormant_state()
         initial_grant.fencing_token,
     )
     .await;
+    let acquired = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "dormant-reset-failover")
+        .await
+        .unwrap();
+    assert!(
+        matches!(acquired.get(&id), Some(LeaseAcquireResult::Acquired(_))),
+        "dormant reset rollback must release the temporary runtime lease: {acquired:?}"
+    );
 }
 
 #[tokio::test]
@@ -2517,6 +3219,7 @@ async fn identity_first_runtime_reset_create_failure_removes_tentative_uninitial
         LeaseAcquireResult::Acquired(g) => g.clone(),
         _ => panic!("expected Acquired"),
     };
+    let old_token = initial_grant.fencing_token;
     runtime
         .register(
             make_spec("triage:uninitialized"),
@@ -2543,6 +3246,7 @@ async fn identity_first_runtime_reset_create_failure_removes_tentative_uninitial
         status.agent_runtime_id.is_none(),
         "rollback should restore the no-continuity entry"
     );
+    assert_status_lease_is_renewable(&lease_prov, &runtime, &id, old_token).await;
 }
 
 #[tokio::test]
@@ -2672,6 +3376,7 @@ async fn identity_first_runtime_reset_register_failure_reports_cleanup_failure_a
         "cleanup ambiguity must not refresh a bridge-visible lease"
     );
     assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &record, old_token).await;
+    assert_other_holder_can_acquire(&lease_prov, &id, "reset-cleanup-failover").await;
 }
 
 /// Roster provider that returns a fixed set of specs (mirrors the operator's
@@ -2813,7 +3518,7 @@ async fn identity_first_runtime_reset_falls_back_to_stored_spec_when_roster_unav
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_skips_old_member_retire_failure_path() {
+async fn identity_first_runtime_reset_retire_failure_does_not_roll_back_committed_generation() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -2860,12 +3565,19 @@ async fn identity_first_runtime_reset_skips_old_member_retire_failure_path() {
     assert_eq!(status.state, IdentityLifecycleState::Active);
     assert!(
         status.lease.is_some(),
-        "successful reset should keep a refreshed lease when old-generation cleanup is skipped"
+        "committed reset must keep its refreshed lease while old-generation cleanup debt remains"
     );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while bridge.retire_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reset cleanup never attempted the old member retire");
     assert_eq!(
         bridge.retire_calls.load(Ordering::SeqCst),
-        0,
-        "reset must not retire the old generation as part of the success path"
+        1,
+        "reset cleanup should attempt the old generation exactly once before shutdown retry"
     );
     assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &reset_record, old_token).await;
 }
@@ -2913,6 +3625,7 @@ async fn identity_first_runtime_reset_store_failure_marks_identity_broken() {
         send.to_string().contains("state Broken"),
         "broken identity must reject delivery: {send}"
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "reset-fence-failover").await;
 }
 
 #[tokio::test]
@@ -2944,9 +3657,27 @@ async fn identity_first_runtime_reset_final_upsert_failure_restores_old_continui
             Some(initial_grant),
         )
         .await;
-    store.fail_next_upsert_after_successes(3);
+    store.gate_next_upsert_failure_after_successes(3);
 
-    let err = runtime.reset(&id).await.unwrap_err();
+    let reset = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        let id = id.clone();
+        async move { runtime.reset(&id).await }
+    });
+    store.wait_for_gated_upsert_failure().await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        bridge.unregister_calls.load(Ordering::SeqCst),
+        0,
+        "reset must not unregister the old or tentative bridge session before the final continuity upsert resolves"
+    );
+    assert!(
+        bridge.unregistered_session_ids.lock().await.is_empty(),
+        "old bridge cleanup must remain ordered after the awaited final continuity upsert"
+    );
+    store.release_gated_upsert_failure();
+
+    let err = reset.await.expect("reset task joins").unwrap_err();
     assert!(err.to_string().contains("upsert failed"));
     assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -2979,6 +3710,7 @@ async fn identity_first_runtime_reset_final_upsert_failure_restores_old_continui
         status.agent_runtime_id.as_ref(),
         Some(&record.agent_runtime_id)
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "reset-final-upsert-failover").await;
 }
 
 #[tokio::test]
@@ -3055,6 +3787,130 @@ async fn identity_first_runtime_delete_identity_removes_from_runtime() {
         &ContinuityResolveState::Uninitialized,
         "deleted identity must resolve as Uninitialized"
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "delete-success-failover").await;
+}
+
+#[tokio::test]
+async fn identity_first_runtime_delete_surfaces_success_path_lease_release_failure() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailingReleaseLeaseProvider::default());
+    let runtime = make_runtime(store.clone(), lease.clone());
+    let id = make_identity("triage:main");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    let err = runtime.delete_identity(&id).await.unwrap_err();
+    assert!(matches!(err, IdentityRuntimeError::Lease(_)));
+    assert!(err.to_string().contains("synthetic release failure"));
+    assert!(
+        runtime.contains(&id).await,
+        "failed provider release must retain a retryable tombstone"
+    );
+    let tombstone = runtime.status(&id).await.unwrap();
+    assert_eq!(tombstone.state, IdentityLifecycleState::Broken);
+    assert!(tombstone.agent_runtime_id.is_none());
+    assert!(tombstone.session_id.is_none());
+    assert!(tombstone.generation.is_none());
+    assert!(tombstone.lease.is_none());
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    assert_eq!(
+        resolved.get(&id),
+        Some(&ContinuityResolveState::Uninitialized)
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reconcile_releases_deleted_tombstone_grant_before_recreate() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::default());
+    let runtime = Arc::new(make_runtime(store.clone(), lease.clone()));
+    let id = make_identity("triage:deleted-pending-release");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record(id.as_str(), 0, 0);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    let spec = make_spec(id.as_str());
+    runtime
+        .register(
+            spec.clone(),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    runtime
+        .delete_identity(&id)
+        .await
+        .expect_err("the first provider release must fail");
+    let held_after_delete = lease
+        .held_grant(&id)
+        .expect("delete failure must keep exact provider authority held");
+    let tombstone = runtime.status(&id).await.unwrap();
+    assert_eq!(tombstone.state, IdentityLifecycleState::Broken);
+    assert!(tombstone.agent_runtime_id.is_none());
+    assert!(tombstone.session_id.is_none());
+    assert!(tombstone.generation.is_none());
+    assert!(tombstone.lease.is_none());
+
+    let context = meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+        runtime.clone(),
+        Arc::new(StaticRosterProvider::new(vec![spec])),
+        None,
+        None,
+        None,
+    );
+    context
+        .refresh_desired_topology()
+        .await
+        .expect("reconcile must release the tombstone grant before recreating");
+
+    let active = runtime.status(&id).await.unwrap();
+    assert_eq!(active.state, IdentityLifecycleState::Active);
+    let active_grant = active.lease.expect("recreated identity owns a new grant");
+    assert!(active_grant.fencing_token > held_after_delete.fencing_token);
+    let release_attempts = lease.release_attempts();
+    assert_eq!(release_attempts.len(), 2);
+    assert!(
+        release_attempts
+            .iter()
+            .all(|grant| grant.fencing_token == held_after_delete.fencing_token),
+        "both delete and reconcile must address the exact parked grant"
+    );
+    assert_eq!(
+        lease.held_grant(&id).map(|grant| grant.fencing_token),
+        Some(active_grant.fencing_token)
+    );
 }
 
 #[tokio::test]
@@ -3082,6 +3938,11 @@ async fn identity_first_runtime_delete_identity_unregisters_bridge_session() {
 
     runtime.delete_identity(&id).await.unwrap();
 
+    assert_eq!(
+        bridge.register_calls.load(Ordering::SeqCst),
+        1,
+        "delete must refresh the live session onto its newly acquired fence before archive"
+    );
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
@@ -3104,7 +3965,7 @@ async fn identity_first_runtime_delete_unregister_failure_preserves_continuity()
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
     bridge.fail_unregister();
-    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge);
 
     let id = make_identity("triage:main");
     let record = make_record("triage:main", 0, 0);
@@ -3135,6 +3996,7 @@ async fn identity_first_runtime_delete_unregister_failure_preserves_continuity()
         Some(&ContinuityResolveState::Ready { record }),
         "failed unregister must not delete durable continuity first"
     );
+    assert_other_holder_can_acquire(&lease_prov, &id, "delete-unregister-failover").await;
 }
 
 #[tokio::test]
@@ -3175,7 +4037,7 @@ async fn identity_first_runtime_delete_store_failure_marks_identity_broken() {
     let store = Arc::new(FaultyContinuityStore::new());
     let lease = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
-    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge);
+    let runtime = make_runtime_with_bridge(store.clone(), lease.clone(), bridge);
 
     let id = make_identity("triage:main");
     let record = make_record("triage:main", 0, 0);
@@ -3201,6 +4063,7 @@ async fn identity_first_runtime_delete_store_failure_marks_identity_broken() {
         status.agent_runtime_id.as_ref(),
         Some(&record.agent_runtime_id)
     );
+    assert_other_holder_can_acquire(&lease, &id, "delete-store-failover").await;
 }
 
 #[tokio::test]
@@ -3229,6 +4092,98 @@ async fn identity_first_runtime_delete_rejects_unregistered_identity_without_sto
 // ===========================================================================
 // Lazy materialization — build registers identity metadata, first touch hydrates
 // ===========================================================================
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_reconcile_stale_resolve_cannot_resurrect_deleted_identity() {
+    let store = Arc::new(GatedStaleResolveContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = Arc::new(make_runtime(store.clone(), lease.clone()));
+    let id = make_identity("triage:stale-lazy-delete");
+    let spec = make_spec(id.as_str());
+    let record = make_record(id.as_str(), 0, 0);
+    let initial_grants = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grants.get(&id).unwrap() else {
+        panic!("initial lease must be acquired");
+    };
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            spec.clone(),
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(initial_grant.clone()),
+        )
+        .await;
+
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new_with_lazy_materialization(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(vec![spec])),
+            None,
+            None,
+            None,
+            true,
+        ),
+    );
+    store.gate_next_resolve();
+    let reconcile_context = context.clone();
+    let reconcile = tokio::spawn(async move { reconcile_context.refresh_desired_topology().await });
+    store.wait_for_stale_resolve().await;
+
+    // lazy_register_flow has already captured the Ready row. Deletion must
+    // wait for the same lifecycle transaction rather than commit underneath
+    // that stale resolve and then be overwritten by dormant registration.
+    let delete_started = Arc::new(tokio::sync::Notify::new());
+    let delete_runtime = runtime.clone();
+    let delete_id = id.clone();
+    let delete_started_task = delete_started.clone();
+    let delete = tokio::spawn(async move {
+        delete_started_task.notify_one();
+        delete_runtime.delete_identity(&delete_id).await
+    });
+    delete_started.notified().await;
+    tokio::task::yield_now().await;
+    assert!(
+        !delete.is_finished(),
+        "delete must wait while lazy reconcile owns lifecycle authority"
+    );
+
+    store.release_stale_resolve();
+    let reconcile_result = reconcile
+        .await
+        .expect("reconcile task must not panic")
+        .expect("lazy reconcile must finish before queued deletion");
+    delete
+        .await
+        .expect("delete task must not panic")
+        .expect("queued deletion must commit after lazy reconcile");
+
+    let RestoreOutcome::Dormant {
+        record: Some(stale_record),
+        ..
+    } = reconcile_result.outcomes.get(&id).unwrap()
+    else {
+        panic!("lazy reconcile must have consumed the gated Ready snapshot");
+    };
+    assert_eq!(stale_record.session_id, record.session_id);
+    assert!(!runtime.contains(&id).await);
+    assert!(matches!(
+        runtime.status(&id).await,
+        Err(IdentityRuntimeError::UnknownIdentity(_))
+    ));
+    let durable = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    assert_eq!(
+        durable.get(&id),
+        Some(&ContinuityResolveState::Uninitialized),
+        "the stale lazy resolve must never republish deleted continuity"
+    );
+}
 
 #[tokio::test]
 async fn identity_first_runtime_lazy_register_does_not_load_snapshots_or_spawn_members() {
@@ -5586,7 +6541,121 @@ async fn identity_first_runtime_restore_flow_releases_leases_on_customizer_failu
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer_failure() {
+async fn identity_first_runtime_reconcile_retries_unpublished_exact_grant_before_reacquire() {
+    struct FailingCustomizer;
+
+    #[async_trait]
+    impl AgentCustomizer for FailingCustomizer {
+        async fn customize_build(
+            &self,
+            _context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            _draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            Err(CustomizerError::BuildFailed("boom".to_string()))
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::default());
+    let runtime = make_runtime_with_store(store, lease.clone());
+    let identity = make_identity("review:unpublished-pending-release");
+    let spec = make_spec(identity.as_str());
+
+    let first_error = restore_flow(
+        &runtime,
+        std::slice::from_ref(&spec),
+        None,
+        Some(&FailingCustomizer),
+    )
+    .await
+    .expect_err("customization and its first cleanup release must fail");
+    assert!(first_error.to_string().contains("boom"));
+    assert!(first_error.to_string().contains("lease cleanup failed"));
+    assert!(
+        !runtime.contains(&identity).await,
+        "failure before lifecycle publication intentionally has no entry"
+    );
+    let held = lease
+        .held_grant(&identity)
+        .expect("provider still holds the exact unpublished grant");
+    assert_eq!(lease.release_attempts(), vec![held.clone()]);
+
+    restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+        .await
+        .expect("reconcile must release the parked grant before reacquiring");
+
+    let recovered = runtime.status(&identity).await.unwrap();
+    assert_eq!(recovered.state, IdentityLifecycleState::Active);
+    assert!(
+        recovered
+            .lease
+            .is_some_and(|grant| grant.fencing_token > held.fencing_token)
+    );
+    assert_eq!(
+        lease.release_attempts(),
+        vec![held.clone(), held],
+        "failure cleanup and reconcile must address the same fencing token"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_repair_supervisor_heals_eager_provider_broken_entry() {
+    let store = Arc::new(TransientBrokenContinuityStore::new_broken());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = Arc::new(make_runtime_with_store(store.clone(), lease));
+    let identity = make_identity("review:transient-broken");
+    let spec = make_spec(identity.as_str());
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(vec![spec.clone()])),
+            None,
+            None,
+            None,
+        ),
+    );
+
+    let first = restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+        .await
+        .expect("provider Broken is a typed terminal restore outcome");
+    assert!(matches!(
+        first.outcomes.get(&identity),
+        Some(RestoreOutcome::Broken(_))
+    ));
+    assert_eq!(
+        runtime.status(&identity).await.unwrap().state,
+        IdentityLifecycleState::Broken,
+        "eager Broken must have a lifecycle projection discoverable by repair"
+    );
+
+    store.recover();
+    let repair = context.spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(20),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if runtime
+                .status(&identity)
+                .await
+                .is_ok_and(|status| status.state == IdentityLifecycleState::Active)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("repair supervisor should heal Broken to Active");
+    repair.abort();
+    let _ = repair.await;
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_reuses_exact_active_lease_without_customizing() {
     struct FailingCustomizer;
 
     #[async_trait]
@@ -5634,30 +6703,27 @@ async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer
         None,
         Some(&FailingCustomizer),
     )
-    .await;
-    assert!(result.is_err());
+    .await
+    .expect("an already-active identity must bypass rebuild customization");
+    assert!(matches!(
+        result.outcomes.get(&identity),
+        Some(RestoreOutcome::Resumed { .. })
+    ));
 
     let status = runtime.status(&identity).await.unwrap();
     assert_eq!(status.state, IdentityLifecycleState::Active);
-    let refreshed_lease = status
+    let preserved_lease = status
         .lease
         .expect("already-active identity keeps a current runtime lease");
-    assert!(
-        refreshed_lease.fencing_token > initial_grant.fencing_token,
-        "restore_flow must refresh the active runtime lease before customizer work"
+    assert_eq!(
+        preserved_lease.fencing_token, initial_grant.fencing_token,
+        "reconcile must preserve the exact live grant instead of rotating authority"
     );
     let send_token = runtime.send(&identity, &make_content()).await.unwrap();
     assert_eq!(
-        send_token, refreshed_lease.fencing_token,
-        "active runtime must not continue sending with the stale pre-restore token"
+        send_token, initial_grant.fencing_token,
+        "the live runtime must keep sending with its unchanged exact authority"
     );
-    assert_old_token_snapshot_write_rejected(
-        store.as_ref(),
-        &identity,
-        &record,
-        initial_grant.fencing_token,
-    )
-    .await;
 
     let acquired = lease
         .acquire_leases(
@@ -5671,7 +6737,119 @@ async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer
             acquired.get(&identity),
             Some(LeaseAcquireResult::AlreadyHeld { .. })
         ),
-        "customizer failure must not release the refreshed lease for an already-active identity: {acquired:?}"
+        "reconcile must not release the preserved active lease: {acquired:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_renews_expired_active_lease_before_reuse() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = make_runtime_with_store(store.clone(), lease.clone());
+    let identity = make_identity("review:expired-active");
+    let record = make_record("review:expired-active", 0, 0);
+    let initial_grant = acquire_controlled_grant(&lease, &identity).await;
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec(identity.as_str()),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant.clone()),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let mut desired = make_spec(identity.as_str());
+    desired
+        .labels
+        .insert("reconciled".to_string(), "true".to_string());
+    let result = restore_flow(&runtime, std::slice::from_ref(&desired), None, None)
+        .await
+        .expect("active reconcile must renew due authority before reuse");
+    assert!(matches!(
+        result.outcomes.get(&identity),
+        Some(RestoreOutcome::Resumed { .. })
+    ));
+
+    let status = runtime.status(&identity).await.unwrap();
+    let renewed = status
+        .lease
+        .expect("successful active reconcile must retain renewed authority");
+    assert!(
+        renewed.fencing_token > initial_grant.fencing_token,
+        "expired active authority must rotate before reconcile succeeds"
+    );
+    assert!(renewed.healthy);
+    assert_eq!(lease.renew_calls(), 1);
+    assert_eq!(
+        status.labels.get("reconciled").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        runtime.send(&identity, &make_content()).await.unwrap(),
+        renewed.fencing_token,
+        "post-reconcile work must use the renewed exact grant"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_lost_active_lease_breaks_before_spec_update() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::Lost,
+    ));
+    let runtime = make_runtime_with_store(store.clone(), lease.clone());
+    let identity = make_identity("review:lost-active");
+    let record = make_record("review:lost-active", 0, 0);
+    let initial_grant = acquire_controlled_grant(&lease, &identity).await;
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    let mut original = make_spec(identity.as_str());
+    original
+        .labels
+        .insert("revision".to_string(), "old".to_string());
+    runtime
+        .register(
+            original,
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let mut desired = make_spec(identity.as_str());
+    desired
+        .labels
+        .insert("revision".to_string(), "new".to_string());
+    let error = restore_flow(&runtime, &[desired], None, None)
+        .await
+        .expect_err("lost authority must fail active reconcile");
+    assert!(matches!(
+        error,
+        IdentityRuntimeError::LeaseLost(ref lost) if lost == &identity
+    ));
+
+    let status = runtime.status(&identity).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert!(status.lease.is_none());
+    assert_eq!(lease.renew_calls(), 1);
+    assert_eq!(
+        status.labels.get("revision").map(String::as_str),
+        Some("old"),
+        "a failed authority preflight must not publish the requested spec update"
     );
 }
 
@@ -5726,6 +6904,76 @@ async fn identity_first_runtime_materialize_releases_lease_on_customizer_failure
             Some(LeaseAcquireResult::Acquired(_))
         ),
         "materialize customizer failure must release the acquired lease: {acquired:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_direct_materialize_drains_parked_grant_before_reacquire() {
+    struct FailOnceCustomizer(AtomicBool);
+
+    #[async_trait]
+    impl AgentCustomizer for FailOnceCustomizer {
+        async fn customize_build(
+            &self,
+            _context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            _draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            if self.0.swap(false, Ordering::SeqCst) {
+                Err(CustomizerError::BuildFailed("boom once".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::without_same_holder_refresh());
+    let runtime = Arc::new(make_runtime_with_store(store, lease.clone()));
+    let identity = make_identity("review:direct-orphan-retry");
+    lazy_register_flow(
+        &runtime,
+        std::slice::from_ref(&make_spec(identity.as_str())),
+        None,
+    )
+    .await
+    .unwrap();
+    runtime
+        .set_agent_customizer(Some(Arc::new(FailOnceCustomizer(AtomicBool::new(true)))))
+        .await;
+
+    let first_error = runtime
+        .materialize_tracked(&identity)
+        .await
+        .expect_err("customization and the first exact-grant cleanup must fail");
+    assert!(first_error.to_string().contains("boom once"));
+    assert!(first_error.to_string().contains("lease cleanup failed"));
+    assert_eq!(
+        runtime.status(&identity).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
+    let parked = lease
+        .held_grant(&identity)
+        .expect("failed cleanup must retain provider authority");
+    assert_eq!(lease.release_attempts(), vec![parked.clone()]);
+
+    runtime
+        .materialize_tracked(&identity)
+        .await
+        .expect("direct retry must release the orphan before strict reacquisition");
+
+    let active = runtime.status(&identity).await.unwrap();
+    assert_eq!(active.state, IdentityLifecycleState::Active);
+    let active_grant = active.lease.expect("retry must publish fresh authority");
+    assert!(active_grant.fencing_token > parked.fencing_token);
+    assert_eq!(
+        lease.release_attempts(),
+        vec![parked.clone(), parked],
+        "the failure cleanup and direct retry must release the same exact token"
+    );
+    assert_eq!(
+        lease.held_grant(&identity).map(|grant| grant.fencing_token),
+        Some(active_grant.fencing_token)
     );
 }
 
@@ -6681,7 +7929,10 @@ async fn identity_first_runtime_inv02_lease_loss_blocks_send() {
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        IdentityRuntimeError::NoActiveLease(_)
+        IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        }
     ));
 }
 
@@ -6710,7 +7961,10 @@ async fn identity_first_runtime_inv02_lease_loss_blocks_dispatch() {
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        IdentityRuntimeError::NoActiveLease(_)
+        IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        }
     ));
 }
 

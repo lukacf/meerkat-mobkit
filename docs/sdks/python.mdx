@@ -275,6 +275,7 @@ rt = await (
 | `.roster(provider)` | Identity-first roster provider |
 | `.topology_provider(provider)` | Identity-first topology provider |
 | `.agent_customizer(customizer)` | Identity-first agent customizer |
+| `.identity_bootstrap_mode(mode)` | Eager, lazy, or bounded background-warm identity materialization; requires `.roster(...)` |
 | `.session_service(builder, store)` | Session agent builder and optional store |
 | `.discovery(callback)` | Discovery callback (mob-level) |
 | `.pre_spawn(callback)` | Pre-spawn callback |
@@ -292,10 +293,19 @@ External identity providers follow the Rust gateway's authoritative path: set
 `.continuity_store(provider)`, `.lease_provider(provider)`, and
 `.scratch_dir(path)` together. The Python callback dispatcher speaks the Rust
 wire contract for leases (`result` tags and `ttl`) and continuity deletes.
+`LeaseProviderProtocol.renew_leases(...)` is atomic from the caller's
+perspective: raising means no input grant was changed, while every returned
+`renewed` or `lost` result is already committed for that identity. Providers
+must not commit a replacement grant and then raise.
 For continuity stores, `checkpoint_version` is monotonic per identity and
 continuity generation. A live session rebind changes `session_id` without
 resetting the version; only destructive reset advances `generation` and starts
 the version stream over.
+
+Every explicit `.identity_bootstrap_mode(...)` call declares identity-first
+intent and requires `.roster(...)`, including explicit eager mode. Omitting the
+setter keeps a gateway without a roster on the classic path; a configured
+roster with no explicit mode retains eager materialization.
 
 Gateway memory config accepts `{backend: "local_json"}` with an optional
 `health_check_endpoint` (`memory.local_json(...)`); the legacy Elephant

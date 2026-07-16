@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
+from .identity_first_models import IdentityBootstrapMode
+
 
 @dataclass
 class MobKitBuilderConfig:
@@ -40,6 +42,7 @@ class MobKitBuilderConfig:
     roster_provider: Any | None = None
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
+    identity_bootstrap_mode: IdentityBootstrapMode | None = None
 
 
 class MobKitBuilder:
@@ -466,6 +469,21 @@ class MobKitBuilder:
         self._config.agent_customizer = customizer
         return self
 
+    def identity_bootstrap_mode(
+        self, mode: IdentityBootstrapMode
+    ) -> MobKitBuilder:
+        """Set the identity materialization policy used during gateway init.
+
+        Calling this method declares identity-first intent and therefore
+        requires ``roster(...)``, including for explicit eager mode. The option
+        is omitted unless this method is called, preserving the classic gateway
+        when no roster is configured and the eager default when one is.
+        """
+        if not isinstance(mode, IdentityBootstrapMode):
+            raise TypeError("mode must be an IdentityBootstrapMode")
+        self._config.identity_bootstrap_mode = mode
+        return self
+
     async def build(self) -> MobKitRuntime:
         self._validate()
         self._apply_convention_defaults()
@@ -476,6 +494,14 @@ class MobKitBuilder:
         if self._config.mob_config_path and self._config.mob_config_inline:
             raise ValueError(
                 "mob() and mob_inline() are mutually exclusive"
+            )
+        if (
+            self._config.identity_bootstrap_mode is not None
+            and self._config.roster_provider is None
+        ):
+            raise ValueError(
+                "identity_bootstrap_mode() requires roster() because every "
+                "explicit bootstrap mode is identity-first"
             )
         has_external = (
             self._config.continuity_store is not None

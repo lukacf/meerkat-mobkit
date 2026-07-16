@@ -812,11 +812,36 @@ pub struct TaintObserverGuard {
     _abort: Arc<AbortOnDrop>,
 }
 
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+struct AbortOnDrop(std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(task) = self
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            task.abort();
+        }
+    }
+}
+
+impl TaintObserverGuard {
+    /// Abort and join the observer rather than merely relying on drop. The
+    /// runtime uses this at shutdown so a failed builder cannot leave a ghost
+    /// subscriber retaining the mob handle and memory sinks.
+    pub async fn abort_and_join(self) {
+        let task = self
+            ._abort
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
     }
 }
 
@@ -839,7 +864,7 @@ pub fn spawn_member_event_observer(
 ) -> TaintObserverGuard {
     let task = tokio::spawn(run_member_event_observer(handle, sinks));
     TaintObserverGuard {
-        _abort: Arc::new(AbortOnDrop(task)),
+        _abort: Arc::new(AbortOnDrop(std::sync::Mutex::new(Some(task)))),
     }
 }
 

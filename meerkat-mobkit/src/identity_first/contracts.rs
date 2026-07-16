@@ -8,6 +8,7 @@
 //! - [`TopologyProvider`] — managed dynamic topology edges (CONTRACT-05)
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -22,6 +23,22 @@ use crate::mob_handle_runtime::SessionCreatedContext;
 // ---------------------------------------------------------------------------
 // CONTRACT-01: ContinuityStore
 // ---------------------------------------------------------------------------
+
+/// Candidate used by stores that can prove an exact, provenance-preserving
+/// snapshot no-op without returning and reparsing the durable document.
+///
+/// A store may report a match only when both the bytes and every ownership/CAS
+/// field identify its current durable row. Implementations that cannot prove
+/// the complete predicate must use the trait's default `false` response.
+#[derive(Debug, Clone)]
+pub struct SessionSnapshotMatchCandidate {
+    pub identity: AgentIdentity,
+    pub session_id: meerkat_core::types::SessionId,
+    pub generation: ContinuityGeneration,
+    pub checkpoint_version: CheckpointVersion,
+    pub fencing_token: FencingToken,
+    pub snapshot: Arc<SessionSnapshot>,
+}
 
 /// Authoritative durable state provider for identity-first continuity.
 ///
@@ -54,6 +71,20 @@ pub trait ContinuityStore: Send + Sync {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<SessionSnapshot>, ContinuityStoreError>;
 
+    /// Return `true` only when `candidate` is byte-for-byte identical to the
+    /// current durable row and its identity, generation, checkpoint version,
+    /// and fencing token all match.
+    ///
+    /// This additive capability lets adapters skip a full document load and
+    /// parse for an already-durable save. The conservative default preserves
+    /// compatibility and correctness for external stores.
+    async fn session_snapshot_matches_current(
+        &self,
+        _candidate: SessionSnapshotMatchCandidate,
+    ) -> Result<bool, ContinuityStoreError> {
+        Ok(false)
+    }
+
     /// Delete a saved session snapshot only if its serialized session
     /// projection still matches `expected_current_revision`.
     ///
@@ -78,6 +109,31 @@ pub trait ContinuityStore: Send + Sync {
         snapshot: &SessionSnapshot,
     ) -> Result<(), ContinuityStoreError>;
 
+    /// Owned equivalent of [`Self::save_session_snapshot`].
+    ///
+    /// Stores backed by blocking workers can override this method to move a
+    /// large snapshot into the worker without cloning it. Existing providers
+    /// inherit the compatibility implementation.
+    async fn save_session_snapshot_owned(
+        &self,
+        identity: AgentIdentity,
+        session_id: meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        self.save_session_snapshot(
+            &identity,
+            &session_id,
+            generation,
+            version,
+            fencing_token,
+            &snapshot,
+        )
+        .await
+    }
+
     /// Upsert a continuity record with fencing precondition.
     ///
     /// Rebinding an identity to a new session without changing
@@ -87,6 +143,51 @@ pub trait ContinuityStore: Send + Sync {
         record: &ContinuityRecord,
         fencing_token: FencingToken,
     ) -> Result<(), ContinuityStoreError>;
+
+    /// Compensate a tentative continuity-generation advance only when the
+    /// durable row still belongs to that exact reset attempt.
+    ///
+    /// Ordinary upserts are generation-monotonic and must reject an older
+    /// generation even under a newer fence. Reset is the one workflow that
+    /// can need a compensating rollback after publishing a provisional row so
+    /// the persistent session service can construct the replacement. Stores
+    /// should override this with one atomic compare-and-swap transaction.
+    /// The compatibility implementation is safe for externally serialized
+    /// providers, but cannot make the comparison and replacement atomic.
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &ContinuityRecord,
+        previous: Option<&ContinuityRecord>,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        let resolved = self
+            .resolve_many(std::slice::from_ref(&expected_attempt.identity))
+            .await?;
+        let Some(ContinuityResolveState::Ready { record: current }) =
+            resolved.get(&expected_attempt.identity)
+        else {
+            return Err(ContinuityStoreError::NotFound {
+                identity: expected_attempt.identity.clone(),
+            });
+        };
+        if current.agent_runtime_id != expected_attempt.agent_runtime_id
+            || current.session_id != expected_attempt.session_id
+            || current.generation != expected_attempt.generation
+        {
+            return Err(ContinuityStoreError::StaleContinuityGeneration {
+                identity: expected_attempt.identity.clone(),
+                presented: expected_attempt.generation,
+                current: current.generation,
+            });
+        }
+        match previous {
+            Some(previous) => self.upsert_continuity_record(previous, fencing_token).await,
+            None => {
+                self.delete_continuity_record(&expected_attempt.identity, fencing_token)
+                    .await
+            }
+        }
+    }
 
     /// Delete a continuity record and associated session snapshots.
     ///
@@ -116,6 +217,13 @@ pub trait LeaseProvider: Send + Sync {
     ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError>;
 
     /// Renew existing lease grants.
+    ///
+    /// Returning `Err` is a pre-commit failure: the provider must leave every
+    /// supplied grant authoritative. Per-identity authority loss is reported as
+    /// [`LeaseRenewResult::Lost`], and a committed rotation is returned as
+    /// [`LeaseRenewResult::Renewed`] with the exact replacement token. This
+    /// distinction lets runtimes safely quiesce and then either resume the old
+    /// bridge authority or publish the returned replacement.
     async fn renew_leases(
         &self,
         grants: &[LeaseGrant],

@@ -2683,6 +2683,19 @@ export function leaseRenewResultToDict(
 
 // -- Provider interfaces (REQ-48) -----------------------------------------
 
+/**
+ * Deadline/cancellation context for a gateway-hosted provider callback.
+ *
+ * Authority-mutating providers must observe `signal` before committing. A
+ * rejected or aborted callback is pre-commit and must not publish replacement
+ * lease or continuity authority after cancellation.
+ */
+export interface ProviderCallbackContext {
+  readonly signal: AbortSignal;
+  /** Absolute Unix timestamp in milliseconds for the host callback deadline. */
+  readonly deadlineMs: number;
+}
+
 export interface ContinuityStore {
   resolveMany(identities: string[]): Promise<Record<string, ContinuityResolveState>>;
   loadSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null>;
@@ -2694,13 +2707,23 @@ export interface ContinuityStore {
     version: number,
     fencingToken: number,
     snapshot: SessionSnapshot,
+    context?: ProviderCallbackContext,
   ): Promise<void>;
   /** Persist the binding without rewinding checkpointVersion on session rebind. */
-  upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
-  deleteContinuityRecord(identity: string, fencingToken: number): Promise<void>;
+  upsertContinuityRecord(
+    record: ContinuityRecord,
+    fencingToken: number,
+    context?: ProviderCallbackContext,
+  ): Promise<void>;
+  deleteContinuityRecord(
+    identity: string,
+    fencingToken: number,
+    context?: ProviderCallbackContext,
+  ): Promise<void>;
   deleteSessionSnapshotIfCurrentRevision?(
     sessionId: string,
     expectedCurrentRevision: string,
+    context?: ProviderCallbackContext,
   ): Promise<boolean>;
 }
 
@@ -2708,9 +2731,22 @@ export interface LeaseProvider {
   acquireLeases(
     identities: string[],
     runtimeInstance: string,
+    context?: ProviderCallbackContext,
   ): Promise<Record<string, LeaseAcquireResult>>;
-  renewLeases(grants: LeaseGrant[]): Promise<Record<string, LeaseRenewResult>>;
-  releaseLeases(grants: LeaseGrant[]): Promise<void>;
+  /**
+   * Renew atomically from the caller's perspective. A rejected Promise is a
+   * pre-commit failure and MUST leave every input grant unchanged. Every
+   * returned `renewed` or `lost` result is committed for that identity before
+   * the Promise resolves.
+   */
+  renewLeases(
+    grants: LeaseGrant[],
+    context?: ProviderCallbackContext,
+  ): Promise<Record<string, LeaseRenewResult>>;
+  releaseLeases(
+    grants: LeaseGrant[],
+    context?: ProviderCallbackContext,
+  ): Promise<void>;
 }
 
 export interface RosterProvider {

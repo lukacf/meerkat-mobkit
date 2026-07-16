@@ -18,8 +18,8 @@ use crate::runtime::{
 use crate::types::{EventEnvelope, ModuleEvent, UnifiedEvent};
 
 use super::types::{
-    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport,
+    IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError,
+    UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
@@ -53,6 +53,12 @@ impl UnifiedRuntime {
             Some(d) => d,
             None => return Ok(None),
         };
+        if self.identity_runtime().is_some() {
+            return Err(MobRuntimeError::InvalidConfig(
+                "rediscover resets the whole mob and is unavailable with identity-first authority; use refresh_desired_topology"
+                    .to_string(),
+            ));
+        }
 
         // 1. Reset the mob — retires all, clears state, returns to Running
         self.mob_runtime
@@ -156,14 +162,58 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        if let Some(observer) = self.agent_memory_observer_task.lock().await.take() {
+            observer.abort_and_join().await;
+        }
+        if let Some(task) = self.agent_memory_steward_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let identity_runtime = self.identity_runtime().cloned();
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            // Close request admission before any supervisor is drained. A
+            // caller may disappear while its lazy materialization owns an
+            // uninstalled lease; the runtime, not the caller, owns that task
+            // through its explicit commit/rollback boundary.
+            identity_runtime.close_foreground_operations();
+        }
+        // A continuity repair pass owns the same serialized bootstrap
+        // controller as explicit reconcile. Cancel it while idle, or join an
+        // in-flight pass to its explicit lease/bridge commit boundary, before
+        // waiting for background hydration.
+        if let Some(task) = self.identity_continuity_repair_task.lock().await.take() {
+            task.cancel_and_join().await;
+        }
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            // Background hydration owns concrete member creation/resume work;
+            // stop and join it before quiescing the mob actor.
+            identity_runtime.cancel_identity_bootstrap().await;
+            // Foreground request tasks can share the same materialization and
+            // lifecycle locks. Join them after the warmer has stopped and
+            // before lease renewal or the mob actor is taken down.
+            identity_runtime.join_foreground_operations().await;
+        }
         if let Some(task) = self.implicit_delegate_retirement_task.lock().await.take() {
             task.abort();
+            let _ = task.await;
         }
-        if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
-            task.abort();
-        }
-        if let Some(task) = self.identity_continuity_repair_task.lock().await.take() {
-            task.abort();
+
+        // Reset commits the replacement continuity generation before the old
+        // physical member can finish its archive protocol. Those exact
+        // post-commit obligations live in a dedicated runtime-owned task set
+        // and debt ledger: join them after foreground lifecycle admission is
+        // closed, then synchronously retry every remaining pair before Mob
+        // stop can observe a stale Retiring anchor.
+        let mut reset_bridge_cleanup_error = None;
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            identity_runtime.join_reset_bridge_cleanup_tasks().await;
+            if let Err(error) = identity_runtime.drain_pending_reset_bridge_cleanups().await {
+                tracing::warn!(
+                    %error,
+                    "reset-superseded bridge cleanup remains before mob shutdown"
+                );
+                reset_bridge_cleanup_error = Some(error.to_string());
+            }
         }
 
         // Phase 1: Drain in-flight events
@@ -196,7 +246,83 @@ impl UnifiedRuntime {
         // Phase 2: Stop the mob actor while its router/module dependencies
         // are still alive. Closing them first can race Stop against an
         // already-dropped actor reply channel under teardown pressure.
-        let mob_stop = self.stop_mob_quiescing().await;
+        let mut mob_stop = self.stop_mob_quiescing().await;
+
+        // A first cleanup attempt can fail while the Mob stop itself finishes
+        // quiescing the old runtime. Retry the retained exact debt once more;
+        // if it converges after a failed stop, retry Stop so cleanup attestation
+        // reflects the final structural state rather than the first refusal.
+        if reset_bridge_cleanup_error.is_some()
+            && let Some(identity_runtime) = identity_runtime.as_ref()
+        {
+            match identity_runtime.drain_pending_reset_bridge_cleanups().await {
+                Ok(_) => {
+                    reset_bridge_cleanup_error = None;
+                    if mob_stop.is_err() {
+                        mob_stop = self.stop_mob_quiescing().await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "reset-superseded bridge cleanup remains after mob shutdown retry"
+                    );
+                    reset_bridge_cleanup_error = Some(error.to_string());
+                }
+            }
+        }
+
+        // Fencing authority must outlive the physical members it protects.
+        // Keep renewal running through mob quiescence, then stop it before the
+        // final provider release so no renewal can race the release boundary.
+        if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
+            task.cancel_and_join().await;
+        }
+        let identity_authority_release = match identity_runtime.as_ref() {
+            None => IdentityAuthorityReleaseOutcome::NotConfigured,
+            Some(identity_runtime) if mob_stop.is_ok() && reset_bridge_cleanup_error.is_none() => {
+                match identity_runtime.release_all_leases_for_shutdown().await {
+                    Ok(grant_count) => IdentityAuthorityReleaseOutcome::Released { grant_count },
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "failed to release identity authority after mob shutdown"
+                        );
+                        IdentityAuthorityReleaseOutcome::Failed {
+                            error: error.to_string(),
+                        }
+                    }
+                }
+            }
+            Some(_) if mob_stop.is_ok() => {
+                let error = reset_bridge_cleanup_error.unwrap_or_else(|| {
+                    "reset bridge cleanup remained without an error detail".to_string()
+                });
+                tracing::warn!(
+                    %error,
+                    "retaining identity grants because reset bridge cleanup did not converge"
+                );
+                IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed { error }
+            }
+            Some(_) => {
+                tracing::warn!(
+                    "mob shutdown did not quiesce physical members; retaining identity grants"
+                );
+                IdentityAuthorityReleaseOutcome::SkippedMobStopFailed
+            }
+        };
+        if mob_stop.is_ok() {
+            // Break the MobRuntime <-> IdentityRuntime authority cycle only
+            // after physical members are gone. This is required for failed
+            // builders to release persistent topology/store locks before
+            // returning Err; on a failed mob stop the authority and grants
+            // deliberately remain intact.
+            self.mob_runtime.clear_identity_runtime_authority();
+            *self
+                .implicit_delegate_identity_runtime
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
 
         // Phase 3: Close event router
         self.close_event_router().await;
@@ -207,6 +333,7 @@ impl UnifiedRuntime {
             drain,
             module_shutdown,
             mob_stop,
+            identity_authority_release,
         }
     }
 
@@ -352,12 +479,57 @@ impl UnifiedRuntime {
                 continue;
             };
 
-            let injection_result = send_message_on_mob(
-                &self.mob_handle(),
-                &runtime_injection.member_id,
-                runtime_injection.message.clone(),
-            )
-            .await;
+            let member_alias =
+                crate::member_comms_id::runtime_alias_str(runtime_injection.member_id.as_str())
+                    .into_owned();
+            let injection_result = if let Some(identity_runtime) = self.identity_runtime() {
+                if let Some(identity) = identity_runtime
+                    .identity_for_member_mutation(&member_alias)
+                    .await
+                {
+                    let input = crate::identity_first::DispatchInput::with_origin(
+                        runtime_injection.message.clone(),
+                        crate::identity_first::DispatchOrigin::Scheduler,
+                    );
+                    identity_runtime
+                        .dispatch_member_alias_with_session_tracked(
+                            &identity,
+                            &member_alias,
+                            &input,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|session_id| {
+                            session_id.map(|value| value.to_string()).ok_or_else(|| {
+                                "identity schedule dispatch returned no bridge session".to_string()
+                            })
+                        })
+                } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
+                    Err(format!(
+                        "generated member alias is not owned by the identity runtime: {member_alias}"
+                    ))
+                } else {
+                    send_message_on_mob(
+                        &self.mob_handle(),
+                        &member_alias,
+                        runtime_injection.message.clone(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                }
+            } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
+                Err(format!(
+                    "generated member alias requires identity runtime authority: {member_alias}"
+                ))
+            } else {
+                send_message_on_mob(
+                    &self.mob_handle(),
+                    &member_alias,
+                    runtime_injection.message.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())
+            };
 
             match injection_result {
                 Ok(session_id) => {

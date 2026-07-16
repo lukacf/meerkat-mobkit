@@ -378,10 +378,7 @@ pub(crate) fn console_spawn_seeds(
         let labels = record
             .map(|record| record.labels.clone())
             .unwrap_or_default();
-        let identity = labels
-            .get("agent_identity")
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
+        let identity = crate::member_comms_id::durable_identity_label(&labels)
             .map(ToString::to_string)
             .unwrap_or_else(|| member_id.clone());
         ConsoleSpawnSeed {

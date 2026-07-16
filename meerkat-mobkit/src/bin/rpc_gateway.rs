@@ -22,6 +22,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -34,7 +35,8 @@ use meerkat_mobkit::{
     ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
     RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
     ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, handle_mobkit_rpc_json, load_console_ui_config_from_path_for_realm,
+    UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
         mob_definition_may_use_shell,
@@ -65,6 +67,9 @@ struct GatewayGatingConfig {
 
 struct GatewayRuntimeOptions {
     runtime_options: RuntimeOptions,
+    /// Presence is identity-first intent. `None` preserves the classic gateway
+    /// when no roster is configured; a roster still defaults to eager restore.
+    identity_bootstrap_mode: Option<meerkat_mobkit::IdentityBootstrapMode>,
     max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
     schedules: Vec<ScheduleDefinition>,
@@ -174,6 +179,7 @@ impl Default for GatewayRuntimeOptions {
     fn default() -> Self {
         Self {
             runtime_options: RuntimeOptions::default(),
+            identity_bootstrap_mode: None,
             max_sessions: 16,
             routing_routes: Vec::new(),
             schedules: Vec::new(),
@@ -371,6 +377,9 @@ fn parse_gateway_modules(params: &Value) -> (Vec<ModuleConfig>, Vec<PreSpawnData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
+    use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+    use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
 
     #[test]
     fn gateway_module_boundary_becomes_pre_spawn_data() {
@@ -1845,6 +1854,277 @@ actions = ["agent.view"]
             assert!(err.contains("runtime_options.workgraph"), "{err}");
         }
     }
+
+    #[test]
+    fn gateway_identity_bootstrap_mode_parse_matrix_is_strict() {
+        use meerkat_mobkit::IdentityBootstrapMode;
+
+        let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
+        assert_eq!(defaults.identity_bootstrap_mode, None);
+
+        for (wire, expected) in [
+            (
+                json!({"mode": "eager_materialize"}),
+                IdentityBootstrapMode::EagerMaterialize,
+            ),
+            (
+                json!({"mode": "lazy_materialize"}),
+                IdentityBootstrapMode::LazyMaterialize,
+            ),
+            (
+                json!({"mode": "lazy_with_background_warm", "concurrency": 2}),
+                IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+            ),
+        ] {
+            let options = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"identity_bootstrap_mode": wire}}),
+                None,
+            )
+            .expect("valid bootstrap mode");
+            assert_eq!(options.identity_bootstrap_mode, Some(expected));
+        }
+
+        for invalid in [
+            json!("lazy_materialize"),
+            json!({}),
+            json!({"mode": "unknown"}),
+            json!({"mode": "lazy_materialize", "concurrency": 2}),
+            json!({"mode": "lazy_with_background_warm"}),
+            json!({"mode": "lazy_with_background_warm", "concurrency": 0}),
+            json!({"mode": "lazy_with_background_warm", "concurrency": 17}),
+            json!({"mode": "eager_materialize", "extra": true}),
+        ] {
+            let error = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"identity_bootstrap_mode": invalid}}),
+                None,
+            )
+            .err()
+            .expect("invalid bootstrap mode must fail");
+            assert!(error.contains("identity_bootstrap_mode"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_close_wakes_pending_call_and_rejects_late_admission() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let pending = tokio::spawn({
+            let bridge = bridge.clone();
+            async move { bridge.call("callback/build_agent", json!({})).await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), stdout_rx.recv())
+            .await
+            .expect("pending callback should be written")
+            .expect("stdout callback channel should remain open");
+        bridge.close().await;
+
+        let error = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("close should wake the pending callback")
+            .expect("callback task should not panic")
+            .expect_err("closed callback must fail");
+        assert!(error.contains("channel dropped"), "{error}");
+
+        let late_error = bridge
+            .call("callback/build_agent", json!({}))
+            .await
+            .expect_err("close must reject callbacks admitted after EOF");
+        assert!(late_error.contains("transport closed"), "{late_error}");
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    #[test]
+    fn advertised_shutdown_horizon_covers_every_bounded_gateway_phase() {
+        fn completed_report() -> UnifiedRuntimeShutdownReport {
+            UnifiedRuntimeShutdownReport {
+                drain: ShutdownDrainReport {
+                    drained_count: 1,
+                    timed_out: false,
+                    drain_duration_ms: 2,
+                },
+                module_shutdown: RuntimeShutdownReport {
+                    terminated_modules: vec!["router".to_string()],
+                    orphan_processes: 0,
+                },
+                mob_stop: Ok(()),
+                identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
+                    grant_count: 1,
+                },
+            }
+        }
+
+        fn assert_not_attested(report: Option<&UnifiedRuntimeShutdownReport>) {
+            let response = gateway_shutdown_response(json!("shutdown"), report);
+            assert_eq!(response["result"]["shutdown"], false);
+            assert_eq!(response["result"]["runtime_cleanup_completed"], false);
+        }
+
+        assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
+        let mob_quiesce_window = Duration::from_secs(10);
+        let scheduler_overhead = Duration::from_secs(10);
+        assert_eq!(
+            GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
+            PROVIDER_CALLBACK_TIMEOUT
+                + PROVIDER_CALLBACK_TIMEOUT
+                + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
+                + mob_quiesce_window
+                + scheduler_overhead,
+            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, and scheduler overhead"
+        );
+        let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
+            + GATEWAY_HTTP_DRAIN_TIMEOUT
+            + GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
+            + GATEWAY_STDOUT_DRAIN_TIMEOUT;
+        assert_eq!(gateway_phase_budget, Duration::from_secs(325));
+        assert_eq!(
+            Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS),
+            Duration::from_secs(335)
+        );
+        assert_eq!(
+            Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
+            Duration::from_secs(10),
+            "advertised horizon must leave response/reaping margin"
+        );
+
+        assert_not_attested(None);
+
+        let successful_report = completed_report();
+        let completed = gateway_shutdown_response(json!("shutdown"), Some(&successful_report));
+        assert_eq!(completed["result"]["shutdown"], true);
+        assert_eq!(completed["result"]["runtime_cleanup_completed"], true);
+
+        let mut report = completed_report();
+        report.drain.timed_out = true;
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.mob_stop = Err(MobRuntimeError::InvalidConfig(
+            "mob stop failed".to_string(),
+        ));
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::SkippedMobStopFailed;
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.identity_authority_release =
+            IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed {
+                error: "superseded generation cleanup remains pending".to_string(),
+            };
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::Failed {
+            error: "provider release failed".to_string(),
+        };
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.module_shutdown.orphan_processes = 1;
+        assert_not_attested(Some(&report));
+    }
+
+    #[test]
+    fn gateway_explicit_identity_bootstrap_mode_always_requires_roster() {
+        use meerkat_mobkit::IdentityBootstrapMode;
+
+        validate_gateway_identity_bootstrap_intent(None, false)
+            .expect("omitted mode preserves the classic gateway");
+        validate_gateway_identity_bootstrap_intent(None, true)
+            .expect("a roster may use the eager compatibility default");
+
+        for mode in [
+            IdentityBootstrapMode::EagerMaterialize,
+            IdentityBootstrapMode::LazyMaterialize,
+            IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+        ] {
+            let error = validate_gateway_identity_bootstrap_intent(Some(&mode), false)
+                .expect_err("every explicit identity mode requires a roster");
+            assert!(error.contains("roster provider"), "{error}");
+            validate_gateway_identity_bootstrap_intent(Some(&mode), true)
+                .expect("an explicit mode with a roster is valid");
+        }
+    }
+}
+
+fn parse_gateway_identity_bootstrap_mode(
+    value: &Value,
+) -> Result<meerkat_mobkit::IdentityBootstrapMode, String> {
+    use meerkat_mobkit::identity_first::MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY;
+
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.identity_bootstrap_mode must be an object".to_string())?;
+    let unsupported = object
+        .keys()
+        .filter(|key| !matches!(key.as_str(), "mode" | "concurrency"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.identity_bootstrap_mode fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let mode = object.get("mode").and_then(Value::as_str).ok_or_else(|| {
+        "runtime_options.identity_bootstrap_mode.mode must be a string".to_string()
+    })?;
+    let parsed = match mode {
+        "eager_materialize" => {
+            if object.contains_key("concurrency") {
+                return Err(
+                    "runtime_options.identity_bootstrap_mode.concurrency is only valid for lazy_with_background_warm"
+                        .to_string(),
+                );
+            }
+            meerkat_mobkit::IdentityBootstrapMode::EagerMaterialize
+        }
+        "lazy_materialize" => {
+            if object.contains_key("concurrency") {
+                return Err(
+                    "runtime_options.identity_bootstrap_mode.concurrency is only valid for lazy_with_background_warm"
+                        .to_string(),
+                );
+            }
+            meerkat_mobkit::IdentityBootstrapMode::LazyMaterialize
+        }
+        "lazy_with_background_warm" => {
+            let concurrency = object
+                .get("concurrency")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "runtime_options.identity_bootstrap_mode.concurrency must be a positive integer"
+                        .to_string()
+                })?;
+            let concurrency = usize::try_from(concurrency).map_err(|_| {
+                "runtime_options.identity_bootstrap_mode.concurrency is too large".to_string()
+            })?;
+            if !(1..=MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY).contains(&concurrency) {
+                return Err(format!(
+                    "runtime_options.identity_bootstrap_mode.concurrency must be between 1 and {MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY}"
+                ));
+            }
+            meerkat_mobkit::IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency }
+        }
+        _ => {
+            return Err(format!(
+                "runtime_options.identity_bootstrap_mode.mode '{mode}' is unsupported"
+            ));
+        }
+    };
+    Ok(parsed)
+}
+
+fn validate_gateway_identity_bootstrap_intent(
+    configured_mode: Option<&meerkat_mobkit::IdentityBootstrapMode>,
+    has_roster_provider: bool,
+) -> Result<(), String> {
+    if configured_mode.is_some() && !has_roster_provider {
+        return Err(
+            "runtime_options.identity_bootstrap_mode requires an identity-first roster provider"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn parse_gateway_runtime_options(
@@ -1859,6 +2139,7 @@ fn parse_gateway_runtime_options(
         .ok_or_else(|| "runtime_options must be a JSON object".to_string())?;
     let supported = [
         "memory_config",
+        "identity_bootstrap_mode",
         "routing_config_path",
         "scheduling_files",
         "gating_config_path",
@@ -1891,6 +2172,9 @@ fn parse_gateway_runtime_options(
     }
 
     let mut parsed = GatewayRuntimeOptions::default();
+    if let Some(value) = runtime_options.get("identity_bootstrap_mode") {
+        parsed.identity_bootstrap_mode = Some(parse_gateway_identity_bootstrap_mode(value)?);
+    }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
             memory_config,
@@ -3094,17 +3378,81 @@ fn run_single_shot() {
 struct StdioCallbackBridge {
     /// Send a line to stdout (the stdout writer task reads from this).
     stdout_tx: mpsc::Sender<String>,
-    /// Pending callback responses keyed by callback ID.
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    /// Callback admission and pending responses share one lock so EOF cannot
+    /// race a late insertion after pending callers have been cancelled.
+    state: Arc<Mutex<StdioCallbackState>>,
     /// Counter for generating unique callback IDs.
     counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(Default)]
+struct StdioCallbackState {
+    closed: bool,
+    pending: HashMap<String, oneshot::Sender<Value>>,
+}
+
+const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
+
+// Shutdown is negotiated with SDK hosts because the callback bridge must stay
+// open while identity-owned cleanup runs. The runtime budget deliberately
+// covers two complete callback windows: one for an already-admitted identity
+// operation which shutdown must join, and one for the final batched lease
+// release. The 310-second runtime budget is exactly two 130-second provider
+// callback windows, the runtime's 30-second event drain, its 10-second mob
+// quiesce window, and 10 seconds of scheduler overhead.
+const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
+const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(310);
+const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+// The bounded gateway phases total at most 325 seconds (5 + 5 + 310 + 5).
+// Advertise another 10 seconds for response delivery and process reaping so
+// an SDK never races the gateway's own deadline and preempts a valid callback.
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 335_000;
+
+#[derive(Debug)]
+struct GatewayShutdownRequest {
+    response_id: Value,
+}
+
+fn gateway_shutdown_request(message: &Value) -> Option<GatewayShutdownRequest> {
+    if message.get("method").and_then(Value::as_str) != Some(GATEWAY_SHUTDOWN_METHOD) {
+        return None;
+    }
+    // The private SDK handshake is deliberately request/response, not a
+    // notification: the host must keep stdin open until runtime cleanup
+    // (including provider callbacks) is complete.
+    Some(GatewayShutdownRequest {
+        response_id: message.get("id")?.clone(),
+    })
+}
+
+fn gateway_shutdown_response(
+    response_id: Value,
+    runtime_shutdown: Option<&UnifiedRuntimeShutdownReport>,
+) -> Value {
+    let runtime_cleanup_completed =
+        runtime_shutdown.is_some_and(UnifiedRuntimeShutdownReport::cleanup_completed);
+    json!({
+        "jsonrpc": "2.0",
+        "id": response_id,
+        "result": {
+            // Future completion alone is not successful authority cleanup.
+            // SDKs validate these fields and surface failure only after
+            // reaping the gateway.
+            "shutdown": runtime_cleanup_completed,
+            "runtime_cleanup_completed": runtime_cleanup_completed
+        }
+    })
 }
 
 impl StdioCallbackBridge {
     fn new(stdout_tx: mpsc::Sender<String>) -> Self {
         Self {
             stdout_tx,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(Mutex::new(StdioCallbackState::default())),
             counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
@@ -3145,7 +3493,13 @@ impl StdioCallbackBridge {
         let id_str = format!("cb-{id}");
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id_str.clone(), tx);
+        {
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return Err("callback transport closed".to_string());
+            }
+            state.pending.insert(id_str.clone(), tx);
+        }
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -3156,17 +3510,17 @@ impl StdioCallbackBridge {
         let line = match serde_json::to_string(&request) {
             Ok(l) => l,
             Err(e) => {
-                self.pending.lock().await.remove(&id_str);
+                self.state.lock().await.pending.remove(&id_str);
                 return Err(e.to_string());
             }
         };
         if let Err(_) = self.stdout_tx.send(line).await {
-            self.pending.lock().await.remove(&id_str);
+            self.state.lock().await.pending.remove(&id_str);
             return Err("stdout channel closed".to_string());
         }
 
         // Wait for Python to respond (routed by the stdin multiplexer)
-        match tokio::time::timeout(Duration::from_mins(2), rx).await {
+        match tokio::time::timeout(PROVIDER_CALLBACK_TIMEOUT, rx).await {
             Ok(Ok(value)) => {
                 if let Some(error) = value.get("error") {
                     Err(format!(
@@ -3182,8 +3536,11 @@ impl StdioCallbackBridge {
             }
             Ok(Err(_)) => Err("callback response channel dropped".to_string()),
             Err(_) => {
-                self.pending.lock().await.remove(&id_str);
-                Err("callback timed out after 120s".to_string())
+                self.state.lock().await.pending.remove(&id_str);
+                Err(format!(
+                    "callback timed out after {}s",
+                    PROVIDER_CALLBACK_TIMEOUT.as_secs()
+                ))
             }
         }
     }
@@ -3195,9 +3552,21 @@ impl StdioCallbackBridge {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if let Some(tx) = self.pending.lock().await.remove(&id) {
+        if let Some(tx) = self.state.lock().await.pending.remove(&id) {
             let _ = tx.send(msg);
         }
+    }
+
+    /// Close callback admission and wake every pending caller. The pending
+    /// senders are dropped after releasing the lock, resolving their oneshot
+    /// receivers immediately without holding callback state across wakeups.
+    async fn close(&self) {
+        let pending = {
+            let mut state = self.state.lock().await;
+            state.closed = true;
+            std::mem::take(&mut state.pending)
+        };
+        drop(pending);
     }
 }
 
@@ -3810,8 +4179,24 @@ external_addressable = true
 
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
-    let stdout_writer = tokio::spawn(async move {
-        while let Some(line) = stdout_rx.recv().await {
+    let (stdout_shutdown_tx, mut stdout_shutdown_rx) = oneshot::channel::<()>();
+    let mut stdout_writer = tokio::spawn(async move {
+        loop {
+            let line = tokio::select! {
+                shutdown = &mut stdout_shutdown_rx => {
+                    let _ = shutdown;
+                    while let Ok(line) = stdout_rx.try_recv() {
+                        let mut stdout = std::io::stdout().lock();
+                        let _ = writeln!(stdout, "{line}");
+                        let _ = stdout.flush();
+                    }
+                    break;
+                }
+                line = stdout_rx.recv() => match line {
+                    Some(line) => line,
+                    None => break,
+                },
+            };
             let mut stdout = std::io::stdout().lock();
             let _ = writeln!(stdout, "{line}");
             let _ = stdout.flush();
@@ -3824,10 +4209,13 @@ external_addressable = true
     // spawn) are routed even while UnifiedRuntime::bootstrap is running.
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<String>(64);
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
 
     let stdin_reader = tokio::spawn({
         let bridge = bridge.clone();
         let rpc_tx = rpc_tx.clone();
+        let stdout_tx = stdout_tx.clone();
+        let shutdown_requested = shutdown_requested.clone();
         async move {
             let mut line = String::new();
             loop {
@@ -3854,13 +4242,60 @@ external_addressable = true
 
                 if is_callback_response {
                     bridge.route_callback_response(msg).await;
+                } else if gateway_shutdown_request(&msg).is_some() {
+                    // Stop new RPC admission as soon as the handshake enters
+                    // the reader, but keep routing callback responses. The
+                    // dispatch loop will retain the bridge through
+                    // `runtime.shutdown()` and answer this request only after
+                    // provider-backed cleanup has completed.
+                    if shutdown_requested.swap(true, Ordering::AcqRel) {
+                        if let Some(id) = msg.get("id") {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32098,
+                                    "message": "gateway shutdown already in progress"
+                                }
+                            });
+                            if let Ok(line) = serde_json::to_string(&response) {
+                                let _ = stdout_tx.send(line).await;
+                            }
+                        }
+                    } else if rpc_tx.send(trimmed.to_string()).await.is_err() {
+                        break;
+                    }
+                } else if shutdown_requested.load(Ordering::Acquire) {
+                    // Requests admitted after shutdown cannot be serviced and
+                    // must not be left pending in an SDK. Callback responses
+                    // were routed above and remain admitted.
+                    if let Some(id) = msg.get("id") {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32098,
+                                "message": "gateway shutdown in progress"
+                            }
+                        });
+                        if let Ok(line) = serde_json::to_string(&response) {
+                            let _ = stdout_tx.send(line).await;
+                        }
+                    }
                 } else {
                     // Queue RPC request for the dispatch loop
-                    let _ = rpc_tx.send(trimmed.to_string()).await;
+                    if rpc_tx.send(trimmed.to_string()).await.is_err() {
+                        break;
+                    }
                 }
             }
+            bridge.close().await;
         }
     });
+    // The reader task owns the sole producer. Dropping this setup copy is
+    // what lets EOF close `rpc_rx`; retaining it would make the dispatch loop
+    // wait forever and skip graceful runtime shutdown entirely.
+    drop(rpc_tx);
 
     /// Helper: send a JSON-RPC error response for the init request and exit.
     fn fail_init(request_id: &Value, code: i32, message: String) -> ! {
@@ -3907,6 +4342,11 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
+    validate_gateway_identity_bootstrap_intent(
+        gateway_options.identity_bootstrap_mode.as_ref(),
+        has_roster_provider,
+    )
+    .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
     if gateway_options.agent_memory.is_some() && !has_roster_provider {
         fail_init(
             &request_id,
@@ -3946,6 +4386,7 @@ external_addressable = true
                 std::env::temp_dir().join(format!("mobkit-continuity-{}.db", std::process::id()))
             };
             let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&db_path)
+                .await
                 .unwrap_or_else(|e| fail_init(&request_id, -32603, e));
             local_default_lease_provider = Some(substrate.lease_provider);
             substrate.continuity_store
@@ -4375,7 +4816,7 @@ external_addressable = true
         mob_spec
     };
 
-    let timeout = Duration::from_secs(30);
+    let timeout = GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT;
     let persistent_metadata: Arc<dyn PersistentMetadataStore> =
         if let Some(state_path) = persistent_state.as_ref() {
             let metadata_path = state_path.join("mobkit_metadata.sqlite");
@@ -4520,17 +4961,19 @@ external_addressable = true
                 ))
             };
 
-        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store,
-            lease_provider,
-            runtime_instance_id: format!("gateway-{}", std::process::id()),
-            has_runtime_store: identity_session_store_adapter.is_some()
-                || persistent_state.is_some(),
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(bridge_arc),
-            default_timeout: None,
-        })
-        .with_runtime_services(AgentRuntimeServices::new(mob_handle));
+        let irt = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store,
+                lease_provider,
+                runtime_instance_id: format!("gateway-{}", std::process::id()),
+                has_runtime_store: identity_session_store_adapter.is_some()
+                    || persistent_state.is_some(),
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge_arc),
+                default_timeout: None,
+            })
+            .with_runtime_services(AgentRuntimeServices::new(mob_handle)),
+        );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
 
         // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
@@ -4985,7 +5428,8 @@ external_addressable = true
         };
         irt.set_agent_memory(agent_memory_injector).await;
 
-        // Call restore_flow to bootstrap identities from the roster provider
+        // Bootstrap identities from the roster provider using the explicit
+        // gateway mode (eager remains the compatibility default).
         let roster_specs = roster
             .roster(&RosterContext {
                 mob_definition: Some(mob_definition.clone()),
@@ -5003,32 +5447,38 @@ external_addressable = true
             .lock()
             .unwrap_or_else(|err| err.into_inner()) = roster_specs.clone();
 
-        if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
-            &irt,
-            &roster_specs,
-            topology.as_deref(),
-            customizer.as_deref(),
-        )
-        .await
-        {
-            fail_init(
-                &request_id,
-                -32603,
-                format!("identity-first restore_flow failed: {e}"),
-            );
-        }
-
-        let identity_runtime = Arc::new(irt);
-        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
-            identity_runtime.clone(),
+        let identity_context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            irt.clone(),
             roster.clone(),
             topology.clone(),
             customizer.clone(),
             Some(runtime.mob_handle().definition().clone()),
-        )));
+            gateway_options
+                .identity_bootstrap_mode
+                .clone()
+                .unwrap_or_default(),
+        ));
+        if let Err(e) = runtime
+            .install_and_bootstrap_identity_first_context(
+                Arc::clone(&identity_context),
+                &roster_specs,
+            )
+            .await
+        {
+            // `install_and_bootstrap_identity_first_context` has already run
+            // the full UnifiedRuntime shutdown sequence. Keep the callback
+            // bridge/stdin reader alive until that returns: external lease
+            // release is itself a callback that must be acknowledged before
+            // the process emits the init error and exits.
+            fail_init(
+                &request_id,
+                -32603,
+                format!("identity-first bootstrap failed: {e}"),
+            );
+        }
 
         Some(meerkat_mobkit::rpc::IdentityFirstContext {
-            runtime: identity_runtime,
+            runtime: irt,
             roster_provider: roster,
             topology_provider: topology,
             customizer,
@@ -5125,12 +5575,13 @@ external_addressable = true
             Default::default(),
         );
         (
-            meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+            meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
                 adapter,
                 schedule_service,
                 mob_state,
                 runtime.mob_handle(),
+                runtime.identity_runtime().cloned(),
                 runnable_host,
                 workgraph_service.clone(),
                 schedule_owner_id.clone(),
@@ -5212,7 +5663,7 @@ external_addressable = true
         } else {
             (app, None)
         };
-    let serve_task = tokio::spawn({
+    let mut serve_task = tokio::spawn({
         let mut shutdown_rx = shutdown_rx.clone();
         async move {
             axum::serve(listener, app)
@@ -5240,6 +5691,9 @@ external_addressable = true
         );
         format!("{:x}", hasher.finalize())
     };
+    let identity_bootstrap = identity_ctx
+        .as_ref()
+        .map(|ctx| ctx.runtime.identity_bootstrap_status());
     let init_response = json!({
         "jsonrpc": "2.0",
         "id": request_id,
@@ -5249,6 +5703,14 @@ external_addressable = true
             "contract_version": MOBKIT_CONTRACT_VERSION,
             "runtime_origin": runtime_origin,
             "runtime_fingerprint": runtime_fingerprint,
+            "identity_bootstrap": identity_bootstrap,
+            // Private transport capability. SDKs use this to avoid sending
+            // the shutdown control method to older/custom gateways that may
+            // not implement normal JSON-RPC method-not-found semantics.
+            "stdio_shutdown_handshake": true,
+            // Complete, bounded host wait for the private shutdown request.
+            // SDKs keep callback admission and stdin alive for this horizon.
+            "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
         }
     });
     let _ = stdout_tx
@@ -5268,16 +5730,27 @@ external_addressable = true
     // the same methods concurrently, so completion order is free.
     let identity_ctx = identity_ctx.map(Arc::new);
     let http_base_url_shared: Arc<str> = http_base_url.clone().into();
+    let mut interrupted_with_open_stdin = false;
+    let mut gateway_shutdown = None;
     {
         let mut inflight = tokio::task::JoinSet::new();
         loop {
             let request_line = tokio::select! {
-                line = rpc_rx.recv() => match line {
-                    Some(l) => l,
-                    None => break, // stdin reader closed (EOF or error)
+                line = rpc_rx.recv() => line,
+                _ = tokio::signal::ctrl_c() => {
+                    interrupted_with_open_stdin = true;
+                    None
                 },
-                _ = tokio::signal::ctrl_c() => break,
             };
+            let Some(request_line) = request_line else {
+                break; // stdin reader closed (EOF/error), or Ctrl-C won
+            };
+            if let Ok(message) = serde_json::from_str::<Value>(&request_line)
+                && let Some(request) = gateway_shutdown_request(&message)
+            {
+                gateway_shutdown = Some(request);
+                break;
+            }
             let request_line = apply_gateway_runtime_config_to_request(
                 &request_line,
                 &gateway_options.schedules,
@@ -5289,7 +5762,7 @@ external_addressable = true
             let http_base_url = http_base_url_shared.clone();
             let live_rpc = live_rpc.clone();
             inflight.spawn(async move {
-                let response = meerkat_mobkit::rpc::handle_unified_rpc_json_with_live(
+                let response = meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc(
                     &runtime,
                     &request_line,
                     timeout,
@@ -5305,12 +5778,20 @@ external_addressable = true
             // Reap completed handlers so the set does not grow unbounded.
             while inflight.try_join_next().is_some() {}
         }
-        // stdin is closed: the client that would consume these responses is
-        // gone or leaving. Give in-flight handlers a short grace period,
-        // then abort rather than waiting out callback timeouts against a
-        // departed host; runtime.shutdown() below still runs.
+        // EOF/Ctrl-C makes further callback responses impossible (or asks us
+        // to stop immediately), so wake callback waiters. An explicit SDK
+        // shutdown handshake is different: stdin stays open and callback
+        // admission must survive until runtime-owned provider cleanup ends.
+        if gateway_shutdown.is_none() {
+            bridge.close().await;
+        }
+        // EOF closes request admission. Give ordinary handlers a bounded
+        // response grace, then abort their outer waiters so runtime shutdown
+        // can begin promptly. Identity materialization/delivery transactions
+        // are independently owned by the runtime foreground supervisor and
+        // are cancelled or joined below at their explicit cleanup boundary.
         let drain = async { while inflight.join_next().await.is_some() {} };
-        if tokio::time::timeout(Duration::from_secs(5), drain)
+        if tokio::time::timeout(GATEWAY_RPC_DRAIN_TIMEOUT, drain)
             .await
             .is_err()
         {
@@ -5318,16 +5799,78 @@ external_addressable = true
         }
     }
 
-    // 10. Graceful shutdown: stop HTTP server, then runtime
+    // 10. Graceful shutdown: stop HTTP admission, bound the outer-handler
+    // drain, then let the runtime cancel/join identity-owned transactions.
+    // Dispatch can also end on Ctrl-C while stdin is still open. Stop the
+    // reader now unless the SDK handshake must continue routing callback
+    // responses through runtime shutdown. Aborting an already-completed EOF
+    // reader is harmless.
+    if gateway_shutdown.is_none() {
+        stdin_reader.abort();
+    }
     let _ = shutdown_tx.send(true);
-    let _ = serve_task.await;
+    if tokio::time::timeout(GATEWAY_HTTP_DRAIN_TIMEOUT, &mut serve_task)
+        .await
+        .is_err()
+    {
+        serve_task.abort();
+        let _ = serve_task.await;
+    }
     event_drain_task.abort();
-    runtime.shutdown().await;
-    drop(rpc_tx);
+    let runtime_shutdown =
+        tokio::time::timeout(GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await;
+    match runtime_shutdown.as_ref() {
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
+                "gateway runtime shutdown exceeded its bounded horizon"
+            );
+        }
+        Ok(report) if !report.cleanup_completed() => {
+            tracing::warn!(
+                drain_timed_out = report.drain.timed_out,
+                mob_stop = ?report.mob_stop,
+                identity_authority_release = ?report.identity_authority_release,
+                orphan_processes = report.module_shutdown.orphan_processes,
+                "gateway runtime shutdown completed without cleanup attestation"
+            );
+        }
+        Ok(_) => {}
+    }
+    bridge.close().await;
+    if let Some(request) = gateway_shutdown {
+        let response =
+            gateway_shutdown_response(request.response_id, runtime_shutdown.as_ref().ok());
+        if let Ok(line) = serde_json::to_string(&response) {
+            let _ = stdout_tx.send(line).await;
+        }
+        // The SDK closes stdin after receiving the response. Abort our Tokio
+        // reader task now; that close also releases Tokio's blocking stdin
+        // helper before the runtime itself is dropped.
+        stdin_reader.abort();
+    }
     drop(stdout_tx);
+    // Runtime and callback objects intentionally retain sender clones until
+    // function exit. Signal the writer explicitly after all producers have
+    // quiesced so it drains queued responses without waiting for channel
+    // ownership to disappear.
+    let _ = stdout_shutdown_tx.send(());
     let _ = stdin_reader.await;
-    let _ = stdout_writer.await;
+    if tokio::time::timeout(GATEWAY_STDOUT_DRAIN_TIMEOUT, &mut stdout_writer)
+        .await
+        .is_err()
+    {
+        stdout_writer.abort();
+        let _ = stdout_writer.await;
+    }
     drop(_temp_dir);
+    if interrupted_with_open_stdin {
+        // Tokio's stdin adapter performs a blocking read that cannot be
+        // cancelled by aborting its task. All MobKit/runtime/stdout cleanup is
+        // complete above; exit explicitly so the runtime destructor does not
+        // wait forever for that helper thread while stdin remains open.
+        std::process::exit(0);
+    }
 }
 
 fn main() {

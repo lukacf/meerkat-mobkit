@@ -7,19 +7,21 @@
 //! - Ownership: lease tracking, fencing, and invariant enforcement
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use meerkat_core::types::{HandlingMode, SessionId};
-use tokio::sync::{Mutex, Notify, RwLock, broadcast};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, oneshot, watch};
+use tokio::task::{JoinHandle, JoinSet};
 
 use super::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
-use super::bridge::SessionBridge;
+use super::bridge::{BridgeError, SessionBridge};
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
@@ -27,6 +29,7 @@ use super::types::{
     AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
     CheckpointVersion, ContinuityGeneration, ContinuityHealth, ContinuityRecord,
     ContinuityStoreError, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
+    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
     IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
     RosterContext, SessionSnapshot, TopologyContext,
 };
@@ -36,6 +39,9 @@ use crate::memory::records::{
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN: usize = 256;
+const BACKGROUND_WARM_CANCELLED: &str =
+    "identity background warm cancelled before session installation";
 fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
     matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
         || matches!(
@@ -92,6 +98,18 @@ pub enum IdentityRuntimeError {
         presented: CheckpointVersion,
         current: CheckpointVersion,
     },
+    StaleContinuityGeneration {
+        identity: AgentIdentity,
+        presented: ContinuityGeneration,
+        current: ContinuityGeneration,
+    },
+    /// A lifecycle request named an old generated runtime alias after the
+    /// durable identity had already advanced to another generation.
+    StaleRuntimeAlias {
+        identity: AgentIdentity,
+        requested: String,
+        current: Option<AgentRuntimeId>,
+    },
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -135,6 +153,26 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "stale checkpoint version for {identity}: presented {presented}, current {current}"
             ),
+            Self::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            } => write!(
+                f,
+                "stale continuity generation for {identity}: presented {presented}, current {current}"
+            ),
+            Self::StaleRuntimeAlias {
+                identity,
+                requested,
+                current,
+            } => write!(
+                f,
+                "stale runtime alias for {identity}: requested {requested}, current {}",
+                current
+                    .as_ref()
+                    .map(AgentRuntimeId::as_str)
+                    .unwrap_or("<none>")
+            ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
     }
@@ -163,6 +201,15 @@ impl From<ContinuityStoreError> for IdentityRuntimeError {
                 presented,
                 current,
             },
+            ContinuityStoreError::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            } => Self::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            },
             other => Self::Store(other),
         }
     }
@@ -176,9 +223,21 @@ impl From<ContinuityStoreError> for IdentityRuntimeError {
 #[derive(Debug, Clone)]
 pub(crate) struct IdentityEntry {
     pub spec: DurableAgentSpec,
+    /// Bootstrap pass that last accepted `spec` as this entry's desired
+    /// roster projection. Foreground materialization binds readiness writes
+    /// to this entry-owned generation only after acquiring the lifecycle
+    /// lock, so a pass that wins that lock cannot be mistaken for either its
+    /// predecessor or successor merely because the global status epoch moved.
+    pub bootstrap_generation: u64,
     pub state: IdentityLifecycleState,
     pub continuity: Option<ContinuityRecord>,
     pub lease: Option<LeaseEntry>,
+    /// Exact authority that a completed lower-plane transition tried and
+    /// failed to release. This is deliberately separate from `lease`: Broken
+    /// identities must not advertise or renew active authority, but repair
+    /// still needs the exact fencing token to retry the provider release
+    /// before any reacquire attempt.
+    pub pending_lease_release: Option<LeaseGrant>,
     pub checkpoint_version: CheckpointVersion,
     /// Whether a durable runtime_store is available (affects dispatch ack semantics).
     pub has_runtime_store: bool,
@@ -287,7 +346,7 @@ pub struct IdentityFirstRuntimeContext {
     pub topology_provider: Option<Arc<dyn TopologyProvider>>,
     pub customizer: Option<Arc<dyn AgentCustomizer>>,
     mob_definition: Option<meerkat_mob::MobDefinition>,
-    lazy_materialization: bool,
+    bootstrap_mode: IdentityBootstrapMode,
 }
 
 impl IdentityFirstRuntimeContext {
@@ -349,6 +408,30 @@ impl IdentityFirstRuntimeContext {
         mob_definition: Option<meerkat_mob::MobDefinition>,
         lazy_materialization: bool,
     ) -> Self {
+        Self::new_with_bootstrap_mode(
+            runtime,
+            roster_provider,
+            topology_provider,
+            customizer,
+            mob_definition,
+            if lazy_materialization {
+                IdentityBootstrapMode::LazyMaterialize
+            } else {
+                IdentityBootstrapMode::EagerMaterialize
+            },
+        )
+    }
+
+    /// Construct a context that preserves the complete startup policy across
+    /// later roster reconciliation.
+    pub fn new_with_bootstrap_mode(
+        runtime: Arc<IdentityRuntime>,
+        roster_provider: Arc<dyn RosterProvider>,
+        topology_provider: Option<Arc<dyn TopologyProvider>>,
+        customizer: Option<Arc<dyn AgentCustomizer>>,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+        bootstrap_mode: IdentityBootstrapMode,
+    ) -> Self {
         runtime.set_reset_roster_provider_context(
             Some(roster_provider.clone()),
             mob_definition.clone(),
@@ -359,38 +442,188 @@ impl IdentityFirstRuntimeContext {
             topology_provider,
             customizer,
             mob_definition,
-            lazy_materialization,
+            bootstrap_mode,
         }
+    }
+
+    pub fn bootstrap_mode(&self) -> &IdentityBootstrapMode {
+        &self.bootstrap_mode
+    }
+
+    /// Apply the configured bootstrap policy to an already-resolved roster.
+    /// The same helper is used at startup and during reconcile so a lazy
+    /// deployment can never accidentally hydrate the full fleet.
+    pub async fn bootstrap_roster(
+        &self,
+        roster: &[DurableAgentSpec],
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let _controller = self.runtime.bootstrap_controller.lock().await;
+        let generation = self
+            .runtime
+            .begin_identity_bootstrap_pending(self.bootstrap_mode.clone());
+        if let Err(error) = self.prepare_controlled_bootstrap().await {
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
+        self.apply_roster_controlled(generation, roster, true).await
+    }
+
+    /// Apply a roster under the runtime's single bootstrap controller.
+    ///
+    /// Startup callers may skip snapshot payloads for bridges that explicitly
+    /// opt out because they discard [`RestoreOutcome`] after registration.
+    /// The existing public refresh API must preserve its historical payload,
+    /// so it always selects the full restore path.
+    async fn prepare_controlled_bootstrap(&self) -> Result<(), IdentityRuntimeError> {
+        if self.runtime.bootstrap_shutdown.load(Ordering::Acquire) {
+            return Err(IdentityRuntimeError::Internal(
+                "identity bootstrap is shutting down".to_string(),
+            ));
+        }
+        // Stop admitting new warm items and let any materialization already in
+        // flight reach a transaction boundary before applying the next roster.
+        self.runtime.request_identity_bootstrap_stop();
+        self.runtime.join_identity_bootstrap_task().await;
+        if self.runtime.bootstrap_shutdown.load(Ordering::Acquire) {
+            return Err(IdentityRuntimeError::Internal(
+                "identity bootstrap is shutting down".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn apply_roster_controlled(
+        &self,
+        generation: u64,
+        roster: &[DurableAgentSpec],
+        optimize_startup_snapshot_load: bool,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        if let Err(message) = self.bootstrap_mode.validate() {
+            let error = IdentityRuntimeError::Internal(message);
+            self.runtime
+                .begin_identity_bootstrap(generation, self.bootstrap_mode.clone(), roster)
+                .await;
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
+        // Publish the new pass before any provider/restore await. RPC dispatch
+        // is concurrent, so retaining the previous complete/ready snapshot here
+        // would let a readiness waiter falsely pass while reconcile is active.
+        self.runtime
+            .begin_identity_bootstrap(generation, self.bootstrap_mode.clone(), roster)
+            .await;
+        // Converge the physical runtime before either restore policy publishes
+        // the new roster. The restore flows only iterate desired identities;
+        // without this boundary a removed member can remain live (and leased)
+        // while the reduced bootstrap snapshot reports ready. Likewise, an
+        // already-active member must not keep running an old build after its
+        // desired spec changes.
+        if let Err(error) = self
+            .runtime
+            .reconcile_roster_members(roster, generation)
+            .await
+        {
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
+        let result = match (&self.bootstrap_mode, optimize_startup_snapshot_load) {
+            (IdentityBootstrapMode::EagerMaterialize, true) => {
+                super::orchestrator::restore_flow_for_bootstrap(
+                    &self.runtime,
+                    roster,
+                    self.topology_provider.as_deref(),
+                    self.customizer.as_deref(),
+                )
+                .await
+            }
+            (IdentityBootstrapMode::EagerMaterialize, false) => {
+                super::orchestrator::restore_flow(
+                    &self.runtime,
+                    roster,
+                    self.topology_provider.as_deref(),
+                    self.customizer.as_deref(),
+                )
+                .await
+            }
+            (
+                IdentityBootstrapMode::LazyMaterialize
+                | IdentityBootstrapMode::LazyWithBackgroundWarm { .. },
+                _,
+            ) => {
+                super::orchestrator::lazy_register_flow(
+                    &self.runtime,
+                    roster,
+                    self.topology_provider.as_deref(),
+                )
+                .await
+            }
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.runtime.fail_identity_bootstrap(generation, &error);
+                return Err(error);
+            }
+        };
+        if self.runtime.bootstrap_shutdown.load(Ordering::Acquire) {
+            let error =
+                IdentityRuntimeError::Internal("identity bootstrap is shutting down".to_string());
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
+        self.runtime
+            .install_identity_bootstrap(generation, self.bootstrap_mode.clone(), roster, &result)
+            .await;
+        Ok(result)
     }
 
     pub async fn refresh_desired_topology(
         &self,
     ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
-        let roster = self
+        // One runtime owns one controller from roster discovery through task
+        // installation. Provider calls are user code and can be slow; publish
+        // the in-flight pass before awaiting them so concurrent readiness RPCs
+        // cannot observe the previous terminal snapshot.
+        let _controller = self.runtime.bootstrap_controller.lock().await;
+        let generation = self
+            .runtime
+            .begin_identity_bootstrap_pending(self.bootstrap_mode.clone());
+        if let Err(error) = self.prepare_controlled_bootstrap().await {
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
+        let roster = match self
             .roster_provider
             .roster(&RosterContext {
                 mob_definition: self.mob_definition.clone(),
                 previous_identities: Vec::new(),
             })
             .await
-            .map_err(|err| IdentityRuntimeError::Internal(format!("roster provider: {err}")))?;
+        {
+            Ok(roster) => roster,
+            Err(err) => {
+                let error = IdentityRuntimeError::Internal(format!("roster provider: {err}"));
+                self.runtime.fail_identity_bootstrap(generation, &error);
+                return Err(error);
+            }
+        };
 
-        if self.lazy_materialization {
-            super::orchestrator::lazy_register_flow(
-                &self.runtime,
-                &roster,
-                self.topology_provider.as_deref(),
-            )
+        self.apply_roster_controlled(generation, &roster, false)
             .await
-        } else {
-            super::orchestrator::restore_flow(
-                &self.runtime,
-                &roster,
-                self.topology_provider.as_deref(),
-                self.customizer.as_deref(),
-            )
+    }
+
+    /// Cancellation-safe reconcile for RPC/host request boundaries.
+    /// Dropping the caller only drops its result receiver; the runtime owns
+    /// the pass until every acquired lease and bridge mutation reaches an
+    /// explicit commit or rollback boundary.
+    pub async fn refresh_desired_topology_tracked(
+        self: &Arc<Self>,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let context = Arc::clone(self);
+        let runtime = Arc::clone(&self.runtime);
+        runtime
+            .run_tracked_foreground(async move { context.refresh_desired_topology().await })
             .await
-        }
     }
 
     /// Background repair for Broken identities. A rejected resume degrades the
@@ -414,46 +647,135 @@ impl IdentityFirstRuntimeContext {
         self: Arc<Self>,
         policy: ContinuityRepairPolicy,
     ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut backoff = policy.initial_backoff;
-            loop {
+        tokio::spawn(self.run_broken_identity_repair_loop(policy, None))
+    }
+
+    pub(crate) fn spawn_tracked_broken_identity_repair_task(
+        self: Arc<Self>,
+        policy: ContinuityRepairPolicy,
+    ) -> TrackedContinuityRepairTask {
+        let (cancel, receiver) = watch::channel(false);
+        let join = tokio::spawn(self.run_broken_identity_repair_loop(policy, Some(receiver)));
+        TrackedContinuityRepairTask { cancel, join }
+    }
+
+    async fn run_broken_identity_repair_loop(
+        self: Arc<Self>,
+        policy: ContinuityRepairPolicy,
+        mut cancellation: Option<watch::Receiver<bool>>,
+    ) {
+        let mut backoff = policy.initial_backoff;
+        loop {
+            if let Some(cancellation) = cancellation.as_mut() {
+                if *cancellation.borrow() {
+                    return;
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(backoff) => {}
+                    changed = cancellation.changed() => {
+                        match changed {
+                            Ok(()) if *cancellation.borrow() => return,
+                            Ok(()) => continue,
+                            // Dropping the runtime-owned supervisor drops the
+                            // only sender. Treat that as cancellation; looping
+                            // on the permanently closed receiver would spin a
+                            // detached task at 100% CPU.
+                            Err(_) => return,
+                        }
+                    }
+                }
+            } else {
                 tokio::time::sleep(backoff).await;
-                let broken = self.runtime.broken_identities().await;
-                if broken.is_empty() {
-                    backoff = policy.initial_backoff;
-                    continue;
-                }
-                tracing::info!(
-                    broken = broken.len(),
-                    "continuity repair: retrying restore for Broken identities"
-                );
-                if let Err(err) = self.refresh_desired_topology().await {
-                    tracing::warn!(
-                        error = %err,
-                        "continuity repair reconcile failed; backing off"
-                    );
-                    backoff = (backoff * 2).min(policy.max_backoff);
-                    continue;
-                }
-                let still_broken = self.runtime.broken_identities().await;
-                let healed = broken
-                    .iter()
-                    .filter(|id| !still_broken.contains(id))
-                    .count();
-                if healed > 0 {
-                    tracing::info!(
-                        healed,
-                        still_broken = still_broken.len(),
-                        "continuity repair healed identities"
-                    );
-                }
-                backoff = if still_broken.is_empty() {
-                    policy.initial_backoff
-                } else {
-                    (backoff * 2).min(policy.max_backoff)
-                };
             }
-        })
+            let broken = self.runtime.broken_identities().await;
+            if broken.is_empty() {
+                backoff = policy.initial_backoff;
+                continue;
+            }
+            tracing::info!(
+                broken = broken.len(),
+                "continuity repair: retrying restore for Broken identities"
+            );
+            if let Err(err) = self.refresh_desired_topology().await {
+                tracing::warn!(
+                    error = %err,
+                    "continuity repair reconcile failed; backing off"
+                );
+                backoff = (backoff * 2).min(policy.max_backoff);
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| *cancellation.borrow())
+                {
+                    return;
+                }
+                continue;
+            }
+            let still_broken = self.runtime.broken_identities().await;
+            let healed = broken
+                .iter()
+                .filter(|id| !still_broken.contains(id))
+                .count();
+            if healed > 0 {
+                tracing::info!(
+                    healed,
+                    still_broken = still_broken.len(),
+                    "continuity repair healed identities"
+                );
+            }
+            backoff = if still_broken.is_empty() {
+                policy.initial_backoff
+            } else {
+                (backoff * 2).min(policy.max_backoff)
+            };
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| *cancellation.borrow())
+            {
+                return;
+            }
+        }
+    }
+}
+
+/// Runtime-owned repair supervisor with cooperative idle cancellation.
+///
+/// Cancellation is observed while sleeping or between passes. An active
+/// restore pass is joined to its explicit commit/rollback boundary instead of
+/// being raw-aborted after lease acquisition.
+pub(crate) struct TrackedContinuityRepairTask {
+    cancel: watch::Sender<bool>,
+    join: JoinHandle<()>,
+}
+
+impl TrackedContinuityRepairTask {
+    pub(crate) fn cancel(&self) {
+        let _ = self.cancel.send(true);
+    }
+
+    pub(crate) async fn cancel_and_join(self) {
+        self.cancel();
+        let _ = self.join.await;
+    }
+}
+
+/// Runtime-owned lease-renewal supervisor with cooperative cancellation.
+///
+/// Cancellation is observed while the supervisor is idle or between ticks.
+/// An in-flight renewal is always joined through publication of the provider's
+/// returned fencing token so final shutdown releases current authority.
+pub(crate) struct TrackedLeaseRenewalTask {
+    cancel: watch::Sender<bool>,
+    join: JoinHandle<()>,
+}
+
+impl TrackedLeaseRenewalTask {
+    pub(crate) fn cancel(&self) {
+        let _ = self.cancel.send(true);
+    }
+
+    pub(crate) async fn cancel_and_join(self) {
+        self.cancel();
+        let _ = self.join.await;
     }
 }
 
@@ -471,6 +793,46 @@ impl Default for ContinuityRepairPolicy {
         Self {
             initial_backoff: Duration::from_secs(30),
             max_backoff: Duration::from_mins(10),
+        }
+    }
+}
+
+/// Weak keyed locks serialize claims on the shared raw/durable alias
+/// namespace without retaining every caller-chosen alias for the lifetime of
+/// the runtime. Sweeps grow geometrically while many aliases are live (as in
+/// fleet bootstrap), avoiding a full-map scan for every new roster member.
+struct RawMemberAliasLockTable {
+    entries: BTreeMap<String, Weak<Mutex<()>>>,
+    next_sweep_len: usize,
+    #[cfg(test)]
+    sweep_count: usize,
+}
+
+impl Default for RawMemberAliasLockTable {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_sweep_len: RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN,
+            #[cfg(test)]
+            sweep_count: 0,
+        }
+    }
+}
+
+impl RawMemberAliasLockTable {
+    fn sweep_if_needed(&mut self) {
+        if self.entries.len() < self.next_sweep_len {
+            return;
+        }
+        self.entries.retain(|_, lock| lock.upgrade().is_some());
+        self.next_sweep_len = self
+            .entries
+            .len()
+            .saturating_mul(2)
+            .max(RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN);
+        #[cfg(test)]
+        {
+            self.sweep_count += 1;
         }
     }
 }
@@ -495,12 +857,52 @@ pub struct IdentityRuntime {
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     best_effort_materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
+    raw_member_alias_locks: RwLock<RawMemberAliasLockTable>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     agent_memory: RwLock<Option<AgentMemoryRuntimeInjector>>,
     lease_renewal_notify: Notify,
+    /// Exact grants whose restore task failed before an IdentityEntry existed.
+    /// These must outlive the failed task so reconcile or shutdown can retry
+    /// provider release instead of leaving invisible, non-expiring authority.
+    pending_unactivated_lease_releases: RwLock<Vec<LeaseGrant>>,
+    pending_unactivated_lease_release_gate: Mutex<()>,
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
     error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
+    bootstrap_status: watch::Sender<IdentityBootstrapStatus>,
+    bootstrap_generation: StdMutex<u64>,
+    bootstrap_controller: Mutex<()>,
+    bootstrap_task: Mutex<Option<JoinHandle<()>>>,
+    bootstrap_cancel: StdRwLock<Option<watch::Sender<bool>>>,
+    bootstrap_shutdown: AtomicBool,
+    foreground_operations: Mutex<JoinSet<()>>,
+    foreground_cancel: watch::Sender<bool>,
+    foreground_shutdown: AtomicBool,
+    /// Post-commit cleanup for reset-superseded bridge generations. The debt
+    /// is recorded before task spawn, survives task failure/timeout, and is
+    /// retried synchronously before shutdown can attest cleanup or release
+    /// identity fencing authority.
+    pending_reset_bridge_cleanups: Arc<RwLock<BTreeMap<String, PendingResetBridgeCleanup>>>,
+    reset_bridge_cleanup_tasks: Mutex<JoinSet<()>>,
+}
+
+/// One generated member alias plus the lifecycle lock owned by its durable
+/// identity runtime. Cross-runtime topology code resolves all endpoints first,
+/// then acquires these targets in one global order before inspecting or
+/// mutating either side.
+pub(crate) struct MemberAliasLifecycleTarget {
+    runtime: Arc<IdentityRuntime>,
+    identity: AgentIdentity,
+    alias: String,
+    lock: Arc<Mutex<()>>,
+}
+
+struct MultiRuntimeForegroundCompletion(watch::Sender<bool>);
+
+impl Drop for MultiRuntimeForegroundCompletion {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
 }
 
 #[derive(Clone)]
@@ -515,9 +917,71 @@ struct MaterializationFailureBackoff {
     error: String,
 }
 
+#[derive(Clone)]
+struct PendingResetMemoryCapture {
+    injector: AgentMemoryRuntimeInjector,
+    identity: AgentIdentity,
+    session_key: String,
+    generation: u64,
+}
+
+impl PendingResetMemoryCapture {
+    async fn run(&self) {
+        // Repeat the synchronous marks in the owned task so a raw reset
+        // future dropped after debt publication cannot let the distiller read
+        // evidence before the reset quarantine boundary exists.
+        self.injector.note_reset_boundary(&self.session_key);
+        self.injector
+            .note_session_generation(&self.identity, &self.session_key, self.generation);
+        self.injector
+            .distill_before_rotation(
+                &self.identity,
+                &self.session_key,
+                crate::memory::distiller::DistillCause::Reset,
+            )
+            .await;
+    }
+}
+
+#[derive(Clone)]
+struct PendingResetBridgeCleanup {
+    runtime_id: Option<AgentRuntimeId>,
+    session_id: Option<SessionId>,
+    memory_capture: Option<PendingResetMemoryCapture>,
+}
+
+impl PartialEq for PendingResetBridgeCleanup {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id && self.session_id == other.session_id
+    }
+}
+
+impl Eq for PendingResetBridgeCleanup {}
+
+impl PendingResetBridgeCleanup {
+    fn key(&self) -> String {
+        format!(
+            "{}|{}",
+            self.runtime_id
+                .as_ref()
+                .map(AgentRuntimeId::as_str)
+                .unwrap_or("-"),
+            self.session_id
+                .as_ref()
+                .map(std::string::ToString::to_string)
+                .as_deref()
+                .unwrap_or("-")
+        )
+    }
+}
+
 impl IdentityRuntime {
     /// Create a new identity runtime with the given configuration.
     pub fn new(config: IdentityRuntimeConfig) -> Self {
+        let (bootstrap_status, _) = watch::channel(IdentityBootstrapStatus::empty(
+            IdentityBootstrapMode::EagerMaterialize,
+        ));
+        let (foreground_cancel, _) = watch::channel(false);
         Self {
             entries: RwLock::new(BTreeMap::new()),
             event_channels: RwLock::new(BTreeMap::new()),
@@ -536,12 +1000,26 @@ impl IdentityRuntime {
             materialization_locks: RwLock::new(BTreeMap::new()),
             best_effort_materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
+            raw_member_alias_locks: RwLock::new(RawMemberAliasLockTable::default()),
             customizer: RwLock::new(None),
             agent_memory: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
+            pending_unactivated_lease_releases: RwLock::new(Vec::new()),
+            pending_unactivated_lease_release_gate: Mutex::new(()),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
             materialization_failure_backoff: RwLock::new(BTreeMap::new()),
             error_hook: StdRwLock::new(None),
+            bootstrap_status,
+            bootstrap_generation: StdMutex::new(0),
+            bootstrap_controller: Mutex::new(()),
+            bootstrap_task: Mutex::new(None),
+            bootstrap_cancel: StdRwLock::new(None),
+            bootstrap_shutdown: AtomicBool::new(false),
+            foreground_operations: Mutex::new(JoinSet::new()),
+            foreground_cancel,
+            foreground_shutdown: AtomicBool::new(false),
+            pending_reset_bridge_cleanups: Arc::new(RwLock::new(BTreeMap::new())),
+            reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
         }
     }
 
@@ -566,6 +1044,488 @@ impl IdentityRuntime {
 
     pub(crate) fn runtime_services(&self) -> AgentRuntimeServices {
         self.runtime_services.clone()
+    }
+
+    /// Current typed bootstrap snapshot. Reading it never waits on an
+    /// in-flight materialization.
+    pub fn identity_bootstrap_status(&self) -> IdentityBootstrapStatus {
+        self.identity_bootstrap_status_with_generation().1
+    }
+
+    pub(crate) fn identity_bootstrap_status_with_generation(
+        &self,
+    ) -> (u64, IdentityBootstrapStatus) {
+        let generation = self
+            .bootstrap_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*generation, self.bootstrap_status.borrow().clone())
+    }
+
+    pub(crate) fn subscribe_identity_bootstrap_status(
+        &self,
+    ) -> watch::Receiver<IdentityBootstrapStatus> {
+        self.bootstrap_status.subscribe()
+    }
+
+    /// Wait until every tracked identity has reached Active or Broken.
+    /// Broken is terminal (and `ready == false`), so callers receive a useful
+    /// failure snapshot instead of hanging forever.
+    pub async fn wait_identity_bootstrap_terminal(
+        &self,
+        timeout: Duration,
+    ) -> (IdentityBootstrapStatus, bool) {
+        let (status, timed_out, _) = self
+            .wait_identity_bootstrap_terminal_with_generation(timeout)
+            .await;
+        (status, timed_out)
+    }
+
+    pub(crate) async fn wait_identity_bootstrap_terminal_with_generation(
+        &self,
+        timeout: Duration,
+    ) -> (IdentityBootstrapStatus, bool, u64) {
+        let mut receiver = self.subscribe_identity_bootstrap_status();
+        let wait = async {
+            loop {
+                let (generation, snapshot) = self.identity_bootstrap_status_with_generation();
+                if snapshot.complete && snapshot.materialization_terminal() {
+                    return (snapshot, generation);
+                }
+                if receiver.changed().await.is_err() {
+                    let (generation, snapshot) = self.identity_bootstrap_status_with_generation();
+                    return (snapshot, generation);
+                }
+            }
+        };
+        match tokio::time::timeout(timeout, wait).await {
+            Ok((snapshot, generation)) => (snapshot, false, generation),
+            Err(_) => {
+                let (generation, snapshot) = self.identity_bootstrap_status_with_generation();
+                (snapshot, true, generation)
+            }
+        }
+    }
+
+    fn request_identity_bootstrap_stop(&self) {
+        if let Some(cancel) = self
+            .bootstrap_cancel
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            let _ = cancel.send(true);
+        }
+    }
+
+    async fn join_identity_bootstrap_task(&self) {
+        if let Some(task) = self.bootstrap_task.lock().await.take() {
+            let _ = task.await;
+        }
+        *self
+            .bootstrap_cancel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// Serialize status mutation with pass supersession. The generation lock
+    /// closes the check-then-write race that an atomic epoch alone would leave
+    /// between a retiring warm task and a newly-published reconcile barrier.
+    fn modify_bootstrap_status<F>(&self, expected_generation: Option<u64>, modify: F) -> bool
+    where
+        F: FnOnce(&mut IdentityBootstrapStatus),
+    {
+        let current_generation = self
+            .bootstrap_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if expected_generation.is_some_and(|expected| expected != *current_generation) {
+            return false;
+        }
+        self.bootstrap_status.send_modify(modify);
+        true
+    }
+
+    fn replace_bootstrap_status(
+        &self,
+        expected_generation: u64,
+        status: IdentityBootstrapStatus,
+    ) -> bool {
+        let current_generation = self
+            .bootstrap_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if expected_generation != *current_generation {
+            return false;
+        }
+        self.bootstrap_status.send_replace(status);
+        true
+    }
+
+    /// Close the controller, cooperatively cancel warm operations before
+    /// bridge/member installation, and join the tracked task. An acquired but
+    /// uninstalled lease is released explicitly; operations past that boundary
+    /// reach their explicit commit/rollback path so no external lease or
+    /// bridge session can be leaked by a raw task abort.
+    pub(crate) async fn cancel_identity_bootstrap(&self) {
+        self.bootstrap_shutdown.store(true, Ordering::Release);
+        self.request_identity_bootstrap_stop();
+        let _controller = self.bootstrap_controller.lock().await;
+        self.request_identity_bootstrap_stop();
+        self.join_identity_bootstrap_task().await;
+        self.modify_bootstrap_status(None, |snapshot| {
+            for entry in snapshot.identities.values_mut() {
+                if entry.state == IdentityBootstrapState::Warming {
+                    entry.state = IdentityBootstrapState::Dormant;
+                }
+            }
+            snapshot.complete = true;
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    async fn begin_identity_bootstrap(
+        &self,
+        generation: u64,
+        mode: IdentityBootstrapMode,
+        roster: &[DurableAgentSpec],
+    ) {
+        let entries = self.entries.read().await;
+        let identities = roster
+            .iter()
+            .map(|spec| {
+                let lifecycle = entries.get(&spec.identity).map(|entry| entry.state);
+                let state = match lifecycle {
+                    Some(IdentityLifecycleState::Active) => IdentityBootstrapState::Active,
+                    _ if matches!(&mode, IdentityBootstrapMode::EagerMaterialize) => {
+                        IdentityBootstrapState::Warming
+                    }
+                    _ => IdentityBootstrapState::Dormant,
+                };
+                (
+                    spec.identity.clone(),
+                    IdentityBootstrapEntry { state, error: None },
+                )
+            })
+            .collect();
+        drop(entries);
+        let mut status = IdentityBootstrapStatus {
+            mode,
+            complete: false,
+            ready: false,
+            error: None,
+            counts: Default::default(),
+            identities,
+        };
+        status.refresh_aggregates();
+        // A roster consisting only of already-active identities still has a
+        // reconcile pass in flight. `complete` is the barrier guard even when
+        // the aggregate states themselves happen to look ready.
+        status.complete = false;
+        status.ready = false;
+        self.replace_bootstrap_status(generation, status);
+    }
+
+    fn begin_identity_bootstrap_pending(&self, mode: IdentityBootstrapMode) -> u64 {
+        let mut generation = self
+            .bootstrap_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *generation = generation.wrapping_add(1);
+        if *generation == 0 {
+            *generation = 1;
+        }
+        let current_generation = *generation;
+        self.bootstrap_status.send_modify(|snapshot| {
+            snapshot.mode = mode;
+            snapshot.complete = false;
+            snapshot.ready = false;
+            snapshot.error = None;
+        });
+        current_generation
+    }
+
+    fn fail_identity_bootstrap(&self, generation: u64, error: &IdentityRuntimeError) {
+        self.modify_bootstrap_status(Some(generation), |snapshot| {
+            let detail = error.to_string();
+            snapshot.complete = true;
+            snapshot.error = Some(detail.clone());
+            for entry in snapshot.identities.values_mut() {
+                if entry.state != IdentityBootstrapState::Active {
+                    entry.state = IdentityBootstrapState::Broken;
+                    entry.error = Some(detail.clone());
+                }
+            }
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_supersede_identity_bootstrap_ready(&self) {
+        let generation =
+            self.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        self.modify_bootstrap_status(Some(generation), |snapshot| {
+            snapshot.identities.clear();
+            snapshot.complete = true;
+            snapshot.error = None;
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fail_identity_bootstrap(&self, detail: &str) {
+        let generation =
+            self.begin_identity_bootstrap_pending(IdentityBootstrapMode::EagerMaterialize);
+        self.modify_bootstrap_status(Some(generation), |snapshot| {
+            snapshot.identities.clear();
+            if let Ok(identity) = AgentIdentity::parse("agent:test-bootstrap-failure") {
+                snapshot.identities.insert(
+                    identity,
+                    IdentityBootstrapEntry {
+                        state: IdentityBootstrapState::Dormant,
+                        error: None,
+                    },
+                );
+            }
+            snapshot.refresh_aggregates();
+        });
+        self.fail_identity_bootstrap(
+            generation,
+            &IdentityRuntimeError::Internal(detail.to_string()),
+        );
+    }
+
+    async fn install_identity_bootstrap(
+        self: &Arc<Self>,
+        generation: u64,
+        mode: IdentityBootstrapMode,
+        roster: &[DurableAgentSpec],
+        result: &super::orchestrator::RestoreFlowResult,
+    ) {
+        let background_concurrency = match mode {
+            IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency } => Some(concurrency),
+            _ => None,
+        };
+        let mut status = IdentityBootstrapStatus {
+            mode: mode.clone(),
+            complete: background_concurrency.is_none(),
+            ready: false,
+            error: None,
+            counts: Default::default(),
+            identities: BTreeMap::new(),
+        };
+        for spec in roster {
+            let broken_outcome = result.outcomes.get(&spec.identity).and_then(|outcome| {
+                if let super::orchestrator::RestoreOutcome::Broken(failure) = outcome {
+                    Some(failure.detail.clone())
+                } else {
+                    None
+                }
+            });
+            let lifecycle = self
+                .status(&spec.identity)
+                .await
+                .ok()
+                .map(|item| item.state);
+            let (state, error) = match (broken_outcome, lifecycle) {
+                // A store-projected Broken result is itself authoritative.
+                // restore_flow intentionally does not fabricate a lifecycle
+                // entry for it, so consulting lifecycle alone would default
+                // to Dormant and make a terminal wait barrier time out.
+                (Some(detail), _) => (IdentityBootstrapState::Broken, Some(detail)),
+                (None, Some(IdentityLifecycleState::Active)) => {
+                    (IdentityBootstrapState::Active, None)
+                }
+                (None, Some(IdentityLifecycleState::Broken)) => {
+                    (IdentityBootstrapState::Broken, None)
+                }
+                (None, _) => (IdentityBootstrapState::Dormant, None),
+            };
+            status.identities.insert(
+                spec.identity.clone(),
+                IdentityBootstrapEntry { state, error },
+            );
+        }
+        status.refresh_aggregates();
+        if !self.replace_bootstrap_status(generation, status.clone()) {
+            return;
+        }
+
+        let Some(concurrency) = background_concurrency else {
+            return;
+        };
+        let identities = status
+            .identities
+            .iter()
+            .filter(|(_, entry)| entry.state == IdentityBootstrapState::Dormant)
+            .map(|(identity, _)| identity.clone())
+            .collect::<Vec<_>>();
+        if identities.is_empty() {
+            self.modify_bootstrap_status(Some(generation), |snapshot| {
+                snapshot.complete = true;
+                snapshot.refresh_aggregates();
+            });
+            return;
+        }
+
+        let runtime = Arc::clone(self);
+        let (cancel, task_cancel) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            stream::iter(identities.into_iter().map(|identity| {
+                let runtime = Arc::clone(&runtime);
+                let mut cancel = task_cancel.clone();
+                async move {
+                    if *cancel.borrow() {
+                        return;
+                    }
+                    let Some(result) = runtime
+                        .materialize_for_background(&identity, &mut cancel, generation)
+                        .await
+                    else {
+                        return;
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            %identity,
+                            error = %error,
+                            "identity background warm failed"
+                        );
+                        runtime
+                            .record_best_effort_materialization_failure(
+                                &identity,
+                                None,
+                                "background_warm",
+                                &error,
+                            )
+                            .await;
+                    }
+                }
+            }))
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+            if !*task_cancel.borrow() {
+                runtime.modify_bootstrap_status(Some(generation), |snapshot| {
+                    snapshot.complete = true;
+                    snapshot.refresh_aggregates();
+                });
+            }
+        });
+        *self
+            .bootstrap_cancel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cancel);
+        *self.bootstrap_task.lock().await = Some(task);
+    }
+
+    fn mark_bootstrap_materialization_started(
+        &self,
+        identity: &AgentIdentity,
+        generation: Option<u64>,
+    ) {
+        self.modify_bootstrap_status(generation, |snapshot| {
+            let Some(entry) = snapshot.identities.get_mut(identity) else {
+                return;
+            };
+            entry.state = IdentityBootstrapState::Warming;
+            entry.error = None;
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    fn mark_bootstrap_from_lifecycle(
+        &self,
+        identity: &AgentIdentity,
+        lifecycle: IdentityLifecycleState,
+        error: Option<String>,
+    ) {
+        self.modify_bootstrap_status(None, |snapshot| {
+            let Some(entry) = snapshot.identities.get_mut(identity) else {
+                return;
+            };
+            entry.state = match lifecycle {
+                IdentityLifecycleState::Active => IdentityBootstrapState::Active,
+                IdentityLifecycleState::Broken => IdentityBootstrapState::Broken,
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Retiring
+                | IdentityLifecycleState::Suspended
+                | IdentityLifecycleState::Uninitialized => IdentityBootstrapState::Dormant,
+            };
+            entry.error = if entry.state == IdentityBootstrapState::Broken {
+                error
+            } else {
+                None
+            };
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    fn mark_bootstrap_materialization_finished(
+        &self,
+        identity: &AgentIdentity,
+        result: &Result<ContinuityRecord, IdentityRuntimeError>,
+        generation: Option<u64>,
+    ) {
+        self.modify_bootstrap_status(generation, |snapshot| {
+            let Some(entry) = snapshot.identities.get_mut(identity) else {
+                return;
+            };
+            match result {
+                Ok(_) => {
+                    entry.state = IdentityBootstrapState::Active;
+                    entry.error = None;
+                }
+                Err(error) => {
+                    entry.state = IdentityBootstrapState::Broken;
+                    entry.error = Some(error.to_string());
+                }
+            }
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    fn mark_bootstrap_materialization_cancelled(
+        &self,
+        identity: &AgentIdentity,
+        generation: Option<u64>,
+    ) {
+        self.modify_bootstrap_status(generation, |snapshot| {
+            if let Some(entry) = snapshot.identities.get_mut(identity) {
+                entry.state = IdentityBootstrapState::Dormant;
+                entry.error = None;
+                snapshot.refresh_aggregates();
+            }
+        });
+    }
+
+    /// Exact concrete member ids represented by the tracked bootstrap roster.
+    /// Used only after `ready == true`, preventing a false-ready snapshot of a
+    /// partially warmed mob.
+    pub async fn identity_bootstrap_member_ids(&self) -> Vec<meerkat_mob::ids::AgentIdentity> {
+        let tracked = self.identity_bootstrap_status();
+        self.identity_bootstrap_member_ids_for_status(&tracked)
+            .await
+    }
+
+    pub(crate) async fn identity_bootstrap_member_ids_for_status(
+        &self,
+        tracked: &IdentityBootstrapStatus,
+    ) -> Vec<meerkat_mob::ids::AgentIdentity> {
+        let entries = self.entries.read().await;
+        tracked
+            .identities
+            .keys()
+            .filter_map(|identity| {
+                let entry = entries.get(identity)?;
+                let runtime_id = entry.continuity.as_ref()?.agent_runtime_id.as_str();
+                let alias = if durable_spec_uses_external_binding(&entry.spec) {
+                    identity.as_str()
+                } else {
+                    runtime_id
+                };
+                Some(crate::member_comms_id::mob_member_id(alias))
+            })
+            .collect()
     }
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
@@ -816,6 +1776,25 @@ impl IdentityRuntime {
         self.spawn_lease_renewal_task_with_poll_interval(DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL)
     }
 
+    /// Spawn the runtime-owned renewal supervisor. Unlike the public
+    /// fire-and-forget helper, this handle cooperatively cancels while idle
+    /// and joins any in-flight renewal through provider, continuity-store,
+    /// bridge, and local-publication commit boundaries.
+    pub(crate) fn spawn_tracked_lease_renewal_task(self: Arc<Self>) -> TrackedLeaseRenewalTask {
+        self.spawn_tracked_lease_renewal_task_with_poll_interval(
+            DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL,
+        )
+    }
+
+    pub(crate) fn spawn_tracked_lease_renewal_task_with_poll_interval(
+        self: Arc<Self>,
+        max_poll_interval: Duration,
+    ) -> TrackedLeaseRenewalTask {
+        let (cancel, receiver) = watch::channel(false);
+        let join = tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, Some(receiver)));
+        TrackedLeaseRenewalTask { cancel, join }
+    }
+
     /// Spawn a lease renewal supervisor with a caller-provided maximum poll
     /// interval. Embedders can use this for shorter external lease TTLs; tests
     /// use it to exercise renewal without waiting on wall-clock TTLs.
@@ -823,48 +1802,85 @@ impl IdentityRuntime {
         self: Arc<Self>,
         max_poll_interval: Duration,
     ) -> JoinHandle<()> {
+        tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, None))
+    }
+
+    async fn run_lease_renewal_loop(
+        self: Arc<Self>,
+        max_poll_interval: Duration,
+        mut cancellation: Option<watch::Receiver<bool>>,
+    ) {
         let max_poll_interval = max_poll_interval.max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL);
-        tokio::spawn(async move {
-            let mut consecutive_failures: u32 = 0;
-            loop {
-                let base = self.lease_renewal_sleep_interval(max_poll_interval).await;
-                // While the provider is failing, hold off at least the backoff
-                // delay so a persistent outage retries at a bounded rate
-                // instead of the TTL-derived floor (down to 10ms).
-                let sleep = if consecutive_failures > 0 {
-                    base.max(lease_renewal_failure_backoff(
-                        consecutive_failures,
-                        max_poll_interval,
-                    ))
-                } else {
-                    base
-                };
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| *cancellation.borrow())
+            {
+                return;
+            }
+            let base = self.lease_renewal_sleep_interval(max_poll_interval).await;
+            // While the provider is failing, hold off at least the backoff
+            // delay so a persistent outage retries at a bounded rate instead
+            // of the TTL-derived floor (down to 10ms).
+            let sleep = if consecutive_failures > 0 {
+                base.max(lease_renewal_failure_backoff(
+                    consecutive_failures,
+                    max_poll_interval,
+                ))
+            } else {
+                base
+            };
+            if let Some(cancellation) = cancellation.as_mut() {
+                tokio::select! {
+                    () = tokio::time::sleep(sleep) => {}
+                    () = self.lease_renewal_notify.notified() => {}
+                    changed = cancellation.changed() => {
+                        match changed {
+                            Ok(()) if *cancellation.borrow() => return,
+                            Ok(()) => continue,
+                            Err(_) => return,
+                        }
+                    }
+                }
+            } else {
                 tokio::select! {
                     () = tokio::time::sleep(sleep) => {}
                     () = self.lease_renewal_notify.notified() => {}
                 }
-                match self.renew_due_leases_once().await {
-                    Ok(_) => consecutive_failures = 0,
-                    Err(err) => {
-                        // Warn once, then debounce to debug so a backend outage
-                        // can't flood the log at the renewal cadence.
-                        if consecutive_failures == 0 {
-                            tracing::warn!(
-                                error = %err,
-                                "identity-first proactive lease renewal tick failed; backing off"
-                            );
-                        } else {
-                            tracing::debug!(
-                                error = %err,
-                                consecutive_failures,
-                                "identity-first lease renewal still failing; backing off"
-                            );
-                        }
-                        consecutive_failures = consecutive_failures.saturating_add(1);
+            }
+
+            // Do not select cancellation against this future. Once renewal
+            // has entered the provider, the returned token may already be
+            // authoritative; the runtime must publish that exact grant before
+            // shutdown performs its final release.
+            match self.renew_due_leases_once().await {
+                Ok(_) => consecutive_failures = 0,
+                Err(err) => {
+                    // Warn once, then debounce to debug so a backend outage
+                    // can't flood the log at the renewal cadence.
+                    if consecutive_failures == 0 {
+                        tracing::warn!(
+                            error = %err,
+                            "identity-first proactive lease renewal tick failed; backing off"
+                        );
+                    } else {
+                        tracing::debug!(
+                            error = %err,
+                            consecutive_failures,
+                            "identity-first lease renewal still failing; backing off"
+                        );
                     }
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                 }
             }
-        })
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| *cancellation.borrow())
+            {
+                return;
+            }
+        }
     }
 
     async fn lease_renewal_sleep_interval(&self, max_poll_interval: Duration) -> Duration {
@@ -918,11 +1934,22 @@ impl IdentityRuntime {
     }
 
     async fn release_uninstalled_materialize_lease(&self, grant: &LeaseGrant) -> Option<String> {
-        self.lease_provider
-            .release_leases(std::slice::from_ref(grant))
+        self.release_or_park_untracked_leases(std::slice::from_ref(grant))
             .await
             .err()
             .map(|err| err.to_string())
+    }
+
+    async fn cancel_uninstalled_background_materialization(
+        &self,
+        grant: &LeaseGrant,
+    ) -> IdentityRuntimeError {
+        let cleanup_error = self.release_uninstalled_materialize_lease(grant).await;
+        IdentityRuntimeError::Internal(
+            cleanup_error
+                .map(|error| format!("{BACKGROUND_WARM_CANCELLED}; lease cleanup failed: {error}"))
+                .unwrap_or_else(|| BACKGROUND_WARM_CANCELLED.to_string()),
+        )
     }
 
     pub async fn set_desired_peer_edges(&self, edges: Vec<ManagedPeerEdge>) {
@@ -1024,10 +2051,56 @@ impl IdentityRuntime {
             .collect())
     }
 
+    pub(crate) async fn logical_peer_edges_any_half(
+        &self,
+    ) -> Result<Vec<ManagedPeerEdge>, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter_map(|(identity, entry)| {
+                entry
+                    .continuity
+                    .as_ref()
+                    .map(|record| (record.agent_runtime_id.clone(), identity.clone()))
+            })
+            .collect();
+        let runtime_edges = bridge
+            .current_member_wires_any_half()
+            .await
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "bridge current_member_wires_any_half: {error}"
+                ))
+            })?;
+        Ok(runtime_edges
+            .into_iter()
+            .filter_map(|(runtime_a, runtime_b)| {
+                let a = runtime_identities.get(&runtime_a)?.clone();
+                let b = runtime_identities.get(&runtime_b)?.clone();
+                ManagedPeerEdge::new(a, b).ok()
+            })
+            .collect())
+    }
+
     pub(crate) async fn managed_peer_edges_snapshot(
         &self,
     ) -> BTreeSet<(AgentIdentity, AgentIdentity)> {
         self.managed_peer_edges.read().await.clone()
+    }
+
+    pub(crate) async fn retain_managed_peer_edges(
+        &self,
+        edges: &BTreeSet<(AgentIdentity, AgentIdentity)>,
+    ) {
+        self.managed_peer_edges
+            .write()
+            .await
+            .extend(edges.iter().cloned());
     }
 
     /// Logical identity actuator used only while the shared topology
@@ -1038,8 +2111,13 @@ impl IdentityRuntime {
         edge: &ManagedPeerEdge,
     ) -> Result<(), IdentityRuntimeError> {
         let _guard = self.managed_peer_reconcile_lock.lock().await;
+        let _lifecycle_guards = self
+            .lifecycle_guards_for([edge.a().clone(), edge.b().clone()])
+            .await;
         let Some(bridge) = self.bridge.clone() else {
-            return Ok(());
+            return Err(IdentityRuntimeError::Internal(
+                "topology mutation requires a session bridge".to_string(),
+            ));
         };
         let (runtime_a, runtime_b) = {
             let entries = self.entries.read().await;
@@ -1138,7 +2216,20 @@ impl IdentityRuntime {
                     IdentityRuntimeError::Internal(format!("topology recovery journal: {error}"))
                 })?;
         }
-        let _guard = self.managed_peer_reconcile_lock.lock().await;
+        let pending_recovery_edges = if let Some(controller) = topology_controller.as_ref() {
+            controller
+                .pending_local_recovery_edges()
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology recovery ownership: {error}"))
+                })?
+        } else {
+            BTreeSet::new()
+        };
+        if !pending_recovery_edges.is_empty() {
+            self.retain_managed_peer_edges(&pending_recovery_edges)
+                .await;
+        }
         let composed_edges;
         let desired_edges = if let Some(controller) = topology_controller.as_ref() {
             composed_edges = controller
@@ -1151,23 +2242,123 @@ impl IdentityRuntime {
         } else {
             desired_edges
         };
-        let Some(bridge) = self.bridge.clone() else {
-            if let Some(controller) = topology_controller.as_ref() {
-                controller
-                    .finalize_recovered_pending(true)
+        let result = self
+            .reconcile_managed_peer_edges_admitted(desired_edges)
+            .await;
+        let mut recovery_inspection_error = None;
+        if let Some(controller) = topology_controller.as_ref() {
+            let recovery_complete = if result.is_ok() && !pending_recovery_edges.is_empty() {
+                match self
+                    .pending_recovery_is_physically_complete(desired_edges, &pending_recovery_edges)
                     .await
-                    .map_err(|error| {
-                        IdentityRuntimeError::Internal(format!(
-                            "topology recovery receipt: {error}"
-                        ))
-                    })?;
-            }
+                {
+                    Ok(complete) => complete,
+                    Err(error) => {
+                        recovery_inspection_error = Some(error);
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            controller
+                .finalize_recovered_pending(result.is_ok() && recovery_complete)
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!("topology recovery receipt: {error}"))
+                })?;
+        }
+        result?;
+        if let Some(error) = recovery_inspection_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn pending_recovery_is_physically_complete(
+        &self,
+        desired_edges: &[ManagedPeerEdge],
+        pending_recovery_edges: &BTreeSet<(AgentIdentity, AgentIdentity)>,
+    ) -> Result<bool, IdentityRuntimeError> {
+        if self.bridge.is_none() {
+            return Ok(false);
+        }
+        let active_identities = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter_map(|(identity, entry)| {
+                (entry.state == IdentityLifecycleState::Active && entry.continuity.is_some())
+                    .then_some(identity.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        if pending_recovery_edges
+            .iter()
+            .any(|(a, b)| !active_identities.contains(a) || !active_identities.contains(b))
+        {
+            return Ok(false);
+        }
+        let desired = desired_edges
+            .iter()
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect::<BTreeSet<_>>();
+        let actual = self
+            .logical_peer_edges()
+            .await?
+            .into_iter()
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect::<BTreeSet<_>>();
+        let actual_any_half = self
+            .logical_peer_edges_any_half()
+            .await?
+            .into_iter()
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect::<BTreeSet<_>>();
+
+        Ok(desired.is_subset(&actual)
+            && pending_recovery_edges
+                .difference(&desired)
+                .all(|edge| !actual_any_half.contains(edge)))
+    }
+
+    /// Reconcile an already-composed desired topology while the caller holds
+    /// the shared topology-controller admission guard.
+    pub(crate) async fn reconcile_managed_peer_edges_admitted(
+        &self,
+        desired_edges: &[ManagedPeerEdge],
+    ) -> Result<(), IdentityRuntimeError> {
+        let _guard = self.managed_peer_reconcile_lock.lock().await;
+        let Some(bridge) = self.bridge.clone() else {
             return Ok(());
         };
 
-        let active_runtimes: BTreeMap<AgentIdentity, AgentRuntimeId> = {
+        let managed_snapshot = self.managed_peer_edges.read().await.clone();
+        let topology_identities = desired_edges
+            .iter()
+            .flat_map(|edge| [edge.a().clone(), edge.b().clone()])
+            .chain(
+                managed_snapshot
+                    .iter()
+                    .flat_map(|(a, b)| [a.clone(), b.clone()]),
+            );
+        let _lifecycle_guards = self.lifecycle_guards_for(topology_identities).await;
+
+        let (known_runtimes, active_runtimes): (
+            BTreeMap<AgentIdentity, AgentRuntimeId>,
+            BTreeMap<AgentIdentity, AgentRuntimeId>,
+        ) = {
             let entries = self.entries.read().await;
-            entries
+            let known = entries
+                .iter()
+                .filter_map(|(identity, entry)| {
+                    entry
+                        .continuity
+                        .as_ref()
+                        .map(|record| (identity.clone(), record.agent_runtime_id.clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let active = entries
                 .iter()
                 .filter_map(|(identity, entry)| {
                     if entry.state != IdentityLifecycleState::Active {
@@ -1178,9 +2369,10 @@ impl IdentityRuntime {
                         .as_ref()
                         .map(|record| (identity.clone(), record.agent_runtime_id.clone()))
                 })
-                .collect()
+                .collect();
+            (known, active)
         };
-        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = active_runtimes
+        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = known_runtimes
             .iter()
             .map(|(identity, runtime_id)| (runtime_id.clone(), identity.clone()))
             .collect();
@@ -1238,7 +2430,6 @@ impl IdentityRuntime {
             .map(|edge| (edge.a().clone(), edge.b().clone()))
             .collect();
 
-        let managed_snapshot = self.managed_peer_edges.read().await.clone();
         let edge_is_managed_and_live = |edge: &(AgentIdentity, AgentIdentity)| {
             // Managed-but-missing live edges are retried deliberately so tolerant topology restores self-heal.
             managed_snapshot.contains(edge)
@@ -1334,11 +2525,9 @@ impl IdentityRuntime {
 
         for (a, b) in stale {
             let key = (a.clone(), b.clone());
-            if !active_runtimes.contains_key(&a)
-                || !active_runtimes.contains_key(&b)
-                || current_logical_edges
-                    .as_ref()
-                    .is_some_and(|edges| !edges.contains(&key))
+            if current_any_half_edges
+                .as_ref()
+                .is_some_and(|edges| !edges.contains(&key))
             {
                 managed.remove(&key);
             }
@@ -1349,14 +2538,6 @@ impl IdentityRuntime {
             managed.remove(&(a, b));
         }
 
-        if let Some(controller) = topology_controller.as_ref() {
-            controller
-                .finalize_recovered_pending(true)
-                .await
-                .map_err(|error| {
-                    IdentityRuntimeError::Internal(format!("topology recovery receipt: {error}"))
-                })?;
-        }
         Ok(())
     }
 
@@ -1442,6 +2623,7 @@ impl IdentityRuntime {
         lease: Option<LeaseGrant>,
     ) {
         let identity = spec.identity.clone();
+        let bootstrap_generation = self.identity_bootstrap_status_with_generation().0;
         let cpv = continuity
             .as_ref()
             .map(|r| r.checkpoint_version)
@@ -1453,9 +2635,11 @@ impl IdentityRuntime {
         });
         let entry = IdentityEntry {
             spec,
+            bootstrap_generation,
             state,
             continuity,
             lease: lease_entry,
+            pending_lease_release: None,
             checkpoint_version: cpv,
             has_runtime_store: self.has_runtime_store,
         };
@@ -1472,6 +2656,7 @@ impl IdentityRuntime {
         if has_active_lease {
             self.lease_renewal_notify.notify_one();
         }
+        self.mark_bootstrap_from_lifecycle(&identity, state, None);
     }
 
     async fn materialization_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
@@ -1504,7 +2689,7 @@ impl IdentityRuntime {
             .clone()
     }
 
-    async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
+    pub(crate) async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
         if let Some(lock) = self.lifecycle_locks.read().await.get(identity) {
             return lock.clone();
         }
@@ -1513,6 +2698,498 @@ impl IdentityRuntime {
             .entry(identity.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    pub(crate) async fn raw_member_alias_lock(&self, alias: &str) -> Arc<Mutex<()>> {
+        let alias = crate::member_comms_id::runtime_alias_str(alias.trim()).into_owned();
+        if let Some(lock) = self
+            .raw_member_alias_locks
+            .read()
+            .await
+            .entries
+            .get(&alias)
+            .and_then(Weak::upgrade)
+        {
+            return lock;
+        }
+        let mut table = self.raw_member_alias_locks.write().await;
+        table.sweep_if_needed();
+        // Another caller may have installed the key after our read miss. The
+        // write-side upgrade is the authority boundary that prevents two live
+        // mutexes from serializing the same alias independently.
+        if let Some(lock) = table.entries.get(&alias).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        table.entries.insert(alias, Arc::downgrade(&lock));
+        lock
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn raw_member_alias_lock_metrics(&self) -> (usize, usize, usize) {
+        let table = self.raw_member_alias_locks.read().await;
+        (table.entries.len(), table.next_sweep_len, table.sweep_count)
+    }
+
+    pub(crate) async fn ensure_raw_member_alias_available(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        if let Some(bridge) = self.bridge.as_ref()
+            && bridge
+                .raw_member_alias_exists(identity.as_str())
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "raw member namespace inspection for {identity}: {error}"
+                    ))
+                })?
+        {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "durable identity '{identity}' collides with an existing raw member alias"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolve an alias into a lifecycle-lock target. Classic members return
+    /// `None`; generated aliases always resolve to an authority target even
+    /// after deletion so validation under the lock fails closed.
+    pub(crate) async fn member_alias_lifecycle_target(
+        self: &Arc<Self>,
+        alias: &str,
+    ) -> Result<Option<MemberAliasLifecycleTarget>, IdentityRuntimeError> {
+        let alias = crate::member_comms_id::runtime_alias_str(alias).into_owned();
+        match self.identity_for_member_mutation(&alias).await {
+            Some(identity) => {
+                // Fail stale/deleted generated aliases before unrelated
+                // operation prerequisites (for example cross-mob directory
+                // lookup). The tracked operation validates again after taking
+                // the lifecycle lock, so this preflight does not become the
+                // authority boundary or introduce a TOCTOU gap.
+                self.ensure_expected_member_alias_current(&identity, &alias)
+                    .await?;
+                Ok(Some(MemberAliasLifecycleTarget {
+                    runtime: Arc::clone(self),
+                    lock: self.lifecycle_lock_for(&identity).await,
+                    identity,
+                    alias,
+                }))
+            }
+            None if crate::member_comms_id::is_reserved_generated_alias(&alias) => {
+                Err(IdentityRuntimeError::Internal(format!(
+                    "generated member alias requires identity authority: {alias}"
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Acquire member-alias lifecycle targets across one or more identity
+    /// runtimes in a deterministic process-global order, then validate every
+    /// alias while its owning lock is held. Duplicate identities acquire one
+    /// lock but still validate every spelling/generation.
+    pub(crate) async fn acquire_member_alias_lifecycle_targets(
+        mut targets: Vec<MemberAliasLifecycleTarget>,
+    ) -> Result<Vec<tokio::sync::OwnedMutexGuard<()>>, IdentityRuntimeError> {
+        targets.sort_by(|a, b| {
+            a.runtime
+                .runtime_instance_id
+                .cmp(&b.runtime.runtime_instance_id)
+                .then_with(|| {
+                    (Arc::as_ptr(&a.runtime) as usize).cmp(&(Arc::as_ptr(&b.runtime) as usize))
+                })
+                .then_with(|| a.identity.cmp(&b.identity))
+                .then_with(|| a.alias.cmp(&b.alias))
+        });
+
+        let mut guards = Vec::with_capacity(targets.len());
+        let mut held: Option<(usize, AgentIdentity)> = None;
+        for target in targets {
+            let key = (
+                Arc::as_ptr(&target.runtime) as usize,
+                target.identity.clone(),
+            );
+            if held.as_ref() != Some(&key) {
+                guards.push(target.lock.lock_owned().await);
+                held = Some(key);
+            }
+            target
+                .runtime
+                .ensure_expected_member_alias_current(&target.identity, &target.alias)
+                .await?;
+            let state = target
+                .runtime
+                .entries
+                .read()
+                .await
+                .get(&target.identity)
+                .map(|entry| entry.state)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(target.identity.clone()))?;
+            if state != IdentityLifecycleState::Active {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: target.identity,
+                    state,
+                    operation: "mutate member alias",
+                });
+            }
+        }
+        Ok(guards)
+    }
+
+    /// Cancellation-safe operation spanning one or more alias targets. The
+    /// first target in global order supervises the transaction to its explicit
+    /// commit/rollback boundary if the request future is dropped.
+    pub(crate) async fn run_member_alias_targets_operation_tracked<T, F, Fut>(
+        targets: Vec<MemberAliasLifecycleTarget>,
+        operation: F,
+    ) -> Result<T, IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let mut runtimes = targets
+            .iter()
+            .map(|target| Arc::clone(&target.runtime))
+            .collect::<Vec<_>>();
+        runtimes.sort_by(|a, b| {
+            a.runtime_instance_id
+                .cmp(&b.runtime_instance_id)
+                .then_with(|| (Arc::as_ptr(a) as usize).cmp(&(Arc::as_ptr(b) as usize)))
+        });
+        runtimes.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        let transaction = async move {
+            let _guards = Self::acquire_member_alias_lifecycle_targets(targets).await?;
+            operation().await.map_err(IdentityRuntimeError::Internal)
+        };
+        if !runtimes.is_empty() {
+            return Self::run_tracked_foreground_multi(runtimes, transaction).await;
+        }
+        transaction.await
+    }
+
+    /// Register one compound transaction with every participating runtime.
+    /// Non-owner shutdowns wait on a completion task in their own JoinSet,
+    /// while the globally first runtime owns the actual operation and result.
+    async fn run_tracked_foreground_multi<T, F>(
+        runtimes: Vec<Arc<Self>>,
+        operation: F,
+    ) -> Result<T, IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, IdentityRuntimeError>> + Send + 'static,
+    {
+        let Some((supervisor, participants)) = runtimes.split_first() else {
+            return operation.await;
+        };
+        if runtimes
+            .iter()
+            .any(|runtime| runtime.foreground_shutdown.load(Ordering::Acquire))
+        {
+            return Err(IdentityRuntimeError::Internal(
+                "identity runtime is shutting down".to_string(),
+            ));
+        }
+
+        let (completion, _) = watch::channel(false);
+        for runtime in participants {
+            let mut operations = runtime.foreground_operations.lock().await;
+            if runtime.foreground_shutdown.load(Ordering::Acquire) {
+                completion.send_replace(true);
+                return Err(IdentityRuntimeError::Internal(
+                    "identity runtime is shutting down".to_string(),
+                ));
+            }
+            while let Some(result) = operations.try_join_next() {
+                if let Err(error) = result {
+                    tracing::error!(
+                        error = %error,
+                        "tracked foreground identity operation panicked"
+                    );
+                }
+            }
+            let mut completed = completion.subscribe();
+            operations.spawn(async move {
+                while !*completed.borrow() && completed.changed().await.is_ok() {}
+            });
+        }
+
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut operations = supervisor.foreground_operations.lock().await;
+            if supervisor.foreground_shutdown.load(Ordering::Acquire) {
+                completion.send_replace(true);
+                return Err(IdentityRuntimeError::Internal(
+                    "identity runtime is shutting down".to_string(),
+                ));
+            }
+            while let Some(result) = operations.try_join_next() {
+                if let Err(error) = result {
+                    tracing::error!(
+                        error = %error,
+                        "tracked foreground identity operation panicked"
+                    );
+                }
+            }
+            operations.spawn(async move {
+                let _completion = MultiRuntimeForegroundCompletion(completion);
+                let _ = sender.send(operation.await);
+            });
+        }
+        receiver.await.map_err(|_| {
+            IdentityRuntimeError::Internal(
+                "tracked foreground identity operation terminated without a result".to_string(),
+            )
+        })?
+    }
+
+    /// Acquire several identity lifecycle locks in stable identity order.
+    /// Topology operations span two or more generated aliases; global ordering
+    /// prevents opposite-direction edge requests from deadlocking.
+    async fn lifecycle_guards_for(
+        &self,
+        identities: impl IntoIterator<Item = AgentIdentity>,
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        let identities = identities.into_iter().collect::<BTreeSet<_>>();
+        let mut guards = Vec::with_capacity(identities.len());
+        for identity in identities {
+            guards.push(self.lifecycle_lock_for(&identity).await.lock_owned().await);
+        }
+        guards
+    }
+
+    /// Run an externally-cancellable operation under runtime ownership.
+    ///
+    /// Dropping the caller only drops the result receiver; the transaction
+    /// remains in the runtime's join set and reaches its explicit
+    /// commit/rollback boundary. Graceful shutdown closes admission and joins
+    /// every such task before lease renewal or the mob actor is stopped.
+    async fn run_tracked_foreground<T, F>(
+        self: &Arc<Self>,
+        operation: F,
+    ) -> Result<T, IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, IdentityRuntimeError>> + Send + 'static,
+    {
+        if self.foreground_shutdown.load(Ordering::Acquire) {
+            return Err(IdentityRuntimeError::Internal(
+                "identity runtime is shutting down".to_string(),
+            ));
+        }
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut operations = self.foreground_operations.lock().await;
+            if self.foreground_shutdown.load(Ordering::Acquire) {
+                return Err(IdentityRuntimeError::Internal(
+                    "identity runtime is shutting down".to_string(),
+                ));
+            }
+            while let Some(result) = operations.try_join_next() {
+                if let Err(error) = result {
+                    tracing::error!(
+                        error = %error,
+                        "tracked foreground identity operation panicked"
+                    );
+                }
+            }
+            operations.spawn(async move {
+                let _ = sender.send(operation.await);
+            });
+        }
+        receiver.await.map_err(|_| {
+            IdentityRuntimeError::Internal(
+                "tracked foreground identity operation terminated without a result".to_string(),
+            )
+        })?
+    }
+
+    pub(crate) fn close_foreground_operations(&self) {
+        self.foreground_shutdown.store(true, Ordering::Release);
+        // `watch::Sender::send` discards the value when no receiver exists.
+        // A just-admitted JoinSet task may not have subscribed yet, so retain
+        // shutdown truth for future receivers explicitly.
+        self.foreground_cancel.send_replace(true);
+    }
+
+    pub(crate) async fn join_foreground_operations(&self) {
+        let mut operations = self.foreground_operations.lock().await;
+        while let Some(result) = operations.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(
+                    error = %error,
+                    "tracked foreground identity operation panicked during shutdown"
+                );
+            }
+        }
+    }
+
+    /// Preserve exact grants acquired by a restore task that failed before it
+    /// could publish an [`IdentityEntry`]. Entry-scoped pending-release state
+    /// cannot represent this phase, so the runtime owns a small orphan-grant
+    /// ledger until reconcile or shutdown successfully releases it.
+    pub(crate) async fn park_unactivated_lease_releases(&self, grants: &[LeaseGrant]) {
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        for grant in grants {
+            if !pending.iter().any(|parked| {
+                parked.identity == grant.identity && parked.fencing_token == grant.fencing_token
+            }) {
+                pending.push(grant.clone());
+            }
+        }
+    }
+
+    /// Release grants that do not yet have an IdentityEntry capable of
+    /// retaining retry state. A provider failure atomically transfers their
+    /// exact fencing tokens into the runtime-owned orphan ledger.
+    pub(crate) async fn release_or_park_untracked_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<(), super::types::LeaseError> {
+        let _release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        match self.lease_provider.release_leases(grants).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.park_unactivated_lease_releases(grants).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Retry every grant parked before lifecycle publication. This runs under
+    /// the restore controller before any new batch acquisition, and again from
+    /// shutdown after all identity work has joined.
+    pub(crate) async fn release_parked_unactivated_leases(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        self.release_parked_unactivated_leases_matching(None).await
+    }
+
+    /// Retry parked pre-publication grants for one identity before a direct
+    /// lazy materialization attempts to acquire fresh authority. The caller
+    /// holds that identity's lifecycle lock, so another same-identity path
+    /// cannot park a replacement grant between this drain and acquisition.
+    async fn release_parked_unactivated_leases_for_identity(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<usize, IdentityRuntimeError> {
+        self.release_parked_unactivated_leases_matching(Some(identity))
+            .await
+    }
+
+    async fn release_parked_unactivated_leases_matching(
+        &self,
+        identity: Option<&AgentIdentity>,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let _release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        let grants = self
+            .pending_unactivated_lease_releases
+            .read()
+            .await
+            .iter()
+            .filter(|grant| identity.is_none_or(|identity| grant.identity == *identity))
+            .cloned()
+            .collect::<Vec<_>>();
+        if grants.is_empty() {
+            return Ok(0);
+        }
+        self.lease_provider
+            .release_leases(&grants)
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        pending.retain(|parked| {
+            !grants.iter().any(|released| {
+                released.identity == parked.identity
+                    && released.fencing_token == parked.fencing_token
+            })
+        });
+        Ok(grants.len())
+    }
+
+    /// Release every durable identity grant after the lower mob plane has
+    /// quiesced. Successful release clears the in-memory authority so the
+    /// method is idempotent; failures retain the exact grants for inspection
+    /// or a subsequent retry.
+    pub(crate) async fn release_all_leases_for_shutdown(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let _parked_release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        let mut grants = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter_map(|(identity, entry)| {
+                entry.pending_lease_release.clone().or_else(|| {
+                    entry.lease.as_ref().map(|lease| LeaseGrant {
+                        identity: identity.clone(),
+                        fencing_token: lease.fencing_token,
+                        ttl: lease.ttl,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let parked_grants = self.pending_unactivated_lease_releases.read().await.clone();
+        for grant in parked_grants {
+            if !grants.iter().any(|existing| {
+                existing.identity == grant.identity && existing.fencing_token == grant.fencing_token
+            }) {
+                grants.push(grant);
+            }
+        }
+        if grants.is_empty() {
+            return Ok(0);
+        }
+
+        self.lease_provider
+            .release_leases(&grants)
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+
+        let mut entries = self.entries.write().await;
+        let mut lifecycle_updates = Vec::new();
+        for grant in &grants {
+            if let Some(entry) = entries.get_mut(&grant.identity) {
+                let released_active_lease = entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.fencing_token == grant.fencing_token);
+                if released_active_lease {
+                    entry.lease = None;
+                }
+                if entry
+                    .pending_lease_release
+                    .as_ref()
+                    .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+                if released_active_lease
+                    && matches!(
+                        entry.state,
+                        IdentityLifecycleState::Active | IdentityLifecycleState::Suspended
+                    )
+                {
+                    entry.state = IdentityLifecycleState::Dormant;
+                    lifecycle_updates.push(grant.identity.clone());
+                }
+            }
+        }
+        drop(entries);
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        pending.retain(|parked| {
+            !grants.iter().any(|released| {
+                released.identity == parked.identity
+                    && released.fencing_token == parked.fencing_token
+            })
+        });
+        drop(pending);
+        for identity in lifecycle_updates {
+            self.mark_bootstrap_from_lifecycle(&identity, IdentityLifecycleState::Dormant, None);
+        }
+        Ok(grants.len())
     }
 
     /// Materialize a dormant identity into a concrete mob member/session.
@@ -1525,8 +3202,552 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        self.materialize_with_expected_member_alias(identity, None)
+            .await
+    }
+
+    async fn materialize_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        self.materialize_with_expected_member_alias_after_inner(
+            identity,
+            expected_alias,
+            std::future::ready(()),
+        )
+        .await
+    }
+
+    /// Complete a foreground materialization with an internal seam after the
+    /// lifecycle transaction commits. Production callers use an immediately
+    /// ready future; deterministic concurrency tests pause here to exercise
+    /// superseding roster passes without adding runtime-visible hooks.
+    async fn materialize_with_expected_member_alias_after_inner<F>(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        after_inner: F,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError>
+    where
+        F: Future<Output = ()>,
+    {
+        // `materialize_inner` binds this attempt to the generation stored on
+        // the IdentityEntry after it acquires the lifecycle lock. Sampling the
+        // global generation here is insufficient: a newer reconcile can
+        // publish G+1 and win that lock before this future reaches the entry,
+        // in which case the materialized spec belongs to G+1, not G.
+        let mut bootstrap_generation = None;
+        let mut shutdown = self.foreground_cancel.subscribe();
+        let result = self
+            .materialize_inner(
+                identity,
+                expected_alias,
+                Some(&mut shutdown),
+                None,
+                &mut bootstrap_generation,
+            )
+            .await;
+        after_inner.await;
+        if matches!(
+            &result,
+            Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
+        ) {
+            if let Some(generation) = bootstrap_generation {
+                self.mark_bootstrap_materialization_cancelled(identity, Some(generation));
+            }
+            return result;
+        }
+        // Alias validation happens under the lifecycle lock before
+        // `materialize_inner` marks bootstrap work as started. A stale alias
+        // therefore must leave the replacement generation's exact readiness
+        // state untouched.
+        if matches!(&result, Err(IdentityRuntimeError::StaleRuntimeAlias { .. })) {
+            return result;
+        }
+        if result.is_ok() {
+            let desired_edges = self.desired_peer_edges.read().await.clone();
+            let has_pending_topology_recovery = match self.topology_controller() {
+                Some(controller) => controller.has_pending().await,
+                None => false,
+            };
+            if (!desired_edges.is_empty() || has_pending_topology_recovery)
+                && let Err(error) = self.reconcile_managed_peer_edges(&desired_edges).await
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    %error,
+                    "identity materialized with topology reconcile warning"
+                );
+            }
+        }
+        if let Some(generation) = bootstrap_generation {
+            self.mark_bootstrap_materialization_finished(identity, &result, Some(generation));
+        }
+        result
+    }
+
+    /// Cancellation-safe materialization for request/host boundaries.
+    pub async fn materialize_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move { runtime.materialize(&identity).await })
+            .await
+    }
+
+    /// Cancellation-safe compatibility restore used by embedders that pass
+    /// an RPC identity context without attaching an
+    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
+    pub(crate) async fn restore_flow_tracked(
+        self: &Arc<Self>,
+        roster: Vec<DurableAgentSpec>,
+        topology_provider: Option<Arc<dyn TopologyProvider>>,
+        customizer: Option<Arc<dyn AgentCustomizer>>,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        self.run_tracked_foreground(async move {
+            super::orchestrator::restore_flow(
+                runtime.as_ref(),
+                &roster,
+                topology_provider.as_deref(),
+                customizer.as_deref(),
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Cancellation-safe retirement for RPC/host request boundaries.
+    pub async fn retire_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move { runtime.retire(&identity).await })
+            .await
+    }
+
+    /// Cancellation-safe retirement that atomically rejects an old generated
+    /// runtime alias under the same lifecycle lock as the mutation.
+    pub async fn retire_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            runtime
+                .retire_with_expected_member_alias(&identity, Some(&expected_alias))
+                .await
+        })
+        .await
+    }
+
+    /// Retire identity authority and its captured lower-plane generations
+    /// under one lifecycle lock. Enumeration performed by `cleanup` therefore
+    /// observes the generation actually retired, even when this request had
+    /// waited behind a concurrent reset.
+    pub(crate) async fn retire_and_cleanup_live_members_tracked<T, F, Fut>(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        cleanup: F,
+    ) -> Result<(FencingToken, T), IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Option<AgentRuntimeId>) -> Fut + Send + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(str::to_owned);
+        self.run_tracked_foreground(async move {
+            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            if let Some(expected_alias) = expected_alias.as_deref() {
+                runtime
+                    .ensure_expected_member_alias_current(&identity, expected_alias)
+                    .await?;
+            }
+            let retired_alias = runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .and_then(|entry| entry.continuity.as_ref())
+                .map(|record| record.agent_runtime_id.clone());
+            let token = runtime.retire_locked(&identity).await?;
+            let metadata = cleanup(retired_alias).await;
+            Ok((token, metadata))
+        })
+        .await
+    }
+
+    /// Cancellation-safe respawn for RPC/host request boundaries.
+    pub async fn respawn_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move { runtime.respawn(&identity).await })
+            .await
+    }
+
+    /// Cancellation-safe respawn that atomically rejects an old generated
+    /// runtime alias under the same lifecycle lock as the mutation.
+    pub async fn respawn_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            runtime
+                .respawn_with_expected_member_alias(&identity, Some(&expected_alias))
+                .await
+        })
+        .await
+    }
+
+    /// Execute a lower member-plane mutation while pinning a generated alias
+    /// to the durable identity generation that owns it. This is the common
+    /// authority boundary for legacy member RPCs (for example force-cancel)
+    /// that cannot otherwise express identity continuity.
+    pub(crate) async fn run_member_alias_operation_tracked<T, F, Fut>(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+        operation: F,
+    ) -> Result<T, IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            runtime
+                .ensure_expected_member_alias_current(&identity, &expected_alias)
+                .await?;
+            operation().await.map_err(IdentityRuntimeError::Internal)
+        })
+        .await
+    }
+
+    /// Run the identity refresh, lower-level member respawn, and continuity
+    /// rebind as one per-identity lifecycle transaction.
+    ///
+    /// The lower member plane historically ran after `respawn_tracked`
+    /// released this lock, allowing a concurrent reset to publish generation
+    /// N+1 before the member fallback recreated generation N. Keeping the
+    /// caller-supplied lower-plane operation inside the same authority window
+    /// makes stale-generation resurrection impossible. If the lower-plane
+    /// operation or continuity rebind fails, its exact member alias is retired
+    /// before the transaction releases ownership.
+    pub(crate) async fn respawn_and_rebind_live_member_tracked<T, F, Fut, R, RollbackFut>(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        live_respawn: F,
+        rollback_live_member: R,
+    ) -> Result<(ContinuityRecord, T), IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(AgentRuntimeId) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(SessionId, T), String>> + Send + 'static,
+        R: FnOnce(AgentRuntimeId) -> RollbackFut + Send + 'static,
+        RollbackFut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(str::to_owned);
+        self.run_tracked_foreground(async move {
+            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            if let Some(expected_alias) = expected_alias.as_deref() {
+                runtime
+                    .ensure_expected_member_alias_current(&identity, expected_alias)
+                    .await?;
+            }
+
+            let refreshed_record = runtime.respawn_locked(&identity).await?;
+            let respawned_alias = refreshed_record.agent_runtime_id.clone();
+            let (live_session_id, metadata) = match live_respawn(respawned_alias.clone()).await {
+                Ok(result) => result,
+                Err(error) => {
+                    let rollback_error = rollback_live_member(respawned_alias.clone()).await.err();
+                    let state_cleanup_error = runtime
+                        .mark_live_member_respawn_failure_broken(&identity, &respawned_alias)
+                        .await;
+                    let mut message = format!("live member respawn for {respawned_alias}: {error}");
+                    if let Some(rollback_error) = rollback_error {
+                        message.push_str(&format!("; rollback retire failed: {rollback_error}"));
+                    }
+                    if let Some(state_cleanup_error) = state_cleanup_error {
+                        message.push_str(&format!(
+                            "; identity failure fencing failed: {state_cleanup_error}"
+                        ));
+                    }
+                    return Err(IdentityRuntimeError::Internal(message));
+                }
+            };
+
+            match runtime
+                .rebind_session_after_live_respawn_locked(&identity, live_session_id)
+                .await
+            {
+                Ok(record) => Ok((record, metadata)),
+                Err(error) => {
+                    let rollback_error = rollback_live_member(respawned_alias.clone()).await.err();
+                    let state_cleanup_error = runtime
+                        .mark_live_member_respawn_failure_broken(&identity, &respawned_alias)
+                        .await;
+                    if rollback_error.is_none() && state_cleanup_error.is_none() {
+                        return Err(error);
+                    }
+                    let mut message = error.to_string();
+                    if let Some(rollback_error) = rollback_error {
+                        message.push_str(&format!(
+                            "; live member rollback retire for {respawned_alias} failed: \
+                             {rollback_error}"
+                        ));
+                    }
+                    if let Some(state_cleanup_error) = state_cleanup_error {
+                        message.push_str(&format!(
+                            "; identity failure fencing failed: {state_cleanup_error}"
+                        ));
+                    }
+                    Err(IdentityRuntimeError::Internal(message))
+                }
+            }
+        })
+        .await
+    }
+
+    /// Cancellation-safe live-session rebind for RPC/host boundaries.
+    pub async fn rebind_session_after_live_respawn_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        session_id: SessionId,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move {
+            runtime
+                .rebind_session_after_live_respawn(&identity, session_id)
+                .await
+        })
+        .await
+    }
+
+    /// Cancellation-safe live-session rebind pinned to the generation that
+    /// initiated the lower-level member respawn.
+    pub async fn rebind_session_after_live_respawn_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+        session_id: SessionId,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            runtime
+                .rebind_session_after_live_respawn_with_expected_member_alias(
+                    &identity,
+                    Some(&expected_alias),
+                    session_id,
+                )
+                .await
+        })
+        .await
+    }
+
+    /// Cancellation-safe destructive reset for RPC/host boundaries.
+    pub async fn reset_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move { runtime.reset(&identity).await })
+            .await
+    }
+
+    /// Cancellation-safe reset that atomically rejects an old generated
+    /// runtime alias under the same lifecycle lock as the mutation.
+    pub async fn reset_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            runtime
+                .reset_with_expected_member_alias(&identity, Some(&expected_alias))
+                .await
+        })
+        .await
+    }
+
+    /// Cancellation-safe identity deletion for RPC/host boundaries.
+    pub async fn delete_identity_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        self.run_tracked_foreground(async move { runtime.delete_identity(&identity).await })
+            .await
+    }
+
+    /// Cancellation-safe deletion that atomically rejects an old generated
+    /// runtime alias under the same lifecycle lock as the mutation.
+    pub async fn delete_identity_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+    ) -> Result<(), IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        self.run_tracked_foreground(async move {
+            runtime
+                .delete_identity_with_expected_member_alias(&identity, Some(&expected_alias))
+                .await
+        })
+        .await
+    }
+
+    /// Delete identity authority and clean its captured concrete generations
+    /// in the same lifecycle transaction.
+    pub(crate) async fn delete_identity_and_cleanup_live_members_tracked<T, F, Fut>(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        cleanup: F,
+    ) -> Result<T, IdentityRuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Option<AgentRuntimeId>) -> Fut + Send + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(str::to_owned);
+        self.run_tracked_foreground(async move {
+            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            if let Some(expected_alias) = expected_alias.as_deref() {
+                runtime
+                    .ensure_expected_member_alias_current(&identity, expected_alias)
+                    .await?;
+            }
+            let deleted_alias = runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .and_then(|entry| entry.continuity.as_ref())
+                .map(|record| record.agent_runtime_id.clone());
+            runtime.delete_identity_locked(&identity).await?;
+            Ok(cleanup(deleted_alias).await)
+        })
+        .await
+    }
+
+    /// Background warming observes controller cancellation after lease
+    /// acquisition bookkeeping but before bridge/member installation. A
+    /// cancelled grant is explicitly released; after customization completes,
+    /// the operation is joined to its explicit commit/rollback boundary.
+    async fn materialize_for_background(
+        &self,
+        identity: &AgentIdentity,
+        cancellation: &mut watch::Receiver<bool>,
+        generation: u64,
+    ) -> Option<Result<ContinuityRecord, IdentityRuntimeError>> {
+        let mut bound_generation = None;
+        let result = self
+            .materialize_inner(
+                identity,
+                None,
+                Some(cancellation),
+                Some(generation),
+                &mut bound_generation,
+            )
+            .await;
+        if matches!(
+            &result,
+            Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
+        ) {
+            self.mark_bootstrap_materialization_cancelled(identity, Some(generation));
+            return None;
+        }
+        if result.is_ok() {
+            let desired_edges = self.desired_peer_edges.read().await.clone();
+            if !desired_edges.is_empty()
+                && let Err(error) = self.reconcile_managed_peer_edges(&desired_edges).await
+            {
+                tracing::warn!(
+                    identity = %identity,
+                    %error,
+                    "background identity materialized with topology reconcile warning"
+                );
+            }
+        }
+        self.mark_bootstrap_materialization_finished(identity, &result, Some(generation));
+        Some(result)
+    }
+
+    async fn materialize_inner(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        mut cancellation: Option<&mut watch::Receiver<bool>>,
+        expected_bootstrap_generation: Option<u64>,
+        bound_bootstrap_generation: &mut Option<u64>,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        let bootstrap_generation = {
+            let entries = self.entries.read().await;
+            entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?
+                .bootstrap_generation
+        };
+        *bound_bootstrap_generation = Some(bootstrap_generation);
+        // A background item belongs to one controller generation. If a newer
+        // roster pass converged the entry before this item acquired lifecycle
+        // authority, treat the old work as cancelled instead of materializing
+        // the newer spec on behalf of a superseded pass.
+        if expected_bootstrap_generation.is_some_and(|expected| expected != bootstrap_generation) {
+            return Err(IdentityRuntimeError::Internal(
+                BACKGROUND_WARM_CANCELLED.to_string(),
+            ));
+        }
+        let raw_alias_lock = self.raw_member_alias_lock(identity.as_str()).await;
+        let _raw_alias_guard = raw_alias_lock.lock().await;
+        self.ensure_raw_member_alias_available(identity).await?;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
         let lock = self.materialization_lock_for(identity).await;
         let _guard = lock.lock().await;
 
@@ -1567,7 +3788,24 @@ impl IdentityRuntime {
             }
             IdentityLifecycleState::Active => unreachable!("active handled above"),
         }
+        // Begin readiness bookkeeping only after ownership validation and
+        // only for an identity that will actually materialize. An old alias
+        // can now fail without a transient or terminal mutation of the
+        // replacement generation's bootstrap entry.
+        self.mark_bootstrap_materialization_started(identity, Some(bootstrap_generation));
 
+        // A previous customization/installation failure can leave its exact
+        // unactivated grant parked when provider cleanup itself fails. Strict
+        // providers reject reacquisition while that grant still exists, so a
+        // direct lazy retry must drain this identity's orphan before acquiring
+        // fresh authority. Other identities' cleanup failures remain isolated.
+        self.release_parked_unactivated_leases_for_identity(identity)
+            .await?;
+
+        // Establish single-embodiment ownership before invoking arbitrary
+        // host customizer code, preserving the public ordering contract. No
+        // bridge/member state exists yet, so every exit below can still
+        // release this uninstalled grant explicitly.
         let lease_results = self
             .lease_provider
             .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
@@ -1605,6 +3843,15 @@ impl IdentityRuntime {
             )));
         }
 
+        if cancellation
+            .as_ref()
+            .is_some_and(|cancellation| *cancellation.borrow())
+        {
+            return Err(self
+                .cancel_uninstalled_background_materialization(&grant)
+                .await);
+        }
+
         let active_peers = self.entries.read().await.keys().cloned().collect();
         let managed_edges = self.desired_peer_edges.read().await.clone();
         let build_context = AgentBuildContext {
@@ -1622,39 +3869,65 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
         };
-        if let Some(customizer) = self.customizer.read().await.clone()
-            && let Err(err) = customizer
-                .customize_build(&build_context, &spec, &mut draft)
-                .await
-        {
-            let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
-            return Err(IdentityRuntimeError::Internal(format!(
-                "customizer: {err}{}",
-                cleanup_error
-                    .as_ref()
-                    .map(|e| format!("; lease cleanup failed: {e}"))
-                    .unwrap_or_default(),
-            )));
+        if let Some(customizer) = self.customizer.read().await.clone() {
+            let customize = customizer.customize_build(&build_context, &spec, &mut draft);
+            tokio::pin!(customize);
+            let customize_result = if let Some(cancellation) = cancellation.as_mut() {
+                let cancellation = &mut **cancellation;
+                tokio::select! {
+                    result = &mut customize => result,
+                    changed = cancellation.changed() => {
+                        if changed.is_ok() && *cancellation.borrow() {
+                            return Err(
+                                self.cancel_uninstalled_background_materialization(&grant)
+                                    .await,
+                            );
+                        }
+                        customize.await
+                    }
+                }
+            } else {
+                customize.await
+            };
+            if let Err(err) = customize_result {
+                let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "customizer: {err}{}",
+                    cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; lease cleanup failed: {e}"))
+                        .unwrap_or_default(),
+                )));
+            }
         }
 
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut record = if let Some(mut record) = continuity {
-            let snapshot = match self
-                .continuity_store
-                .load_session_snapshot(&record.session_id)
-                .await
+            let snapshot = if self
+                .bridge
+                .as_ref()
+                .is_none_or(|bridge| bridge.requires_resume_snapshot())
             {
-                Ok(snapshot) => snapshot,
-                Err(err) => {
-                    let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
-                    return Err(IdentityRuntimeError::Internal(format!(
-                        "load session snapshot before materialize: {err}{}",
-                        cleanup_error
-                            .as_ref()
-                            .map(|e| format!("; lease cleanup failed: {e}"))
-                            .unwrap_or_default(),
-                    )));
+                match self
+                    .continuity_store
+                    .load_session_snapshot(&record.session_id)
+                    .await
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(err) => {
+                        let cleanup_error =
+                            self.release_uninstalled_materialize_lease(&grant).await;
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "load session snapshot before materialize: {err}{}",
+                            cleanup_error
+                                .as_ref()
+                                .map(|e| format!("; lease cleanup failed: {e}"))
+                                .unwrap_or_default(),
+                        )));
+                    }
                 }
+            } else {
+                None
             };
 
             if let Some(bridge) = self.bridge.as_ref() {
@@ -2109,16 +4382,6 @@ impl IdentityRuntime {
             },
         )
         .await;
-        let desired_edges = self.desired_peer_edges.read().await.clone();
-        if !desired_edges.is_empty()
-            && let Err(err) = self.reconcile_managed_peer_edges(&desired_edges).await
-        {
-            tracing::warn!(
-                identity = %identity,
-                error = %err,
-                "identity materialized with topology reconcile warning"
-            );
-        }
         self.clear_materialization_backoff(identity).await;
         Ok(record)
     }
@@ -2241,9 +4504,13 @@ impl IdentityRuntime {
         Ok(records)
     }
 
-    pub(crate) async fn best_effort_background_warm_identity(&self, identity: AgentIdentity) {
-        self.best_effort_materialize_identity(identity, None, "background_warm")
-            .await;
+    /// Cancellation-safe strict fleet hydration for flow/request boundaries.
+    pub async fn materialize_all_required_tracked(
+        self: &Arc<Self>,
+    ) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        self.run_tracked_foreground(async move { runtime.materialize_all_required().await })
+            .await
     }
 
     /// Ensure an active identity's desired peer neighborhood exists in the
@@ -2306,6 +4573,330 @@ impl IdentityRuntime {
             .get_mut(&spec.identity)
             .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(spec.identity.clone()))?;
         entry.spec = spec;
+        Ok(())
+    }
+
+    /// Release every exact provider grant retained by a Broken entry. The
+    /// caller owns this identity's lifecycle lock.
+    ///
+    /// Most failed lower-plane transitions already park authority in
+    /// `pending_lease_release`, but rollback of an originally Active entry can
+    /// deliberately retain its current grant in `lease` while projecting
+    /// Broken. Move that live grant into pending state before the provider await
+    /// so cancellation, a provider failure, and shutdown all retain the exact
+    /// fencing token. A failed release aborts reconcile before lazy registration
+    /// can overwrite the entry or restore can reacquire authority.
+    async fn release_broken_lease_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<bool, IdentityRuntimeError> {
+        let pending = {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            if entry.state != IdentityLifecycleState::Broken {
+                return Ok(false);
+            }
+
+            let existing_pending = entry.pending_lease_release.clone();
+            let retained_lease = entry.lease.as_ref().map(|lease| LeaseGrant {
+                identity: identity.clone(),
+                fencing_token: lease.fencing_token,
+                ttl: lease.ttl,
+            });
+            if let (Some(pending), Some(retained)) =
+                (existing_pending.as_ref(), retained_lease.as_ref())
+                && pending.fencing_token != retained.fencing_token
+            {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "Broken identity {identity} retained conflicting fencing tokens {} and {}",
+                    pending.fencing_token, retained.fencing_token
+                )));
+            }
+
+            let grant = existing_pending.or(retained_lease);
+            if let Some(grant) = grant.as_ref() {
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant.clone());
+            }
+            grant
+        };
+        let Some(grant) = pending else {
+            return Ok(false);
+        };
+
+        if let Err(error) = self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await
+        {
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(format!("pending lease release retry: {error}")),
+            );
+            return Err(IdentityRuntimeError::Lease(error));
+        }
+
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        match entry.pending_lease_release.as_ref() {
+            Some(current) if current.fencing_token == grant.fencing_token => {
+                entry.pending_lease_release = None;
+            }
+            Some(current) => {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "pending lease release for {identity} changed from fencing token {} to {} under lifecycle authority",
+                    grant.fencing_token, current.fencing_token
+                )));
+            }
+            None => {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "pending lease release for {identity} disappeared under lifecycle authority"
+                )));
+            }
+        }
+        Ok(true)
+    }
+
+    /// Dispose the concrete member and its session-store authority retained by
+    /// a continuity-backed Broken entry. Lease loss is fail-closed at the
+    /// identity plane, but it cannot synchronously remove the lower member;
+    /// every roster reconcile that will reproject the Broken entry must do so
+    /// before abandoning or reusing the runtime alias. The real bridge treats
+    /// an already-retired member as success, and session unregister is
+    /// idempotent, making retries safe when a later exact-grant cleanup step
+    /// fails.
+    ///
+    /// This deliberately does not mutate `lease` or `pending_lease_release`:
+    /// provider authority is an independent exact-token cleanup obligation.
+    async fn cleanup_broken_lower_plane_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        let continuity = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            (entry.state == IdentityLifecycleState::Broken)
+                .then(|| entry.continuity.clone())
+                .flatten()
+        };
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+
+        let retire_error = bridge.retire_member(&record.agent_runtime_id).await.err();
+        let unregister_error = bridge
+            .unregister_session_runtime_state(&record.session_id)
+            .await
+            .err();
+        match (retire_error, unregister_error) {
+            (None, None) => Ok(()),
+            (retire_error, unregister_error) => Err(IdentityRuntimeError::Internal(format!(
+                "cleanup Broken lower-plane state for {identity}{}{}",
+                retire_error
+                    .map(|error| format!("; retire member: {error}"))
+                    .unwrap_or_default(),
+                unregister_error
+                    .map(|error| format!("; unregister session: {error}"))
+                    .unwrap_or_default()
+            ))),
+        }
+    }
+
+    async fn accept_bootstrap_spec_locked(
+        &self,
+        spec: DurableAgentSpec,
+        generation: u64,
+    ) -> Result<(), IdentityRuntimeError> {
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(&spec.identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(spec.identity.clone()))?;
+        entry.spec = spec;
+        entry.bootstrap_generation = generation;
+        Ok(())
+    }
+
+    /// Converge currently registered embodiments with a newly desired roster.
+    ///
+    /// Restore flows only walk the desired roster, so removal and replacement
+    /// must happen first. Each transition shares the same per-identity lock as
+    /// foreground materialization and lifecycle RPCs. Same-profile changes are
+    /// REQ-33 hot reloads: publish the new registry metadata while preserving
+    /// the exact live session and grant. Profile changes retire to Dormant
+    /// before the new spec is installed; the selected eager/background/lazy
+    /// policy then decides when to rebuild the physical member.
+    async fn reconcile_roster_members(
+        &self,
+        roster: &[DurableAgentSpec],
+        generation: u64,
+    ) -> Result<(), IdentityRuntimeError> {
+        self.reconcile_roster_members_after_lifecycle_lock(roster, generation, |_| {
+            std::future::ready(())
+        })
+        .await
+    }
+
+    /// Internal deterministic seam used by concurrency regressions. The hook
+    /// runs with each identity's lifecycle lock held and before the entry is
+    /// inspected or mutated.
+    async fn reconcile_roster_members_after_lifecycle_lock<H, F>(
+        &self,
+        roster: &[DurableAgentSpec],
+        generation: u64,
+        mut after_lifecycle_lock: H,
+    ) -> Result<(), IdentityRuntimeError>
+    where
+        H: FnMut(&AgentIdentity) -> F,
+        F: Future<Output = ()>,
+    {
+        Self::validate_roster_uniqueness(roster)?;
+        let desired = roster
+            .iter()
+            .map(|spec| (spec.identity.clone(), spec.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let registered = self.registered_identities().await;
+
+        for identity in registered
+            .iter()
+            .filter(|identity| !desired.contains_key(*identity))
+        {
+            let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            after_lifecycle_lock(identity).await;
+            self.cleanup_broken_lower_plane_locked(identity).await?;
+            self.release_broken_lease_locked(identity).await?;
+            let state = self
+                .entries
+                .read()
+                .await
+                .get(identity)
+                .map(|entry| entry.state);
+            let Some(state) = state else {
+                continue;
+            };
+            match state {
+                IdentityLifecycleState::Active => {
+                    self.retire_locked(identity).await?;
+                }
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Broken
+                | IdentityLifecycleState::Uninitialized => {
+                    let lease = self
+                        .entries
+                        .read()
+                        .await
+                        .get(identity)
+                        .and_then(|entry| entry.lease.as_ref())
+                        .map(|lease| LeaseGrant {
+                            identity: identity.clone(),
+                            fencing_token: lease.fencing_token,
+                            ttl: lease.ttl,
+                        });
+                    if let Some(lease) = lease {
+                        self.lease_provider
+                            .release_leases(std::slice::from_ref(&lease))
+                            .await
+                            .map_err(IdentityRuntimeError::Lease)?;
+                    }
+                }
+                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity: identity.clone(),
+                        state,
+                        operation: "reconcile_roster_remove",
+                    });
+                }
+            }
+            self.event_channels.write().await.remove(identity);
+            self.entries.write().await.remove(identity);
+        }
+
+        for (identity, desired_spec) in desired {
+            let lifecycle_lock = self.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            after_lifecycle_lock(&identity).await;
+            // Initial bootstrap reaches this loop before lazy/eager restore has
+            // registered the desired identities. Pending-release recovery only
+            // applies to an existing lifecycle entry.
+            if !self.entries.read().await.contains_key(&identity) {
+                continue;
+            }
+            let reconciling_broken_entry = {
+                let entries = self.entries.read().await;
+                entries
+                    .get(&identity)
+                    .is_some_and(|entry| entry.state == IdentityLifecycleState::Broken)
+            };
+            if reconciling_broken_entry {
+                self.cleanup_broken_lower_plane_locked(&identity).await?;
+            }
+            // This runs before the same-spec fast path. A failed retire may
+            // leave the desired metadata unchanged while the physical member
+            // is already gone and its exact provider grant is still held.
+            self.release_broken_lease_locked(&identity).await?;
+            let current = self
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .map(|entry| (entry.spec.clone(), entry.state));
+            let Some((current_spec, state)) = current else {
+                continue;
+            };
+            if current_spec == desired_spec {
+                self.accept_bootstrap_spec_locked(desired_spec, generation)
+                    .await?;
+                continue;
+            }
+            if matches!(
+                state,
+                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended
+            ) {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity,
+                    state,
+                    operation: "reconcile_roster_replace",
+                });
+            }
+            // REQ-33 and `compute_reconcile_actions` classify every
+            // same-profile change (addressability, labels, display name,
+            // context, and instructions) as a metadata hot reload. Retiring
+            // an Active member here needlessly rotates its exact grant and can
+            // collide with a still-draining session during eager restore.
+            if current_spec.profile == desired_spec.profile {
+                self.accept_bootstrap_spec_locked(desired_spec, generation)
+                    .await?;
+                continue;
+            }
+            match state {
+                IdentityLifecycleState::Active => {
+                    self.retire_locked(&identity).await?;
+                }
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Broken
+                | IdentityLifecycleState::Uninitialized => {}
+                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity,
+                        state,
+                        operation: "reconcile_roster_replace",
+                    });
+                }
+            }
+            self.accept_bootstrap_spec_locked(desired_spec, generation)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -2399,8 +4990,14 @@ impl IdentityRuntime {
         let entry = entries
             .get_mut(identity)
             .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        entry.state = IdentityLifecycleState::Broken;
         entry.lease = None;
         drop(entries);
+        self.mark_bootstrap_from_lifecycle(
+            identity,
+            IdentityLifecycleState::Broken,
+            Some("external lease authority was lost".to_string()),
+        );
         self.emit_event(
             identity,
             IdentityEvent::LeaseLost {
@@ -2468,6 +5065,327 @@ impl IdentityRuntime {
         }
     }
 
+    /// Transfer a provider-returned active grant into runtime ownership before
+    /// any fallible continuity or bridge projection. The provider call is the
+    /// authority commit: once it returns, retaining only the previous token is
+    /// unsafe because exact-token release would become a no-op.
+    async fn stage_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        expected_previous: Option<FencingToken>,
+        grant: &LeaseGrant,
+    ) -> Result<Option<ContinuityRecord>, IdentityRuntimeError> {
+        let staged = {
+            let mut entries = self.entries.write().await;
+            (|| {
+                if grant.identity != *identity {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "provider returned grant for {} while publishing active authority for {identity}",
+                        grant.identity
+                    )));
+                }
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                if entry.state != IdentityLifecycleState::Active {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity: identity.clone(),
+                        state: entry.state,
+                        operation: "stage_active_grant",
+                    });
+                }
+                let current = entry
+                    .lease
+                    .as_ref()
+                    .ok_or_else(|| IdentityRuntimeError::NoActiveLease(identity.clone()))?;
+                if let Some(expected) = expected_previous
+                    && current.fencing_token != expected
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "active lease for {identity} changed from fencing token {expected} to {} before renewed authority could be staged",
+                        current.fencing_token
+                    )));
+                }
+                if let Some(pending) = entry.pending_lease_release.as_ref() {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "active identity {identity} already has pending fencing token {} while staging {}",
+                        pending.fencing_token, grant.fencing_token
+                    )));
+                }
+
+                let continuity = entry.continuity.clone();
+                // Broken + pending is the fail-closed intermediate state.
+                // The lifecycle lock prevents another operation from
+                // observing it as a completed transition, while a dropped
+                // caller still leaves repair/shutdown an exact token.
+                entry.state = IdentityLifecycleState::Broken;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant.clone());
+                Ok(continuity)
+            })()
+        };
+
+        match staged {
+            Ok(continuity) => Ok(continuity),
+            Err(error) => {
+                if let Err(cleanup_error) = self
+                    .release_or_park_untracked_leases(std::slice::from_ref(grant))
+                    .await
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "{error}; exact grant cleanup failed: {cleanup_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn fail_staged_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        detail: String,
+    ) {
+        let retained_by_entry = {
+            let mut entries = self.entries.write().await;
+            entries.get_mut(identity).is_some_and(|entry| {
+                if entry
+                    .pending_lease_release
+                    .as_ref()
+                    .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.state = IdentityLifecycleState::Broken;
+                    entry.lease = None;
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if !retained_by_entry {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+        }
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Broken, Some(detail));
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Broken,
+            },
+        )
+        .await;
+    }
+
+    async fn suspend_bridge_continuity(
+        &self,
+        continuity: Option<&ContinuityRecord>,
+    ) -> Result<(), IdentityRuntimeError> {
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+        bridge
+            .suspend_session_runtime_state(&record.session_id)
+            .await
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "suspend bridge session runtime state before authority rotation: {error}"
+                ))
+            })
+    }
+
+    async fn resume_bridge_continuity(
+        &self,
+        identity: &AgentIdentity,
+        continuity: Option<&ContinuityRecord>,
+        grant: &LeaseGrant,
+    ) -> Result<(), IdentityRuntimeError> {
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+        bridge
+            .register_session_runtime_state(
+                &record.session_id,
+                identity,
+                record.generation,
+                record.checkpoint_version,
+                grant.fencing_token,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "resume bridge session runtime state after pre-commit renewal failure: {error}"
+                ))
+            })
+    }
+
+    async fn break_existing_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        detail: String,
+    ) {
+        let retained = {
+            let mut entries = self.entries.write().await;
+            entries.get_mut(identity).is_some_and(|entry| {
+                if entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.fencing_token == grant.fencing_token)
+                {
+                    entry.state = IdentityLifecycleState::Broken;
+                    entry.lease = None;
+                    entry.pending_lease_release = Some(grant.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if !retained {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+        }
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Broken, Some(detail));
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Broken,
+            },
+        )
+        .await;
+    }
+
+    async fn commit_staged_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        continuity: Option<ContinuityRecord>,
+    ) -> Result<(), IdentityRuntimeError> {
+        let committed = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry)
+                    if entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token) =>
+                {
+                    if let Some(record) = continuity {
+                        entry.checkpoint_version = record.checkpoint_version;
+                        entry.continuity = Some(record);
+                    }
+                    entry.pending_lease_release = None;
+                    entry.lease = Some(Self::lease_entry_from_grant(grant));
+                    entry.state = IdentityLifecycleState::Active;
+                    Ok(())
+                }
+                Some(entry) => Err(IdentityRuntimeError::Internal(format!(
+                    "staged fencing token {} for {identity} was replaced before commit (state {:?})",
+                    grant.fencing_token, entry.state
+                ))),
+                None => Err(IdentityRuntimeError::UnknownIdentity(identity.clone())),
+            }
+        };
+        if let Err(error) = committed {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn publish_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        expected_previous: Option<FencingToken>,
+        grant: &LeaseGrant,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let mut continuity = self
+            .stage_active_grant(identity, expected_previous, grant)
+            .await?;
+
+        // `ensure_active_lease` suspends before invoking the provider so no
+        // stale-token save can overlap the authority rotation. Keep this
+        // idempotent suspension here as a defensive boundary for callers that
+        // already hold a provider-returned active grant (restore compatibility).
+        if let Err(error) = self.suspend_bridge_continuity(continuity.as_ref()).await {
+            self.fail_staged_active_grant(identity, grant, error.to_string())
+                .await;
+            return Err(error);
+        }
+
+        if let Some(record) = continuity.as_mut() {
+            if let Err(error) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+            {
+                let runtime_error = IdentityRuntimeError::Store(error);
+                self.fail_staged_active_grant(
+                    identity,
+                    grant,
+                    format!("active grant continuity publication failed: {runtime_error}"),
+                )
+                .await;
+                return Err(runtime_error);
+            }
+            if let Some(bridge) = self.bridge.as_ref() {
+                match bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                {
+                    Ok(version) => {
+                        record.checkpoint_version = CheckpointVersion::new(
+                            record.checkpoint_version.get().max(version.get()),
+                        );
+                    }
+                    Err(error) => {
+                        let runtime_error = IdentityRuntimeError::Internal(format!(
+                            "bridge refresh session runtime state after active grant publication: {error}"
+                        ));
+                        let _ = self.suspend_bridge_continuity(Some(record)).await;
+                        self.fail_staged_active_grant(identity, grant, runtime_error.to_string())
+                            .await;
+                        return Err(runtime_error);
+                    }
+                }
+            }
+        }
+
+        let session_to_reference = continuity.as_ref().map(|record| record.session_id.clone());
+        if let Err(error) = self
+            .commit_staged_active_grant(identity, grant, continuity)
+            .await
+        {
+            if let (Some(bridge), Some(session_id)) =
+                (self.bridge.as_ref(), session_to_reference.as_ref())
+            {
+                let _ = bridge.suspend_session_runtime_state(session_id).await;
+            }
+            return Err(error);
+        }
+        self.lease_renewal_notify.notify_one();
+        self.emit_event(
+            identity,
+            IdentityEvent::LeaseUpdated {
+                identity: identity.clone(),
+                fencing_token: grant.fencing_token,
+            },
+        )
+        .await;
+        Ok(grant.fencing_token)
+    }
+
     async fn ensure_active_lease(
         &self,
         identity: &AgentIdentity,
@@ -2492,11 +5410,53 @@ impl IdentityRuntime {
             )
         };
 
-        let renewed = self
+        // Drain every already-admitted persistence mutation before asking the
+        // provider to rotate N to N+1. Once this returns, all session-store
+        // mutations fail closed until register_session_runtime_state publishes
+        // the exact replacement token.
+        if let Err(suspend_error) = self.suspend_bridge_continuity(continuity.as_ref()).await {
+            if let Err(resume_error) = self
+                .resume_bridge_continuity(identity, continuity.as_ref(), &grant)
+                .await
+            {
+                self.break_existing_active_grant(
+                    identity,
+                    &grant,
+                    format!("{suspend_error}; bridge rollback failed: {resume_error}"),
+                )
+                .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "{suspend_error}; bridge rollback failed: {resume_error}"
+                )));
+            }
+            return Err(suspend_error);
+        }
+
+        let renewed = match self
             .lease_provider
             .renew_leases(std::slice::from_ref(&grant))
             .await
-            .map_err(IdentityRuntimeError::Lease)?;
+        {
+            Ok(renewed) => renewed,
+            Err(error) => {
+                let runtime_error = IdentityRuntimeError::Lease(error);
+                if let Err(resume_error) = self
+                    .resume_bridge_continuity(identity, continuity.as_ref(), &grant)
+                    .await
+                {
+                    self.break_existing_active_grant(
+                        identity,
+                        &grant,
+                        format!("{runtime_error}; bridge rollback failed: {resume_error}"),
+                    )
+                    .await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "{runtime_error}; bridge rollback failed: {resume_error}"
+                    )));
+                }
+                return Err(runtime_error);
+            }
+        };
         let renewed_grant = match renewed.get(identity) {
             Some(super::types::LeaseRenewResult::Renewed(grant)) => grant.clone(),
             Some(super::types::LeaseRenewResult::Lost { .. }) | None => {
@@ -2505,53 +5465,8 @@ impl IdentityRuntime {
             }
         };
 
-        if let Some(record) = continuity.as_ref() {
-            self.continuity_store
-                .upsert_continuity_record(record, renewed_grant.fencing_token)
-                .await
-                .map_err(IdentityRuntimeError::Store)?;
-            if let Some(bridge) = self.bridge.as_ref() {
-                bridge
-                    .register_session_runtime_state(
-                        &record.session_id,
-                        identity,
-                        record.generation,
-                        record.checkpoint_version,
-                        renewed_grant.fencing_token,
-                    )
-                    .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge refresh session runtime state after lease renewal: {err}"
-                        ))
-                    })?;
-            }
-        }
-
-        let fencing_token = renewed_grant.fencing_token;
-        let mut entries = self.entries.write().await;
-        let entry = entries
-            .get_mut(identity)
-            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-        match entry.lease.as_ref() {
-            Some(current) if current.fencing_token == grant.fencing_token => {
-                entry.lease = Some(Self::lease_entry_from_grant(&renewed_grant));
-            }
-            Some(current) => return Ok(current.fencing_token),
-            None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
-        }
-        drop(entries);
-        self.lease_renewal_notify.notify_one();
-
-        self.emit_event(
-            identity,
-            IdentityEvent::LeaseUpdated {
-                identity: identity.clone(),
-                fencing_token,
-            },
-        )
-        .await;
-        Ok(fencing_token)
+        self.publish_active_grant(identity, Some(grant.fencing_token), &renewed_grant)
+            .await
     }
 
     async fn mark_lifecycle_in_progress(
@@ -2566,11 +5481,85 @@ impl IdentityRuntime {
         let snapshot = entry.clone();
         entry.state = state;
         entry.lease = None;
+        drop(entries);
+        self.mark_bootstrap_materialization_started(identity, None);
         Ok(snapshot)
     }
 
     async fn restore_entry(&self, identity: &AgentIdentity, entry: IdentityEntry) {
+        let state = entry.state;
         self.entries.write().await.insert(identity.clone(), entry);
+        self.mark_bootstrap_from_lifecycle(identity, state, None);
+    }
+
+    /// Fail closed after the lower member plane could not complete a compound
+    /// respawn. The exact alias has already been (or is being) retired, so an
+    /// Active projection would advertise a member that cannot receive work.
+    /// Broken + no lease makes the existing continuity repair loop the sole
+    /// authority that can restore it.
+    async fn mark_live_member_respawn_failure_broken(
+        &self,
+        identity: &AgentIdentity,
+        respawned_alias: &AgentRuntimeId,
+    ) -> Option<String> {
+        let grant = {
+            let mut entries = self.entries.write().await;
+            let Some(entry) = entries.get_mut(identity) else {
+                return Some(format!(
+                    "identity {identity} disappeared during respawn rollback"
+                ));
+            };
+            let current_alias = entry
+                .continuity
+                .as_ref()
+                .map(|record| &record.agent_runtime_id);
+            if current_alias != Some(respawned_alias) {
+                return Some(format!(
+                    "identity {identity} advanced from failed alias {respawned_alias}"
+                ));
+            }
+            entry.state = IdentityLifecycleState::Broken;
+            let grant = entry.lease.take().map(|lease| LeaseGrant {
+                identity: identity.clone(),
+                fencing_token: lease.fencing_token,
+                ttl: lease.ttl,
+            });
+            entry.pending_lease_release = grant.clone();
+            grant
+        };
+        self.mark_bootstrap_from_lifecycle(
+            identity,
+            IdentityLifecycleState::Broken,
+            Some(format!("live member respawn failed for {respawned_alias}")),
+        );
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Broken,
+            },
+        )
+        .await;
+        let grant = grant?;
+        match self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await
+        {
+            Ok(()) => {
+                let mut entries = self.entries.write().await;
+                if let Some(entry) = entries.get_mut(identity)
+                    && entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+                None
+            }
+            Err(error) => Some(error.to_string()),
+        }
     }
 
     async fn restore_entry_with_grant(
@@ -2610,79 +5599,128 @@ impl IdentityRuntime {
                 );
                 entry.state = IdentityLifecycleState::Broken;
             }
-            entry.lease = restore_live_lease.then(|| Self::lease_entry_from_grant(grant));
+        }
+        // Preserve ownership for an originally Active entry even if bridge
+        // repair marks it Broken; repair still needs the current fenced
+        // grant. Originally non-Active entries must not retain a lease that
+        // their restored local state does not expose.
+        let retain_grant = restore_live_lease;
+        entry.lease = retain_grant.then(|| Self::lease_entry_from_grant(grant));
+        if !retain_grant {
+            entry.pending_lease_release = Some(grant.clone());
+            match self
+                .lease_provider
+                .release_leases(std::slice::from_ref(grant))
+                .await
+            {
+                Ok(()) => entry.pending_lease_release = None,
+                Err(err) => {
+                    tracing::warn!(
+                        %identity,
+                        error = %err,
+                        "failed to release lifecycle rollback lease for non-active identity; exact grant parked for retry"
+                    );
+                    entry.state = IdentityLifecycleState::Broken;
+                }
+            }
         }
         self.restore_entry(identity, entry).await;
-        if restore_live_lease {
+        if retain_grant {
             self.lease_renewal_notify.notify_one();
         }
     }
 
-    pub(crate) async fn refresh_active_restore_grant(
+    /// Reuse an already-active embodiment during roster reconciliation.
+    ///
+    /// The lifecycle reservation held by the restore controller makes this
+    /// snapshot stable. Crucially, this path preserves the exact live lease
+    /// grant instead of reacquiring/rotating authority for a member that is
+    /// already running.
+    pub(crate) async fn reuse_active_restore_state(
         &self,
-        identity: &AgentIdentity,
-        grant: &LeaseGrant,
-    ) -> Result<(), IdentityRuntimeError> {
-        let record = {
-            let entries = self.entries.read().await;
-            let entry = entries
-                .get(identity)
-                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            if entry.state != IdentityLifecycleState::Active {
-                return Err(IdentityRuntimeError::InvalidState {
-                    identity: identity.clone(),
-                    state: entry.state,
-                    operation: "refresh_active_restore_grant",
-                });
-            }
-            entry.continuity.clone()
-        };
-
-        if let Some(record) = record.as_ref()
-            && let Err(err) = self
-                .continuity_store
-                .upsert_continuity_record(record, grant.fencing_token)
-                .await
-        {
-            let mut entries = self.entries.write().await;
-            if let Some(entry) = entries.get_mut(identity) {
-                entry.state = IdentityLifecycleState::Broken;
-                entry.lease = None;
-            }
-            drop(entries);
-            self.emit_event(
-                identity,
-                IdentityEvent::StateChanged {
-                    identity: identity.clone(),
-                    new_state: IdentityLifecycleState::Broken,
-                },
-            )
-            .await;
-            return Err(IdentityRuntimeError::Store(err));
-        }
+        spec: &DurableAgentSpec,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        // The restore controller still owns this identity's lifecycle guard,
+        // so validate time-sensitive external authority before snapshotting or
+        // mutating the local projection. Healthy grants return unchanged;
+        // due grants publish their exact renewal, and Lost authority marks the
+        // identity Broken instead of reporting a successful active reconcile.
+        self.ensure_active_lease(&spec.identity).await?;
 
         let mut entries = self.entries.write().await;
         let entry = entries
-            .get_mut(identity)
-            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            .get_mut(&spec.identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(spec.identity.clone()))?;
         if entry.state != IdentityLifecycleState::Active {
             return Err(IdentityRuntimeError::InvalidState {
-                identity: identity.clone(),
+                identity: spec.identity.clone(),
                 state: entry.state,
-                operation: "refresh_active_restore_grant",
+                operation: "reuse active restore state",
             });
         }
-        entry.lease = Some(Self::lease_entry_from_grant(grant));
-        drop(entries);
-        self.emit_event(
-            identity,
-            IdentityEvent::LeaseUpdated {
-                identity: identity.clone(),
-                fencing_token: grant.fencing_token,
-            },
-        )
-        .await;
-        Ok(())
+        if entry.lease.is_none() {
+            return Err(IdentityRuntimeError::NoActiveLease(spec.identity.clone()));
+        }
+        let record = entry.continuity.clone().ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "active identity {} has no continuity record",
+                spec.identity
+            ))
+        })?;
+        entry.spec = spec.clone();
+        Ok(record)
+    }
+
+    /// Publish a fail-closed local state and relinquish the fresh external
+    /// grant acquired for the failed lifecycle transaction.
+    ///
+    /// These ambiguous failure paths deliberately publish Broken with no local
+    /// lease. Keeping the matching provider grant alive would make that
+    /// projection a lie and could block another runtime from repairing the
+    /// identity until the provider TTL expires (forever for the bundled
+    /// single-process provider).
+    async fn restore_broken_entry_and_release_grant(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+    ) {
+        entry.state = IdentityLifecycleState::Broken;
+        entry.lease = None;
+        // Park the exact grant before the provider call. If release fails (or
+        // this future is abandoned after publication), reconcile/shutdown can
+        // retry the same fencing token instead of leaving an invisible owner.
+        entry.pending_lease_release = Some(grant.clone());
+        self.restore_entry(identity, entry).await;
+        match self
+            .lease_provider
+            .release_leases(std::slice::from_ref(grant))
+            .await
+        {
+            Ok(()) => {
+                let mut entries = self.entries.write().await;
+                if let Some(entry) = entries.get_mut(identity)
+                    && entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+            }
+            Err(err) => {
+                self.mark_bootstrap_from_lifecycle(
+                    identity,
+                    IdentityLifecycleState::Broken,
+                    Some(format!("pending lease release: {err}")),
+                );
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to release lease after lifecycle transaction became Broken; exact grant parked for retry"
+                );
+            }
+        }
     }
 
     async fn restore_broken_entry_with_fenced_store(
@@ -2705,7 +5743,51 @@ impl IdentityRuntime {
                 "failed to preserve fenced continuity record for broken identity"
             );
         }
-        self.restore_entry(identity, entry).await;
+        self.restore_broken_entry_and_release_grant(identity, entry, grant)
+            .await;
+    }
+
+    /// A failed reset rollback means the caller's pre-reset entry is no
+    /// longer authoritative. Re-resolve under the lifecycle transaction and
+    /// publish only the store's actual record; if the store itself cannot be
+    /// read, fail closed without continuity rather than claiming the old
+    /// generation still owns the durable row.
+    async fn restore_broken_entry_from_authoritative_continuity(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+    ) {
+        let authoritative = self
+            .continuity_store
+            .resolve_many(std::slice::from_ref(identity))
+            .await;
+        entry.continuity = match authoritative {
+            Ok(resolved) => match resolved.get(identity) {
+                Some(super::types::ContinuityResolveState::Ready { record }) => {
+                    Some(record.clone())
+                }
+                Some(super::types::ContinuityResolveState::Broken { failure }) => {
+                    failure.record.clone()
+                }
+                Some(super::types::ContinuityResolveState::Uninitialized) | None => None,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    %identity,
+                    error = %error,
+                    "failed to resolve authoritative continuity after reset rollback failure"
+                );
+                None
+            }
+        };
+        entry.checkpoint_version = entry
+            .continuity
+            .as_ref()
+            .map(|record| record.checkpoint_version)
+            .unwrap_or(CheckpointVersion::new(0));
+        self.restore_broken_entry_and_release_grant(identity, entry, grant)
+            .await;
     }
 
     async fn mark_rebind_failure_broken(
@@ -2731,31 +5813,37 @@ impl IdentityRuntime {
                 "failed to preserve rebound continuity after live respawn rebind failure"
             );
         }
-        self.restore_entry(identity, entry).await;
+        self.restore_broken_entry_and_release_grant(identity, entry, grant)
+            .await;
     }
 
     async fn restore_entry_after_reset_bridge_failure(
         &self,
         identity: &AgentIdentity,
+        expected_attempt: &ContinuityRecord,
         entry: IdentityEntry,
         grant: &LeaseGrant,
         force_broken: bool,
     ) -> Option<ContinuityStoreError> {
-        let delete_error = if entry.continuity.is_none() {
-            self.continuity_store
-                .delete_continuity_record(identity, grant.fencing_token)
-                .await
-                .err()
-        } else {
-            None
-        };
-        if force_broken || delete_error.is_some() {
-            self.restore_broken_entry_with_fenced_store(identity, entry, grant)
+        let rollback_error = self
+            .continuity_store
+            .rollback_continuity_record(
+                expected_attempt,
+                entry.continuity.as_ref(),
+                grant.fencing_token,
+            )
+            .await
+            .err();
+        if rollback_error.is_some() {
+            self.restore_broken_entry_from_authoritative_continuity(identity, entry, grant)
+                .await;
+        } else if force_broken {
+            self.restore_broken_entry_and_release_grant(identity, entry, grant)
                 .await;
         } else {
             self.restore_entry_with_grant(identity, entry, grant).await;
         }
-        delete_error
+        rollback_error
     }
 
     async fn restore_continuity_after_materialize_failure(
@@ -2858,6 +5946,16 @@ impl IdentityRuntime {
             .await
     }
 
+    /// Cancellation-safe queue send for RPC/host request boundaries.
+    pub async fn send_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_with_mode_tracked(identity, content, HandlingMode::Queue)
+            .await
+    }
+
     /// Send conversational content using an explicit turn handling mode.
     ///
     /// This is the identity-first counterpart to the mob member send path used
@@ -2873,6 +5971,73 @@ impl IdentityRuntime {
             .await
     }
 
+    /// Cancellation-safe explicit-mode send for RPC/host request boundaries.
+    pub async fn send_with_mode_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_with_mode_and_interaction_tracked(identity, content, handling_mode, None)
+            .await
+    }
+
+    /// Cancellation-safe interaction send for RPC/host request boundaries.
+    pub async fn send_with_mode_and_interaction_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let content = content.clone();
+        let interaction_id = interaction_id.map(ToString::to_string);
+        self.run_tracked_foreground(async move {
+            runtime
+                .send_with_mode_and_interaction(
+                    &identity,
+                    &content,
+                    handling_mode,
+                    interaction_id.as_deref(),
+                )
+                .await
+        })
+        .await
+    }
+
+    /// Cancellation-safe interaction send pinned to the generated runtime
+    /// alias that the caller resolved. Validation and delivery share the
+    /// identity lifecycle lock, so a concurrent reset cannot retarget the
+    /// request onto the replacement generation.
+    pub async fn send_with_mode_and_interaction_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        let content = content.clone();
+        let interaction_id = interaction_id.map(ToString::to_string);
+        self.run_tracked_foreground(async move {
+            runtime
+                .send_with_mode_and_interaction_with_expected_member_alias(
+                    &identity,
+                    Some(&expected_alias),
+                    &content,
+                    handling_mode,
+                    interaction_id.as_deref(),
+                )
+                .await
+        })
+        .await
+    }
+
     /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
     /// 0.7.25 ask 15 addendum). The id rides `WorkSpec` into runtime
     /// admission, so the turn's live events and its committed transcript
@@ -2882,6 +6047,24 @@ impl IdentityRuntime {
     pub async fn send_with_mode_and_interaction(
         &self,
         identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_with_mode_and_interaction_with_expected_member_alias(
+            identity,
+            None,
+            content,
+            handling_mode,
+            interaction_id,
+        )
+        .await
+    }
+
+    async fn send_with_mode_and_interaction_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
@@ -2903,18 +6086,29 @@ impl IdentityRuntime {
                 || entry.state == IdentityLifecycleState::Uninitialized
         };
         if should_materialize {
-            self.materialize(identity).await?;
+            self.materialize_with_expected_member_alias(identity, expected_alias)
+                .await?;
         }
         // Live steers are latency-sensitive operator input for an already
         // active turn. Ordinary sends may hydrate the reachable topology first,
         // but a steer must reach the current session boundary before the tool
         // turn resumes; background/full-fleet materialization owns the peers.
         if handling_mode != HandlingMode::Steer {
+            if let Some(expected_alias) = expected_alias {
+                let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+                let _lifecycle_guard = lifecycle_lock.lock().await;
+                self.ensure_expected_member_alias_current(identity, expected_alias)
+                    .await?;
+            }
             self.materialize_reachable_peers(identity).await?;
         }
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
         {
             let entries = self.entries.read().await;
             let entry = entries
@@ -3023,6 +6217,17 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         input: &DispatchInput,
     ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
+        self.dispatch_with_expected_member_alias(identity, None, input)
+            .await
+            .map(|(token, durable, _)| (token, durable))
+    }
+
+    async fn dispatch_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        input: &DispatchInput,
+    ) -> Result<(FencingToken, bool, Option<SessionId>), IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -3032,12 +6237,23 @@ impl IdentityRuntime {
                 || entry.state == IdentityLifecycleState::Uninitialized
         };
         if should_materialize {
-            self.materialize(identity).await?;
+            self.materialize_with_expected_member_alias(identity, expected_alias)
+                .await?;
+        }
+        if let Some(expected_alias) = expected_alias {
+            let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
         }
         self.materialize_reachable_peers(identity).await?;
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
         {
             let entries = self.entries.read().await;
             let entry = entries
@@ -3070,11 +6286,13 @@ impl IdentityRuntime {
         };
 
         // Deliver through the session bridge when available.
+        let mut dispatched_session_id = None;
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
             let delivered_session_id = bridge
                 .deliver(rid, &input.content)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge dispatch: {e}")))?;
+            dispatched_session_id = Some(delivered_session_id.clone());
             if let Some(rebound_token) = self
                 .reconcile_delivered_session_locked(identity, delivered_session_id)
                 .await?
@@ -3083,7 +6301,62 @@ impl IdentityRuntime {
             }
         }
 
-        Ok((token, is_durable))
+        Ok((token, is_durable, dispatched_session_id))
+    }
+
+    /// Cancellation-safe dispatch for RPC/host request boundaries.
+    pub async fn dispatch_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        input: &DispatchInput,
+    ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let input = input.clone();
+        self.run_tracked_foreground(async move { runtime.dispatch(&identity, &input).await })
+            .await
+    }
+
+    /// Cancellation-safe dispatch pinned to the generated runtime alias that
+    /// the caller resolved.
+    pub async fn dispatch_member_alias_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+        input: &DispatchInput,
+    ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        let input = input.clone();
+        self.run_tracked_foreground(async move {
+            runtime
+                .dispatch_with_expected_member_alias(&identity, Some(&expected_alias), &input)
+                .await
+                .map(|(token, durable, _)| (token, durable))
+        })
+        .await
+    }
+
+    /// Scheduler delivery pinned to a generated alias, returning the exact
+    /// bridge session that accepted the work while the lifecycle lock held.
+    pub(crate) async fn dispatch_member_alias_with_session_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+        input: &DispatchInput,
+    ) -> Result<Option<SessionId>, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.to_string();
+        let input = input.clone();
+        self.run_tracked_foreground(async move {
+            runtime
+                .dispatch_with_expected_member_alias(&identity, Some(&expected_alias), &input)
+                .await
+                .map(|(_, _, session_id)| session_id)
+        })
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -3168,8 +6441,27 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.retire_with_expected_member_alias(identity, None).await
+    }
+
+    async fn retire_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
+        self.retire_locked(identity).await
+    }
+
+    async fn retire_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
         self.ensure_active_lease(identity).await?;
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
@@ -3213,10 +6505,8 @@ impl IdentityRuntime {
             .advance_existing_continuity_fence(identity, &registered_entry, &grant)
             .await
         {
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(err);
         }
 
@@ -3260,15 +6550,35 @@ impl IdentityRuntime {
         if let (Some(bridge), Some(session_id)) = (&self.bridge, &session_id)
             && let Err(err) = bridge.unregister_session_runtime_state(session_id).await
         {
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(IdentityRuntimeError::Internal(format!(
                 "bridge unregister retired session: {err}"
             )));
         }
 
+        let release_result = self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await;
+        let (state, bootstrap_error) = match &release_result {
+            Ok(()) => (IdentityLifecycleState::Retiring, None),
+            Err(error) => (
+                IdentityLifecycleState::Broken,
+                Some(format!("lease release after retire: {error}")),
+            ),
+        };
+        {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry.state = state;
+            entry.lease = None;
+            entry.pending_lease_release = release_result.as_ref().err().map(|_| grant.clone());
+        }
+        self.mark_bootstrap_from_lifecycle(identity, state, bootstrap_error);
+        release_result.map_err(IdentityRuntimeError::Lease)?;
         Ok(grant.fencing_token)
     }
 
@@ -3286,8 +6596,30 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        self.respawn_with_expected_member_alias(identity, None)
+            .await
+    }
+
+    async fn respawn_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
+        self.respawn_locked(identity).await
+    }
+
+    /// Perform the identity-side half of respawn while the caller holds the
+    /// per-identity lifecycle lock.
+    async fn respawn_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
             .await?;
@@ -3317,10 +6649,8 @@ impl IdentityRuntime {
             .advance_existing_continuity_fence(identity, &registered_entry, &grant)
             .await
         {
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(err);
         }
 
@@ -3398,16 +6728,30 @@ impl IdentityRuntime {
 
         // Update runtime state: same record, new lease, back to Active
         let mut entries = self.entries.write().await;
-        if let Some(entry) = entries.get_mut(identity) {
-            entry.continuity = Some(record.clone());
-            entry.lease = Some(LeaseEntry {
-                fencing_token: grant.fencing_token,
-                ttl: grant.ttl,
-                acquired_at: Instant::now(),
-            });
-            entry.state = IdentityLifecycleState::Active;
-            entry.checkpoint_version = record.checkpoint_version;
-        }
+        let Some(entry) = entries.get_mut(identity) else {
+            drop(entries);
+            if let Err(err) = self
+                .release_or_park_untracked_leases(std::slice::from_ref(&grant))
+                .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to release lease after respawn entry disappeared; exact grant parked for retry"
+                );
+            }
+            return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
+        };
+        entry.continuity = Some(record.clone());
+        entry.lease = Some(LeaseEntry {
+            fencing_token: grant.fencing_token,
+            ttl: grant.ttl,
+            acquired_at: Instant::now(),
+        });
+        entry.state = IdentityLifecycleState::Active;
+        entry.checkpoint_version = record.checkpoint_version;
+        drop(entries);
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
 
         Ok(record)
     }
@@ -3420,8 +6764,24 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         session_id: SessionId,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        self.rebind_session_after_live_respawn_with_expected_member_alias(
+            identity, None, session_id,
+        )
+        .await
+    }
+
+    async fn rebind_session_after_live_respawn_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        session_id: SessionId,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
         self.rebind_session_after_live_respawn_locked(identity, session_id)
             .await
     }
@@ -3517,10 +6877,8 @@ impl IdentityRuntime {
                     "failed to unregister rebound session after continuity fence failure"
                 );
             }
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(err);
         }
         let previous_session_id = record.session_id.clone();
@@ -3548,6 +6906,41 @@ impl IdentityRuntime {
             return Err(IdentityRuntimeError::Store(err));
         }
 
+        // A lower session-store save can advance the durable checkpoint head
+        // while a respawn is rebinding to a different session id. The local
+        // store preserves that same-generation maximum; read the effective
+        // row back before seeding bridge runtime state so neither the in-memory
+        // entry nor the new session counter rewinds to the stale captured
+        // version.
+        let effective = match self
+            .continuity_store
+            .resolve_many(std::slice::from_ref(identity))
+            .await
+        {
+            Ok(effective) => effective,
+            Err(error) => {
+                self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                    .await;
+                return Err(IdentityRuntimeError::Store(error));
+            }
+        };
+        match effective.get(identity) {
+            Some(super::types::ContinuityResolveState::Ready {
+                record: effective_record,
+            }) if effective_record.session_id == record.session_id
+                && effective_record.generation == record.generation =>
+            {
+                record = effective_record.clone();
+            }
+            other => {
+                self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                    .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "rebind continuity read-back did not return the committed session/generation: {other:?}"
+                )));
+            }
+        }
+
         if let Some(bridge) = self.bridge.as_ref() {
             match bridge
                 .register_session_runtime_state(
@@ -3559,7 +6952,10 @@ impl IdentityRuntime {
                 )
                 .await
             {
-                Ok(version) => record.checkpoint_version = version,
+                Ok(version) => {
+                    record.checkpoint_version =
+                        CheckpointVersion::new(record.checkpoint_version.get().max(version.get()));
+                }
                 Err(err) => {
                     if let Err(unregister_err) = bridge
                         .unregister_session_runtime_state(&record.session_id)
@@ -3639,8 +7035,21 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        self.reset_with_expected_member_alias(identity, None).await
+    }
+
+    async fn reset_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let mut foreground_shutdown = self.foreground_cancel.subscribe();
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
         // Re-profile before snapshotting the lifecycle entry so the rebuilt
         // session uses the current roster spec, not the old checkpoint spec.
         self.adopt_current_roster_spec_for_reset(identity).await;
@@ -3672,10 +7081,8 @@ impl IdentityRuntime {
             .advance_existing_continuity_fence(identity, &registered_entry, &grant)
             .await
         {
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(err);
         }
 
@@ -3735,16 +7142,38 @@ impl IdentityRuntime {
                 managed_edges,
                 runtime_services: self.runtime_services(),
             };
-            if let Some(customizer) = self.customizer.read().await.clone()
-                && let Err(err) = customizer
-                    .customize_build(&build_context, &spec, &mut draft)
-                    .await
-            {
-                self.restore_entry_with_grant(identity, registered_entry, &grant)
-                    .await;
-                return Err(IdentityRuntimeError::Internal(format!(
-                    "customizer after reset: {err}"
-                )));
+            if let Some(customizer) = self.customizer.read().await.clone() {
+                let customize = customizer.customize_build(&build_context, &spec, &mut draft);
+                tokio::pin!(customize);
+                let customize_result = if *foreground_shutdown.borrow() {
+                    None
+                } else {
+                    tokio::select! {
+                        result = &mut customize => Some(result),
+                        changed = foreground_shutdown.changed() => {
+                            if changed.is_ok() && *foreground_shutdown.borrow() {
+                                None
+                            } else {
+                                Some(customize.await)
+                            }
+                        }
+                    }
+                };
+                let Some(customize_result) = customize_result else {
+                    self.restore_entry_with_grant(identity, registered_entry, &grant)
+                        .await;
+                    return Err(IdentityRuntimeError::Internal(
+                        "identity reset cancelled during shutdown before session installation"
+                            .to_string(),
+                    ));
+                };
+                if let Err(err) = customize_result {
+                    self.restore_entry_with_grant(identity, registered_entry, &grant)
+                        .await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "customizer after reset: {err}"
+                    )));
+                }
             }
         }
 
@@ -3759,6 +7188,7 @@ impl IdentityRuntime {
                     .await;
                 return Err(IdentityRuntimeError::Store(err));
             }
+            let provisional_record = new_record.clone();
 
             let old_runtime_id = registered_entry
                 .continuity
@@ -3793,6 +7223,7 @@ impl IdentityRuntime {
                     let delete_error = self
                         .restore_entry_after_reset_bridge_failure(
                             identity,
+                            &provisional_record,
                             registered_entry.clone(),
                             &grant,
                             cleanup_error.is_some(),
@@ -3841,6 +7272,7 @@ impl IdentityRuntime {
                 let delete_error = self
                     .restore_entry_after_reset_bridge_failure(
                         identity,
+                        &provisional_record,
                         registered_entry.clone(),
                         &grant,
                         unregister_error.is_some() || cleanup_error.is_some(),
@@ -3899,6 +7331,7 @@ impl IdentityRuntime {
                     let delete_error = self
                         .restore_entry_after_reset_bridge_failure(
                             identity,
+                            &new_record,
                             registered_entry.clone(),
                             &grant,
                             unregister_error.is_some() || cleanup_error.is_some(),
@@ -3919,26 +7352,6 @@ impl IdentityRuntime {
                 session_id = %new_record.session_id,
                 checkpoint_version = new_record.checkpoint_version.get(),
                 "reset bridge session runtime state registered",
-            );
-
-            let cleanup_old_runtime_id = old_runtime_id
-                .as_ref()
-                .filter(|old_id| *old_id != &new_record.agent_runtime_id)
-                .cloned();
-            let cleanup_old_session_id = old_session_id
-                .as_ref()
-                .filter(|old_session_id| *old_session_id != &new_record.session_id)
-                .cloned();
-            self.spawn_old_bridge_cleanup_after_reset(
-                bridge.clone(),
-                cleanup_old_runtime_id,
-                cleanup_old_session_id,
-            );
-            tracing::debug!(
-                identity = %identity,
-                runtime_id = %new_record.agent_runtime_id,
-                session_id = %new_record.session_id,
-                "reset old bridge cleanup scheduled",
             );
 
             if let Err(err) = self
@@ -3962,15 +7375,24 @@ impl IdentityRuntime {
                     .await
                     .err();
                 let rollback_error = self
-                    .restore_continuity_after_materialize_failure(
-                        identity,
+                    .continuity_store
+                    .rollback_continuity_record(
+                        &new_record,
                         registered_entry.continuity.as_ref(),
+                        grant.fencing_token,
+                    )
+                    .await
+                    .err();
+                if rollback_error.is_some() {
+                    self.restore_broken_entry_from_authoritative_continuity(
+                        identity,
+                        registered_entry,
                         &grant,
                     )
                     .await;
-                let mut entries = self.entries.write().await;
-                if let Some(entry) = entries.get_mut(identity) {
-                    entry.state = IdentityLifecycleState::Broken;
+                } else {
+                    self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                        .await;
                 }
                 if unregister_error.is_some() || cleanup_error.is_some() || rollback_error.is_some()
                 {
@@ -3996,6 +7418,7 @@ impl IdentityRuntime {
             // Update runtime state
             let mut entries = self.entries.write().await;
             let Some(entry) = entries.get_mut(identity) else {
+                drop(entries);
                 tracing::warn!(
                     identity = %identity,
                     runtime_id = %new_record.agent_runtime_id,
@@ -4006,11 +7429,30 @@ impl IdentityRuntime {
                     .unregister_session_runtime_state(&new_record.session_id)
                     .await;
                 let _ = bridge.retire_member(&new_record.agent_runtime_id).await;
-                if registered_entry.continuity.is_none() {
-                    let _ = self
-                        .continuity_store
-                        .delete_continuity_record(identity, grant.fencing_token)
-                        .await;
+                if let Err(err) = self
+                    .continuity_store
+                    .rollback_continuity_record(
+                        &new_record,
+                        registered_entry.continuity.as_ref(),
+                        grant.fencing_token,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %identity,
+                        error = %err,
+                        "failed to roll back continuity after reset entry disappeared"
+                    );
+                }
+                if let Err(err) = self
+                    .release_or_park_untracked_leases(std::slice::from_ref(&grant))
+                    .await
+                {
+                    tracing::warn!(
+                        %identity,
+                        error = %err,
+                        "failed to release lease after reset entry disappeared; exact grant parked for retry"
+                    );
                 }
                 return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
             };
@@ -4025,14 +7467,51 @@ impl IdentityRuntime {
                 "reset completed",
             );
             drop(entries);
+
+            // The prior bridge projection remains rollback authority until
+            // the final continuity row and in-memory entry both commit. In
+            // particular, blocking continuity stores introduce scheduler
+            // yield points here, so scheduling cleanup before the final
+            // upsert can unregister the old session while rollback is still
+            // possible.
+            let cleanup_old_runtime_id = old_runtime_id
+                .as_ref()
+                .filter(|old_id| *old_id != &new_record.agent_runtime_id)
+                .cloned();
+            let cleanup_old_session_id = old_session_id
+                .as_ref()
+                .filter(|old_session_id| *old_session_id != &new_record.session_id)
+                .cloned();
+            let reset_memory_injector = self.agent_memory.read().await.clone();
+            let reset_memory_capture = reset_memory_injector.as_ref().and_then(|injector| {
+                registered_entry.continuity.as_ref().map(|old_continuity| {
+                    PendingResetMemoryCapture {
+                        injector: injector.clone(),
+                        identity: identity.clone(),
+                        session_key: old_continuity.session_id.to_string(),
+                        generation: old_continuity.generation.get(),
+                    }
+                })
+            });
+            // Record exact cleanup debt immediately after the durable and
+            // in-memory replacement commit. The owned debt carries its memory
+            // capture prerequisite, so reset remains latency-neutral while
+            // graceful shutdown still joins/retries the complete sequence.
+            let reset_bridge_cleanup = self
+                .record_old_bridge_cleanup_after_reset(
+                    cleanup_old_runtime_id,
+                    cleanup_old_session_id,
+                    reset_memory_capture.clone(),
+                )
+                .await;
             // §10.1: reset is the deliberate clean-slate boundary — clear
             // session taint explicitly (rotation clears implicitly; this
-            // also drops pending pre-attribution taint). §8.4: distill the
-            // outgoing session DETACHED (never on the reset critical path;
-            // the session store outlives the member, so the read stays
-            // valid after teardown) with the reset boundary marked first so
-            // every distillate lands Quarantined pending steward review.
-            if let Some(injector) = self.agent_memory.read().await.as_ref() {
+            // also drops pending pre-attribution taint). Mark the outgoing
+            // boundary synchronously; the runtime-owned cleanup task performs
+            // bounded distillation before it may CAS-delete the superseded
+            // session projection. This preserves detached reset latency
+            // without racing the evidence source.
+            if let Some(injector) = reset_memory_injector.as_ref() {
                 injector.clear_taint_for_identity(identity);
                 injector.note_session_generation(
                     identity,
@@ -4047,13 +7526,20 @@ impl IdentityRuntime {
                         &old_session_key,
                         old_continuity.generation.get(),
                     );
-                    injector.spawn_rotation_distillation(
-                        identity,
-                        &old_session_key,
-                        crate::memory::distiller::DistillCause::Reset,
-                    );
                 }
             }
+
+            if let Some(cleanup) = reset_bridge_cleanup {
+                self.spawn_old_bridge_cleanup_after_reset(bridge.clone(), cleanup)
+                    .await;
+            }
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                "reset old bridge cleanup debt recorded after continuity commit",
+            );
+            self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
             return Ok(new_record);
         }
 
@@ -4070,9 +7556,35 @@ impl IdentityRuntime {
 
         // No bridge — update runtime state only (validation mode)
         let mut entries = self.entries.write().await;
-        let entry = entries
-            .get_mut(identity)
-            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        let Some(entry) = entries.get_mut(identity) else {
+            drop(entries);
+            if let Err(err) = self
+                .continuity_store
+                .rollback_continuity_record(
+                    &new_record,
+                    registered_entry.continuity.as_ref(),
+                    grant.fencing_token,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to roll back continuity after reset validation entry disappeared"
+                );
+            }
+            if let Err(err) = self
+                .release_or_park_untracked_leases(std::slice::from_ref(&grant))
+                .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to release lease after reset validation entry disappeared; exact grant parked for retry"
+                );
+            }
+            return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
+        };
         entry.continuity = Some(new_record.clone());
         entry.lease = Some(Self::lease_entry_from_grant(&grant));
         entry.state = IdentityLifecycleState::Active;
@@ -4092,6 +7604,7 @@ impl IdentityRuntime {
             }
         }
 
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
         Ok(new_record)
     }
 
@@ -4108,8 +7621,28 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<(), IdentityRuntimeError> {
+        self.delete_identity_with_expected_member_alias(identity, None)
+            .await
+    }
+
+    async fn delete_identity_with_expected_member_alias(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+    ) -> Result<(), IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        if let Some(expected_alias) = expected_alias {
+            self.ensure_expected_member_alias_current(identity, expected_alias)
+                .await?;
+        }
+        self.delete_identity_locked(identity).await
+    }
+
+    async fn delete_identity_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
             .await?;
@@ -4146,11 +7679,25 @@ impl IdentityRuntime {
             .advance_existing_continuity_fence(identity, &registered_entry, &grant)
             .await
         {
-            let mut broken_entry = registered_entry;
-            broken_entry.state = IdentityLifecycleState::Broken;
-            broken_entry.lease = None;
-            self.restore_entry(identity, broken_entry).await;
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(err);
+        }
+        // The durable fence now belongs to the delete transaction. Refresh
+        // the bridge adapter before retirement so Meerkat's terminal archive
+        // projection carries that same token. Leaving the live session on the
+        // prior token makes ArchiveSession fail closed, retains a Retiring Mob
+        // anchor, and later prevents strict shutdown attestation.
+        if let Some(record) = registered_entry.continuity.as_ref()
+            && let Err(error) = self
+                .refresh_existing_session_runtime_state(identity, record, &grant)
+                .await
+        {
+            self.restore_broken_entry_with_fenced_store(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge refresh session authority before delete: {error}"
+            )));
         }
 
         // §8.4 trigger (b): delete is the identity's LAST boundary — harvest
@@ -4225,18 +7772,53 @@ impl IdentityRuntime {
             .delete_continuity_record(identity, grant.fencing_token)
             .await
         {
-            let mut entries = self.entries.write().await;
-            if let Some(entry) = entries.get_mut(identity) {
-                entry.state = IdentityLifecycleState::Broken;
-            }
+            self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                .await;
             return Err(IdentityRuntimeError::Store(err));
         }
 
-        // Remove from runtime tracking
-        self.event_channels.write().await.remove(identity);
-        self.entries.write().await.remove(identity);
+        // Authoritative deletion is committed before ownership is released,
+        // so another holder can never race the continuity delete. Surface a
+        // provider release failure explicitly; the still-held external grant
+        // then remains the fail-closed ownership fence.
+        let release_result = self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await;
 
-        Ok(())
+        match release_result {
+            Ok(()) => {
+                self.event_channels.write().await.remove(identity);
+                self.entries.write().await.remove(identity);
+                // The identity remains part of the desired bootstrap roster
+                // until a roster reconcile removes it. Successful deletion
+                // therefore makes readiness Dormant.
+                self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
+                Ok(())
+            }
+            Err(error) => {
+                // The physical member and continuity row are already gone,
+                // but the provider still owns this exact fencing grant. Keep
+                // an explicit Broken tombstone so reconcile and shutdown can
+                // retry it; removing the entry here would make non-expiring
+                // provider authority permanently unreachable.
+                let mut entries = self.entries.write().await;
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                entry.state = IdentityLifecycleState::Broken;
+                entry.continuity = None;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant);
+                drop(entries);
+                self.mark_bootstrap_from_lifecycle(
+                    identity,
+                    IdentityLifecycleState::Broken,
+                    Some(format!("lease release after delete: {error}")),
+                );
+                Err(IdentityRuntimeError::Lease(error))
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -4410,6 +7992,81 @@ impl IdentityRuntime {
             .is_some_and(|e| e.state == IdentityLifecycleState::Active)
     }
 
+    fn identity_from_member_alias(alias: &str) -> Option<(AgentIdentity, bool)> {
+        let alias = crate::member_comms_id::runtime_alias_str(alias);
+        let alias = alias.as_ref();
+        alias
+            .strip_prefix("rt:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .filter(|(identity, generation)| {
+                !identity.is_empty()
+                    && !generation.is_empty()
+                    && generation.chars().all(|ch| ch.is_ascii_digit())
+            })
+            .and_then(|(identity, _)| AgentIdentity::parse(identity).ok())
+            .map(|identity| (identity, true))
+            .or_else(|| {
+                AgentIdentity::parse(alias)
+                    .ok()
+                    .map(|identity| (identity, false))
+            })
+    }
+
+    /// Parse the durable owner encoded in the reserved generated-alias
+    /// namespace, whether or not that identity is still registered. Mutating
+    /// member surfaces use this to fail closed after a concurrent delete
+    /// instead of treating an orphaned `rt:*` alias as an ordinary mob member.
+    pub(crate) fn identity_for_generated_member_alias(alias: &str) -> Option<AgentIdentity> {
+        Self::identity_from_member_alias(alias).and_then(|(identity, generated)| {
+            if generated { Some(identity) } else { None }
+        })
+    }
+
+    /// Resolve a mutating member request without allowing a generated alias
+    /// to fall back to the raw mob plane after concurrent deletion. Plain
+    /// durable identities retain their historical registered-only behavior.
+    pub(crate) async fn identity_for_member_mutation(&self, alias: &str) -> Option<AgentIdentity> {
+        match Self::identity_from_member_alias(alias) {
+            Some((identity, true)) => Some(identity),
+            Some((identity, false)) => self.contains(&identity).await.then_some(identity),
+            None => None,
+        }
+    }
+
+    async fn ensure_expected_member_alias_current(
+        &self,
+        identity: &AgentIdentity,
+        expected_alias: &str,
+    ) -> Result<(), IdentityRuntimeError> {
+        let canonical_alias = crate::member_comms_id::runtime_alias_str(expected_alias);
+        let Some((alias_identity, generated_runtime_alias)) =
+            Self::identity_from_member_alias(canonical_alias.as_ref())
+        else {
+            return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
+        };
+        if alias_identity != *identity {
+            return Err(IdentityRuntimeError::UnknownIdentity(alias_identity));
+        }
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        if generated_runtime_alias {
+            let current = entry
+                .continuity
+                .as_ref()
+                .map(|record| record.agent_runtime_id.clone());
+            if current.as_ref().map(AgentRuntimeId::as_str) != Some(canonical_alias.as_ref()) {
+                return Err(IdentityRuntimeError::StaleRuntimeAlias {
+                    identity: identity.clone(),
+                    requested: canonical_alias.into_owned(),
+                    current,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve a member alias to the durable identity that OWNS it, if any.
     ///
     /// Accepts both a generated runtime alias (`rt:<identity>:<generation>`)
@@ -4421,16 +8078,7 @@ impl IdentityRuntime {
     /// continuity binding, generation drift), which is the doctrine's
     /// "mob plane must not mangle durables" rule.
     pub async fn owned_identity_for_member_alias(&self, alias: &str) -> Option<AgentIdentity> {
-        let identity = alias
-            .strip_prefix("rt:")
-            .and_then(|rest| rest.rsplit_once(':'))
-            .filter(|(identity, generation)| {
-                !identity.is_empty()
-                    && !generation.is_empty()
-                    && generation.chars().all(|ch| ch.is_ascii_digit())
-            })
-            .and_then(|(identity, _)| AgentIdentity::parse(identity).ok())
-            .or_else(|| AgentIdentity::parse(alias).ok())?;
+        let (identity, _) = Self::identity_from_member_alias(alias)?;
         self.contains(&identity).await.then_some(identity)
     }
 
@@ -4547,53 +8195,173 @@ impl IdentityRuntime {
         self.default_timeout
     }
 
-    fn spawn_old_bridge_cleanup_after_reset(
+    async fn execute_reset_bridge_cleanup(
+        bridge: &Arc<dyn SessionBridge>,
+        cleanup: &PendingResetBridgeCleanup,
+    ) -> Result<(), BridgeError> {
+        match (&cleanup.runtime_id, &cleanup.session_id) {
+            (Some(runtime_id), Some(session_id)) => {
+                bridge
+                    .retire_reset_superseded_member(runtime_id, session_id)
+                    .await
+            }
+            (Some(runtime_id), None) => bridge.retire_member(runtime_id).await,
+            (None, Some(session_id)) => bridge.unregister_session_runtime_state(session_id).await,
+            (None, None) => Ok(()),
+        }
+    }
+
+    async fn clear_reset_bridge_cleanup_if_current(
+        pending: &RwLock<BTreeMap<String, PendingResetBridgeCleanup>>,
+        key: &str,
+        cleanup: &PendingResetBridgeCleanup,
+    ) {
+        let mut pending = pending.write().await;
+        if pending.get(key) == Some(cleanup) {
+            pending.remove(key);
+        }
+    }
+
+    async fn run_reset_memory_capture_if_pending(
+        pending: &RwLock<BTreeMap<String, PendingResetBridgeCleanup>>,
+        key: &str,
+        cleanup: &mut PendingResetBridgeCleanup,
+    ) {
+        let Some(capture) = cleanup.memory_capture.take() else {
+            return;
+        };
+        capture.run().await;
+
+        // Publish the state-machine advance only after the bounded capture
+        // returns. Cancellation before this write leaves the capture on the
+        // authoritative debt and a shutdown retry runs it again.
+        let mut pending = pending.write().await;
+        if let Some(current) = pending.get_mut(key)
+            && current == cleanup
+        {
+            current.memory_capture = None;
+        }
+    }
+
+    async fn record_old_bridge_cleanup_after_reset(
         &self,
-        bridge: Arc<dyn SessionBridge>,
         old_runtime_id: Option<AgentRuntimeId>,
         old_session_id: Option<SessionId>,
-    ) {
+        memory_capture: Option<PendingResetMemoryCapture>,
+    ) -> Option<PendingResetBridgeCleanup> {
         if old_runtime_id.is_none() && old_session_id.is_none() {
-            return;
+            return None;
         }
+        let cleanup = PendingResetBridgeCleanup {
+            runtime_id: old_runtime_id,
+            session_id: old_session_id,
+            memory_capture,
+        };
+        let key = cleanup.key();
+        self.pending_reset_bridge_cleanups
+            .write()
+            .await
+            .insert(key, cleanup.clone());
+        Some(cleanup)
+    }
+
+    async fn spawn_old_bridge_cleanup_after_reset(
+        &self,
+        bridge: Arc<dyn SessionBridge>,
+        mut cleanup: PendingResetBridgeCleanup,
+    ) {
+        let key = cleanup.key();
         let runtime_instance_id = self.runtime_instance_id.clone();
-        let timeout = self.default_timeout;
-        tokio::spawn(async move {
-            if let Some(old_runtime_id) = old_runtime_id {
-                tracing::debug!(
-                    runtime_instance_id = %runtime_instance_id,
-                    runtime_id = %old_runtime_id,
-                    "skipping old bridge member retire after reset; reset commits the new generation and only clears stale session projection",
+        let pending = self.pending_reset_bridge_cleanups.clone();
+        let mut tasks = self.reset_bridge_cleanup_tasks.lock().await;
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::error!(
+                    runtime_instance_id = %self.runtime_instance_id,
+                    %error,
+                    "reset bridge cleanup task panicked"
                 );
             }
-
-            if let Some(old_session_id) = old_session_id {
-                match tokio::time::timeout(
-                    timeout,
-                    bridge.unregister_session_runtime_state(&old_session_id),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        tracing::warn!(
-                            runtime_instance_id = %runtime_instance_id,
-                            session_id = %old_session_id,
-                            error = %err,
-                            "failed to unregister old bridge session after reset; continuing with new generation",
-                        );
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            runtime_instance_id = %runtime_instance_id,
-                            session_id = %old_session_id,
-                            timeout_ms = timeout.as_millis(),
-                            "timed out unregistering old bridge session after reset; continuing with new generation",
-                        );
-                    }
+        }
+        tasks.spawn(async move {
+            Self::run_reset_memory_capture_if_pending(&pending, &key, &mut cleanup).await;
+            match Self::execute_reset_bridge_cleanup(&bridge, &cleanup).await {
+                Ok(()) => {
+                    Self::clear_reset_bridge_cleanup_if_current(&pending, &key, &cleanup).await;
                 }
+                Err(error) => tracing::warn!(
+                    runtime_instance_id = %runtime_instance_id,
+                    cleanup_key = %key,
+                    %error,
+                    "reset-superseded bridge cleanup failed; retaining exact shutdown debt",
+                ),
             }
         });
+    }
+
+    /// Join every post-commit reset cleanup task after foreground lifecycle
+    /// admission is closed. The exact debt remains in the ledger on failure
+    /// and is retried synchronously before physical mob shutdown.
+    pub(crate) async fn join_reset_bridge_cleanup_tasks(&self) {
+        let mut tasks = self.reset_bridge_cleanup_tasks.lock().await;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(
+                    runtime_instance_id = %self.runtime_instance_id,
+                    %error,
+                    "reset bridge cleanup task panicked"
+                );
+            }
+        }
+    }
+
+    /// Retry all exact reset cleanup debt. Success is the only path that
+    /// removes an obligation; callers must retain identity grants when this
+    /// returns an error.
+    pub(crate) async fn drain_pending_reset_bridge_cleanups(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(0);
+        };
+        let pending = self
+            .pending_reset_bridge_cleanups
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut completed = 0_usize;
+        let mut errors = Vec::new();
+        for mut cleanup in pending {
+            let key = cleanup.key();
+            Self::run_reset_memory_capture_if_pending(
+                &self.pending_reset_bridge_cleanups,
+                &key,
+                &mut cleanup,
+            )
+            .await;
+            match Self::execute_reset_bridge_cleanup(bridge, &cleanup).await {
+                Ok(()) => {
+                    Self::clear_reset_bridge_cleanup_if_current(
+                        &self.pending_reset_bridge_cleanups,
+                        &key,
+                        &cleanup,
+                    )
+                    .await;
+                    completed += 1;
+                }
+                Err(error) => errors.push(format!("{key}: {error}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(completed)
+        } else {
+            Err(IdentityRuntimeError::Internal(format!(
+                "reset bridge cleanup debt remains: {}",
+                errors.join("; ")
+            )))
+        }
     }
 
     /// Poll until the identity produces an output_preview, or timeout.
@@ -4667,17 +8435,267 @@ pub async fn wire_cross_mob_by_identity(
 mod reset_reprofile_tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 
     use super::super::bridge::{BridgeError, MemberInspection, ResumeSessionOutcome};
     use super::super::contracts::RosterProvider;
     use super::super::local_lease::LocalLeaseProvider;
     use super::super::local_store::LocalContinuityStore;
-    use super::super::types::{AgentBuildDraft, RosterError, SessionSnapshot};
+    use super::super::types::{
+        AgentBuildDraft, ContinuityResolveState, CustomizerError, LeaseAcquireResult, LeaseError,
+        LeaseRenewResult, RosterError, SessionSnapshot,
+    };
 
     struct MutableRoster {
         specs: AsyncRwLock<Vec<DurableAgentSpec>>,
+    }
+
+    struct LostRenewLeaseProvider {
+        inner: LocalLeaseProvider,
+        lose_renewals: AtomicBool,
+    }
+
+    impl Default for LostRenewLeaseProvider {
+        fn default() -> Self {
+            Self {
+                inner: LocalLeaseProvider::new(),
+                lose_renewals: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LeaseProvider for LostRenewLeaseProvider {
+        async fn acquire_leases(
+            &self,
+            identities: &[AgentIdentity],
+            runtime_instance: &str,
+        ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+            self.inner
+                .acquire_leases(identities, runtime_instance)
+                .await
+        }
+
+        async fn renew_leases(
+            &self,
+            grants: &[LeaseGrant],
+        ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+            if self.lose_renewals.load(Ordering::SeqCst) {
+                return Ok(grants
+                    .iter()
+                    .map(|grant| {
+                        (
+                            grant.identity.clone(),
+                            LeaseRenewResult::Lost {
+                                identity: grant.identity.clone(),
+                            },
+                        )
+                    })
+                    .collect());
+            }
+            self.inner.renew_leases(grants).await
+        }
+
+        async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+            self.inner.release_leases(grants).await
+        }
+    }
+
+    struct RecordingReleaseLeaseProvider {
+        inner: LocalLeaseProvider,
+        fail_next_release: AtomicBool,
+        release_attempts: AsyncMutex<Vec<LeaseGrant>>,
+    }
+
+    impl Default for RecordingReleaseLeaseProvider {
+        fn default() -> Self {
+            Self {
+                inner: LocalLeaseProvider::new(),
+                fail_next_release: AtomicBool::new(false),
+                release_attempts: AsyncMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RecordingReleaseLeaseProvider {
+        fn fail_next_release(&self) {
+            self.fail_next_release.store(true, Ordering::SeqCst);
+        }
+
+        async fn release_attempts(&self) -> Vec<LeaseGrant> {
+            self.release_attempts.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LeaseProvider for RecordingReleaseLeaseProvider {
+        async fn acquire_leases(
+            &self,
+            identities: &[AgentIdentity],
+            runtime_instance: &str,
+        ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+            self.inner
+                .acquire_leases(identities, runtime_instance)
+                .await
+        }
+
+        async fn renew_leases(
+            &self,
+            grants: &[LeaseGrant],
+        ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+            self.inner.renew_leases(grants).await
+        }
+
+        async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+            self.release_attempts.lock().await.extend_from_slice(grants);
+            if self.fail_next_release.swap(false, Ordering::SeqCst) {
+                return Err(LeaseError::ProviderUnavailable(
+                    "synthetic retained Broken lease release failure".to_string(),
+                ));
+            }
+            self.inner.release_leases(grants).await
+        }
+    }
+
+    struct GatedResetContinuityStore {
+        inner: Arc<LocalContinuityStore>,
+        upsert_calls: AtomicUsize,
+        fail_on_call: AtomicUsize,
+        failure_started: Notify,
+        release_failure: Notify,
+    }
+
+    #[derive(Default)]
+    struct GatedResetCustomizer {
+        entered: Notify,
+    }
+
+    impl GatedResetCustomizer {
+        async fn wait_for_entry(&self) {
+            self.entered.notified().await;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentCustomizer for GatedResetCustomizer {
+        async fn customize_build(
+            &self,
+            _context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            _draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            self.entered.notify_one();
+            futures::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    impl GatedResetContinuityStore {
+        fn new() -> Result<Self, ContinuityStoreError> {
+            Ok(Self {
+                inner: Arc::new(LocalContinuityStore::in_memory()?),
+                upsert_calls: AtomicUsize::new(0),
+                fail_on_call: AtomicUsize::new(usize::MAX),
+                failure_started: Notify::new(),
+                release_failure: Notify::new(),
+            })
+        }
+
+        fn fail_after_successful_upserts(&self, successful_upserts: usize) {
+            let current = self.upsert_calls.load(Ordering::SeqCst);
+            self.fail_on_call
+                .store(current + successful_upserts + 1, Ordering::SeqCst);
+        }
+
+        async fn wait_for_failure(&self) {
+            self.failure_started.notified().await;
+        }
+
+        fn release_failure(&self) {
+            self.release_failure.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContinuityStore for GatedResetContinuityStore {
+        async fn resolve_many(
+            &self,
+            identities: &[AgentIdentity],
+        ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+            self.inner.resolve_many(identities).await
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+            self.inner.load_session_snapshot(session_id).await
+        }
+
+        async fn save_session_snapshot(
+            &self,
+            identity: &AgentIdentity,
+            session_id: &SessionId,
+            generation: ContinuityGeneration,
+            version: CheckpointVersion,
+            fencing_token: FencingToken,
+            snapshot: &SessionSnapshot,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .save_session_snapshot(
+                    identity,
+                    session_id,
+                    generation,
+                    version,
+                    fencing_token,
+                    snapshot,
+                )
+                .await
+        }
+
+        async fn upsert_continuity_record(
+            &self,
+            record: &ContinuityRecord,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            let call = self.upsert_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self
+                .fail_on_call
+                .compare_exchange(call, usize::MAX, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                self.failure_started.notify_one();
+                self.release_failure.notified().await;
+                return Err(ContinuityStoreError::Io(
+                    "gated final reset upsert failure".to_string(),
+                ));
+            }
+            self.inner
+                .upsert_continuity_record(record, fencing_token)
+                .await
+        }
+
+        async fn rollback_continuity_record(
+            &self,
+            expected_attempt: &ContinuityRecord,
+            previous: Option<&ContinuityRecord>,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .rollback_continuity_record(expected_attempt, previous, fencing_token)
+                .await
+        }
+
+        async fn delete_continuity_record(
+            &self,
+            identity: &AgentIdentity,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .delete_continuity_record(identity, fencing_token)
+                .await
+        }
     }
 
     impl MutableRoster {
@@ -4710,7 +8728,10 @@ mod reset_reprofile_tests {
         max_creates_in_flight: AtomicUsize,
         retired_runtime_ids: AsyncMutex<Vec<String>>,
         hanging_retire_runtime_ids: AsyncMutex<BTreeSet<String>>,
+        failing_register_session_ids: AsyncMutex<BTreeSet<String>>,
         failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
+        registered_fencing_tokens: AsyncMutex<Vec<FencingToken>>,
+        authority_transitions: AsyncMutex<Vec<String>>,
     }
 
     impl RecordingBridge {
@@ -4738,6 +8759,28 @@ mod reset_reprofile_tests {
                 .lock()
                 .await
                 .insert(session_id.to_string());
+        }
+
+        async fn allow_unregister_for(&self, session_id: &SessionId) {
+            self.failing_unregister_session_ids
+                .lock()
+                .await
+                .remove(&session_id.to_string());
+        }
+
+        async fn fail_register_for(&self, session_id: &SessionId) {
+            self.failing_register_session_ids
+                .lock()
+                .await
+                .insert(session_id.to_string());
+        }
+
+        async fn registered_fencing_tokens(&self) -> Vec<FencingToken> {
+            self.registered_fencing_tokens.lock().await.clone()
+        }
+
+        async fn authority_transitions(&self) -> Vec<String> {
+            self.authority_transitions.lock().await.clone()
         }
     }
 
@@ -4822,6 +8865,46 @@ mod reset_reprofile_tests {
             ))
         }
 
+        async fn register_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+            _identity: &AgentIdentity,
+            _generation: ContinuityGeneration,
+            checkpoint_version: CheckpointVersion,
+            fencing_token: FencingToken,
+        ) -> Result<CheckpointVersion, BridgeError> {
+            self.registered_fencing_tokens
+                .lock()
+                .await
+                .push(fencing_token);
+            self.authority_transitions
+                .lock()
+                .await
+                .push(format!("register:{}", fencing_token.get()));
+            if self
+                .failing_register_session_ids
+                .lock()
+                .await
+                .contains(&session_id.to_string())
+            {
+                return Err(BridgeError::Mob(
+                    "synthetic live-session rebind failure".to_string(),
+                ));
+            }
+            Ok(checkpoint_version)
+        }
+
+        async fn suspend_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), BridgeError> {
+            self.authority_transitions
+                .lock()
+                .await
+                .push(format!("suspend:{session_id}"));
+            Ok(())
+        }
+
         async fn unregister_session_runtime_state(
             &self,
             session_id: &SessionId,
@@ -4834,6 +8917,235 @@ mod reset_reprofile_tests {
             {
                 return Err(BridgeError::Mob("old session still draining".to_string()));
             }
+            Ok(())
+        }
+    }
+
+    /// Bridge used to prove REQ-33 metadata hot reloads never cross the
+    /// retire/resume boundary. Initial creation and ordinary dispatch work;
+    /// any attempted resume fails loudly, reproducing the real gateway's
+    /// still-draining-member collision without an LLM or network dependency.
+    #[derive(Default)]
+    struct HotReloadBridge {
+        sessions: AsyncMutex<BTreeMap<String, SessionId>>,
+        retire_calls: AtomicUsize,
+        resume_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for HotReloadBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            self.sessions
+                .lock()
+                .await
+                .insert(runtime_id.to_string(), session_id.clone());
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            self.resume_calls.fetch_add(1, Ordering::SeqCst);
+            Err(BridgeError::Mob(
+                "same-profile metadata hot reload attempted session resume".to_string(),
+            ))
+        }
+
+        async fn deliver(
+            &self,
+            runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            self.sessions
+                .lock()
+                .await
+                .get(runtime_id.as_str())
+                .cloned()
+                .ok_or_else(|| BridgeError::Mob(format!("missing session for {runtime_id}")))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in hot-reload test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            self.retire_calls.fetch_add(1, Ordering::SeqCst);
+            self.sessions.lock().await.remove(runtime_id.as_str());
+            Ok(())
+        }
+
+        async fn inspect_member(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+        ) -> Result<MemberInspection, BridgeError> {
+            Err(BridgeError::Mob(
+                "inspect not used in hot-reload test".to_string(),
+            ))
+        }
+    }
+
+    /// Lower-plane model for lease-loss reconciliation. Resume rejects a
+    /// duplicate concrete alias, so the tests prove Broken cleanup happens
+    /// before profile replacement rather than merely observing call counts.
+    #[derive(Default)]
+    struct LostCleanupBridge {
+        members: AsyncMutex<BTreeSet<String>>,
+        session_runtime_states: AsyncMutex<BTreeSet<String>>,
+        retire_calls: AtomicUsize,
+        unregister_calls: AtomicUsize,
+        resume_collisions: AtomicUsize,
+    }
+
+    impl LostCleanupBridge {
+        async fn member_count(&self) -> usize {
+            self.members.lock().await.len()
+        }
+
+        async fn session_runtime_state_count(&self) -> usize {
+            self.session_runtime_states.lock().await.len()
+        }
+    }
+
+    async fn force_renewal_lost(
+        runtime: &IdentityRuntime,
+        lease_provider: &LostRenewLeaseProvider,
+        identity: &AgentIdentity,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        lease_provider.lose_renewals.store(true, Ordering::SeqCst);
+        {
+            let mut entries = runtime.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or("identity disappeared before forced renewal")?;
+            let lease = entry
+                .lease
+                .as_mut()
+                .ok_or("active identity has no lease before forced renewal")?;
+            lease.ttl = Duration::ZERO;
+        }
+        assert!(matches!(
+            runtime.renew_due_leases_once().await,
+            Err(IdentityRuntimeError::LeaseLost(lost)) if lost == *identity
+        ));
+        Ok(())
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for LostCleanupBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            if !self.members.lock().await.insert(runtime_id.to_string()) {
+                return Err(BridgeError::Mob(format!(
+                    "member collision for {runtime_id}"
+                )));
+            }
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            if !self.members.lock().await.insert(runtime_id.to_string()) {
+                self.resume_collisions.fetch_add(1, Ordering::SeqCst);
+                return Err(BridgeError::Mob(format!(
+                    "member collision for {runtime_id}"
+                )));
+            }
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            self.retire_calls.fetch_add(1, Ordering::SeqCst);
+            self.members.lock().await.remove(runtime_id.as_str());
+            Ok(())
+        }
+
+        async fn inspect_member(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+        ) -> Result<MemberInspection, BridgeError> {
+            Err(BridgeError::Mob(
+                "inspect not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn register_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+            _identity: &AgentIdentity,
+            _generation: ContinuityGeneration,
+            checkpoint_version: CheckpointVersion,
+            _fencing_token: FencingToken,
+        ) -> Result<CheckpointVersion, BridgeError> {
+            self.session_runtime_states
+                .lock()
+                .await
+                .insert(session_id.to_string());
+            Ok(checkpoint_version)
+        }
+
+        async fn unregister_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), BridgeError> {
+            self.unregister_calls.fetch_add(1, Ordering::SeqCst);
+            self.session_runtime_states
+                .lock()
+                .await
+                .remove(&session_id.to_string());
             Ok(())
         }
     }
@@ -4852,6 +9164,363 @@ mod reset_reprofile_tests {
             backend: None,
             binding: None,
         }
+    }
+
+    async fn lazy_context_with_broken_retained_lease(
+        identity: AgentIdentity,
+        spec: DurableAgentSpec,
+        roster: Arc<MutableRoster>,
+        lease_provider: Arc<RecordingReleaseLeaseProvider>,
+        runtime_instance_id: &str,
+    ) -> Result<
+        (
+            Arc<IdentityRuntime>,
+            IdentityFirstRuntimeContext,
+            LeaseGrant,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
+        let acquired = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), runtime_instance_id)
+            .await?;
+        let grant = match acquired.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected retained lease grant, got {other:?}").into()),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0"))?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        continuity_store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider,
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                spec,
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant.clone()),
+            )
+            .await;
+        // Model the public rollback state exercised by
+        // `identity_first_runtime_reset_register_failure_cleans_new_member_and_preserves_old_continuity`:
+        // the identity is fail-closed Broken while its exact current grant is
+        // retained in `entry.lease` for repair.
+        runtime
+            .entries
+            .write()
+            .await
+            .get_mut(&identity)
+            .ok_or("seeded identity disappeared")?
+            .state = IdentityLifecycleState::Broken;
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster,
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::LazyMaterialize,
+        );
+        Ok((runtime, context, grant))
+    }
+
+    async fn active_alias_runtime(
+        runtime_instance_id: &str,
+        identity: &str,
+    ) -> Result<(Arc<IdentityRuntime>, String), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse(identity)?;
+        let alias = format!("rt:{identity}:0");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&alias)?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity, "domain"),
+                IdentityLifecycleState::Active,
+                Some(record),
+                None,
+            )
+            .await;
+        Ok((runtime, alias))
+    }
+
+    async fn alias_target(
+        runtime: &Arc<IdentityRuntime>,
+        alias: &str,
+    ) -> Result<MemberAliasLifecycleTarget, Box<dyn std::error::Error>> {
+        runtime
+            .member_alias_lifecycle_target(alias)
+            .await?
+            .ok_or_else(|| {
+                format!("generated alias did not resolve to lifecycle target: {alias}").into()
+            })
+    }
+
+    #[tokio::test]
+    async fn compound_alias_targets_sort_opposite_orders_without_deadlock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (runtime_a, alias_a) = active_alias_runtime("00-alias-runtime", "domain:alpha").await?;
+        let (runtime_b, alias_b) = active_alias_runtime("01-alias-runtime", "domain:beta").await?;
+
+        // Hold the globally first lock while both transactions are admitted.
+        // Correct ordering makes both wait on A without touching B. An input-
+        // ordered implementation lets the reverse request take B first and
+        // then deadlocks once the forward request receives A.
+        let held_a = alias_target(&runtime_a, &alias_a)
+            .await?
+            .lock
+            .clone()
+            .lock_owned()
+            .await;
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let forward = tokio::spawn({
+            let targets = vec![
+                alias_target(&runtime_a, &alias_a).await?,
+                alias_target(&runtime_b, &alias_b).await?,
+            ];
+            let completed = Arc::clone(&completed);
+            async move {
+                IdentityRuntime::run_member_alias_targets_operation_tracked(targets, move || {
+                    let completed = Arc::clone(&completed);
+                    async move {
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !runtime_a.foreground_operations.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        let reverse = tokio::spawn({
+            let targets = vec![
+                alias_target(&runtime_b, &alias_b).await?,
+                alias_target(&runtime_a, &alias_a).await?,
+            ];
+            let completed = Arc::clone(&completed);
+            async move {
+                IdentityRuntime::run_member_alias_targets_operation_tracked(targets, move || {
+                    let completed = Arc::clone(&completed);
+                    async move {
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if runtime_a.foreground_operations.lock().await.len() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        tokio::task::yield_now().await;
+
+        let b_probe = alias_target(&runtime_b, &alias_b)
+            .await?
+            .lock
+            .try_lock_owned()
+            .map_err(|_| "reverse-order request acquired B before globally-first A")?;
+        drop(b_probe);
+        drop(held_a);
+
+        tokio::time::timeout(Duration::from_secs(2), forward).await???;
+        tokio::time::timeout(Duration::from_secs(2), reverse).await???;
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+
+        runtime_a.close_foreground_operations();
+        runtime_b.close_foreground_operations();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                runtime_a.join_foreground_operations(),
+                runtime_b.join_foreground_operations()
+            );
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropped_compound_alias_caller_still_completes_operation_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (runtime_a, alias_a) = active_alias_runtime("00-drop-runtime", "domain:alpha").await?;
+        let (runtime_b, alias_b) = active_alias_runtime("01-drop-runtime", "domain:beta").await?;
+        let targets = vec![
+            alias_target(&runtime_a, &alias_a).await?,
+            alias_target(&runtime_b, &alias_b).await?,
+        ];
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let caller = tokio::spawn({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let completed = Arc::clone(&completed);
+            async move {
+                IdentityRuntime::run_member_alias_targets_operation_tracked(targets, move || {
+                    let entered = Arc::clone(&entered);
+                    let release = Arc::clone(&release);
+                    let completed = Arc::clone(&completed);
+                    async move {
+                        entered.add_permits(1);
+                        release
+                            .acquire()
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .forget();
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+            .await??
+            .forget();
+
+        caller.abort();
+        match caller.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(result) => {
+                return Err(format!("aborted caller unexpectedly returned: {result:?}").into());
+            }
+        }
+        release.add_permits(1);
+
+        runtime_a.close_foreground_operations();
+        runtime_b.close_foreground_operations();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                runtime_a.join_foreground_operations(),
+                runtime_b.join_foreground_operations()
+            );
+        })
+        .await?;
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            1,
+            "runtime-owned compound transaction must reach its boundary"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn either_compound_alias_runtime_shutdown_waits_for_operation_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for shutdown_first_runtime in [true, false] {
+            let suffix = if shutdown_first_runtime {
+                "first"
+            } else {
+                "second"
+            };
+            let (runtime_a, alias_a) =
+                active_alias_runtime(&format!("00-shutdown-{suffix}"), "domain:alpha").await?;
+            let (runtime_b, alias_b) =
+                active_alias_runtime(&format!("01-shutdown-{suffix}"), "domain:beta").await?;
+            let targets = vec![
+                alias_target(&runtime_a, &alias_a).await?,
+                alias_target(&runtime_b, &alias_b).await?,
+            ];
+            let entered = Arc::new(tokio::sync::Semaphore::new(0));
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let operation = tokio::spawn({
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                async move {
+                    IdentityRuntime::run_member_alias_targets_operation_tracked(
+                        targets,
+                        move || {
+                            let entered = Arc::clone(&entered);
+                            let release = Arc::clone(&release);
+                            async move {
+                                entered.add_permits(1);
+                                release
+                                    .acquire()
+                                    .await
+                                    .map_err(|error| error.to_string())?
+                                    .forget();
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+                .await??
+                .forget();
+
+            let shutting_down = if shutdown_first_runtime {
+                Arc::clone(&runtime_a)
+            } else {
+                Arc::clone(&runtime_b)
+            };
+            shutting_down.close_foreground_operations();
+            let mut shutdown = tokio::spawn(async move {
+                shutting_down.join_foreground_operations().await;
+            });
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+                    .await
+                    .is_err(),
+                "shutdown of {suffix} participating runtime returned before compound boundary"
+            );
+
+            release.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(2), &mut shutdown).await??;
+            tokio::time::timeout(Duration::from_secs(2), operation).await???;
+
+            runtime_a.close_foreground_operations();
+            runtime_b.close_foreground_operations();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(
+                    runtime_a.join_foreground_operations(),
+                    runtime_b.join_foreground_operations()
+                );
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -4948,6 +9617,1317 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
+    async fn shutdown_joins_reset_after_outer_abort_at_final_upsert()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let roster = Arc::new(MutableRoster::new(vec![durable_spec(
+            identity.clone(),
+            "domain",
+        )]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let store = Arc::new(GatedResetContinuityStore::new()?);
+        let runtime = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: store.clone(),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "tracked-reset-shutdown-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge.clone()),
+                default_timeout: None,
+            })
+            .with_reset_roster_provider(roster.clone()),
+        );
+
+        super::super::orchestrator::restore_flow(
+            &runtime,
+            &roster
+                .roster(&RosterContext {
+                    mob_definition: None,
+                    previous_identities: Vec::new(),
+                })
+                .await?,
+            None,
+            None,
+        )
+        .await?;
+        let old_record = match store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await?
+            .remove(&identity)
+        {
+            Some(ContinuityResolveState::Ready { record }) => record,
+            other => return Err(format!("expected initial continuity, got {other:?}").into()),
+        };
+        store.fail_after_successful_upserts(3);
+
+        let outer = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let identity = identity.clone();
+            async move { runtime.reset_tracked(&identity).await }
+        });
+        store.wait_for_failure().await;
+        outer.abort();
+        match outer.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(result) => {
+                return Err(
+                    format!("outer reset waiter unexpectedly completed: {result:?}").into(),
+                );
+            }
+        }
+
+        runtime.close_foreground_operations();
+        let mut join = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            async move { runtime.join_foreground_operations().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut join)
+                .await
+                .is_err(),
+            "shutdown must wait for the runtime-owned reset transaction"
+        );
+        assert!(
+            bridge.retired_runtime_ids().await.is_empty(),
+            "rollback cleanup cannot run before the final upsert resolves"
+        );
+
+        store.release_failure();
+        tokio::time::timeout(Duration::from_secs(2), &mut join)
+            .await
+            .map_err(|_| "shutdown did not join reset rollback")??;
+
+        let resolved = store.resolve_many(std::slice::from_ref(&identity)).await?;
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Ready {
+                record: old_record.clone(),
+            }),
+            "abandoned reset must roll durable continuity back before shutdown completes"
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(
+            status.agent_runtime_id.as_ref(),
+            Some(&old_record.agent_runtime_id)
+        );
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert_eq!(
+            bridge.retired_runtime_ids().await,
+            vec!["rt:domain:security:1".to_string()],
+            "rollback must retire only the tentative reset generation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_reset_customizer_and_restores_old_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:security")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let bridge = Arc::new(RecordingBridge::default());
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "reset-customizer-shutdown-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+
+        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+            .await?;
+        let old_record = match store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await?
+            .remove(&identity)
+        {
+            Some(ContinuityResolveState::Ready { record }) => record,
+            other => return Err(format!("expected initial continuity, got {other:?}").into()),
+        };
+
+        let customizer = Arc::new(GatedResetCustomizer::default());
+        runtime.set_agent_customizer(Some(customizer.clone())).await;
+        let outer = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let identity = identity.clone();
+            async move { runtime.reset_tracked(&identity).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), customizer.wait_for_entry())
+            .await
+            .map_err(|_| "reset did not enter the gated customizer")?;
+        outer.abort();
+        match outer.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(result) => {
+                return Err(
+                    format!("outer reset waiter unexpectedly completed: {result:?}").into(),
+                );
+            }
+        }
+
+        runtime.close_foreground_operations();
+        tokio::time::timeout(Duration::from_secs(2), runtime.join_foreground_operations())
+            .await
+            .map_err(|_| "shutdown hung on the reset customizer")?;
+
+        let resolved = store.resolve_many(std::slice::from_ref(&identity)).await?;
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Ready {
+                record: old_record.clone(),
+            }),
+            "shutdown cancellation must roll durable continuity back to the old generation"
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            status.agent_runtime_id.as_ref(),
+            Some(&old_record.agent_runtime_id)
+        );
+        assert_eq!(status.session_id.as_ref(), Some(&old_record.session_id));
+        assert_eq!(bridge.create_profiles().await, vec!["domain".to_string()]);
+        assert!(
+            bridge.retired_runtime_ids().await.is_empty(),
+            "cancellation before session installation must not touch either bridge generation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancelled_dormant_reset_releases_temporary_lease()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:dormant")?;
+        let bridge = Arc::new(RecordingBridge::default());
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let runtime_instance_id = "dormant-reset-customizer-shutdown-test";
+        let acquired = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), runtime_instance_id)
+            .await?;
+        let initial_grant = match acquired.get(&identity) {
+            Some(super::super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected initial lease, got {other:?}").into()),
+        };
+        let old_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:dormant:0")?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&old_record, initial_grant.fencing_token)
+            .await?;
+        lease_provider
+            .release_leases(std::slice::from_ref(&initial_grant))
+            .await?;
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store.clone(),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Dormant,
+                Some(old_record.clone()),
+                None,
+            )
+            .await;
+
+        let customizer = Arc::new(GatedResetCustomizer::default());
+        runtime.set_agent_customizer(Some(customizer.clone())).await;
+        let outer = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let identity = identity.clone();
+            async move { runtime.reset_tracked(&identity).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), customizer.wait_for_entry())
+            .await
+            .map_err(|_| "dormant reset did not enter the gated customizer")?;
+        outer.abort();
+        match outer.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(result) => {
+                return Err(
+                    format!("outer dormant reset unexpectedly completed: {result:?}").into(),
+                );
+            }
+        }
+        runtime.close_foreground_operations();
+        tokio::time::timeout(Duration::from_secs(2), runtime.join_foreground_operations())
+            .await
+            .map_err(|_| "shutdown hung on the dormant reset customizer")?;
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Dormant);
+        assert!(status.lease.is_none());
+        let resolved = store.resolve_many(std::slice::from_ref(&identity)).await?;
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Ready {
+                record: old_record.clone(),
+            })
+        );
+        let failover = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "dormant-reset-failover")
+            .await?;
+        assert!(
+            matches!(
+                failover.get(&identity),
+                Some(super::super::types::LeaseAcquireResult::Acquired(_))
+            ),
+            "shutdown rollback must release the dormant reset lease: {failover:?}"
+        );
+        assert!(bridge.create_profiles().await.is_empty());
+        assert!(bridge.retired_runtime_ids().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn compound_live_respawn_serializes_concurrent_reset()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:compound-respawn")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "compound-respawn-reset-race".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge),
+            default_timeout: None,
+        }));
+        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+            .await?;
+
+        let lower_plane_entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release_lower_plane = Arc::new(tokio::sync::Semaphore::new(0));
+        let live_session_id = SessionId::new();
+        let respawn = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let identity = identity.clone();
+            let lower_plane_entered = Arc::clone(&lower_plane_entered);
+            let release_lower_plane = Arc::clone(&release_lower_plane);
+            let live_session_id = live_session_id.clone();
+            async move {
+                runtime
+                    .respawn_and_rebind_live_member_tracked(
+                        &identity,
+                        None,
+                        move |_runtime_alias| async move {
+                            lower_plane_entered.add_permits(1);
+                            release_lower_plane
+                                .acquire()
+                                .await
+                                .map_err(|error| error.to_string())?
+                                .forget();
+                            Ok((live_session_id, ()))
+                        },
+                        |_runtime_alias| async { Ok(()) },
+                    )
+                    .await
+            }
+        });
+        lower_plane_entered.acquire().await?.forget();
+
+        let mut reset = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let identity = identity.clone();
+            async move { runtime.reset_tracked(&identity).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut reset)
+                .await
+                .is_err(),
+            "reset must wait while the compound lower-plane respawn holds lifecycle authority"
+        );
+
+        release_lower_plane.add_permits(1);
+        let (respawned, ()) = tokio::time::timeout(Duration::from_secs(2), respawn).await???;
+        assert_eq!(respawned.generation, ContinuityGeneration::new(0));
+        assert_eq!(respawned.session_id, live_session_id);
+        let reset_record = tokio::time::timeout(Duration::from_secs(2), &mut reset).await???;
+        assert_eq!(reset_record.generation, ContinuityGeneration::new(1));
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.generation, Some(ContinuityGeneration::new(1)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_lower_plane_respawn_is_broken_and_releases_lease()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:failed-live-respawn")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "failed-live-respawn".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(RecordingBridge::default())),
+            default_timeout: None,
+        }));
+        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+            .await?;
+
+        let rolled_back_alias = Arc::new(AsyncMutex::new(None));
+        let error = match runtime
+            .respawn_and_rebind_live_member_tracked(
+                &identity,
+                None,
+                |_runtime_alias| async {
+                    Err::<(SessionId, ()), String>("synthetic lower-plane failure".to_string())
+                },
+                {
+                    let rolled_back_alias = Arc::clone(&rolled_back_alias);
+                    move |runtime_alias| async move {
+                        *rolled_back_alias.lock().await = Some(runtime_alias);
+                        Ok(())
+                    }
+                },
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => return Err("lower-plane failure must fail the compound respawn".into()),
+        };
+        assert!(error.to_string().contains("synthetic lower-plane failure"));
+        assert!(rolled_back_alias.lock().await.is_some());
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert!(status.lease.is_none());
+        let failover = lease_provider
+            .acquire_leases(
+                std::slice::from_ref(&identity),
+                "failed-live-respawn-failover",
+            )
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(super::super::types::LeaseAcquireResult::Acquired(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_live_session_rebind_is_broken_and_releases_lease()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:failed-live-rebind")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "failed-live-rebind".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+            .await?;
+
+        let rebound_session_id = SessionId::new();
+        bridge.fail_register_for(&rebound_session_id).await;
+        let rolled_back_alias = Arc::new(AsyncMutex::new(None));
+        let error = match runtime
+            .respawn_and_rebind_live_member_tracked(
+                &identity,
+                None,
+                {
+                    let rebound_session_id = rebound_session_id.clone();
+                    move |_runtime_alias| async move { Ok((rebound_session_id, ())) }
+                },
+                {
+                    let rolled_back_alias = Arc::clone(&rolled_back_alias);
+                    move |runtime_alias| async move {
+                        *rolled_back_alias.lock().await = Some(runtime_alias);
+                        Ok(())
+                    }
+                },
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => return Err("bridge rebind failure must fail the compound respawn".into()),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic live-session rebind failure")
+        );
+        assert!(
+            rolled_back_alias.lock().await.is_some(),
+            "the lower-plane member must be retired after rebind failure"
+        );
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert!(status.lease.is_none());
+        let failover = lease_provider
+            .acquire_leases(
+                std::slice::from_ref(&identity),
+                "failed-live-rebind-failover",
+            )
+            .await?;
+        assert!(
+            matches!(
+                failover.get(&identity),
+                Some(super::super::types::LeaseAcquireResult::Acquired(_))
+            ),
+            "rebind rollback must release the external lease: {failover:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_alias_materialization_preserves_active_and_dormant_bootstrap_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:bootstrap-alias")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let current_alias = AgentRuntimeId::parse("rt:domain:bootstrap-alias:1")?;
+        let stale_alias = "rt:domain:bootstrap-alias:0";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let grants = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "bootstrap-alias-status")
+            .await?;
+        let grant = match grants.get(&identity) {
+            Some(super::super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected acquired lease, got {other:?}").into()),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: current_alias,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(1),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider,
+            runtime_instance_id: "bootstrap-alias-status".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                spec.clone(),
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant),
+            )
+            .await;
+
+        let active_generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::LazyMaterialize);
+        runtime
+            .begin_identity_bootstrap(
+                active_generation,
+                IdentityBootstrapMode::LazyMaterialize,
+                std::slice::from_ref(&spec),
+            )
+            .await;
+        runtime.modify_bootstrap_status(Some(active_generation), |status| {
+            status.complete = true;
+            status.refresh_aggregates();
+        });
+        let active_before = runtime.identity_bootstrap_status();
+        assert_eq!(
+            active_before
+                .identities
+                .get(&identity)
+                .map(|entry| entry.state),
+            Some(IdentityBootstrapState::Active)
+        );
+        assert!(matches!(
+            runtime
+                .materialize_with_expected_member_alias(&identity, Some(stale_alias))
+                .await,
+            Err(IdentityRuntimeError::StaleRuntimeAlias { .. })
+        ));
+        assert_eq!(runtime.identity_bootstrap_status(), active_before);
+
+        runtime.retire(&identity).await?;
+        let dormant_generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::LazyMaterialize);
+        runtime
+            .begin_identity_bootstrap(
+                dormant_generation,
+                IdentityBootstrapMode::LazyMaterialize,
+                std::slice::from_ref(&spec),
+            )
+            .await;
+        runtime.modify_bootstrap_status(Some(dormant_generation), |status| {
+            status.complete = true;
+            status.refresh_aggregates();
+        });
+        let dormant_before = runtime.identity_bootstrap_status();
+        assert_eq!(
+            dormant_before
+                .identities
+                .get(&identity)
+                .map(|entry| entry.state),
+            Some(IdentityBootstrapState::Dormant)
+        );
+        assert!(matches!(
+            runtime
+                .materialize_with_expected_member_alias(&identity, Some(stale_alias))
+                .await,
+            Err(IdentityRuntimeError::StaleRuntimeAlias { .. })
+        ));
+        assert_eq!(runtime.identity_bootstrap_status(), dormant_before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn eager_reconcile_hot_reloads_active_metadata_without_retire_or_resume()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:luka")?;
+        let mut initial_spec = durable_spec(identity.clone(), "personal");
+        initial_spec
+            .labels
+            .insert("revision".to_string(), "v1".to_string());
+        let roster = Arc::new(MutableRoster::new(vec![initial_spec.clone()]));
+        let bridge = Arc::new(HotReloadBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "eager-hot-reload-contract".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::EagerMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&initial_spec))
+            .await?;
+
+        let before = runtime.status(&identity).await?;
+        assert_eq!(before.state, IdentityLifecycleState::Active);
+        let before_session = before.session_id.clone();
+        let before_runtime_id = before.agent_runtime_id.clone();
+        let before_generation = before.generation;
+        let before_token = before
+            .lease
+            .as_ref()
+            .ok_or("initial active identity must have a lease")?
+            .fencing_token;
+
+        let mut updated_spec = initial_spec;
+        updated_spec.addressability = AgentAddressability::InternalOnly;
+        updated_spec
+            .labels
+            .insert("timezone".to_string(), "Europe/Stockholm".to_string());
+        updated_spec
+            .labels
+            .insert("revision".to_string(), "v2".to_string());
+        roster.set(vec![updated_spec]).await;
+
+        let result = context.refresh_desired_topology().await?;
+        assert!(matches!(
+            result.outcomes.get(&identity),
+            Some(super::super::orchestrator::RestoreOutcome::Resumed { .. })
+        ));
+        let after = runtime.status(&identity).await?;
+        assert_eq!(after.state, IdentityLifecycleState::Active);
+        assert_eq!(after.addressability, AgentAddressability::InternalOnly);
+        assert_eq!(
+            after.labels.get("timezone").map(String::as_str),
+            Some("Europe/Stockholm")
+        );
+        assert_eq!(after.session_id, before_session);
+        assert_eq!(after.agent_runtime_id, before_runtime_id);
+        assert_eq!(after.generation, before_generation);
+        assert_eq!(
+            after
+                .lease
+                .as_ref()
+                .ok_or("hot-reloaded identity must retain its lease")?
+                .fencing_token,
+            before_token,
+            "same-profile reconcile must preserve exact live authority"
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+
+        assert!(matches!(
+            runtime
+                .send(
+                    &identity,
+                    &meerkat_core::ContentInput::Text("external".to_string()),
+                )
+                .await,
+            Err(IdentityRuntimeError::NotAddressable(_))
+        ));
+        let (dispatch_token, durable) = runtime
+            .dispatch(&identity, &DispatchInput::system("system notice"))
+            .await?;
+        assert_eq!(dispatch_token, before_token);
+        assert!(durable);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lazy_unchanged_reconcile_retained_broken_lease_failure_stays_shutdown_visible()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:broken-retained-unchanged")?;
+        let spec = durable_spec(identity.clone(), "personal");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let lease_provider = Arc::new(RecordingReleaseLeaseProvider::default());
+        let (runtime, context, retained_grant) = lazy_context_with_broken_retained_lease(
+            identity.clone(),
+            spec,
+            roster,
+            lease_provider.clone(),
+            "broken-retained-unchanged",
+        )
+        .await?;
+
+        lease_provider.fail_next_release();
+        let error = match context.refresh_desired_topology().await {
+            Err(error) => error,
+            Ok(_) => return Err("failed exact release allowed lazy registration".into()),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic retained Broken lease release failure")
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert!(
+            status.lease.is_none(),
+            "failed release authority must be pending, never advertised as active"
+        );
+        assert_eq!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .and_then(|entry| entry.pending_lease_release.as_ref())
+                .map(|grant| grant.fencing_token),
+            Some(retained_grant.fencing_token),
+            "the exact retained token must survive provider failure"
+        );
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token]
+        );
+
+        assert_eq!(
+            runtime.release_all_leases_for_shutdown().await?,
+            1,
+            "shutdown must retain visibility of the staged exact grant"
+        );
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token, retained_grant.fencing_token],
+            "shutdown must retry the same exact fencing token"
+        );
+        assert!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .is_some_and(|entry| {
+                    entry.lease.is_none() && entry.pending_lease_release.is_none()
+                })
+        );
+
+        context.refresh_desired_topology().await?;
+        let recovered = runtime.status(&identity).await?;
+        assert_eq!(recovered.state, IdentityLifecycleState::Dormant);
+        assert!(recovered.lease.is_none());
+        let failover = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "other-runtime")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lazy_profile_replace_releases_retained_broken_lease_before_overwrite()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:broken-retained-replace")?;
+        let original = durable_spec(identity.clone(), "personal-v1");
+        let roster = Arc::new(MutableRoster::new(vec![original.clone()]));
+        let lease_provider = Arc::new(RecordingReleaseLeaseProvider::default());
+        let (runtime, context, retained_grant) = lazy_context_with_broken_retained_lease(
+            identity.clone(),
+            original,
+            roster.clone(),
+            lease_provider.clone(),
+            "broken-retained-replace",
+        )
+        .await?;
+
+        roster
+            .set(vec![durable_spec(identity.clone(), "personal-v2")])
+            .await;
+        context.refresh_desired_topology().await?;
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Dormant);
+        assert_eq!(
+            status.profile.as_ref().map(ToString::to_string).as_deref(),
+            Some("personal-v2")
+        );
+        assert!(status.lease.is_none());
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token],
+            "profile replacement must release the retained exact token before lazy registration"
+        );
+        assert!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .is_some_and(|entry| entry.pending_lease_release.is_none())
+        );
+        let failover = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "replacement-failover")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_lost_then_roster_remove_cleans_lower_plane_before_dropping_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:lost-remove")?;
+        let spec = durable_spec(identity.clone(), "personal");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let bridge = Arc::new(LostCleanupBridge::default());
+        let lease_provider = Arc::new(LostRenewLeaseProvider::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "lost-remove-cleanup".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::EagerMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&spec))
+            .await?;
+        assert_eq!(bridge.member_count().await, 1);
+        assert_eq!(bridge.session_runtime_state_count().await, 1);
+
+        force_renewal_lost(&runtime, &lease_provider, &identity).await?;
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Broken
+        );
+        assert_eq!(bridge.member_count().await, 1);
+        let unregisters_after_lost = bridge.unregister_calls.load(Ordering::SeqCst);
+
+        roster.set(Vec::new()).await;
+        context.refresh_desired_topology().await?;
+        assert!(!runtime.contains(&identity).await);
+        assert_eq!(
+            bridge.member_count().await,
+            0,
+            "stale member survived removal"
+        );
+        assert_eq!(
+            bridge.session_runtime_state_count().await,
+            0,
+            "stale session authority survived removal"
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bridge.unregister_calls.load(Ordering::SeqCst),
+            unregisters_after_lost + 1,
+            "roster removal must idempotently unregister after Lost"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_lost_then_profile_replace_cleans_old_member_before_resume()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:lost-replace")?;
+        let original = durable_spec(identity.clone(), "personal-v1");
+        let roster = Arc::new(MutableRoster::new(vec![original.clone()]));
+        let bridge = Arc::new(LostCleanupBridge::default());
+        let lease_provider = Arc::new(LostRenewLeaseProvider::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "lost-replace-cleanup".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::EagerMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&original))
+            .await?;
+        force_renewal_lost(&runtime, &lease_provider, &identity).await?;
+        let unregisters_after_lost = bridge.unregister_calls.load(Ordering::SeqCst);
+
+        let replacement = durable_spec(identity.clone(), "personal-v2");
+        roster.set(vec![replacement]).await;
+        context.refresh_desired_topology().await?;
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            status.profile.as_ref().map(ToString::to_string).as_deref(),
+            Some("personal-v2")
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bridge.unregister_calls.load(Ordering::SeqCst),
+            unregisters_after_lost + 1,
+            "profile replacement must idempotently unregister before resume"
+        );
+        assert_eq!(
+            bridge.resume_collisions.load(Ordering::SeqCst),
+            0,
+            "replacement encountered the stale lower-plane alias"
+        );
+        assert_eq!(bridge.member_count().await, 1);
+        assert_eq!(bridge.session_runtime_state_count().await, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_materialization_completion_cannot_overwrite_newer_lazy_reconcile_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:foreground-generation")?;
+        let mut v1 = durable_spec(identity.clone(), "domain");
+        v1.labels
+            .insert("roster_revision".to_string(), "v1".to_string());
+        let mut v2 = v1.clone();
+        v2.profile = meerkat_mob::ProfileName::from("replacement");
+        v2.labels
+            .insert("roster_revision".to_string(), "v2".to_string());
+
+        let roster = Arc::new(MutableRoster::new(vec![v1.clone()]));
+        let bridge = Arc::new(RecordingBridge::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "foreground-generation-fence".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::LazyMaterialize,
+        );
+        context.bootstrap_roster(std::slice::from_ref(&v1)).await?;
+        let (v1_generation, initial) = runtime.identity_bootstrap_status_with_generation();
+        assert!(initial.complete);
+        assert!(!initial.ready);
+        assert_eq!(
+            initial.identities.get(&identity).map(|entry| entry.state),
+            Some(IdentityBootstrapState::Dormant)
+        );
+
+        // Pause the v1 foreground call after its lifecycle transaction has
+        // committed Active but before its outer readiness bookkeeping runs.
+        // The lifecycle lock is free at this seam, so a v2 roster pass can
+        // retire the v1 member and install a new lazy Dormant snapshot.
+        let completion_entered = Arc::new(Notify::new());
+        let release_completion = Arc::new(Notify::new());
+        let materialize = tokio::spawn({
+            let runtime = runtime.clone();
+            let identity = identity.clone();
+            let completion_entered = completion_entered.clone();
+            let release_completion = release_completion.clone();
+            async move {
+                runtime
+                    .materialize_with_expected_member_alias_after_inner(
+                        &identity,
+                        None,
+                        async move {
+                            completion_entered.notify_one();
+                            release_completion.notified().await;
+                        },
+                    )
+                    .await
+            }
+        });
+        completion_entered.notified().await;
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Active
+        );
+
+        roster.set(vec![v2]).await;
+        context.refresh_desired_topology().await?;
+        let after_v2 = runtime.identity_bootstrap_status();
+        assert!(after_v2.complete);
+        assert!(!after_v2.ready);
+        assert_eq!(
+            after_v2.identities.get(&identity).map(|entry| entry.state),
+            Some(IdentityBootstrapState::Dormant)
+        );
+        let lifecycle = runtime.status(&identity).await?;
+        assert_eq!(lifecycle.state, IdentityLifecycleState::Dormant);
+        assert_eq!(
+            lifecycle.labels.get("roster_revision").map(String::as_str),
+            Some("v2")
+        );
+        assert_eq!(bridge.retired_runtime_ids().await.len(), 1);
+
+        // Let the older v1 outer future run its terminal status update. Its
+        // captured generation must make the update a no-op against v2.
+        release_completion.notify_one();
+        materialize.await??;
+        assert_eq!(runtime.identity_bootstrap_status(), after_v2);
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Dormant
+        );
+        assert_ne!(
+            runtime.identity_bootstrap_status_with_generation().0,
+            v1_generation
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_materialization_uses_generation_of_reconcile_that_wins_lifecycle_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:foreground-reconcile-first")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "foreground-reconcile-first".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster,
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::LazyMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&spec))
+            .await?;
+        let first_generation = runtime.identity_bootstrap_status_with_generation().0;
+
+        // Publish G+1 with an unchanged desired spec, then pause its reconcile
+        // while it owns the lifecycle lock. This is the ordering that a
+        // pre-lock global generation sample gets wrong: materialization starts
+        // during G+1 and must operate on the G+1-stamped entry, even though the
+        // entry itself was originally registered by G.
+        let next_generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::LazyMaterialize);
+        assert_ne!(next_generation, first_generation);
+        runtime
+            .begin_identity_bootstrap(
+                next_generation,
+                IdentityBootstrapMode::LazyMaterialize,
+                std::slice::from_ref(&spec),
+            )
+            .await;
+
+        let reconcile_holds_lock = Arc::new(Notify::new());
+        let release_reconcile = Arc::new(Notify::new());
+        let paused = Arc::new(AtomicBool::new(false));
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            let spec = spec.clone();
+            let reconcile_holds_lock = reconcile_holds_lock.clone();
+            let release_reconcile = release_reconcile.clone();
+            let paused = paused.clone();
+            async move {
+                runtime
+                    .reconcile_roster_members_after_lifecycle_lock(
+                        std::slice::from_ref(&spec),
+                        next_generation,
+                        move |_| {
+                            let should_pause = !paused.swap(true, Ordering::SeqCst);
+                            let reconcile_holds_lock = reconcile_holds_lock.clone();
+                            let release_reconcile = release_reconcile.clone();
+                            async move {
+                                if should_pause {
+                                    reconcile_holds_lock.notify_one();
+                                    release_reconcile.notified().await;
+                                }
+                            }
+                        },
+                    )
+                    .await
+            }
+        });
+        reconcile_holds_lock.notified().await;
+
+        let materialize = tokio::spawn({
+            let runtime = runtime.clone();
+            let identity = identity.clone();
+            async move { runtime.materialize(&identity).await }
+        });
+        // Poll the spawned future until it queues behind the lifecycle owner.
+        tokio::task::yield_now().await;
+        release_reconcile.notify_one();
+        reconcile.await??;
+        materialize.await??;
+
+        let (published_generation, status) = runtime.identity_bootstrap_status_with_generation();
+        assert_eq!(published_generation, next_generation);
+        assert_eq!(
+            status.identities.get(&identity).map(|entry| entry.state),
+            Some(IdentityBootstrapState::Active),
+            "G+1 materialization completion was misbound to the older pass"
+        );
+        let entries = runtime.entries.read().await;
+        assert_eq!(
+            entries
+                .get(&identity)
+                .map(|entry| entry.bootstrap_generation),
+            Some(next_generation),
+            "unchanged roster acceptance must still stamp the new generation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_alias_preflight_cannot_mutate_new_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:alias-race")?;
+        let old_alias = "rt:domain:alias-race:0";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let acquired = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "alias-race-test")
+            .await?;
+        let grant = match acquired.get(&identity) {
+            Some(super::super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected initial lease, got {other:?}").into()),
+        };
+        let old_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(old_alias)?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&old_record, grant.fencing_token)
+            .await?;
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider,
+            runtime_instance_id: "alias-race-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(old_record),
+                Some(grant),
+            )
+            .await;
+
+        let preflight_identity = runtime
+            .owned_identity_for_member_alias(old_alias)
+            .await
+            .ok_or("old alias did not pass ownership preflight")?;
+        let new_record = runtime.reset_tracked(&identity).await?;
+        assert_eq!(new_record.generation, ContinuityGeneration::new(1));
+
+        let respawn_error = match runtime
+            .respawn_member_alias_tracked(&preflight_identity, old_alias)
+            .await
+        {
+            Ok(_) => return Err("old alias respawned the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            respawn_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let content = meerkat_core::ContentInput::Text("stale alias delivery".to_string());
+        let send_error = match runtime
+            .send_with_mode_and_interaction_member_alias_tracked(
+                &preflight_identity,
+                old_alias,
+                &content,
+                HandlingMode::Queue,
+                None,
+            )
+            .await
+        {
+            Ok(_) => return Err("old alias delivered to the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            send_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let dispatch = DispatchInput {
+            content,
+            origin: super::super::types::DispatchOrigin::System,
+            correlation_id: None,
+            idempotency_key: None,
+        };
+        let dispatch_error = match runtime
+            .dispatch_member_alias_tracked(&preflight_identity, old_alias, &dispatch)
+            .await
+        {
+            Ok(_) => return Err("old alias dispatched to the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            dispatch_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let rebind_error = match runtime
+            .rebind_session_after_live_respawn_member_alias_tracked(
+                &preflight_identity,
+                old_alias,
+                SessionId::new(),
+            )
+            .await
+        {
+            Ok(_) => return Err("old alias rebound the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            rebind_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let retire_error = match runtime
+            .retire_member_alias_tracked(&preflight_identity, old_alias)
+            .await
+        {
+            Ok(_) => return Err("old alias retired the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            retire_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let reset_error = match runtime
+            .reset_member_alias_tracked(&preflight_identity, old_alias)
+            .await
+        {
+            Ok(_) => return Err("old alias reset the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            reset_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let delete_error = match runtime
+            .delete_identity_member_alias_tracked(&preflight_identity, old_alias)
+            .await
+        {
+            Ok(()) => return Err("old alias deleted the replacement generation".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            delete_error,
+            IdentityRuntimeError::StaleRuntimeAlias { ref requested, .. }
+                if requested == old_alias
+        ));
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.generation, Some(ContinuityGeneration::new(1)));
+        assert_eq!(
+            status.agent_runtime_id.as_ref(),
+            Some(&new_record.agent_runtime_id)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reset_reprofiles_session_from_identity_first_context_roster_provider()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
@@ -4989,7 +10969,7 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn reset_does_not_retire_old_generation_during_cleanup()
+    async fn reset_records_exact_cleanup_debt_without_waiting_for_hung_old_retire()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
         let roster = Arc::new(MutableRoster::new(vec![durable_spec(
@@ -5038,12 +11018,28 @@ mod reset_reprofile_tests {
             bridge.create_profiles().await,
             vec!["domain".to_string(), "security".to_string()]
         );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if bridge
+                    .retired_runtime_ids()
+                    .await
+                    .contains(&old_runtime_id.to_string())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "reset cleanup task never attempted the old generation")?;
         assert!(
-            !bridge
-                .retired_runtime_ids()
+            runtime
+                .pending_reset_bridge_cleanups
+                .read()
                 .await
-                .contains(&old_runtime_id.to_string()),
-            "reset cleanup must not call the cancellation-unsafe mob-member retire path"
+                .values()
+                .any(|cleanup| cleanup.runtime_id.as_ref() == Some(&old_runtime_id)),
+            "hung cleanup must retain the exact old runtime/session debt for shutdown"
         );
         let status = runtime.status(&identity).await?;
         assert_eq!(
@@ -5054,7 +11050,7 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn reset_returns_when_old_session_unregister_fails_after_new_generation()
+    async fn reset_cleanup_failure_stays_retryable_after_new_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
         let roster = Arc::new(MutableRoster::new(vec![durable_spec(
@@ -5106,11 +11102,253 @@ mod reset_reprofile_tests {
             bridge.create_profiles().await,
             vec!["domain".to_string(), "security".to_string()]
         );
+        runtime.join_reset_bridge_cleanup_tasks().await;
+        assert_eq!(
+            runtime.pending_reset_bridge_cleanups.read().await.len(),
+            1,
+            "failed unregister must retain exact cleanup debt"
+        );
+        bridge.allow_unregister_for(&old_session_id).await;
+        assert_eq!(runtime.drain_pending_reset_bridge_cleanups().await?, 1);
+        assert!(
+            runtime
+                .pending_reset_bridge_cleanups
+                .read()
+                .await
+                .is_empty()
+        );
         let status = runtime.status(&identity).await?;
         assert_eq!(
             status.profile.map(|profile| profile.to_string()).as_deref(),
             Some("security")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_renewal_suspends_bridge_before_publishing_replacement_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct RotatingLeaseProvider;
+
+        #[async_trait::async_trait]
+        impl LeaseProvider for RotatingLeaseProvider {
+            async fn acquire_leases(
+                &self,
+                _identities: &[AgentIdentity],
+                _runtime_instance: &str,
+            ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+                Ok(BTreeMap::new())
+            }
+
+            async fn renew_leases(
+                &self,
+                grants: &[LeaseGrant],
+            ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+                Ok(grants
+                    .iter()
+                    .map(|grant| {
+                        let renewed = LeaseGrant {
+                            identity: grant.identity.clone(),
+                            fencing_token: FencingToken::new(grant.fencing_token.get() + 1),
+                            ttl: Duration::from_mins(5),
+                        };
+                        (grant.identity.clone(), LeaseRenewResult::Renewed(renewed))
+                    })
+                    .collect())
+            }
+
+            async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+                Ok(())
+            }
+        }
+
+        let identity = AgentIdentity::parse("domain:renewal-barrier")?;
+        let runtime_instance = "active-renewal-barrier-test";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease = Arc::new(RotatingLeaseProvider);
+        let bridge = Arc::new(RecordingBridge::default());
+        let first = LeaseGrant {
+            identity: identity.clone(),
+            fencing_token: FencingToken::new(1),
+            ttl: Duration::ZERO,
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:renewal-barrier:0")?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, first.fencing_token)
+            .await?;
+        bridge
+            .register_session_runtime_state(
+                &record.session_id,
+                &identity,
+                record.generation,
+                record.checkpoint_version,
+                first.fencing_token,
+            )
+            .await?;
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider: lease,
+            runtime_instance_id: runtime_instance.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(first.clone()),
+            )
+            .await;
+
+        let renewed_token = runtime.ensure_active_lease(&identity).await?;
+        assert!(renewed_token > first.fencing_token);
+        assert_eq!(
+            bridge.authority_transitions().await,
+            vec![
+                format!("register:{}", first.fencing_token.get()),
+                format!("suspend:{}", record.session_id),
+                format!("suspend:{}", record.session_id),
+                format!("register:{}", renewed_token.get()),
+            ],
+            "the old bridge authority must be quiesced before replacement publication"
+        );
+        assert_eq!(
+            runtime
+                .status(&identity)
+                .await?
+                .lease
+                .map(|lease| lease.fencing_token),
+            Some(renewed_token)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_grant_bridge_failure_parks_rotated_token_for_exact_shutdown_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:bridge-fence")?;
+        let runtime_instance = "active-grant-bridge-failure-test";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease = Arc::new(LocalLeaseProvider::new());
+        let bridge = Arc::new(RecordingBridge::default());
+        let first = match lease
+            .acquire_leases(std::slice::from_ref(&identity), runtime_instance)
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant,
+            other => return Err(format!("initial lease was not acquired: {other:?}").into()),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:bridge-fence:0")?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, first.fencing_token)
+            .await?;
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider: lease.clone(),
+            runtime_instance_id: runtime_instance.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(first.clone()),
+            )
+            .await;
+
+        let rotated = match lease
+            .renew_leases(std::slice::from_ref(&first))
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseRenewResult::Renewed(grant)) => grant,
+            other => return Err(format!("lease did not rotate: {other:?}").into()),
+        };
+        runtime
+            .publish_active_grant(&identity, None, &rotated)
+            .await?;
+        {
+            let entries = runtime.entries.read().await;
+            let entry = entries
+                .get(&identity)
+                .ok_or("identity entry disappeared after active grant refresh")?;
+            assert_eq!(entry.state, IdentityLifecycleState::Active);
+            assert_eq!(
+                entry.lease.as_ref().map(|lease| lease.fencing_token),
+                Some(rotated.fencing_token)
+            );
+        }
+
+        let failed_grant = match lease
+            .renew_leases(std::slice::from_ref(&rotated))
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseRenewResult::Renewed(grant)) => grant,
+            other => return Err(format!("second lease did not rotate: {other:?}").into()),
+        };
+        bridge.fail_register_for(&record.session_id).await;
+        let error = match runtime
+            .publish_active_grant(&identity, None, &failed_grant)
+            .await
+        {
+            Ok(_) => return Err("bridge publication failure unexpectedly succeeded".into()),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic live-session rebind failure")
+        );
+        assert_eq!(
+            bridge.registered_fencing_tokens().await,
+            vec![rotated.fencing_token, failed_grant.fencing_token],
+            "every active refresh must project the provider-committed token into the bridge"
+        );
+        {
+            let entries = runtime.entries.read().await;
+            let entry = entries
+                .get(&identity)
+                .ok_or("identity entry disappeared after bridge failure")?;
+            assert_eq!(entry.state, IdentityLifecycleState::Broken);
+            assert!(entry.lease.is_none());
+            assert_eq!(
+                entry
+                    .pending_lease_release
+                    .as_ref()
+                    .map(|grant| grant.fencing_token),
+                Some(failed_grant.fencing_token)
+            );
+        }
+
+        assert_eq!(runtime.release_all_leases_for_shutdown().await?, 1);
+        let failover = lease
+            .acquire_leases(std::slice::from_ref(&identity), "bridge-failure-failover")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
         Ok(())
     }
 }
@@ -5137,5 +11375,74 @@ mod lease_renewal_backoff_tests {
         // Saturates at the cap for arbitrarily many failures (no shift overflow).
         assert_eq!(lease_renewal_failure_backoff(99, max), max);
         assert!(lease_renewal_failure_backoff(2, max) > lease_renewal_failure_backoff(1, max));
+    }
+}
+
+#[cfg(test)]
+mod continuity_repair_supervisor_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider, MutableRosterProvider};
+
+    #[tokio::test]
+    async fn repair_loop_exits_when_supervisor_sender_is_dropped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "dropped-repair-supervisor-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let context = Arc::new(IdentityFirstRuntimeContext::new(
+            runtime,
+            Arc::new(MutableRosterProvider::new(Vec::new())),
+            None,
+            None,
+            None,
+        ));
+        let TrackedContinuityRepairTask { cancel, join } = context
+            .spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy {
+                initial_backoff: Duration::from_mins(1),
+                max_backoff: Duration::from_mins(1),
+            });
+
+        // This is what happens if the owning runtime is dropped without an
+        // explicit shutdown: JoinHandle detaches, while the sender disappears.
+        drop(cancel);
+        tokio::time::timeout(Duration::from_millis(100), join)
+            .await
+            .map_err(|_| "repair loop spun after its cancellation channel closed")??;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod foreground_shutdown_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider};
+
+    #[test]
+    fn foreground_shutdown_value_is_retained_for_late_subscribers()
+    -> Result<(), ContinuityStoreError> {
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "late-foreground-cancel-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+
+        assert_eq!(runtime.foreground_cancel.receiver_count(), 0);
+        runtime.close_foreground_operations();
+        let receiver = runtime.foreground_cancel.subscribe();
+        assert!(
+            *receiver.borrow(),
+            "a task subscribed after close must still observe shutdown"
+        );
+        Ok(())
     }
 }

@@ -21,10 +21,18 @@ use meerkat_mob::{MobEventRouterHandle, MobHandle};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::access::{ACTION_AGENT_VIEW, ACTION_MOB_OBSERVE, AccessController, AccessView};
+use crate::access::{
+    ACTION_AGENT_VIEW, ACTION_MOB_OBSERVE, AccessController, AccessView, AgentResourceAttributes,
+};
+use crate::console_aggregator::{
+    AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
+    ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleVisibilityPolicy, NewConsoleFrame,
+};
 use crate::runtime::{RuntimeDecisionState, extract_bearer_token_from_header};
 use crate::unified_runtime::EventQuery;
-use crate::unified_runtime::mob_events::{MOB_EVENTS_STREAM_PATH, MobEventsStore};
+use crate::unified_runtime::mob_events::{
+    MOB_EVENTS_STREAM_PATH, MobEventsStore, ProjectedMobEvent,
+};
 
 use crate::mob_handle_runtime::{MobRuntime, MobRuntimeError};
 use meerkat_core::comms::SendError;
@@ -83,6 +91,73 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
     }
 }
 
+/// Apply the console's frame visibility/redaction contract to an SSE payload.
+/// SSE remains a distinct transport, but it must not become a side door around
+/// the policy already enforced by the console timeline.
+fn project_sse_payload(
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+    identity: &str,
+    kind: &str,
+    timestamp_ms: u64,
+    payload: Value,
+) -> Option<Value> {
+    let mut projected = NewConsoleFrame {
+        id: None,
+        dedupe_key: format!("sse:{identity}:{kind}:{timestamp_ms}"),
+        timestamp_ms,
+        runtime_key: "sse".to_string(),
+        identity: identity.to_string(),
+        conversation_id: Some(identity.to_string()),
+        session_id: None,
+        kind: kind.to_string(),
+        status: ConsoleFrameStatus::Completed,
+        payload,
+        source: ConsoleFrameSource {
+            kind: ConsoleFrameSourceKind::Synthetic,
+            source_cursor: None,
+        },
+        source_event_id: None,
+        interaction_id: None,
+        turn_id: None,
+        run_id: None,
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    };
+    if let Some(redacted) = visibility_policy.redact_payload(&projected) {
+        projected.payload = redacted;
+        projected.status = ConsoleFrameStatus::Redacted;
+    }
+    let frame = ConsoleFrame {
+        id: projected.dedupe_key.clone(),
+        cursor: ConsoleCursor::from(projected.dedupe_key.as_str()),
+        dedupe_key: projected.dedupe_key.clone(),
+        timestamp_ms: projected.timestamp_ms,
+        runtime_key: projected.runtime_key.clone(),
+        identity: projected.identity.clone(),
+        conversation_id: projected.conversation_id.clone(),
+        session_id: projected.session_id.clone(),
+        kind: projected.kind.clone(),
+        status: projected.status,
+        frame_version: 1,
+        updated_at_ms: None,
+        payload: projected.payload.clone(),
+        source: projected.source.clone(),
+        source_event_id: projected.source_event_id.clone(),
+        interaction_id: projected.interaction_id.clone(),
+        turn_id: projected.turn_id.clone(),
+        run_id: projected.run_id.clone(),
+        parent_frame_id: projected.parent_frame_id.clone(),
+        caused_by_frame_id: projected.caused_by_frame_id.clone(),
+    };
+    visibility_policy
+        .frame_visible(&frame)
+        .then_some(projected.payload)
+}
+
+fn mob_event_authorization_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> String {
+    crate::member_comms_id::runtime_alias_str(runtime_id.identity.as_str()).into_owned()
+}
+
 // ---------------------------------------------------------------------------
 // Tier 2: Per-agent persistent SSE  (MK-005)
 // ---------------------------------------------------------------------------
@@ -97,6 +172,7 @@ struct AgentSseState {
     subscribe_fn: AgentEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     /// Live mob runtime used to prime the access attribute cache at
     /// connection time (roster plus spawn-registered console metadata), so
     /// label/role/lineage rules resolve without a prior
@@ -116,7 +192,13 @@ pub fn agent_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
-    agent_events_sse_router_with_access_and_priming(subscribe_fn, decisions, access, None)
+    agent_events_sse_router_with_access_and_priming(
+        subscribe_fn,
+        decisions,
+        access,
+        None,
+        Arc::new(AllowAllConsoleVisibilityPolicy),
+    )
 }
 
 pub(crate) fn agent_events_sse_router_with_access_and_priming(
@@ -124,6 +206,7 @@ pub(crate) fn agent_events_sse_router_with_access_and_priming(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
     prime_runtime: Option<MobRuntime>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 ) -> Router {
     Router::new()
         .route("/agents/{agent_id}/events", get(agent_events_sse_handler))
@@ -131,6 +214,7 @@ pub(crate) fn agent_events_sse_router_with_access_and_priming(
             subscribe_fn,
             decisions,
             access,
+            visibility_policy,
             prime_runtime,
         })
 }
@@ -148,13 +232,6 @@ async fn agent_events_sse_handler(
         &uri,
     )
     .map_err(|()| sse_unauthorized("agent events stream requires a valid auth token"))?;
-    prime_sse_access_cache(state.prime_runtime.as_ref(), state.access.as_ref()).await;
-    if access_view
-        .as_ref()
-        .is_some_and(|view| view.enforced() && !view.allows_agent(ACTION_AGENT_VIEW, &agent_id))
-    {
-        return Err(sse_access_denied(ACTION_AGENT_VIEW));
-    }
     let agent_id = agent_id.trim().to_string();
     if agent_id.is_empty() {
         return Err(http_error(
@@ -162,17 +239,54 @@ async fn agent_events_sse_handler(
             "agent_id must not be empty",
         ));
     }
+    if let Err(message) =
+        crate::member_comms_id::validate_public_member_alias("agent_id", &agent_id)
+    {
+        return Err(http_error(StatusCode::BAD_REQUEST, &message));
+    }
+    let policy_identity = if let Some(runtime) = state.prime_runtime.as_ref()
+        && let Some((identity, visible)) = crate::http_console::sse_member_identity_visibility(
+            &runtime.handle(),
+            state.visibility_policy.as_ref(),
+            &agent_id,
+        )
+        .await
+    {
+        if !visible {
+            return Err(http_error(StatusCode::NOT_FOUND, "member_not_found"));
+        }
+        identity
+    } else {
+        agent_id.clone()
+    };
+    prime_sse_access_cache(state.prime_runtime.as_ref(), state.access.as_ref()).await;
+    if access_view
+        .as_ref()
+        .is_some_and(|view| view.enforced() && !view.allows_agent(ACTION_AGENT_VIEW, &agent_id))
+    {
+        return Err(sse_access_denied(ACTION_AGENT_VIEW));
+    }
 
     let event_stream = (state.subscribe_fn)(agent_id.clone())
         .await
         .map_err(map_runtime_error)?;
+    let visibility_policy = state.visibility_policy;
 
     let stream = stream! {
         let mut seq = 0_u64;
         tokio::pin!(event_stream);
         while let Some(envelope) = event_stream.next().await {
             let event_name = agent_event_type(&envelope.payload).to_string();
-            let payload = serde_json::to_string(&console_agent_event_payload(&envelope.payload))
+            let Some(payload) = project_sse_payload(
+                visibility_policy.as_ref(),
+                &policy_identity,
+                &event_name,
+                envelope.timestamp_ms,
+                console_agent_event_payload(&envelope.payload),
+            ) else {
+                continue;
+            };
+            let payload = serde_json::to_string(&payload)
                 .unwrap_or_else(|_| "{}".to_string());
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -207,6 +321,7 @@ struct MobSseState {
     subscribe_fn: MobEventSubscribeFn,
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     /// See [`AgentSseState::prime_runtime`].
     prime_runtime: Option<MobRuntime>,
 }
@@ -223,7 +338,13 @@ pub fn mob_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
-    mob_events_sse_router_with_access_and_priming(subscribe_fn, decisions, access, None)
+    mob_events_sse_router_with_access_and_priming(
+        subscribe_fn,
+        decisions,
+        access,
+        None,
+        Arc::new(AllowAllConsoleVisibilityPolicy),
+    )
 }
 
 pub(crate) fn mob_events_sse_router_with_access_and_priming(
@@ -231,6 +352,7 @@ pub(crate) fn mob_events_sse_router_with_access_and_priming(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
     prime_runtime: Option<MobRuntime>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 ) -> Router {
     Router::new()
         .route("/mob/events", get(mob_events_sse_handler))
@@ -238,6 +360,7 @@ pub(crate) fn mob_events_sse_router_with_access_and_priming(
             subscribe_fn,
             decisions,
             access,
+            visibility_policy,
             prime_runtime,
         })
 }
@@ -256,6 +379,83 @@ async fn prime_sse_access_cache(
     ) {
         crate::http_console::prime_access_cache_from_runtime(runtime, controller).await;
     }
+}
+
+fn sse_access_allows_agent_attributes(
+    view: Option<&AccessView>,
+    attributes: &AgentResourceAttributes,
+) -> bool {
+    view.is_none_or(|view| {
+        view.decide_agent_with_attributes(ACTION_AGENT_VIEW, attributes)
+            .is_allow()
+    })
+}
+
+/// Apply the shared authorization and console-visibility projection for one
+/// structural event envelope. Callers must prime the access cache first; an
+/// enforced view then fails closed for identities whose attributes remain
+/// unknown. Attributed historical events also fail closed when no live member
+/// projection exists to evaluate the configured console policy.
+pub(crate) async fn project_structural_envelope_for_console(
+    handle: &MobHandle,
+    runtime: Option<&MobRuntime>,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+    access_view: Option<&AccessView>,
+    projection: ProjectedMobEvent,
+    require_exact_authority: bool,
+) -> Option<crate::MobStructuralEventEnvelope> {
+    let access_view = access_view.filter(|view| view.enforced());
+    let mut envelope = projection.envelope;
+    let policy_identity = if let Some(identity) = envelope.agent_identity.as_deref() {
+        let exact = if let Some(authority) = projection.member_authority.as_ref() {
+            crate::http_console::sse_member_authorization_projection(
+                handle,
+                runtime,
+                visibility_policy,
+                identity,
+                &authority.runtime_id,
+                authority.fence_token,
+            )
+            .await
+        } else {
+            None
+        };
+        if let Some(exact) = exact {
+            if !sse_access_allows_agent_attributes(access_view, &exact.attributes) || !exact.visible
+            {
+                return None;
+            }
+            exact.identity
+        } else {
+            // Protected projections require a generation/fence-bound live
+            // roster snapshot. The public low-level AllowAll router retains
+            // its legacy behavior for structural variants that do not carry
+            // a fence token on the upstream event.
+            if require_exact_authority || access_view.is_some() {
+                return None;
+            }
+            let (console_identity, visible) = crate::http_console::sse_member_identity_visibility(
+                handle,
+                visibility_policy,
+                identity,
+            )
+            .await?;
+            if !visible {
+                return None;
+            }
+            console_identity
+        }
+    } else {
+        crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string()
+    };
+    envelope.data = project_sse_payload(
+        visibility_policy,
+        &policy_identity,
+        &envelope.kind,
+        envelope.timestamp_ms,
+        envelope.data,
+    )?;
+    Some(envelope)
 }
 
 async fn mob_events_sse_handler(
@@ -289,6 +489,8 @@ async fn mob_events_sse_handler(
     // attributes through the controller's shared cache).
     let reprime_runtime = state.prime_runtime.clone();
     let reprime_access = state.access.clone();
+    let visibility_runtime = state.prime_runtime.clone();
+    let visibility_policy = state.visibility_policy;
     let mut router_handle = (state.subscribe_fn)().await.map_err(|err| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -298,38 +500,77 @@ async fn mob_events_sse_handler(
 
     let stream = stream! {
         let mut seq = 0_u64;
-        // Agents we've already attempted a cache re-prime for, so an agent that
-        // genuinely has no roster attributes does not trigger a re-prime on
-        // every event.
-        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Roster role/labels are immutable for one concrete member generation.
+        // Re-prime on the first event and whenever the same public alias moves
+        // to a new generated runtime source, so a respawn cannot inherit stale
+        // authorization attributes from the previous embodiment.
+        let mut authorized_source_by_alias = std::collections::HashMap::<String, String>::new();
         while let Some(attributed) = router_handle.event_rx.recv().await {
             // Decode the comms-safe roster member id back to the public
             // alias space: SDK `EventStream` consumers filter by alias, and
             // fail-closed per-agent ABAC view rules are written against
             // aliases — an encoded id would silently drop both.
             let source = crate::member_comms_id::runtime_event_alias(&attributed.source);
-            // Cold-cache fail-open guard: a member spawned after the one-time
-            // subscribe prime has no cached attributes, so a label/role-scoped
-            // `agent.view` deny would NOT match and the member's events would
-            // leak. Re-prime the shared cache once per newly-seen unknown agent
-            // before the decision so the deny resolves fail-closed.
-            if let Some(view) = stream_view.as_ref()
-                && !view.knows_agent(&source)
-                && reprimed.insert(source.clone())
-            {
+            // ABAC speaks the member/durable alias, not meerkat's upstream
+            // `{member}:{generation}` runtime id. The latter is still kept in
+            // the public event payload for stream ordering/debugging, but
+            // policy evaluation must not append a second generation to an
+            // identity-first runtime alias.
+            let authorization_alias = mob_event_authorization_alias(&attributed.source);
+            let concrete_source = attributed.source.to_string();
+            let source_changed = authorized_source_by_alias
+                .insert(authorization_alias.clone(), concrete_source.clone())
+                .as_deref()
+                != Some(concrete_source.as_str());
+            if stream_view.is_some() && source_changed {
                 prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref()).await;
             }
-            if stream_view
-                .as_ref()
-                .is_some_and(|view| !view.can_view_agent(&source))
-            {
-                continue;
-            }
+            let policy_identity = if let Some(runtime) = visibility_runtime.as_ref() {
+                let Some(exact) = crate::http_console::sse_member_authorization_projection(
+                    &runtime.handle(),
+                    Some(runtime),
+                    visibility_policy.as_ref(),
+                    &authorization_alias,
+                    &attributed.source,
+                    attributed.source_fence_token,
+                )
+                .await
+                else {
+                    // The alias may now name a newer incarnation. Never use
+                    // that member's attributes or visibility as authority for
+                    // this event's exact runtime/fence source.
+                    continue;
+                };
+                if !sse_access_allows_agent_attributes(stream_view.as_ref(), &exact.attributes)
+                    || !exact.visible
+                {
+                    continue;
+                }
+                exact.identity
+            } else {
+                // The low-level AllowAll router predates runtime-aware
+                // projection and has no roster handle. Preserve that default
+                // compatibility, but any enforced access view without exact
+                // roster authority must fail closed.
+                if stream_view.is_some() {
+                    continue;
+                }
+                authorization_alias.clone()
+            };
             let event_name = agent_event_type(&attributed.envelope.payload).to_string();
+            let Some(payload) = project_sse_payload(
+                visibility_policy.as_ref(),
+                &policy_identity,
+                &event_name,
+                attributed.envelope.timestamp_ms,
+                console_agent_event_payload(&attributed.envelope.payload),
+            ) else {
+                continue;
+            };
             let data = json!({
                 "member_id": &source,
                 "source": &source,
-                "payload": console_agent_event_payload(&attributed.envelope.payload),
+                "payload": payload,
             });
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -346,6 +587,95 @@ async fn mob_events_sse_handler(
             .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
             .text(KEEP_ALIVE_TEXT),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::{AccessControlConfig, AccessEffect, AccessRule, AgentResourceAttributes};
+    use std::collections::BTreeMap;
+
+    struct RedactAndFilterPolicy;
+
+    impl ConsoleVisibilityPolicy for RedactAndFilterPolicy {
+        fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
+            frame.kind != "hidden"
+        }
+
+        fn redact_payload(&self, _frame: &NewConsoleFrame) -> Option<Value> {
+            Some(json!({"redacted": true}))
+        }
+    }
+
+    #[test]
+    fn sse_projection_applies_redaction_and_frame_filtering() {
+        let policy = RedactAndFilterPolicy;
+        assert_eq!(
+            project_sse_payload(&policy, "agent", "visible", 1, json!({"secret": true})),
+            Some(json!({"redacted": true}))
+        );
+        assert_eq!(
+            project_sse_payload(&policy, "agent", "hidden", 1, json!({"secret": true})),
+            None
+        );
+    }
+
+    #[test]
+    fn enforced_sse_access_uses_exact_attributes_instead_of_alias_cache()
+    -> Result<(), crate::access::AccessConfigError> {
+        let controller = AccessController::new(AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![
+                AccessRule {
+                    id: "view-all".to_string(),
+                    actions: vec![ACTION_AGENT_VIEW.to_string()],
+                    agents: vec!["*".to_string()],
+                    ..AccessRule::default()
+                },
+                AccessRule {
+                    id: "deny-secret".to_string(),
+                    effect: AccessEffect::Deny,
+                    actions: vec![ACTION_AGENT_VIEW.to_string()],
+                    match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                    ..AccessRule::default()
+                },
+            ],
+            ..AccessControlConfig::default()
+        })?;
+        let view = controller.view_for_subject(None);
+        let secret = AgentResourceAttributes {
+            identity: "historical-secret".to_string(),
+            agent_id: Some("historical-secret".to_string()),
+            role: Some("lead".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+        };
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "historical-secret".to_string(),
+            agent_id: Some("historical-secret".to_string()),
+            role: Some("lead".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "public".to_string())]),
+        });
+        assert!(view.can_view_agent("historical-secret"));
+        assert!(!sse_access_allows_agent_attributes(Some(&view), &secret));
+        Ok(())
+    }
+
+    #[test]
+    fn mob_event_authorization_uses_decoded_alias_without_upstream_generation() {
+        let identity = crate::member_comms_id::mob_member_id("rt:identity:secret:0");
+        let runtime_id =
+            meerkat_mob::ids::AgentRuntimeId::new(identity, meerkat_mob::ids::Generation::new(7));
+
+        assert_eq!(
+            mob_event_authorization_alias(&runtime_id),
+            "rt:identity:secret:0"
+        );
+        assert_eq!(
+            crate::member_comms_id::runtime_event_alias(&runtime_id),
+            "rt:identity:secret:0:7"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +747,11 @@ struct MobStructuralSseState {
     /// embedding).
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+    /// Reference/custom-policy surfaces require a generation/fence-bound
+    /// roster snapshot. The public low-level AllowAll constructor keeps the
+    /// historical projection behavior for variants without exact authority.
+    require_exact_authority: bool,
 }
 
 /// Per-client SSE subscription to the meerkat structural-event ledger.
@@ -447,7 +782,15 @@ pub fn mob_structural_events_sse_router_with_access(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
 ) -> Router {
-    mob_structural_events_sse_router_with_access_and_priming(handle, store, decisions, access, None)
+    mob_structural_events_sse_router_configured(
+        handle,
+        store,
+        decisions,
+        access,
+        None,
+        Arc::new(AllowAllConsoleVisibilityPolicy),
+        false,
+    )
 }
 
 pub(crate) fn mob_structural_events_sse_router_with_access_and_priming(
@@ -456,6 +799,27 @@ pub(crate) fn mob_structural_events_sse_router_with_access_and_priming(
     decisions: Option<RuntimeDecisionState>,
     access: Option<AccessController>,
     prime_runtime: Option<MobRuntime>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+) -> Router {
+    mob_structural_events_sse_router_configured(
+        handle,
+        store,
+        decisions,
+        access,
+        prime_runtime,
+        visibility_policy,
+        true,
+    )
+}
+
+fn mob_structural_events_sse_router_configured(
+    handle: MobHandle,
+    store: MobEventsStore,
+    decisions: Option<RuntimeDecisionState>,
+    access: Option<AccessController>,
+    prime_runtime: Option<MobRuntime>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+    require_exact_authority: bool,
 ) -> Router {
     Router::new()
         .route(
@@ -468,6 +832,8 @@ pub(crate) fn mob_structural_events_sse_router_with_access_and_priming(
             prime_runtime,
             decisions,
             access,
+            visibility_policy,
+            require_exact_authority,
         })
 }
 
@@ -622,28 +988,24 @@ async fn mob_structural_events_sse_handler(
     let reprime_runtime = state.prime_runtime.clone();
     let reprime_handle = state.handle.clone();
     let reprime_access = state.access.clone();
+    let visibility_handle = state.handle.clone();
+    let visibility_policy = state.visibility_policy;
+    let require_exact_authority = state.require_exact_authority;
     let stream = stream! {
-        // Agents we've already attempted a cache re-prime for, so an agent that
-        // genuinely has no roster attributes does not re-prime on every event.
-        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(event) = subscription.event_rx.recv().await {
-            let envelope = store.project_event_for_query(&event).await;
-            if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
+            let projection = store.project_event_with_authority(&event).await;
+            if !crate::unified_runtime::mob_events::envelope_matches(&projection.envelope, &query) {
                 continue;
             }
             // Agent-attributed structural events are gated by `agent.view`
             // on their agent; mob-level events (no attribution) pass on the
             // `mob.observe` grant alone.
-            if let Some(identity) = envelope.agent_identity.as_deref() {
-                // Cold-cache fail-open guard: a member spawned after the
-                // one-time subscribe prime has no cached attributes, so a
-                // label/role-scoped `agent.view` deny would NOT match and the
-                // member's lifecycle would leak. Re-prime the shared cache once
-                // per newly-seen unknown agent before deciding.
-                if let Some(view) = stream_view.as_ref()
-                    && !view.knows_agent(identity)
-                    && reprimed.insert(identity.to_string())
-                {
+            if projection.envelope.agent_identity.is_some() {
+                // Structural envelopes carry the durable alias but not the
+                // concrete member generation. Refresh the live projection for
+                // every attributed event before deciding; the subsequent
+                // visibility lookup fails closed if the alias disappeared.
+                if stream_view.is_some() {
                     if reprime_runtime.is_some() {
                         prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref())
                             .await;
@@ -658,13 +1020,18 @@ async fn mob_structural_events_sse_handler(
                         .await;
                     }
                 }
-                if stream_view
-                    .as_ref()
-                    .is_some_and(|view| !view.can_view_agent(identity))
-                {
-                    continue;
-                }
             }
+            let Some(envelope) = project_structural_envelope_for_console(
+                &visibility_handle,
+                reprime_runtime.as_ref(),
+                visibility_policy.as_ref(),
+                stream_view.as_ref(),
+                projection,
+                require_exact_authority,
+            )
+            .await else {
+                continue;
+            };
             let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
             yield Ok::<Event, Infallible>(
                 Event::default()

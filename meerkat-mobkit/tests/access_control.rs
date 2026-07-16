@@ -9,18 +9,22 @@ use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use futures::StreamExt;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
+use meerkat_core::types::HandlingMode;
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::event::MobEventKind;
 use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::runtime::ConsoleMember;
 use meerkat_mobkit::{
-    AccessControlConfig, AccessController, AccessGroup, AccessRule, AuthPolicy, BigQueryNaming,
-    ConsoleAccessRequest, ConsoleLiveSnapshot, ConsoleModelCapabilities, ConsolePolicy,
-    ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, TopologyControlMode, TopologyControlPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    AccessControlConfig, AccessController, AccessGroup, AccessRule, AgentResourceAttributes,
+    AuthPolicy, BigQueryNaming, ConsoleAccessRequest, ConsoleLiveSnapshot,
+    ConsoleModelCapabilities, ConsolePolicy, ConsoleRestJsonRequest, ConsoleVisibilityPolicy,
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TopologyControlMode, TopologyControlPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, build_runtime_decision_state,
     handle_console_rest_json_route_with_snapshot_and_access,
 };
 use serde_json::{Value, json};
@@ -519,6 +523,116 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
         .status()
 }
 
+async fn retire_historical_secret_member(runtime: &UnifiedRuntime, identity: &str) -> u64 {
+    let before_spawn = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .expect("latest cursor before historical member");
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("historical secret member".into()),
+        None,
+        None,
+    );
+    spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime.spawn(spec).await.expect("spawn historical member");
+    runtime
+        .mob_handle()
+        .retire(MeerkatId::from(identity))
+        .await
+        .expect("retire historical member");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let still_present = runtime
+                .mob_handle()
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|member| member.agent_identity.as_str() == identity);
+            if !still_present {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("retired member should leave the operational roster");
+    before_spawn
+}
+
+async fn assert_sse_replay_emits_no_data(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    match tokio::time::timeout(Duration::from_millis(200), stream.next()).await {
+        Err(_) | Ok(None) => {}
+        Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+        Ok(Some(Ok(bytes))) => panic!(
+            "historical hidden member leaked through SSE replay: {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+    }
+}
+
+async fn assert_sse_emits_no_identity(response: axum::response::Response, identity: &str) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    let mut observed = String::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Err(_) | Ok(None) => break,
+            Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+            Ok(Some(Ok(bytes))) => {
+                observed.push_str(&String::from_utf8_lossy(&bytes));
+                assert!(
+                    !observed.contains(identity),
+                    "hidden identity {identity} leaked through SSE: {observed}"
+                );
+            }
+        }
+    }
+}
+
+async fn assert_structural_sse_excludes_and_includes_cursor(
+    response: axum::response::Response,
+    excluded_cursor: u64,
+    included_cursor: u64,
+) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let excluded = format!("id: mob-evt-{excluded_cursor}");
+    let included = format!("id: mob-evt-{included_cursor}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut observed = String::new();
+    while !observed.contains(&included) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "expected current public cursor {included_cursor} in structural SSE: {observed}"
+        );
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Err(_) | Ok(None) => panic!(
+                "expected current public cursor {included_cursor} in structural SSE: {observed}"
+            ),
+            Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+            Ok(Some(Ok(bytes))) => {
+                observed.push_str(&String::from_utf8_lossy(&bytes));
+                assert!(
+                    !observed.contains(&excluded),
+                    "historical secret cursor {excluded_cursor} leaked through structural SSE: {observed}"
+                );
+            }
+        }
+    }
+}
+
 /// Anonymous callers (open console) only match rules with no subject
 /// constraints: visible/sendable only what those rules grant.
 fn anonymous_router_only_config() -> AccessControlConfig {
@@ -703,6 +817,674 @@ async fn http_router_enforces_access_end_to_end() {
     assert_eq!(
         get_status(&app, "/agents/delivery/events").await,
         StatusCode::OK
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn structural_sse_replay_fails_closed_when_historical_agent_attributes_are_unknown() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "historical-secret";
+    let after_seq = retire_historical_secret_member(&runtime, identity).await;
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    assert!(
+        !controller.view_for_subject(None).knows_agent(identity),
+        "the replay regression requires a genuinely cold historical identity"
+    );
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({ "after_seq": after_seq, "identity": identity }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        assert!(
+            page["result"]["events"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "cold historical attributes must fail closed in {method}: {page:#?}"
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("historical structural SSE request"),
+        )
+        .await
+        .expect("historical structural SSE response");
+    assert_sse_replay_emits_no_data(response).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn structural_sse_replay_fails_closed_without_live_visibility_projection() {
+    #[derive(Debug)]
+    struct HideHistoricalSecret;
+
+    impl ConsoleVisibilityPolicy for HideHistoricalSecret {
+        fn member_visible(&self, member: &ConsoleMember) -> bool {
+            member.agent_identity != "historical-secret"
+        }
+    }
+
+    let (_temp_dir, runtime) = build_access_runtime_fixture().await;
+    let identity = "historical-secret";
+    let after_seq = retire_historical_secret_member(&runtime, identity).await;
+    let app = runtime.build_reference_app_router_with_console_visibility_policy(
+        decision_state(false),
+        Arc::new(HideHistoricalSecret),
+    );
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({ "after_seq": after_seq, "identity": identity }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        assert!(
+            page["result"]["events"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "missing live visibility projection must fail closed in {method}: {page:#?}"
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("historical visibility SSE request"),
+        )
+        .await
+        .expect("historical visibility SSE response");
+    assert_sse_replay_emits_no_data(response).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn long_lived_sse_reauthorizes_stale_alias_when_new_generation_appears() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "label-transition";
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    // Model the additive cache entry left by a prior embodiment of this alias.
+    // The new live generation below has different labels; a long-lived stream
+    // must not treat this known-but-stale entry as current authority.
+    controller.record_agent_attributes(AgentResourceAttributes {
+        identity: identity.to_string(),
+        agent_id: Some(identity.to_string()),
+        role: Some("lead".to_string()),
+        labels: BTreeMap::from([("org".to_string(), "public".to_string())]),
+    });
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    assert!(controller.view_for_subject(None).knows_agent(identity));
+    let after_seq = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .expect("cursor before new generation");
+
+    // Open both long-lived routes while the alias is absent. Their initial
+    // prime therefore cannot overwrite the cached public labels.
+    let mob_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mob/events")
+                .body(Body::empty())
+                .expect("mob SSE request"),
+        )
+        .await
+        .expect("mob SSE response");
+    let structural_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("structural SSE request"),
+        )
+        .await
+        .expect("structural SSE response");
+
+    let mut secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("secret member".into()),
+        None,
+        None,
+    );
+    secret_spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime
+        .spawn(secret_spec)
+        .await
+        .expect("spawn secret member");
+    let member_id = MeerkatId::from(identity);
+    let mut proof_stream = runtime
+        .mob_handle()
+        .subscribe_agent_events(&member_id)
+        .await
+        .expect("proof event stream");
+    runtime
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("secret member handle")
+        .send("emit a test event", HandlingMode::Queue)
+        .await
+        .expect("secret member turn");
+    tokio::time::timeout(Duration::from_secs(2), proof_stream.next())
+        .await
+        .expect("secret member should emit an event")
+        .expect("proof stream should remain open");
+
+    assert_sse_emits_no_identity(mob_response, identity).await;
+    assert_sse_emits_no_identity(structural_response, identity).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn event_surfaces_do_not_reauthorize_secret_generation_as_public_same_alias() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "secret-then-public";
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let events_view = runtime.mob_handle().events();
+    let before_secret = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before secret generation");
+
+    let mut secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("secret generation".into()),
+        None,
+        None,
+    );
+    secret_spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime
+        .spawn(secret_spec)
+        .await
+        .expect("spawn secret generation");
+    let secret_spawn_cursor = events_view
+        .poll_strict(before_secret, 128)
+        .await
+        .expect("secret spawn events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned) if spawned.agent_identity.as_str() == identity => {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("secret member_spawned cursor");
+
+    // Subscribe while the secret incarnation is current, then leave the body
+    // unpolled so its attributed event remains queued until after the alias is
+    // rebound to a public incarnation.
+    let mob_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mob/events")
+                .body(Body::empty())
+                .expect("mob SSE request"),
+        )
+        .await
+        .expect("mob SSE response");
+    let member_id = MeerkatId::from(identity);
+    let mut proof_stream = runtime
+        .mob_handle()
+        .subscribe_agent_events(&member_id)
+        .await
+        .expect("secret proof event stream");
+    runtime
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("secret member handle")
+        .send("emit a secret event", HandlingMode::Queue)
+        .await
+        .expect("secret member turn");
+    tokio::time::timeout(Duration::from_secs(2), proof_stream.next())
+        .await
+        .expect("secret member should emit an event")
+        .expect("proof stream should remain open");
+
+    let before_public = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before public alias projection");
+    // A second exact member binding projects to the same durable console
+    // alias. Its raw id sorts after the first in the roster projection, so the
+    // legacy alias-keyed ABAC cache sees this public row as current. Protected
+    // event surfaces must nevertheless authorize each event by runtime+fence.
+    let public_runtime_identity = "zz-public-incarnation";
+    let mut public_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        public_runtime_identity.to_string(),
+        Some("public alias incarnation".into()),
+        None,
+        None,
+    );
+    public_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "public".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(public_spec)
+        .await
+        .expect("spawn exact public binding for the reused alias");
+    let public_spawn_cursor = events_view
+        .poll_strict(before_public, 128)
+        .await
+        .expect("public alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == public_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("public alias member_spawned cursor");
+
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({
+                "after_seq": before_secret,
+                "event_types": ["member_spawned"],
+                "limit": 1,
+            }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        let cursors = page["result"]["events"]
+            .as_array()
+            .expect("event array")
+            .iter()
+            .filter_map(|event| event["cursor"].as_u64())
+            .collect::<Vec<_>>();
+        assert!(
+            !cursors.contains(&secret_spawn_cursor),
+            "historical secret generation leaked through {method}: {page:#?}"
+        );
+        assert!(
+            cursors.contains(&public_spawn_cursor),
+            "current public binding should remain visible in {method}: {page:#?}"
+        );
+        assert_eq!(
+            cursors.len(),
+            1,
+            "authorization-denied rows must not consume the visible page limit: {page:#?}"
+        );
+        assert_eq!(page["result"]["next_after_seq"], public_spawn_cursor);
+    }
+
+    let structural_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={before_secret}"
+                ))
+                .body(Body::empty())
+                .expect("structural SSE request"),
+        )
+        .await
+        .expect("structural SSE response");
+    assert_structural_sse_excludes_and_includes_cursor(
+        structural_response,
+        secret_spawn_cursor,
+        public_spawn_cursor,
+    )
+    .await;
+
+    // Reverse the starvation order as well: a newer hidden generation must
+    // not consume a backwards snapshot's limit and hide the earlier public
+    // generation. Empty forward pages still advance over the hidden raw row,
+    // and subscribe resumes from that frontier without losing the next public
+    // event.
+    let before_latest_secret = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before latest secret alias projection");
+    let latest_secret_runtime_identity = "zzz-secret-incarnation";
+    let mut latest_secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        latest_secret_runtime_identity.to_string(),
+        Some("latest secret alias incarnation".into()),
+        None,
+        None,
+    );
+    latest_secret_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "secret".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(latest_secret_spec)
+        .await
+        .expect("spawn latest exact secret binding");
+    let latest_secret_cursor = events_view
+        .poll_strict(before_latest_secret, 128)
+        .await
+        .expect("latest secret alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == latest_secret_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("latest secret alias member_spawned cursor");
+    let latest_secret_frontier = events_view
+        .latest_cursor()
+        .await
+        .expect("raw frontier after latest secret alias projection");
+
+    let backward = rpc(
+        &app,
+        "mobkit/mob_events/query",
+        json!({ "event_types": ["member_spawned"], "limit": 1 }),
+    )
+    .await;
+    assert_eq!(backward["error"], Value::Null, "{backward:#?}");
+    assert_eq!(
+        backward["result"]["events"][0]["cursor"],
+        public_spawn_cursor
+    );
+    assert_eq!(backward["result"]["events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        backward["result"]["next_after_seq"], latest_secret_frontier,
+        "backwards snapshot must expose the raw ledger frontier"
+    );
+
+    let empty_subscribe = rpc(
+        &app,
+        "mobkit/mob_events/subscribe",
+        json!({
+            "after_seq": public_spawn_cursor,
+            "event_types": ["member_spawned"],
+            "limit": 1,
+        }),
+    )
+    .await;
+    assert_eq!(
+        empty_subscribe["error"],
+        Value::Null,
+        "{empty_subscribe:#?}"
+    );
+    assert!(
+        empty_subscribe["result"]["events"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "hidden-only snapshot should remain empty: {empty_subscribe:#?}"
+    );
+    assert_eq!(
+        empty_subscribe["result"]["next_after_seq"],
+        latest_secret_frontier
+    );
+
+    let before_next_public = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before next public alias projection");
+    let next_public_runtime_identity = "zzzz-public-incarnation";
+    let mut next_public_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        next_public_runtime_identity.to_string(),
+        Some("next public alias incarnation".into()),
+        None,
+        None,
+    );
+    next_public_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "public".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(next_public_spec)
+        .await
+        .expect("spawn next exact public binding");
+    let next_public_cursor = events_view
+        .poll_strict(before_next_public, 128)
+        .await
+        .expect("next public alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == next_public_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("next public alias member_spawned cursor");
+    let subscribe_url = empty_subscribe["result"]["subscribe_url"]
+        .as_str()
+        .expect("subscribe URL");
+    let resumed_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(subscribe_url)
+                .body(Body::empty())
+                .expect("resumed structural SSE request"),
+        )
+        .await
+        .expect("resumed structural SSE response");
+    assert_structural_sse_excludes_and_includes_cursor(
+        resumed_response,
+        latest_secret_cursor,
+        next_public_cursor,
+    )
+    .await;
+    assert_sse_emits_no_identity(mob_response, identity).await;
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn public_member_ingress_rejects_encoded_roster_ids_before_abac_and_resolution() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "everyone-views".to_string(),
+                actions: vec!["agent.view".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-delivery-view".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["delivery".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "everyone-spawns".to_string(),
+                actions: vec!["agent.spawn".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Pre-fix, ABAC evaluated this raw spelling (matching the broad allow but
+    // not the targeted deny), then member resolution decoded it to
+    // `delivery`. Public ingress must reject before either step.
+    let encoded_rpc = rpc(
+        &app,
+        "mobkit/get_member",
+        json!({ "member_id": "mk--delivery" }),
+    )
+    .await;
+    assert_eq!(encoded_rpc["error"]["code"], json!(-32602));
+    assert!(
+        encoded_rpc["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("encoded roster-id")),
+        "{encoded_rpc:#?}"
+    );
+
+    assert_eq!(
+        get_status(&app, "/agents/mk--delivery/events").await,
+        StatusCode::BAD_REQUEST,
+        "per-agent SSE must reject encoded roster ids before its agent.view decision"
+    );
+    assert_eq!(
+        get_status(&app, "/agents/%20delivery%20/events").await,
+        StatusCode::FORBIDDEN,
+        "per-agent SSE must trim the public alias before its targeted agent.view decision"
+    );
+
+    let forged_label = rpc(
+        &app,
+        "mobkit/ensure_member",
+        json!({
+            "role": "lead",
+            "agent_identity": "raw-imposter",
+            "labels": { "agent_identity": "delivery" },
+        }),
+    )
+    .await;
+    assert_eq!(forged_label["error"]["code"], json!(-32602));
+    assert!(
+        forged_label["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("runtime-authoritative")),
+        "{forged_label:#?}"
+    );
+
+    #[derive(Debug)]
+    struct HideDelivery;
+
+    impl ConsoleVisibilityPolicy for HideDelivery {
+        fn member_visible(&self, member: &ConsoleMember) -> bool {
+            member.agent_identity != "delivery"
+        }
+    }
+
+    let hidden_app = runtime.build_reference_app_router_with_console_visibility_policy(
+        decision_state(false),
+        Arc::new(HideDelivery),
+    );
+    assert_eq!(
+        get_status(&hidden_app, "/agents/delivery/events").await,
+        StatusCode::NOT_FOUND,
+        "a visibility-hidden agent must be rejected before SSE subscription"
     );
 
     let _ = runtime.mob_handle().stop().await;

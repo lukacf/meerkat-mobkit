@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Lease renewal authority
+
+- Documented the `LeaseProvider.renewLeases()` commit boundary: rejected
+  promises are pre-commit and must leave every input grant unchanged; returned
+  renewed or lost results are committed per identity.
+
+### Graceful gateway shutdown
+
+- `MobKitRuntime.shutdown()` now closes the persistent gateway's stdin and
+  awaits its runtime cleanup. Handshake-capable gateways advertise a bounded
+  shutdown horizon (335 seconds for the stock gateway), keeping provider
+  callbacks routable through their public 120-second completion contract and
+  the gateway's 130-second hard wire deadline before the bounded `SIGTERM` /
+  `SIGKILL` fallback. Cleanup acknowledgement is strictly boolean and fails
+  closed when missing or malformed; older/custom gateways retain the EOF
+  protocol. Authority-mutating providers receive an optional cancellation and
+  deadline context; the host aborts at 125 seconds and suppresses late callback
+  responses so a timed-out renewal cannot publish unnoticed authority.
+
 ### Identity-first agent memory
 
 - Added `MobKit.builder().agentMemory(...)` for gateway-backed

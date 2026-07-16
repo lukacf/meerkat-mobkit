@@ -240,7 +240,14 @@ class LeaseProviderProtocol(Protocol):
 
     async def renew_leases(
         self, grants: list[LeaseGrant],
-    ) -> dict[str, LeaseRenewResult]: ...
+    ) -> dict[str, LeaseRenewResult]:
+        """Renew atomically from the caller's perspective.
+
+        Raising is a pre-commit failure: the provider MUST leave every input
+        grant unchanged. Each returned ``renewed`` or ``lost`` result is
+        committed for that identity before the call returns.
+        """
+        ...
 
     async def release_leases(
         self, grants: list[LeaseGrant],

@@ -4,18 +4,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{self, StreamExt};
 use meerkat_client::LlmClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
 use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore};
 use crate::contact_directory::ContactDirectory;
+pub use crate::identity_first::IdentityBootstrapMode;
 use crate::identity_first::{
     AgentCustomizer, AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryProvider,
     AgentMemoryRuntimeInjector, AgentRuntimeServices, ContinuitySessionStoreAdapter,
     DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
     LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
-    RosterProvider, TopologyProvider, lazy_register_flow, restore_flow,
+    RosterProvider, TopologyProvider,
 };
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
@@ -46,22 +46,6 @@ const DEFAULT_MAX_SESSIONS: usize = 64;
 /// Default builder timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Controls how identity-first durable agents are materialized during
-/// `UnifiedRuntime::build()`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum IdentityBootstrapMode {
-    /// Compatibility mode: `build()` synchronously creates/resumes every
-    /// identity in the roster.
-    #[default]
-    EagerMaterialize,
-    /// Register roster/topology/continuity metadata only; create/resume a
-    /// concrete member on first send/dispatch/explicit materialize.
-    LazyMaterialize,
-    /// Return from `build()` after lazy metadata registration and warm
-    /// identities in a background task with bounded concurrency.
-    LazyWithBackgroundWarm { concurrency: usize },
-}
-
 #[derive(Default)]
 pub struct UnifiedRuntimeBuilder {
     // --- Legacy path (mob_spec directly) ---
@@ -88,6 +72,7 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
+    identity_bootstrap_mode_configured: bool,
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
@@ -278,6 +263,7 @@ impl UnifiedRuntimeBuilder {
     /// Set how identity-first durable agents are materialized during build.
     pub fn identity_bootstrap_mode(mut self, mode: IdentityBootstrapMode) -> Self {
         self.identity_bootstrap_mode = mode;
+        self.identity_bootstrap_mode_configured = true;
         self
     }
 
@@ -479,6 +465,10 @@ impl UnifiedRuntimeBuilder {
     pub async fn build(mut self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         // --- Identity-first builder validation ---
 
+        self.identity_bootstrap_mode
+            .validate()
+            .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
+
         let has_persistent_state = self.persistent_state_path.is_some();
         let has_continuity_store = self.continuity_store.is_some();
         let has_lease_provider = self.lease_provider.is_some();
@@ -501,7 +491,8 @@ impl UnifiedRuntimeBuilder {
             || has_roster_provider
             || has_topology_provider
             || has_agent_customizer
-            || has_identity_runtime_instance_id;
+            || has_identity_runtime_instance_id
+            || self.identity_bootstrap_mode_configured;
         if self.agent_memory_provider.is_some() && self.agent_memory_from_persistent_state {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                 "agent_memory() and persistent_agent_memory() are mutually exclusive".to_string(),
@@ -793,24 +784,21 @@ impl UnifiedRuntimeBuilder {
             .await
             .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?;
 
-        let identity_first_context = if wants_identity_first {
+        let (identity_first_context, identity_roster_specs) = if wants_identity_first {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
             ) = if let Some(state_path) = self.persistent_state_path.as_ref() {
                 let continuity_path = state_path.join("identity_continuity.sqlite");
-                let local_store = LocalContinuityStore::open(&continuity_path).map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open identity_continuity.sqlite at {}: {e}",
-                        continuity_path.display()
-                    ))
-                })?;
-                let high_water = local_store.max_fencing_token().map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to read identity continuity fencing high-water at {}: {e}",
-                        continuity_path.display()
-                    ))
-                })?;
+                let (local_store, high_water) =
+                    LocalContinuityStore::open_with_fencing_floor(continuity_path.clone())
+                        .await
+                        .map_err(|e| {
+                            UnifiedRuntimeBuilderError::Io(format!(
+                                "failed to open identity_continuity.sqlite and read its fencing high-water at {}: {e}",
+                                continuity_path.display()
+                            ))
+                        })?;
                 (
                     Arc::new(local_store),
                     Arc::new(LocalLeaseProvider::with_floor(high_water)),
@@ -882,101 +870,18 @@ impl UnifiedRuntimeBuilder {
                     )
                 })?;
 
-            match self.identity_bootstrap_mode.clone() {
-                IdentityBootstrapMode::EagerMaterialize => {
-                    restore_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                        agent_customizer.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "restore_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                }
-                IdentityBootstrapMode::LazyMaterialize => {
-                    lazy_register_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "lazy_register_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                }
-                IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency } => {
-                    if concurrency == 0 {
-                        return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                            "LazyWithBackgroundWarm concurrency must be greater than 0".to_string(),
-                        ));
-                    }
-                    lazy_register_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "lazy_register_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                    let warm_runtime = identity_runtime.clone();
-                    let warm_identities = roster_specs
-                        .iter()
-                        .map(|spec| spec.identity.clone())
-                        .collect::<Vec<_>>();
-                    tokio::spawn(async move {
-                        stream::iter(warm_identities.into_iter().map(|identity| {
-                            let runtime = warm_runtime.clone();
-                            async move {
-                                runtime.best_effort_background_warm_identity(identity).await;
-                            }
-                        }))
-                        .buffer_unordered(concurrency)
-                        .collect::<Vec<_>>()
-                        .await;
-                    });
-                }
-            }
-
-            Some(Arc::new(
-                IdentityFirstRuntimeContext::new_with_lazy_materialization(
-                    identity_runtime,
-                    roster_provider,
-                    self.topology_provider.clone(),
-                    agent_customizer.clone(),
-                    Some(runtime.mob_runtime.handle().definition().clone()),
-                    !matches!(
-                        self.identity_bootstrap_mode,
-                        IdentityBootstrapMode::EagerMaterialize
-                    ),
-                ),
-            ))
+            let identity_context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+                identity_runtime,
+                roster_provider,
+                self.topology_provider.clone(),
+                agent_customizer.clone(),
+                Some(runtime.mob_runtime.handle().definition().clone()),
+                self.identity_bootstrap_mode.clone(),
+            ));
+            (Some(identity_context), Some(roster_specs))
         } else {
-            None
+            (None, None)
         };
-        let identity_lease_renewal_task = identity_first_context
-            .as_ref()
-            .map(|context| context.runtime.clone().spawn_lease_renewal_task());
-        let identity_continuity_repair_task = identity_first_context.as_ref().map(|context| {
-            context
-                .clone()
-                .spawn_broken_identity_repair_task(Default::default())
-        });
-
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
             access_controller: self.access_controller,
@@ -996,12 +901,25 @@ impl UnifiedRuntimeBuilder {
             contact_directory: self.contact_directory,
             session_bridge,
             identity_first_context,
-            identity_lease_renewal_task: tokio::sync::Mutex::new(identity_lease_renewal_task),
-            identity_continuity_repair_task: tokio::sync::Mutex::new(
-                identity_continuity_repair_task,
-            ),
+            identity_lease_renewal_task: tokio::sync::Mutex::new(None),
+            identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             console_log_store,
             ..runtime
+        };
+
+        // Run the host's last fallible pre-bootstrap hook before identity
+        // hydration can start any runtime-owned background work. In
+        // particular, LazyWithBackgroundWarm spawns materialization from
+        // bootstrap_roster; a later hook failure must not detach that task or
+        // leave its leases alive after build() returns an error.
+        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
+            hook().await.map_err(|err| {
+                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
+                    err.to_string(),
+                ))
+            })?
+        } else {
+            serde_json::Value::Null
         };
 
         // Classic-path bundled-store wiring: the console Memory panel (§9.3),
@@ -1063,15 +981,17 @@ impl UnifiedRuntimeBuilder {
             )
             .map_err(UnifiedRuntimeBuilderError::Io)?;
             runtime.set_memory_panel_store(stack.store.clone());
-            // Observe-stream feed lives for the runtime's lifetime.
-            std::mem::forget(crate::spawn_member_event_observer(
-                runtime.mob_handle(),
-                stack.sinks,
-            ));
+            // Runtime ownership makes both infinite supervisors visible to
+            // normal shutdown and to the identity-bootstrap failure cleanup
+            // path below. Leaking either handle here would leave ghost memory
+            // work behind after build() returned Err.
+            *runtime.agent_memory_observer_task.lock().await = Some(
+                crate::spawn_member_event_observer(runtime.mob_handle(), stack.sinks),
+            );
             if let Some(steward) = stack.steward.as_ref() {
                 // Library mode has no schedule host; the guarded interval
                 // loop drives dreams.
-                std::mem::forget(steward.spawn_dream_loop());
+                *runtime.agent_memory_steward_task.lock().await = Some(steward.spawn_dream_loop());
             }
             tracing::info!(
                 distiller = stack.distiller.is_some(),
@@ -1080,26 +1000,61 @@ impl UnifiedRuntimeBuilder {
             );
         }
 
-        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
-            hook().await.map_err(|err| {
-                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
-                    err.to_string(),
-                ))
-            })?
-        } else {
-            serde_json::Value::Null
-        };
+        // All fallible builder-only setup is complete. Install the circular
+        // MobRuntime <-> IdentityRuntime authority only now: earlier hook or
+        // memory-stack errors can return by ordinary drop without retaining
+        // the runtime and its persistent controller locks.
+        if let (Some(context), Some(roster_specs)) = (
+            runtime.identity_first_context.as_ref(),
+            identity_roster_specs.as_ref(),
+        ) {
+            runtime
+                .mob_runtime
+                .install_identity_runtime_authority(Arc::clone(&context.runtime));
+            *runtime
+                .implicit_delegate_identity_runtime
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Arc::clone(&context.runtime));
+
+            // Identity bootstrap may now launch background warming; if it
+            // fails, drive the fully assembled runtime through the same
+            // cooperative shutdown path used by embedders so partially
+            // acquired authority is not detached.
+            if let Err(err) = context.bootstrap_roster(roster_specs).await {
+                let build_error = UnifiedRuntimeBuilderError::Bootstrap(
+                    UnifiedRuntimeBootstrapError::IdentityFirst(format!(
+                        "identity bootstrap failed: {err}"
+                    )),
+                );
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
+
+            *runtime.identity_lease_renewal_task.lock().await =
+                Some(context.runtime.clone().spawn_tracked_lease_renewal_task());
+            *runtime.identity_continuity_repair_task.lock().await = Some(
+                context
+                    .clone()
+                    .spawn_tracked_broken_identity_repair_task(Default::default()),
+            );
+        }
+
         if runtime.identity_first_context.is_none()
             && let Some(ref discovery) = runtime.discovery
         {
             let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
-            runtime
-                .spawn_many(spawn_specs)
-                .await
-                .map_err(UnifiedRuntimeBootstrapError::Mob)
-                .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+            if let Err(err) = runtime.spawn_many(spawn_specs).await {
+                let build_error =
+                    UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::Mob(err));
+                // The full memory stack may already own infinite observer and
+                // steward supervisors. Dropping their JoinHandles detaches
+                // them, so failed classic discovery follows normal shutdown.
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
         }
 
         // Run initial edge reconciliation after spawn completes

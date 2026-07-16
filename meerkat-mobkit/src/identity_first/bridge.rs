@@ -57,6 +57,16 @@ fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
     matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
 }
 
+/// Strong proof that reset's first retire reached the archive boundary after
+/// quiescing the physical member and retained the exact Mob cleanup anchor.
+/// Broader lifecycle classifiers include ambiguous pre-disposal failures and
+/// are not sufficient authority for destructive snapshot abandonment.
+fn is_reset_superseded_archive_cleanup_anchor(error: &meerkat_mob::MobError) -> bool {
+    let error = error.to_string();
+    error.contains("disposal completed but ArchiveSession failed")
+        || error.contains("disposal aborted at ArchiveSession")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum MemberRepairRespawnFailure {
     DegradedTopologyRestore { failed_peer_ids: Vec<String> },
@@ -289,6 +299,14 @@ async fn submit_internal_bridge_work(
 /// mob-level counterpart.
 #[async_trait]
 pub trait SessionBridge: Send + Sync {
+    /// Whether the lower mob plane already contains a caller-owned raw member
+    /// whose public alias collides with a durable identity. Identity restore
+    /// uses this under the shared namespace reservation before publishing or
+    /// materializing a durable owner.
+    async fn raw_member_alias_exists(&self, _alias: &str) -> Result<bool, BridgeError> {
+        Ok(false)
+    }
+
     /// Spawn a new mob member for a freshly-created identity.
     async fn create_session(
         &self,
@@ -298,6 +316,17 @@ pub trait SessionBridge: Send + Sync {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
+    /// Whether `resume_session` consumes the continuity-store snapshot payload.
+    ///
+    /// The default is deliberately conservative for compatibility with custom
+    /// bridges: restore callers must load and pass the persisted snapshot unless
+    /// an implementation explicitly declares that session-id-based resume is
+    /// sufficient. Implementations returning `false` must not inspect the
+    /// `snapshot` argument; bootstrap callers may pass an empty payload.
+    fn requires_resume_snapshot(&self) -> bool {
+        true
+    }
 
     /// Resume a mob member from a previously checkpointed snapshot.
     ///
@@ -367,6 +396,21 @@ pub trait SessionBridge: Send + Sync {
     /// Retire a mob member.
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError>;
 
+    /// Retire a member whose session was superseded by a committed destructive
+    /// reset, then remove the old session's bridge persistence authority.
+    ///
+    /// The default keeps compatibility for custom bridges that do not expose
+    /// Meerkat's retained archive-cleanup anchor. The concrete Mob bridge
+    /// overrides this with the quiesce / CAS-abandon / exact-retry protocol.
+    async fn retire_reset_superseded_member(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        self.retire_member(runtime_id).await?;
+        self.unregister_session_runtime_state(session_id).await
+    }
+
     /// Wire two active same-mob members by their concrete runtime IDs.
     async fn wire_peer(&self, _a: &AgentRuntimeId, _b: &AgentRuntimeId) -> Result<(), BridgeError> {
         Err(BridgeError::Mob("peer wiring not supported".to_string()))
@@ -431,6 +475,19 @@ pub trait SessionBridge: Send + Sync {
         _fencing_token: FencingToken,
     ) -> Result<CheckpointVersion, BridgeError> {
         Ok(checkpoint_version)
+    }
+
+    /// Temporarily quiesce persistence for a concrete bridge session while
+    /// external lease authority is rotated. Implementations must drain writes
+    /// admitted before this call and reject later mutations until a successful
+    /// [`Self::register_session_runtime_state`] publishes the replacement
+    /// fencing token. The compatibility default uses permanent unregister;
+    /// bridges with an in-process session-store adapter should preserve state.
+    async fn suspend_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        self.unregister_session_runtime_state(session_id).await
     }
 
     /// Remove identity ownership metadata for a concrete bridge session.
@@ -601,6 +658,59 @@ impl MobSessionBridge {
             // The recompute fallback must mint the same comms-safe roster id
             // as the spawn path (meerkat 0.7 MemberCommsName rejects `:`).
             .unwrap_or_else(|| crate::member_comms_id::mob_member_id(runtime_id.as_str()))
+    }
+
+    /// Retire one session-owned member through the MobMachine's retained
+    /// cleanup anchor until the structural roster entry is actually gone.
+    ///
+    /// Meerkat can finish physical disposal and then reject the final archive
+    /// projection. That first call deliberately leaves a Retiring roster
+    /// anchor so the same exact incarnation can resume cleanup. Treating the
+    /// error as immediate success leaks that stopped anchor into whole-mob
+    /// shutdown, where it is interrupted again and prevents the mob from
+    /// reaching `Stopped`. Retry once through the generated cleanup authority
+    /// and verify the post-condition instead of laundering partial cleanup.
+    async fn retire_session_owned_member_to_absence(
+        &self,
+        member_id: &MobAgentIdentity,
+    ) -> Result<(), meerkat_mob::MobError> {
+        let retained_cleanup_error = match self.handle.retire(member_id.clone()).await {
+            Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => None,
+            Err(error) if is_recoverable_session_owned_retire_cleanup_error(&error.to_string()) => {
+                Some(error)
+            }
+            Err(error) => return Err(error),
+        };
+
+        if let Some(initial_error) = retained_cleanup_error {
+            tracing::warn!(
+                member_id = %member_id,
+                error = %initial_error,
+                "session-owned retire retained a cleanup anchor; retrying exact incarnation"
+            );
+            match self.handle.retire(member_id.clone()).await {
+                Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => {}
+                Err(retry_error) => {
+                    return Err(meerkat_mob::MobError::Internal(format!(
+                        "session-owned retire cleanup retry failed for {member_id}: initial: \
+                         {initial_error}; retry: {retry_error}"
+                    )));
+                }
+            }
+        }
+
+        if self
+            .handle
+            .list_all_members()
+            .await
+            .iter()
+            .any(|entry| entry.agent_identity == *member_id)
+        {
+            return Err(meerkat_mob::MobError::Internal(format!(
+                "session-owned retire reported success but retained roster anchor {member_id}"
+            )));
+        }
+        Ok(())
     }
 
     async fn member_wires(
@@ -841,15 +951,10 @@ impl MobSessionBridge {
         labels: BTreeMap<String, String>,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), RepairResumeFailure> {
-        match self.handle.retire(member_id.clone()).await {
-            Ok(()) => {}
-            Err(meerkat_mob::MobError::MemberNotFound(_)) => {}
-            Err(err) if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
-            Err(err) => {
-                return Err(RepairResumeFailure::Rejected(BridgeError::Mob(format!(
-                    "repair retire before resume: {err}"
-                ))));
-            }
+        if let Err(err) = self.retire_session_owned_member_to_absence(member_id).await {
+            return Err(RepairResumeFailure::Rejected(BridgeError::Mob(format!(
+                "repair retire before resume: {err}"
+            ))));
         }
         self.forget_runtime_member(runtime_id).await;
 
@@ -1133,6 +1238,25 @@ fn runtime_binding_from_wire(
 
 #[async_trait]
 impl SessionBridge for MobSessionBridge {
+    async fn raw_member_alias_exists(&self, alias: &str) -> Result<bool, BridgeError> {
+        let members = self.handle.list_members_including_retiring().await;
+        let authoritative_members = self.runtime_members.read().await;
+        Ok(members.iter().any(|member| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()) == alias
+                && !authoritative_members
+                    .values()
+                    .any(|owned| owned == member.agent_identity.as_str())
+                && crate::member_comms_id::durable_identity_label(&member.labels) != Some(alias)
+        }))
+    }
+
+    fn requires_resume_snapshot(&self) -> bool {
+        // MemberLaunchMode::Resume loads the durable session by id from the
+        // configured Meerkat session store; this bridge never reads the
+        // continuity-store payload passed to resume_session.
+        false
+    }
+
     async fn create_session(
         &self,
         _identity: &AgentIdentity,
@@ -1219,18 +1343,13 @@ impl SessionBridge for MobSessionBridge {
                     error = %error,
                     "resume_session hit a roster collision; retiring the stale member and retrying resume"
                 );
-                match self.handle.retire(mid.clone()).await {
-                    Ok(()) => {}
-                    Err(err)
-                        if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {}
-                    Err(err) => {
-                        return Err(resume_rejected(
-                            identity,
-                            session_id,
-                            &err,
-                            "collision retire before resume retry",
-                        ));
-                    }
+                if let Err(err) = self.retire_session_owned_member_to_absence(&mid).await {
+                    return Err(resume_rejected(
+                        identity,
+                        session_id,
+                        &err,
+                        "collision retire before resume retry",
+                    ));
                 }
                 // meerkat 0.7.29 (ask 32): retire disposition is machine-
                 // authorized and incarnation-scoped — a retire that matches
@@ -1483,26 +1602,88 @@ impl SessionBridge for MobSessionBridge {
 
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        match self.handle.retire(mid).await {
-            Ok(()) => {
-                self.forget_runtime_member(runtime_id).await;
-                Ok(())
+        self.retire_session_owned_member_to_absence(&mid)
+            .await
+            .map_err(|error| BridgeError::Mob(error.to_string()))?;
+        self.forget_runtime_member(runtime_id).await;
+        Ok(())
+    }
+
+    async fn retire_reset_superseded_member(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
+        let retained_archive_anchor = match self.handle.retire(mid.clone()).await {
+            // Both outcomes prove the physical member is quiesced. They do
+            // not prove that a terminal/superseded session projection is
+            // absent: a prior cleanup attempt can retire the member and be
+            // cancelled before deleting the identity-owned snapshot.
+            Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => None,
+            Err(initial_error) if is_reset_superseded_archive_cleanup_anchor(&initial_error) => {
+                Some(initial_error)
             }
-            // All callers of `retire_member` are identity-first session-owned
-            // agents, so a mob-archive miss (NotFound for a registered runtime
-            // session) is the expected outcome of disposing one — not an
-            // orphan. Tolerate it so reset/delete_identity complete instead of
-            // bricking the identity until a process restart.
-            Err(err) if is_recoverable_session_owned_retire_cleanup_error(&err.to_string()) => {
-                // Disposal completed and the member left the roster, so the
-                // runtime-member mapping is stale — forget it (matching the
-                // success path) instead of leaking one entry per tolerated
-                // retire across the process lifetime.
-                self.forget_runtime_member(runtime_id).await;
-                Ok(())
-            }
-            Err(err) => Err(BridgeError::Mob(err.to_string())),
+            Err(error) => return Err(BridgeError::Mob(error.to_string())),
+        };
+
+        let adapter = self.continuity_session_store.as_ref().ok_or_else(|| {
+            let prior = retained_archive_anchor
+                .as_ref()
+                .map_or_else(String::new, |error| format!(": {error}"));
+            BridgeError::Mob(format!(
+                "reset retire quiesced superseded member {mid}, but the bridge has no continuity session-store authority{prior}"
+            ))
+        })?;
+        if let Some(initial_error) = retained_archive_anchor.as_ref() {
+            tracing::warn!(
+                member_id = %mid,
+                session_id = %session_id,
+                error = %initial_error,
+                "reset retire quiesced the superseded member but retained its archive cleanup anchor; abandoning the exact old snapshot before retry"
+            );
         }
+        // This exact-CAS abandon is required even when retire returned Ok or
+        // MemberNotFound. Otherwise a cancellation after physical retirement
+        // but before this step lets a retry clear the cleanup debt while
+        // leaving the superseded snapshot durable forever.
+        adapter
+            .abandon_superseded_session(session_id)
+            .await
+            .map_err(|error| {
+                let prior = retained_archive_anchor
+                    .as_ref()
+                    .map_or_else(String::new, |error| format!(" after {error}"));
+                BridgeError::Mob(format!(
+                    "reset retire could not abandon superseded session {session_id}{prior}: {error}"
+                ))
+            })?;
+
+        if let Some(initial_error) = retained_archive_anchor {
+            match self.handle.retire(mid.clone()).await {
+                Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => {}
+                Err(retry_error) => {
+                    return Err(BridgeError::Mob(format!(
+                        "reset retire cleanup retry failed for {mid}: initial: {initial_error}; retry: {retry_error}"
+                    )));
+                }
+            }
+        }
+
+        if self
+            .handle
+            .list_all_members()
+            .await
+            .iter()
+            .any(|entry| entry.agent_identity == mid)
+        {
+            return Err(BridgeError::Mob(format!(
+                "reset retire reported success but retained roster anchor {mid}"
+            )));
+        }
+
+        self.forget_runtime_member(runtime_id).await;
+        self.unregister_session_runtime_state(session_id).await
     }
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
@@ -1624,6 +1805,19 @@ impl SessionBridge for MobSessionBridge {
                 .map_err(|err| BridgeError::Mob(format!("continuity register_session: {err}")));
         }
         Ok(checkpoint_version)
+    }
+
+    async fn suspend_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        if let Some(adapter) = self.continuity_session_store.as_ref() {
+            adapter
+                .suspend_session(session_id)
+                .await
+                .map_err(|err| BridgeError::Mob(format!("continuity suspend_session: {err}")))?;
+        }
+        Ok(())
     }
 
     async fn unregister_session_runtime_state(
@@ -2079,6 +2273,27 @@ mod tests {
         assert!(!is_missing_durable_session_snapshot_error(
             "model provider returned rate limit"
         ));
+    }
+
+    #[test]
+    fn reset_snapshot_abandon_requires_exact_archive_boundary_proof() {
+        let completed = meerkat_mob::MobError::Internal(
+            "member disposal completed but ArchiveSession failed: stale continuity fence"
+                .to_string(),
+        );
+        let aborted = meerkat_mob::MobError::Internal(
+            "member disposal aborted at ArchiveSession: store unavailable".to_string(),
+        );
+        let ambiguous = meerkat_mob::MobError::Internal(
+            "previous member cleanup ambiguous for member rt-agent-alpha-0".to_string(),
+        );
+
+        assert!(is_reset_superseded_archive_cleanup_anchor(&completed));
+        assert!(is_reset_superseded_archive_cleanup_anchor(&aborted));
+        assert!(
+            !is_reset_superseded_archive_cleanup_anchor(&ambiguous),
+            "ambiguous pre-disposal failures must not authorize snapshot deletion"
+        );
     }
 
     #[test]

@@ -729,6 +729,49 @@ impl TopologyController {
         self.inner.state.read().await.pending.is_some()
     }
 
+    /// Return the same-authority logical edges named by the durable recovery
+    /// journal. These edges remain MobKit-owned across a process restart even
+    /// though the in-memory managed-edge set starts empty.
+    pub(crate) async fn pending_local_recovery_edges(
+        &self,
+    ) -> Result<
+        BTreeSet<(
+            crate::identity_first::AgentIdentity,
+            crate::identity_first::AgentIdentity,
+        )>,
+        TopologyControlError,
+    > {
+        let state = self.inner.state.read().await;
+        let Some(pending) = state.pending.as_ref() else {
+            return Ok(BTreeSet::new());
+        };
+        let authority = state.authority.as_deref().ok_or_else(|| {
+            TopologyControlError::Persistence(
+                "pending topology recovery has no bound authority".to_string(),
+            )
+        })?;
+
+        pending
+            .operations
+            .iter()
+            .filter_map(|mutation| mutation.edge.local_desired_edge(authority))
+            .map(|edge| {
+                let (a, b) = edge.endpoints();
+                let a = crate::identity_first::AgentIdentity::parse(a).map_err(|error| {
+                    TopologyControlError::InvalidRequest(format!(
+                        "invalid persisted topology identity {a:?}: {error}"
+                    ))
+                })?;
+                let b = crate::identity_first::AgentIdentity::parse(b).map_err(|error| {
+                    TopologyControlError::InvalidRequest(format!(
+                        "invalid persisted topology identity {b:?}: {error}"
+                    ))
+                })?;
+                Ok(if a <= b { (a, b) } else { (b, a) })
+            })
+            .collect()
+    }
+
     pub(crate) async fn pending_operation_id(&self) -> Option<String> {
         self.inner
             .state
@@ -1234,20 +1277,31 @@ impl TopologyRuntimeHandle {
         &self,
         context: &crate::identity_first::IdentityFirstRuntimeContext,
     ) -> UnifiedRuntimeReconcileEdgesReport {
+        Self::reconcile_identity_first_with_controller(&self.controller, context).await
+    }
+
+    async fn reconcile_identity_first_with_controller(
+        controller: &TopologyController,
+        context: &crate::identity_first::IdentityFirstRuntimeContext,
+    ) -> UnifiedRuntimeReconcileEdgesReport {
         let (_, provider_edges) = match context.topology_snapshot_inputs().await {
             Ok(inputs) => inputs,
             Err(error) => {
                 return identity_reconcile_failure("discover", error.to_string());
             }
         };
-        let desired_edges = match self
-            .controller
-            .compose_managed_peer_edges(&provider_edges)
-            .await
-        {
+        let desired_edges = match controller.compose_managed_peer_edges(&provider_edges).await {
             Ok(edges) => edges,
             Err(error) => return recovery_failure_report(error),
         };
+        let pending_recovery_edges = match controller.pending_local_recovery_edges().await {
+            Ok(edges) => edges,
+            Err(error) => return recovery_failure_report(error),
+        };
+        context
+            .runtime
+            .retain_managed_peer_edges(&pending_recovery_edges)
+            .await;
         let actual_edges = match context.runtime.logical_peer_edges().await {
             Ok(edges) => edges,
             Err(error) => return identity_reconcile_failure("inspect", error.to_string()),
@@ -1270,6 +1324,42 @@ impl TopologyRuntimeHandle {
                 .collect(),
             ..Default::default()
         };
+        if let Err(error) = context
+            .runtime
+            .reconcile_managed_peer_edges_admitted(&desired_edges)
+            .await
+        {
+            for edge in &desired_edges {
+                if let Ok(logical) =
+                    DesiredPeerEdge::new(edge.a().to_string(), edge.b().to_string())
+                {
+                    report.failures.push(
+                        crate::unified_runtime::edge_types::EdgeReconcileFailure {
+                            edge: logical,
+                            operation: "reconcile".to_string(),
+                            error: error.to_string(),
+                        },
+                    );
+                }
+            }
+            return report;
+        }
+        let actual_after = match context.runtime.logical_peer_edges().await {
+            Ok(edges) => edges
+                .iter()
+                .map(|edge| (edge.a().clone(), edge.b().clone()))
+                .collect::<BTreeSet<_>>(),
+            Err(error) => return identity_reconcile_failure("inspect_after", error.to_string()),
+        };
+        let actual_any_half_after = match context.runtime.logical_peer_edges_any_half().await {
+            Ok(edges) => edges
+                .iter()
+                .map(|edge| (edge.a().clone(), edge.b().clone()))
+                .collect::<BTreeSet<_>>(),
+            Err(error) => {
+                return identity_reconcile_failure("inspect_any_half_after", error.to_string());
+            }
+        };
         for edge in &desired_edges {
             let logical = match DesiredPeerEdge::new(edge.a().to_string(), edge.b().to_string()) {
                 Ok(edge) => edge,
@@ -1278,50 +1368,47 @@ impl TopologyRuntimeHandle {
                 }
             };
             let key = (edge.a().clone(), edge.b().clone());
-            if actual.contains(&key) {
+            if actual_after.contains(&key) && actual.contains(&key) {
                 report.retained_edges.push(logical);
-                continue;
-            }
-            match context
-                .runtime
-                .mutate_managed_peer_edge_admitted(TopologyAction::Connect, edge)
-                .await
-            {
-                Ok(()) => report.wired_edges.push(logical),
-                Err(error) => {
-                    report.failures.push(
-                        crate::unified_runtime::edge_types::EdgeReconcileFailure {
-                            edge: logical,
-                            operation: "wire".to_string(),
-                            error: error.to_string(),
-                        },
-                    );
-                }
+            } else if actual_after.contains(&key) {
+                report.wired_edges.push(logical);
+            } else {
+                // Lazy identity bootstrap deliberately leaves topology edges
+                // pending until both endpoints materialize. Do not claim a
+                // concrete wire that the bridge never created.
+                report.skipped_missing_members.push(logical);
             }
         }
         for (a, b) in managed.difference(&desired) {
-            let edge = match crate::identity_first::ManagedPeerEdge::new(a.clone(), b.clone()) {
-                Ok(edge) => edge,
-                Err(_) => continue,
-            };
             let logical = match DesiredPeerEdge::new(a.to_string(), b.to_string()) {
                 Ok(edge) => edge,
                 Err(_) => continue,
             };
-            match context
+            if actual_any_half_after.contains(&(a.clone(), b.clone())) {
+                report.skipped_missing_members.push(logical);
+            } else {
+                report.unwired_edges.push(logical);
+            }
+        }
+        if !pending_recovery_edges.is_empty() {
+            let recovery_complete = match context
                 .runtime
-                .mutate_managed_peer_edge_admitted(TopologyAction::Disconnect, &edge)
+                .pending_recovery_is_physically_complete(&desired_edges, &pending_recovery_edges)
                 .await
             {
-                Ok(()) => report.unwired_edges.push(logical),
+                Ok(complete) => complete,
                 Err(error) => {
-                    report.failures.push(
-                        crate::unified_runtime::edge_types::EdgeReconcileFailure {
-                            edge: logical,
-                            operation: "unwire".to_string(),
-                            error: error.to_string(),
-                        },
-                    );
+                    return identity_reconcile_failure("inspect_recovery", error.to_string());
+                }
+            };
+            if !recovery_complete {
+                for (a, b) in &pending_recovery_edges {
+                    let Ok(logical) = DesiredPeerEdge::new(a.to_string(), b.to_string()) else {
+                        continue;
+                    };
+                    if !report.skipped_missing_members.contains(&logical) {
+                        report.skipped_missing_members.push(logical);
+                    }
                 }
             }
         }
@@ -2987,6 +3074,384 @@ impl std::error::Error for TopologyControlError {}
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::identity_first::{
+        AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
+        CheckpointVersion, ContinuityGeneration, ContinuityRecord, ContinuityStore,
+        DurabilityPolicy, DurableAgentSpec, IdentityFirstRuntimeContext, IdentityRuntime,
+        IdentityRuntimeConfig, LeaseAcquireResult, LeaseProvider, LocalContinuityStore,
+        LocalLeaseProvider, ResumeSessionOutcome, RosterContext, RosterError, RosterProvider,
+        SessionBridge, SessionSnapshot,
+    };
+    use meerkat_core::types::SessionId;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    struct RecoveryBridge {
+        wires: AsyncMutex<BTreeSet<(AgentRuntimeId, AgentRuntimeId)>>,
+        wire_calls: AtomicUsize,
+        unwire_calls: AtomicUsize,
+    }
+
+    struct RecoveryRoster(Vec<DurableAgentSpec>);
+
+    #[async_trait::async_trait]
+    impl RosterProvider for RecoveryRoster {
+        async fn roster(
+            &self,
+            _context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    impl RecoveryBridge {
+        fn new(wires: impl IntoIterator<Item = (AgentRuntimeId, AgentRuntimeId)>) -> Self {
+            Self {
+                wires: AsyncMutex::new(
+                    wires
+                        .into_iter()
+                        .map(|(a, b)| canonical_runtime_edge(a, b))
+                        .collect(),
+                ),
+                wire_calls: AtomicUsize::new(0),
+                unwire_calls: AtomicUsize::new(0),
+            }
+        }
+
+        async fn wires(&self) -> BTreeSet<(AgentRuntimeId, AgentRuntimeId)> {
+            self.wires.lock().await.clone()
+        }
+    }
+
+    fn canonical_runtime_edge(
+        a: AgentRuntimeId,
+        b: AgentRuntimeId,
+    ) -> (AgentRuntimeId, AgentRuntimeId) {
+        if a <= b { (a, b) } else { (b, a) }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for RecoveryBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        fn requires_resume_snapshot(&self) -> bool {
+            false
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "delivery not used in recovery test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in recovery test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+
+        async fn wire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.wire_calls.fetch_add(1, Ordering::SeqCst);
+            self.wires
+                .lock()
+                .await
+                .insert(canonical_runtime_edge(a.clone(), b.clone()));
+            Ok(())
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            Ok(self.wires.lock().await.iter().cloned().collect())
+        }
+
+        async fn current_member_wires_any_half(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            self.current_member_wires().await
+        }
+
+        async fn unwire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.unwire_calls.fetch_add(1, Ordering::SeqCst);
+            self.wires
+                .lock()
+                .await
+                .remove(&canonical_runtime_edge(a.clone(), b.clone()));
+            Ok(())
+        }
+    }
+
+    fn recovery_spec(identity: AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity,
+            profile: meerkat_mob::ProfileName::from("recovery"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        }
+    }
+
+    async fn seed_recovery_continuity(
+        store: &LocalContinuityStore,
+        leases: &LocalLeaseProvider,
+        identities: &[(AgentIdentity, AgentRuntimeId)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let identity_keys = identities
+            .iter()
+            .map(|(identity, _)| identity.clone())
+            .collect::<Vec<_>>();
+        let acquired = leases
+            .acquire_leases(&identity_keys, "recovery-seed")
+            .await?;
+        let mut grants = Vec::with_capacity(identities.len());
+        for (identity, runtime_id) in identities {
+            let grant = match acquired.get(identity) {
+                Some(LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+                other => {
+                    return Err(format!("expected seed lease for {identity}, got {other:?}").into());
+                }
+            };
+            store
+                .upsert_continuity_record(
+                    &ContinuityRecord {
+                        identity: identity.clone(),
+                        agent_runtime_id: runtime_id.clone(),
+                        session_id: SessionId::new(),
+                        generation: ContinuityGeneration::new(0),
+                        checkpoint_version: CheckpointVersion::new(0),
+                    },
+                    grant.fencing_token,
+                )
+                .await?;
+            grants.push(grant);
+        }
+        leases.release_leases(&grants).await?;
+        Ok(())
+    }
+
+    async fn restarted_pending_controller(
+        path: &Path,
+        authority: &str,
+        action: TopologyAction,
+        a: &AgentIdentity,
+        b: &AgentIdentity,
+    ) -> Result<TopologyController, Box<dyn std::error::Error>> {
+        let controller =
+            TopologyController::load_or_default(TopologyControlPolicy::default(), path)?;
+        let desired = DesiredPeerEdge::new(a.to_string(), b.to_string())?;
+        let operation_edge = TopologyEdge::new(
+            TopologyEndpoint {
+                authority: Some(authority.to_string()),
+                identity: a.to_string(),
+            },
+            TopologyEndpoint {
+                authority: Some(authority.to_string()),
+                identity: b.to_string(),
+            },
+        )?;
+        {
+            let mut state = controller.inner.state.write().await;
+            state.schema_version = TOPOLOGY_STATE_SCHEMA_VERSION;
+            state.authority = Some(authority.to_string());
+            state.revision = 1;
+            match action {
+                TopologyAction::Connect | TopologyAction::Reconnect => {
+                    state.additions.insert(desired.clone());
+                }
+                TopologyAction::Disconnect => {
+                    state.suppressions.insert(desired.clone());
+                }
+            }
+            state.pending = Some(PendingTopologyOperation {
+                operation_id: format!("pending-{action:?}"),
+                audit_record_id: String::new(),
+                idempotency_key: format!("recovery-{action:?}"),
+                fingerprint: format!("fingerprint-{action:?}"),
+                actor: "recovery-test".to_string(),
+                base_revision: 0,
+                target_revision: 1,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                reason: Some("synthetic interrupted apply".to_string()),
+                operations: vec![TopologyMutation {
+                    action,
+                    edge: operation_edge,
+                }],
+                phase: PendingTopologyPhase::Applying,
+                rollback_additions: if action == TopologyAction::Disconnect {
+                    BTreeSet::from([desired])
+                } else {
+                    BTreeSet::new()
+                },
+                rollback_suppressions: BTreeSet::new(),
+                rollback_cross_additions: BTreeSet::new(),
+                rollback_cross_suppressions: BTreeSet::new(),
+                rollback_revision: 0,
+                last_recovery_error: None,
+                recovery_attempts: 0,
+            });
+            controller.persist_candidate(&state)?;
+        }
+        drop(controller);
+        Ok(TopologyController::load_or_default(
+            TopologyControlPolicy::default(),
+            path,
+        )?)
+    }
+
+    async fn assert_pending_recovery_waits_for_materialization(
+        action: TopologyAction,
+        initially_connected: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let a = AgentIdentity::parse("domain:recovery-a")?;
+        let b = AgentIdentity::parse("domain:recovery-b")?;
+        let runtime_a = AgentRuntimeId::parse("rt:domain:recovery-a:0")?;
+        let runtime_b = AgentRuntimeId::parse("rt:domain:recovery-b:0")?;
+        let controller = restarted_pending_controller(
+            &temp.path().join("topology.json"),
+            "recovery-mob",
+            action,
+            &a,
+            &b,
+        )
+        .await?;
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let leases = Arc::new(LocalLeaseProvider::new());
+        seed_recovery_continuity(
+            store.as_ref(),
+            leases.as_ref(),
+            &[
+                (a.clone(), runtime_a.clone()),
+                (b.clone(), runtime_b.clone()),
+            ],
+        )
+        .await?;
+        let bridge = Arc::new(RecoveryBridge::new(if initially_connected {
+            vec![(runtime_a.clone(), runtime_b.clone())]
+        } else {
+            Vec::new()
+        }));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider: leases,
+            runtime_instance_id: "recovery-runtime".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let roster = vec![recovery_spec(a.clone()), recovery_spec(b.clone())];
+        crate::identity_first::lazy_register_flow(runtime.as_ref(), &roster, None).await?;
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
+
+        runtime.set_topology_controller(controller.clone());
+        let context = IdentityFirstRuntimeContext::new_with_lazy_materialization(
+            runtime.clone(),
+            Arc::new(RecoveryRoster(roster)),
+            None,
+            None,
+            None,
+            true,
+        );
+        let handle_report = {
+            let _admission = controller.mutation_guard().await;
+            controller.prepare_pending_recovery().await?;
+            let report = TopologyRuntimeHandle::reconcile_identity_first_with_controller(
+                &controller,
+                &context,
+            )
+            .await;
+            controller
+                .finalize_recovered_pending(report.is_complete())
+                .await?;
+            report
+        };
+
+        assert!(controller.has_pending().await);
+        assert!(!handle_report.is_complete());
+        let expected_managed_while_pending =
+            usize::from(initially_connected || action == TopologyAction::Disconnect);
+        assert_eq!(
+            runtime.managed_peer_edges_snapshot().await.len(),
+            expected_managed_while_pending
+        );
+        assert_eq!(bridge.wire_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.unwire_calls.load(Ordering::SeqCst), 0);
+
+        runtime.materialize(&a).await?;
+        assert!(controller.has_pending().await);
+        assert_eq!(
+            runtime.managed_peer_edges_snapshot().await.len(),
+            expected_managed_while_pending
+        );
+        assert_eq!(bridge.wire_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(bridge.unwire_calls.load(Ordering::SeqCst), 0);
+
+        runtime.materialize(&b).await?;
+        assert!(!controller.has_pending().await);
+        let expected_connected = action == TopologyAction::Disconnect;
+        assert_eq!(!bridge.wires().await.is_empty(), expected_connected);
+        assert_eq!(
+            bridge.wire_calls.load(Ordering::SeqCst),
+            usize::from(!initially_connected && expected_connected)
+        );
+        assert_eq!(
+            bridge.unwire_calls.load(Ordering::SeqCst),
+            usize::from(initially_connected && !expected_connected)
+        );
+        Ok(())
+    }
 
     fn audit_record(label: &str) -> TopologyOperationRecord {
         let now = chrono::Utc::now().to_rfc3339();
@@ -3175,5 +3640,53 @@ mod tests {
             vec![1, 2]
         );
         assert_eq!(after.latest_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn interrupted_connect_handle_recovery_survives_dormancy_until_unwired() {
+        assert_pending_recovery_waits_for_materialization(TopologyAction::Connect, true)
+            .await
+            .expect("connect recovery");
+    }
+
+    #[tokio::test]
+    async fn physically_complete_recovery_still_waits_for_dormant_endpoints() {
+        assert_pending_recovery_waits_for_materialization(TopologyAction::Connect, false)
+            .await
+            .expect("physically complete dormant recovery");
+    }
+
+    #[tokio::test]
+    async fn interrupted_disconnect_recovery_survives_dormancy_until_rewired() {
+        assert_pending_recovery_waits_for_materialization(TopologyAction::Disconnect, false)
+            .await
+            .expect("disconnect recovery");
+    }
+
+    #[tokio::test]
+    async fn identity_topology_mutation_without_bridge_fails_closed() {
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(
+                LocalContinuityStore::in_memory().expect("continuity store"),
+            ),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "no-bridge-topology".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        let edge = crate::identity_first::ManagedPeerEdge::new(
+            AgentIdentity::parse("domain:no-bridge-a").expect("identity a"),
+            AgentIdentity::parse("domain:no-bridge-b").expect("identity b"),
+        )
+        .expect("edge");
+
+        let error = runtime
+            .mutate_managed_peer_edge_admitted(TopologyAction::Connect, &edge)
+            .await
+            .expect_err("a missing bridge must not report physical mutation success");
+        assert!(error.to_string().contains("requires a session bridge"));
+        assert!(runtime.managed_peer_edges_snapshot().await.is_empty());
     }
 }

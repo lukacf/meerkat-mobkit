@@ -274,11 +274,29 @@ pub trait ControlHandler: Send + Sync + 'static {
 /// contact directory advertises a TCP/UDS endpoint for this gateway.
 pub struct MobHandleControlHandler {
     handle: meerkat_mob::MobHandle,
+    identity_runtime: Option<std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 }
 
 impl MobHandleControlHandler {
+    /// Construct a classic member-plane handler. Reserved generated aliases
+    /// fail closed because no durable identity authority was supplied.
     pub fn new(handle: meerkat_mob::MobHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            identity_runtime: None,
+        }
+    }
+
+    /// Construct an identity-aware handler that pins every generated-alias
+    /// operation to its current durable generation.
+    pub fn with_identity_runtime(
+        handle: meerkat_mob::MobHandle,
+        identity_runtime: std::sync::Arc<crate::identity_first::IdentityRuntime>,
+    ) -> Self {
+        Self {
+            handle,
+            identity_runtime: Some(identity_runtime),
+        }
     }
 }
 
@@ -288,6 +306,7 @@ impl ControlHandler for MobHandleControlHandler {
         request: ControlRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ControlResponse> + Send + '_>> {
         let handle = self.handle.clone();
+        let identity_runtime = self.identity_runtime.clone();
         Box::pin(async move {
             match request {
                 ControlRequest::Wire {
@@ -299,12 +318,15 @@ impl ControlHandler for MobHandleControlHandler {
                 } => {
                     handle_wire(
                         &handle,
-                        &remote_member,
-                        &local_peer_spec_address,
-                        &local_comms_name,
-                        &local_peer_id,
-                        local_pubkey_b64.as_deref(),
-                        /* wire = */ true,
+                        WireControlParams {
+                            remote_member: &remote_member,
+                            local_peer_spec_address: &local_peer_spec_address,
+                            local_comms_name: &local_comms_name,
+                            local_peer_id: &local_peer_id,
+                            local_pubkey_b64: local_pubkey_b64.as_deref(),
+                            wire: true,
+                        },
+                        identity_runtime.as_ref(),
                     )
                     .await
                 }
@@ -317,37 +339,113 @@ impl ControlHandler for MobHandleControlHandler {
                 } => {
                     handle_wire(
                         &handle,
-                        &remote_member,
-                        &local_peer_spec_address,
-                        &local_comms_name,
-                        &local_peer_id,
-                        local_pubkey_b64.as_deref(),
-                        /* wire = */ false,
+                        WireControlParams {
+                            remote_member: &remote_member,
+                            local_peer_spec_address: &local_peer_spec_address,
+                            local_comms_name: &local_comms_name,
+                            local_peer_id: &local_peer_id,
+                            local_pubkey_b64: local_pubkey_b64.as_deref(),
+                            wire: false,
+                        },
+                        identity_runtime.as_ref(),
                     )
                     .await
                 }
                 ControlRequest::Inject {
                     remote_member,
                     content,
-                } => handle_inject(&handle, &remote_member, content).await,
+                } => {
+                    handle_inject(&handle, &remote_member, content, identity_runtime.as_ref()).await
+                }
                 ControlRequest::LookupMember { remote_member } => {
-                    handle_lookup_member(&handle, &remote_member).await
+                    handle_lookup_member(&handle, &remote_member, identity_runtime.as_ref()).await
                 }
             }
         })
     }
 }
 
+fn control_identity_error(error: crate::identity_first::IdentityRuntimeError) -> (String, String) {
+    let code = match error {
+        crate::identity_first::IdentityRuntimeError::StaleRuntimeAlias { .. } => {
+            "stale_runtime_alias"
+        }
+        crate::identity_first::IdentityRuntimeError::UnknownIdentity(_) => "unknown_identity",
+        crate::identity_first::IdentityRuntimeError::InvalidState { .. } => "identity_not_active",
+        _ => "identity_error",
+    };
+    (code.to_string(), error.to_string())
+}
+
+const TRACKED_CONTROL_ERROR_PREFIX: &str = "mobkit-control-operation:";
+
+fn tracked_control_error(error: crate::identity_first::IdentityRuntimeError) -> (String, String) {
+    if let crate::identity_first::IdentityRuntimeError::Internal(message) = &error
+        && let Some(encoded) = message.strip_prefix(TRACKED_CONTROL_ERROR_PREFIX)
+        && let Ok((code, message)) = serde_json::from_str::<(String, String)>(encoded)
+    {
+        return (code, message);
+    }
+    control_identity_error(error)
+}
+
+async fn run_control_member_operation<T, F, Fut>(
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_alias: &str,
+    operation: F,
+) -> Result<T, (String, String)>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, (String, String)>> + Send + 'static,
+{
+    let member_alias = crate::member_comms_id::runtime_alias_str(member_alias).into_owned();
+    if let Some(runtime) = identity_runtime {
+        let target = runtime
+            .member_alias_lifecycle_target(&member_alias)
+            .await
+            .map_err(control_identity_error)?;
+        if let Some(target) = target {
+            return crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                vec![target],
+                move || async move {
+                    operation().await.map_err(|error| {
+                        format!(
+                            "{TRACKED_CONTROL_ERROR_PREFIX}{}",
+                            serde_json::to_string(&error)
+                                .unwrap_or_else(|_| "[\"identity_error\",\"unserializable control error\"]".to_string())
+                        )
+                    })
+                },
+            )
+            .await
+            .map_err(tracked_control_error);
+        }
+    }
+    if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
+        return Err((
+            "identity_authority_unavailable".to_string(),
+            format!("generated member alias '{member_alias}' requires the owning IdentityRuntime"),
+        ));
+    }
+    operation().await
+}
+
+struct WireControlParams<'a> {
+    remote_member: &'a str,
+    local_peer_spec_address: &'a str,
+    local_comms_name: &'a str,
+    local_peer_id: &'a str,
+    local_pubkey_b64: Option<&'a str>,
+    wire: bool,
+}
+
 async fn handle_wire(
     handle: &meerkat_mob::MobHandle,
-    remote_member: &str,
-    local_peer_spec_address: &str,
-    local_comms_name: &str,
-    local_peer_id: &str,
-    local_pubkey_b64: Option<&str>,
-    wire: bool,
+    params: WireControlParams<'_>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 ) -> ControlResponse {
-    let pubkey = match local_pubkey_b64 {
+    let pubkey = match params.local_pubkey_b64 {
         Some(s) if !s.is_empty() => match crate::auth::peer_keys::decode_pubkey_b64(s) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
@@ -361,15 +459,15 @@ async fn handle_wire(
     };
     let spec_result = match pubkey {
         Some(bytes) => meerkat_core::comms::TrustedPeerDescriptor::unsigned_with_pubkey(
-            local_comms_name,
-            local_peer_id,
+            params.local_comms_name,
+            params.local_peer_id,
             bytes,
-            local_peer_spec_address,
+            params.local_peer_spec_address,
         ),
         None => meerkat_core::comms::TrustedPeerDescriptor::test_only_unsigned(
-            local_comms_name,
-            local_peer_id,
-            local_peer_spec_address,
+            params.local_comms_name,
+            params.local_peer_id,
+            params.local_peer_spec_address,
         ),
     };
     let spec = match spec_result {
@@ -384,22 +482,28 @@ async fn handle_wire(
     // The control plane speaks the public alias space; the local roster
     // holds comms-safe encoded ids (meerkat 0.7 MemberCommsName), so encode
     // at this boundary.
-    let mid = crate::member_comms_id::mob_member_id(remote_member);
-    let result = if wire {
-        handle
-            .wire(mid, meerkat_mob::PeerTarget::External(spec))
-            .await
-    } else {
-        handle
-            .unwire(mid, meerkat_mob::PeerTarget::External(spec))
-            .await
-    };
+    let operation_handle = handle.clone();
+    let operation_member =
+        crate::member_comms_id::runtime_alias_str(params.remote_member).into_owned();
+    let wire = params.wire;
+    let result =
+        run_control_member_operation(identity_runtime, params.remote_member, move || async move {
+            let mid = crate::member_comms_id::mob_member_id(&operation_member);
+            let result = if wire {
+                operation_handle
+                    .wire(mid, meerkat_mob::PeerTarget::External(spec))
+                    .await
+            } else {
+                operation_handle
+                    .unwire(mid, meerkat_mob::PeerTarget::External(spec))
+                    .await
+            };
+            result.map_err(|error| ("mob_error".to_string(), error.to_string()))
+        })
+        .await;
     match result {
         Ok(()) => ControlResponse::Ok,
-        Err(err) => ControlResponse::Err {
-            code: "mob_error".to_string(),
-            message: err.to_string(),
-        },
+        Err((code, message)) => ControlResponse::Err { code, message },
     }
 }
 
@@ -407,6 +511,7 @@ async fn handle_inject(
     handle: &meerkat_mob::MobHandle,
     remote_member: &str,
     content: serde_json::Value,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 ) -> ControlResponse {
     let content_input: meerkat_core::ContentInput = match serde_json::from_value(content) {
         Ok(c) => c,
@@ -417,65 +522,78 @@ async fn handle_inject(
             };
         }
     };
-    let mid = crate::member_comms_id::mob_member_id(remote_member);
-    let member = match handle.member(&mid).await {
-        Ok(m) => m,
-        Err(err) => {
-            return ControlResponse::Err {
-                code: "unknown_member".to_string(),
-                message: err.to_string(),
-            };
-        }
-    };
-    if let Err(err) = member
-        .send(content_input, meerkat_core::types::HandlingMode::Queue)
-        .await
+    let operation_handle = handle.clone();
+    let operation_member = crate::member_comms_id::runtime_alias_str(remote_member).into_owned();
+    match run_control_member_operation(identity_runtime, remote_member, move || async move {
+        let mid = crate::member_comms_id::mob_member_id(&operation_member);
+        operation_handle
+            .member(&mid)
+            .await
+            .map_err(|error| ("unknown_member".to_string(), error.to_string()))?
+            .send(content_input, meerkat_core::types::HandlingMode::Queue)
+            .await
+            .map_err(|error| ("mob_error".to_string(), error.to_string()))?;
+        operation_handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .map(|session_id| session_id.to_string())
+            .ok_or_else(|| {
+                (
+                    "no_session".to_string(),
+                    format!("member '{operation_member}' has no bound bridge session"),
+                )
+            })
+    })
+    .await
     {
-        return ControlResponse::Err {
-            code: "mob_error".to_string(),
-            message: err.to_string(),
-        };
-    }
-    match handle.resolve_bridge_session_id(&mid).await {
-        Some(sid) => ControlResponse::Injected {
-            session_id: sid.to_string(),
-        },
-        None => ControlResponse::Err {
-            code: "no_session".to_string(),
-            message: format!("member '{remote_member}' has no bound bridge session"),
-        },
+        Ok(session_id) => ControlResponse::Injected { session_id },
+        Err((code, message)) => ControlResponse::Err { code, message },
     }
 }
 
 async fn handle_lookup_member(
     handle: &meerkat_mob::MobHandle,
     remote_member: &str,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
 ) -> ControlResponse {
+    let operation_handle = handle.clone();
+    let operation_member = crate::member_comms_id::runtime_alias_str(remote_member).into_owned();
+    match run_control_member_operation(identity_runtime, remote_member, move || async move {
+        handle_lookup_member_raw(&operation_handle, &operation_member).await
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err((code, message)) => ControlResponse::Err { code, message },
+    }
+}
+
+async fn handle_lookup_member_raw(
+    handle: &meerkat_mob::MobHandle,
+    remote_member: &str,
+) -> Result<ControlResponse, (String, String)> {
     let mid = crate::member_comms_id::mob_member_id(remote_member);
     let mob_id = handle.mob_id().to_string();
     let entry = match handle.get_member(&mid).await {
         Ok(Some(e)) => e,
         Ok(None) => {
-            return ControlResponse::Err {
-                code: "unknown_member".to_string(),
-                message: format!("member '{remote_member}' not in mob '{mob_id}'"),
-            };
+            return Err((
+                "unknown_member".to_string(),
+                format!("member '{remote_member}' not in mob '{mob_id}'"),
+            ));
         }
         // A faulted lookup is a mob error, not an unknown member.
         Err(err) => {
-            return ControlResponse::Err {
-                code: "mob_error".to_string(),
-                message: err.to_string(),
-            };
+            return Err(("mob_error".to_string(), err.to_string()));
         }
     };
     let peer_id = match entry.peer_id() {
         Some(p) => p.to_string(),
         None => {
-            return ControlResponse::Err {
-                code: "no_comms".to_string(),
-                message: format!("member '{remote_member}' has no comms runtime"),
-            };
+            return Err((
+                "no_comms".to_string(),
+                format!("member '{remote_member}' has no comms runtime"),
+            ));
         }
     };
     // The comms name derives from the roster id (the comms-safe encoding),
@@ -490,18 +608,18 @@ async fn handle_lookup_member(
     ) {
         Ok(name) => name.to_string(),
         Err(err) => {
-            return ControlResponse::Err {
-                code: "invalid_comms_name".to_string(),
-                message: format!(
+            return Err((
+                "invalid_comms_name".to_string(),
+                format!(
                     "member '{remote_member}' in mob '{mob_id}' has an invalid comms name component: {err}"
                 ),
-            };
+            ));
         }
     };
-    ControlResponse::Member {
+    Ok(ControlResponse::Member {
         peer_id,
         comms_name,
-    }
+    })
 }
 
 /// Run a control listener on `tcp_listener` until shutdown.
@@ -582,9 +700,63 @@ async fn serve_one(stream: &mut ControlStream, handler: std::sync::Arc<dyn Contr
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::identity_first::{
+        AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion,
+        ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
+        IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseGrant,
+        LocalContinuityStore, LocalLeaseProvider,
+    };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     struct EchoHandler;
+
+    async fn identity_runtime_with_current_alias()
+    -> Result<Arc<IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "cross-mob-control-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse("worker")?;
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:worker:0")?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                Some(LeaseGrant {
+                    identity,
+                    fencing_token: FencingToken::new(1),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+        Ok(runtime)
+    }
 
     impl ControlHandler for EchoHandler {
         fn handle(
@@ -683,5 +855,55 @@ mod tests {
             ControlResponse::Err { code, .. } => assert_eq!(code, "decode"),
             other => panic!("expected decode error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn identity_control_rejects_stale_and_encoded_aliases_before_mutation()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = identity_runtime_with_current_alias().await?;
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        for stale_alias in [
+            "rt:worker:1".to_string(),
+            crate::member_comms_id::mob_member_id_str("rt:worker:1").into_owned(),
+        ] {
+            let operation_calls = Arc::clone(&calls);
+            let error =
+                run_control_member_operation(Some(&runtime), &stale_alias, move || async move {
+                    operation_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, (String, String)>(())
+                })
+                .await
+                .expect_err("stale generation must fail before the lower plane");
+            assert_eq!(error.0, "stale_runtime_alias");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let operation_calls = Arc::clone(&calls);
+        run_control_member_operation(Some(&runtime), "rt:worker:0", move || async move {
+            operation_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, (String, String)>(())
+        })
+        .await
+        .expect("current generation is admitted");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn generated_control_alias_without_authority_fails_closed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let operation_calls = Arc::clone(&calls);
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:worker:0").into_owned();
+        let error = run_control_member_operation(None, &encoded, move || async move {
+            operation_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, (String, String)>(())
+        })
+        .await
+        .expect_err("generated aliases require identity authority");
+
+        assert_eq!(error.0, "identity_authority_unavailable");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

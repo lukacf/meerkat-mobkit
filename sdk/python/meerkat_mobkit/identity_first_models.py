@@ -2,9 +2,279 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, Literal
 
 _VALID_ORIGINS = frozenset({"connector", "scheduler", "policy", "flow", "system"})
+MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY = 16
+
+IdentityBootstrapModeName = Literal[
+    "eager_materialize",
+    "lazy_materialize",
+    "lazy_with_background_warm",
+]
+
+
+def _required_bool(data: dict[str, Any], field_name: str) -> bool:
+    if field_name not in data:
+        raise ValueError(f"identity bootstrap status requires {field_name!r}")
+    value = data[field_name]
+    if type(value) is not bool:
+        raise TypeError(f"identity bootstrap {field_name} must be a boolean")
+    return value
+
+
+def _optional_bool(
+    data: dict[str, Any],
+    field_name: str,
+    *,
+    default: bool | None,
+) -> bool | None:
+    if field_name not in data:
+        return default
+    value = data[field_name]
+    if type(value) is not bool:
+        raise TypeError(f"identity bootstrap {field_name} must be a boolean")
+    return value
+
+
+def _nonnegative_int(data: dict[str, Any], field_name: str) -> int:
+    value = data.get(field_name, 0)
+    if type(value) is not int:
+        raise TypeError(
+            f"identity bootstrap count {field_name!r} must be an integer"
+        )
+    if value < 0:
+        raise ValueError(
+            f"identity bootstrap count {field_name!r} must be non-negative"
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class IdentityBootstrapMode:
+    """Identity materialization policy used while the gateway starts."""
+
+    mode: IdentityBootstrapModeName
+    concurrency: int | None = None
+
+    def __post_init__(self) -> None:
+        supported = {
+            "eager_materialize",
+            "lazy_materialize",
+            "lazy_with_background_warm",
+        }
+        if self.mode not in supported:
+            raise ValueError(f"unsupported identity bootstrap mode: {self.mode!r}")
+        if self.mode == "lazy_with_background_warm":
+            if (
+                not isinstance(self.concurrency, int)
+                or isinstance(self.concurrency, bool)
+                or self.concurrency <= 0
+            ):
+                raise ValueError(
+                    "lazy_with_background_warm requires a positive integer concurrency"
+                )
+            if self.concurrency > MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY:
+                raise ValueError(
+                    "lazy_with_background_warm concurrency must be at most "
+                    f"{MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY}"
+                )
+        elif self.concurrency is not None:
+            raise ValueError(f"{self.mode} does not accept concurrency")
+
+    @classmethod
+    def eager_materialize(cls) -> IdentityBootstrapMode:
+        return cls(mode="eager_materialize")
+
+    @classmethod
+    def lazy_materialize(cls) -> IdentityBootstrapMode:
+        return cls(mode="lazy_materialize")
+
+    @classmethod
+    def lazy_with_background_warm(
+        cls, *, concurrency: int
+    ) -> IdentityBootstrapMode:
+        return cls(mode="lazy_with_background_warm", concurrency=concurrency)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"mode": self.mode}
+        if self.concurrency is not None:
+            result["concurrency"] = self.concurrency
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityBootstrapMode:
+        if not isinstance(data, dict):
+            raise TypeError("identity bootstrap mode must be an object")
+        mode = data.get("mode")
+        if not isinstance(mode, str):
+            raise ValueError("identity bootstrap mode requires a string mode")
+        unsupported = sorted(set(data) - {"mode", "concurrency"})
+        if unsupported:
+            raise ValueError(
+                "identity bootstrap mode has unsupported field(s): "
+                + ", ".join(unsupported)
+            )
+        return cls(mode=mode, concurrency=data.get("concurrency"))  # type: ignore[arg-type]
+
+
+class IdentityBootstrapState(str, Enum):
+    """Transient materialization state for one identity during bootstrap."""
+
+    DORMANT = "dormant"
+    WARMING = "warming"
+    ACTIVE = "active"
+    BROKEN = "broken"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def parse(cls, raw: Any) -> IdentityBootstrapState:
+        if isinstance(raw, cls):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return cls(raw)
+            except ValueError:
+                pass
+        return cls.UNKNOWN
+
+
+@dataclass(frozen=True)
+class IdentityBootstrapCounts:
+    dormant: int = 0
+    warming: int = 0
+    active: int = 0
+    broken: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityBootstrapCounts:
+        if not isinstance(data, dict):
+            raise TypeError("identity bootstrap counts must be an object")
+        return cls(
+            dormant=_nonnegative_int(data, "dormant"),
+            warming=_nonnegative_int(data, "warming"),
+            active=_nonnegative_int(data, "active"),
+            broken=_nonnegative_int(data, "broken"),
+        )
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "dormant": self.dormant,
+            "warming": self.warming,
+            "active": self.active,
+            "broken": self.broken,
+        }
+
+
+@dataclass(frozen=True)
+class IdentityBootstrapEntry:
+    identity: str
+    state: IdentityBootstrapState
+    error: str | None = None
+
+    @classmethod
+    def from_dict(
+        cls, identity: str, data: dict[str, Any]
+    ) -> IdentityBootstrapEntry:
+        if not isinstance(data, dict):
+            raise TypeError(f"bootstrap status for {identity!r} must be an object")
+        if "state" not in data:
+            raise ValueError(f"bootstrap status for {identity!r} requires state")
+        state = data["state"]
+        if not isinstance(state, str):
+            raise TypeError(f"bootstrap state for {identity!r} must be a string")
+        error = data.get("error") if "error" in data else None
+        if error is not None and not isinstance(error, str):
+            raise TypeError(f"bootstrap error for {identity!r} must be a string")
+        return cls(
+            identity=identity,
+            state=IdentityBootstrapState.parse(state),
+            error=error,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"state": self.state.value}
+        if self.error is not None:
+            result["error"] = self.error
+        return result
+
+
+@dataclass(frozen=True)
+class IdentityBootstrapStatus:
+    """Aggregate gateway bootstrap status returned by status/wait RPCs."""
+
+    mode: IdentityBootstrapMode
+    complete: bool
+    ready: bool
+    counts: IdentityBootstrapCounts
+    identities: dict[str, IdentityBootstrapEntry]
+    error: str | None = None
+    timed_out: bool = False
+    target: str | None = None
+    startup_ready: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> IdentityBootstrapStatus:
+        if not isinstance(data, dict):
+            raise TypeError("identity bootstrap status must be an object")
+        mode = IdentityBootstrapMode.from_dict(data.get("mode", {}))
+        counts = IdentityBootstrapCounts.from_dict(data.get("counts", {}))
+        identities_raw = data.get("identities", {})
+        if not isinstance(identities_raw, dict):
+            raise TypeError("identity bootstrap identities must be an object")
+        identities = {
+            str(identity): IdentityBootstrapEntry.from_dict(
+                str(identity), status
+            )
+            for identity, status in identities_raw.items()
+        }
+        target = data.get("target") if "target" in data else None
+        if target is not None and not isinstance(target, str):
+            raise TypeError("identity bootstrap target must be a string")
+        error = data.get("error") if "error" in data else None
+        if error is not None and not isinstance(error, str):
+            raise TypeError("identity bootstrap error must be a string")
+        return cls(
+            mode=mode,
+            complete=_required_bool(data, "complete"),
+            ready=_required_bool(data, "ready"),
+            error=error,
+            counts=counts,
+            identities=identities,
+            timed_out=_optional_bool(
+                data,
+                "timed_out",
+                default=False,
+            ),
+            target=target,
+            startup_ready=_optional_bool(
+                data,
+                "startup_ready",
+                default=None,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "mode": self.mode.to_dict(),
+            "complete": self.complete,
+            "ready": self.ready,
+            "counts": self.counts.to_dict(),
+            "identities": {
+                identity: status.to_dict()
+                for identity, status in self.identities.items()
+            },
+        }
+        if self.error is not None:
+            result["error"] = self.error
+        if self.timed_out:
+            result["timed_out"] = True
+        if self.target is not None:
+            result["target"] = self.target
+        if self.startup_ready is not None:
+            result["startup_ready"] = self.startup_ready
+        return result
 
 
 def _validate_agent_identity(identity: str) -> str:

@@ -18,6 +18,14 @@ from __future__ import annotations
 # Builder + Runtime
 from .builder import MobKit, MobKitBuilder
 from .runtime import MobKitRuntime, ToolCaller
+from .identity_first_models import (
+    IdentityBootstrapCounts,
+    IdentityBootstrapEntry,
+    IdentityBootstrapMode,
+    IdentityBootstrapState,
+    IdentityBootstrapStatus,
+    MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY,
+)
 
 # Data models
 from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionCreatedContext, SessionQuery
@@ -181,6 +189,12 @@ __all__ = [
     "MobKit",
     "MobKitBuilder",
     "MobKitRuntime",
+    "IdentityBootstrapMode",
+    "IdentityBootstrapState",
+    "IdentityBootstrapCounts",
+    "IdentityBootstrapEntry",
+    "IdentityBootstrapStatus",
+    "MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY",
     # Tool-result content blocks
     "text_block",
     "image_block",

@@ -19,6 +19,7 @@ use crate::unified_runtime::UnifiedRuntime;
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 fn identity_from_runtime_alias(alias: &str) -> Option<crate::identity_first::AgentIdentity> {
+    let alias = crate::member_comms_id::runtime_alias_str(alias);
     let rest = alias.strip_prefix("rt:")?;
     let (identity, generation) = rest.rsplit_once(':')?;
     if identity.is_empty()
@@ -35,16 +36,15 @@ async fn stale_runtime_alias_detail(
     alias: &str,
 ) -> Option<(String, Option<String>)> {
     let identity_runtime = identity_runtime?;
-    let identity = identity_from_runtime_alias(alias)?;
-    let Ok(status) = identity_runtime.status(&identity).await else {
-        return None;
-    };
+    let alias = crate::member_comms_id::runtime_alias_str(alias);
+    let identity = identity_from_runtime_alias(alias.as_ref())?;
+    let status = identity_runtime.status(&identity).await.ok();
     let registered = status
-        .agent_runtime_id
         .as_ref()
+        .and_then(|status| status.agent_runtime_id.as_ref())
         .map(crate::identity_first::AgentRuntimeId::as_str)
         .map(str::to_string);
-    if registered.as_deref() == Some(alias) {
+    if registered.as_deref() == Some(alias.as_ref()) {
         return None;
     }
     Some((identity.as_str().to_string(), registered))
@@ -55,7 +55,8 @@ async fn stale_runtime_alias_error_response(
     alias: &str,
     response_id: Value,
 ) -> Option<JsonRpcResponse> {
-    let (identity, registered) = stale_runtime_alias_detail(identity_runtime, alias).await?;
+    let alias = crate::member_comms_id::runtime_alias_str(alias).into_owned();
+    let (identity, registered) = stale_runtime_alias_detail(identity_runtime, &alias).await?;
     Some(JsonRpcResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
         id: response_id,
@@ -235,12 +236,17 @@ fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMo
 enum SendMessageTarget {
     /// Deliver through the mob roster (`send_message_on_mob_with_mode`).
     MobMember,
+    /// Reserved generated aliases never degrade into the raw member plane.
+    AuthorityUnavailable { alias: String },
     /// Deliver through the identity bridge
     /// (`IdentityRuntime::send_with_mode`), which lazily materializes
     /// dormant identities before delivery.
     Identity {
         identity_rt: std::sync::Arc<crate::identity_first::IdentityRuntime>,
         identity: crate::identity_first::AgentIdentity,
+        /// Generated alias named by the caller. When present, validation and
+        /// delivery stay under one identity lifecycle lock.
+        expected_member_alias: Option<String>,
         /// Live runtime member id bound to the identity, when materialized.
         runtime_member_id: Option<String>,
         /// Bridge session bound to the identity at resolve time, when
@@ -257,7 +263,31 @@ async fn resolve_send_message_target(
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     member_id: &str,
 ) -> SendMessageTarget {
-    let roster_id = crate::member_comms_id::mob_member_id(member_id);
+    let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+    let configured_identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
+    // Generated aliases belong to the identity authority even when the raw
+    // member is still present in the roster. Taking roster precedence here
+    // would reopen a reset-to-delivery TOCTOU on an old generation.
+    if let Some(identity_rt) = configured_identity_runtime
+        && let Some(identity) =
+            crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(&member_id)
+    {
+        let status = identity_rt.status(&identity).await.ok();
+        return SendMessageTarget::Identity {
+            identity_rt: identity_rt.clone(),
+            identity,
+            expected_member_alias: Some(member_id.clone()),
+            runtime_member_id: status
+                .as_ref()
+                .and_then(|status| status.agent_runtime_id.as_ref())
+                .map(|runtime_id| runtime_id.as_str().to_string()),
+            session_id: status.and_then(|status| status.session_id),
+        };
+    }
+    if crate::member_comms_id::is_reserved_generated_alias(&member_id) {
+        return SendMessageTarget::AuthorityUnavailable { alias: member_id };
+    }
+    let roster_id = crate::member_comms_id::mob_member_id(&member_id);
     if matches!(
         runtime.mob_handle().get_member(&roster_id).await,
         Ok(Some(_))
@@ -281,16 +311,17 @@ async fn resolve_send_message_target(
     {
         return SendMessageTarget::MobMember;
     }
-    let Some(identity_rt) = identity_runtime.or_else(|| runtime.identity_runtime()) else {
+    let Some(identity_rt) = configured_identity_runtime else {
         return SendMessageTarget::MobMember;
     };
-    let Ok(identity) = crate::identity_first::AgentIdentity::parse(member_id) else {
+    let Ok(identity) = crate::identity_first::AgentIdentity::parse(&member_id) else {
         return SendMessageTarget::MobMember;
     };
     match identity_rt.status(&identity).await {
         Ok(status) => SendMessageTarget::Identity {
             identity_rt: identity_rt.clone(),
             identity,
+            expected_member_alias: None,
             runtime_member_id: status
                 .agent_runtime_id
                 .map(|runtime_id| runtime_id.as_str().to_string()),
@@ -342,13 +373,17 @@ pub(super) async fn handle_send_message(
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
-            if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, member_id, response_id.clone())
-                    .await
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
+            if let Some(response) = stale_runtime_alias_error_response(
+                identity_runtime,
+                &member_id,
+                response_id.clone(),
+            )
+            .await
             {
                 return response;
             }
-            let target = resolve_send_message_target(runtime, identity_runtime, member_id).await;
+            let target = resolve_send_message_target(runtime, identity_runtime, &member_id).await;
             // Pre-flight the image-capability guard against the member that
             // will actually take the delivery: the wire id for roster sends,
             // the live runtime member for identity-bridge sends. A dormant
@@ -356,7 +391,8 @@ pub(super) async fn handle_send_message(
             // it materializes inside `send_with_mode`, where the session
             // bridge re-runs the same guard.
             let image_guard_member_id = match &target {
-                SendMessageTarget::MobMember => Some(member_id),
+                SendMessageTarget::MobMember => Some(member_id.as_str()),
+                SendMessageTarget::AuthorityUnavailable { .. } => None,
                 SendMessageTarget::Identity {
                     runtime_member_id: Some(runtime_member_id),
                     ..
@@ -393,8 +429,9 @@ pub(super) async fn handle_send_message(
             // identity-bridge sends (mirroring the console plane) and by the
             // wire member id for roster sends.
             let (events_identity, events_member_id) = match &target {
-                SendMessageTarget::MobMember => {
-                    (member_id.to_string(), Some(member_id.to_string()))
+                SendMessageTarget::MobMember => (member_id.clone(), Some(member_id.clone())),
+                SendMessageTarget::AuthorityUnavailable { alias } => {
+                    (alias.clone(), Some(alias.clone()))
                 }
                 SendMessageTarget::Identity {
                     identity,
@@ -415,7 +452,7 @@ pub(super) async fn handle_send_message(
             let delivery: Result<String, String> = match &target {
                 SendMessageTarget::MobMember => send_message_on_mob_with_mode(
                     &runtime.mob_handle(),
-                    member_id,
+                    &member_id,
                     content.clone(),
                     handling_mode,
                 )
@@ -424,12 +461,29 @@ pub(super) async fn handle_send_message(
                 SendMessageTarget::Identity {
                     identity_rt,
                     identity,
+                    expected_member_alias,
                     session_id: resolve_time_session_id,
                     ..
-                } => match identity_rt
-                    .send_with_mode(identity, &content, handling_mode)
-                    .await
-                {
+                } => match if let Some(expected_member_alias) = expected_member_alias {
+                    identity_rt
+                        .send_with_mode_and_interaction_member_alias_tracked(
+                            identity,
+                            expected_member_alias,
+                            &content,
+                            handling_mode,
+                            Some(&interaction_id),
+                        )
+                        .await
+                } else {
+                    identity_rt
+                        .send_with_mode_and_interaction_tracked(
+                            identity,
+                            &content,
+                            handling_mode,
+                            Some(&interaction_id),
+                        )
+                        .await
+                } {
                     // Report the bridge session that took the delivery —
                     // re-read after the send so a lazy materialization or a
                     // delivered-session rebind is reflected, falling back to the
@@ -451,6 +505,9 @@ pub(super) async fn handle_send_message(
                         .unwrap_or_default()),
                     Err(err) => Err(err.to_string()),
                 },
+                SendMessageTarget::AuthorityUnavailable { alias } => Err(format!(
+                    "generated member alias requires current identity authority: {alias}"
+                )),
             };
             match delivery {
                 Ok(session_id) => {
@@ -605,6 +662,7 @@ pub(super) async fn handle_find_members(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let label_key = params.get("label_key").and_then(Value::as_str);
     let label_value = params.get("label_value").and_then(Value::as_str);
 
@@ -662,14 +720,36 @@ pub(super) async fn handle_find_members(
 
 pub(super) async fn handle_ensure_member(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let role = params.get("role").and_then(Value::as_str);
     let agent_identity = params.get("agent_identity").and_then(Value::as_str);
 
     match (role, agent_identity) {
         (Some(role), Some(agent_identity)) if !role.is_empty() && !agent_identity.is_empty() => {
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                agent_identity,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let labels = match params.get("labels") {
                 None | Some(Value::Null) => None,
                 Some(v) => {
@@ -694,6 +774,20 @@ pub(super) async fn handle_ensure_member(
                     }
                 }
             };
+            if let Some(labels) = labels.as_ref()
+                && let Err(message) = crate::member_comms_id::validate_raw_identity_labels(labels)
+            {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {message}"),
+                        data: None,
+                    }),
+                };
+            }
             let context = params.get("context").cloned();
             let resume_session_id = match params.get("resume_session_id") {
                 None | Some(Value::Null) => None,
@@ -819,7 +913,7 @@ pub(super) async fn handle_ensure_member(
 
             let mut spec = SpawnMemberSpec::new(
                 ProfileName::from(role),
-                crate::member_comms_id::mob_member_id(agent_identity),
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
             );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
@@ -844,7 +938,9 @@ pub(super) async fn handle_ensure_member(
             }
             let handle = runtime.mob_handle();
             let mid = spec.identity.clone();
-            match handle.ensure_member(spec).await {
+            let ensure_result = handle.ensure_member(spec).await;
+            drop(raw_reservation);
+            match ensure_result {
                 Ok(_outcome) => {
                     // Declared definition wiring (auto_wire_orchestrator /
                     // role_wiring) is bring-up-order dependent at spawn time
@@ -896,6 +992,7 @@ pub(super) async fn handle_list_members(
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let handle = runtime.mob_handle();
     let entries = handle.list_members_including_retiring().await;
     let mut members = Vec::with_capacity(entries.len());
@@ -920,16 +1017,19 @@ pub(super) async fn handle_get_member(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
+            let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, mid, response_id.clone()).await
+                stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone())
+                    .await
             {
                 return response;
             }
             let handle = runtime.mob_handle();
-            let identity = crate::member_comms_id::mob_member_id(mid);
+            let identity = crate::member_comms_id::mob_member_id(&mid);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => JsonRpcResponse {
@@ -969,17 +1069,67 @@ pub(super) async fn handle_retire_member(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
+            let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, mid, response_id.clone()).await
+                stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone())
+                    .await
             {
                 return response;
             }
+            // A current runtime alias owned by the durable identity plane is
+            // not stale, but it still must not fall through to the raw Mob
+            // handle. Retire through IdentityRuntime so fencing, continuity,
+            // bridge state, and shutdown ownership advance together.
+            if let Some(identity_runtime) = identity_runtime
+                && let Some(durable) = identity_runtime.identity_for_member_mutation(&mid).await
+            {
+                return match identity_runtime
+                    .retire_member_alias_tracked(&durable, &mid)
+                    .await
+                {
+                    Ok(token) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "accepted": true,
+                            "identity_first": true,
+                            "fencing_token": token.get(),
+                        })),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32000,
+                            message: format!("retire_member (identity) failed: {err}"),
+                            data: None,
+                        }),
+                    },
+                };
+            }
+            if crate::member_comms_id::is_reserved_generated_alias(&mid) {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!(
+                            "generated member alias requires current identity authority: {mid}"
+                        ),
+                        data: None,
+                    }),
+                };
+            }
             let handle = runtime.mob_handle();
             match handle
-                .retire(crate::member_comms_id::mob_member_id(mid))
+                .retire(crate::member_comms_id::mob_member_id(&mid))
                 .await
             {
                 Ok(()) => JsonRpcResponse {
@@ -1027,11 +1177,14 @@ pub(super) async fn handle_respawn_member(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
+            let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, mid, response_id.clone()).await
+                stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone())
+                    .await
             {
                 return response;
             }
@@ -1039,9 +1192,12 @@ pub(super) async fn handle_respawn_member(
             // authority — reset rebuilds a fresh session under the SAME
             // durable identity (new generation, continuity preserved).
             if let Some(identity_runtime) = identity_runtime
-                && let Some(durable) = identity_runtime.owned_identity_for_member_alias(mid).await
+                && let Some(durable) = identity_runtime.identity_for_member_mutation(&mid).await
             {
-                return match identity_runtime.reset(&durable).await {
+                return match identity_runtime
+                    .reset_member_alias_tracked(&durable, &mid)
+                    .await
+                {
                     Ok(record) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -1065,8 +1221,22 @@ pub(super) async fn handle_respawn_member(
                     },
                 };
             }
+            if crate::member_comms_id::is_reserved_generated_alias(&mid) {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!(
+                            "generated member alias requires current identity authority: {mid}"
+                        ),
+                        data: None,
+                    }),
+                };
+            }
             let handle = runtime.mob_handle();
-            let identity = crate::member_comms_id::mob_member_id(mid);
+            let identity = crate::member_comms_id::mob_member_id(&mid);
             // Best-effort repair material: a faulted lookup degrades to None
             // (the respawn itself surfaces real faults).
             let entry_before_respawn = handle.get_member(&identity).await.ok().flatten();
@@ -1381,11 +1551,39 @@ pub(super) async fn handle_mob_events_subscribe(
 // Cross-mob operations
 // ---------------------------------------------------------------------------
 
+async fn run_cross_mob_local_member_operation<T, F, Fut, G, GFut>(
+    runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    _identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    _local_member_id: &str,
+    owned_operation: F,
+    borrowed_operation: G,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(std::sync::Arc<UnifiedRuntime>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    G: FnOnce() -> GFut,
+    GFut: std::future::Future<Output = Result<T, String>>,
+{
+    // UnifiedRuntime owns both local and remote identity admission at each
+    // concrete member-plane mutation. Keeping the RPC layer out of the
+    // lifecycle lock avoids recursively acquiring the same per-identity lock.
+    if let Some(runtime_owner) = runtime_owner {
+        return owned_operation(runtime_owner).await;
+    }
+    let _ = runtime;
+    borrowed_operation().await
+}
+
 pub(super) async fn handle_cross_mob_wire(
     runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let local_member_id = params.get("local_member_id").and_then(Value::as_str);
     let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
     let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
@@ -1394,7 +1592,39 @@ pub(super) async fn handle_cross_mob_wire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match Box::pin(runtime.wire_cross_mob(local, remote, mob)).await {
+            let owned_local = local.to_string();
+            let owned_remote = remote.to_string();
+            let owned_mob = mob.to_string();
+            let owned_identity_runtime = identity_runtime.cloned();
+            let borrowed_identity_runtime = identity_runtime.cloned();
+            match run_cross_mob_local_member_operation(
+                runtime,
+                runtime_owner,
+                identity_runtime,
+                local,
+                move |runtime| async move {
+                    Box::pin(runtime.wire_cross_mob_with_identity_runtime(
+                        &owned_local,
+                        &owned_remote,
+                        &owned_mob,
+                        owned_identity_runtime.as_ref(),
+                    ))
+                    .await
+                    .map_err(|err| err.to_string())
+                },
+                || async move {
+                    Box::pin(runtime.wire_cross_mob_with_identity_runtime(
+                        local,
+                        remote,
+                        mob,
+                        borrowed_identity_runtime.as_ref(),
+                    ))
+                    .await
+                    .map_err(|err| err.to_string())
+                },
+            )
+            .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1435,9 +1665,12 @@ pub(super) async fn handle_cross_mob_wire(
 
 pub(super) async fn handle_cross_mob_unwire(
     runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let local_member_id = params.get("local_member_id").and_then(Value::as_str);
     let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
     let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
@@ -1446,7 +1679,39 @@ pub(super) async fn handle_cross_mob_unwire(
         (Some(local), Some(remote), Some(mob))
             if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match Box::pin(runtime.unwire_cross_mob(local, remote, mob)).await {
+            let owned_local = local.to_string();
+            let owned_remote = remote.to_string();
+            let owned_mob = mob.to_string();
+            let owned_identity_runtime = identity_runtime.cloned();
+            let borrowed_identity_runtime = identity_runtime.cloned();
+            match run_cross_mob_local_member_operation(
+                runtime,
+                runtime_owner,
+                identity_runtime,
+                local,
+                move |runtime| async move {
+                    Box::pin(runtime.unwire_cross_mob_with_identity_runtime(
+                        &owned_local,
+                        &owned_remote,
+                        &owned_mob,
+                        owned_identity_runtime.as_ref(),
+                    ))
+                    .await
+                    .map_err(|err| err.to_string())
+                },
+                || async move {
+                    Box::pin(runtime.unwire_cross_mob_with_identity_runtime(
+                        local,
+                        remote,
+                        mob,
+                        borrowed_identity_runtime.as_ref(),
+                    ))
+                    .await
+                    .map_err(|err| err.to_string())
+                },
+            )
+            .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1487,9 +1752,12 @@ pub(super) async fn handle_cross_mob_unwire(
 
 pub(super) async fn handle_cross_mob_send(
     runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let from_member_id = params.get("from_member_id").and_then(Value::as_str);
     let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
     let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
@@ -1513,7 +1781,44 @@ pub(super) async fn handle_cross_mob_send(
         (Some(from), Some(remote), Some(mob), Some(content))
             if !from.is_empty() && !remote.is_empty() && !mob.is_empty() =>
         {
-            match runtime.send_cross_mob(from, remote, mob, content).await {
+            let owned_from = from.to_string();
+            let owned_remote = remote.to_string();
+            let owned_mob = mob.to_string();
+            let owned_content = content.clone();
+            let owned_identity_runtime = identity_runtime.cloned();
+            let borrowed_identity_runtime = identity_runtime.cloned();
+            match run_cross_mob_local_member_operation(
+                runtime,
+                runtime_owner,
+                identity_runtime,
+                from,
+                move |runtime| async move {
+                    runtime
+                        .send_cross_mob_with_identity_runtime(
+                            &owned_from,
+                            &owned_remote,
+                            &owned_mob,
+                            owned_content,
+                            owned_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+                || async move {
+                    runtime
+                        .send_cross_mob_with_identity_runtime(
+                            from,
+                            remote,
+                            mob,
+                            content,
+                            borrowed_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+            )
+            .await
+            {
                 Ok(session_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1624,17 +1929,20 @@ pub(super) async fn handle_member_status(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
+            let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, mid, response_id.clone()).await
+                stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone())
+                    .await
             {
                 return response;
             }
             match runtime
                 .mob_handle()
-                .member_status(&crate::member_comms_id::mob_member_id(mid))
+                .member_status(&crate::member_comms_id::mob_member_id(&mid))
                 .await
             {
                 Ok(snapshot) => JsonRpcResponse {
@@ -1680,21 +1988,22 @@ pub(super) async fn handle_identity_resolved_tools(
         .and_then(Value::as_str);
     match identity {
         Some(identity) if !identity.is_empty() => {
+            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
             let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, identity, response_id.clone())
+                stale_runtime_alias_error_response(identity_runtime, &identity, response_id.clone())
                     .await
             {
                 return response;
             }
             if let Some(identity_runtime) = identity_runtime
-                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(identity)
+                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
                 && let Ok(status) = identity_runtime.status(&parsed).await
                 && let Some(session_id) = status.session_id
             {
                 match resolved_tools_for_session(
                     runtime.mob_runtime().session_service(),
-                    identity,
+                    &identity,
                     session_id,
                 )
                 .await
@@ -1724,7 +2033,7 @@ pub(super) async fn handle_identity_resolved_tools(
             match resolved_tools_for_member(
                 &runtime.mob_handle(),
                 runtime.mob_runtime().session_service(),
-                identity,
+                &identity,
             )
             .await
             {
@@ -1765,19 +2074,43 @@ pub(super) async fn handle_force_cancel_member(
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
+            let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
             if let Some(response) =
-                stale_runtime_alias_error_response(identity_runtime, mid, response_id.clone()).await
+                stale_runtime_alias_error_response(identity_runtime, &mid, response_id.clone())
+                    .await
             {
                 return response;
             }
-            match runtime
-                .mob_handle()
-                .force_cancel_member(crate::member_comms_id::mob_member_id(mid))
-                .await
+            let result = if let Some(identity_rt) = identity_runtime
+                && let Some(identity) = identity_rt.identity_for_member_mutation(&mid).await
             {
+                let handle = runtime.mob_handle();
+                let member_id = crate::member_comms_id::mob_member_id(&mid);
+                identity_rt
+                    .run_member_alias_operation_tracked(&identity, &mid, move || async move {
+                        handle
+                            .force_cancel_member(member_id)
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+            } else if crate::member_comms_id::is_reserved_generated_alias(&mid) {
+                Err(format!(
+                    "generated member alias requires current identity authority: {mid}"
+                ))
+            } else {
+                runtime
+                    .mob_handle()
+                    .force_cancel_member(crate::member_comms_id::mob_member_id(&mid))
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            match result {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1811,9 +2144,11 @@ pub(super) async fn handle_force_cancel_member(
 
 pub(super) async fn handle_spawn_helper(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let agent_identity = params.get("agent_identity").and_then(Value::as_str);
     let task = params.get("task").and_then(Value::as_str);
 
@@ -1834,14 +2169,35 @@ pub(super) async fn handle_spawn_helper(
                     };
                 }
             };
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                mid,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let handle = runtime.mob_handle();
-            match Box::pin(handle.spawn_helper(
-                crate::member_comms_id::mob_member_id(mid),
+            let spawn_result = Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task_str,
                 options,
             ))
-            .await
-            {
+            .await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(result) => {
                     // Note: meerkat 0.6's `spawn_helper` retires the helper
                     // before returning, so `resolve_bridge_session_id` would
@@ -1886,9 +2242,11 @@ pub(super) async fn handle_spawn_helper(
 
 pub(super) async fn handle_fork_helper(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let source_member_id = params.get("source_member_id").and_then(Value::as_str);
     let agent_identity = params.get("agent_identity").and_then(Value::as_str);
     let task = params.get("task").and_then(Value::as_str);
@@ -1898,6 +2256,21 @@ pub(super) async fn handle_fork_helper(
         (Some(source), Some(mid), Some(task_str))
             if !source.is_empty() && !mid.is_empty() && !task_str.is_empty() =>
         {
+            let source = crate::member_comms_id::runtime_alias_str(source).into_owned();
+            if let Err(message) =
+                crate::member_comms_id::validate_raw_member_target(identity_runtime, mid).await
+            {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {message}"),
+                        data: None,
+                    }),
+                };
+            }
             let fork_context = match fork_ctx_val {
                 Some(v) if !v.is_null() => match serde_json::from_value::<ForkContext>(v) {
                     Ok(fc) => fc,
@@ -1932,15 +2305,84 @@ pub(super) async fn handle_fork_helper(
                 }
             };
             let handle = runtime.mob_handle();
-            match Box::pin(handle.fork_helper(
-                &crate::member_comms_id::mob_member_id(source),
-                crate::member_comms_id::mob_member_id(mid),
-                task_str,
-                fork_context,
-                options,
-            ))
-            .await
-            {
+            let source_member_id = crate::member_comms_id::mob_member_id(&source);
+            let helper_alias = mid.to_string();
+            let task = task_str.to_string();
+            let identity_runtime_owned = identity_runtime.cloned();
+            let authority_target = if let Some(identity_runtime) = identity_runtime {
+                identity_runtime
+                    .member_alias_lifecycle_target(&source)
+                    .await
+            } else {
+                Ok(None)
+            };
+            let fork_result = match authority_target {
+                Err(error) => Err(error.to_string()),
+                Ok(Some(target)) => {
+                    crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                        vec![target],
+                        move || async move {
+                            // The lifecycle target is acquired by the tracked
+                            // wrapper before this closure runs. Reserve the raw
+                            // namespace second, matching durable materialization's
+                            // lock order and preventing an inversion deadlock.
+                            let raw_reservation =
+                                crate::member_comms_id::reserve_raw_member_target(
+                                    identity_runtime_owned.as_ref(),
+                                    helper_alias.as_str(),
+                                )
+                                .await?;
+                            let helper_member_id = crate::member_comms_id::mob_member_id(
+                                raw_reservation.alias(),
+                            );
+                            let result = handle
+                            .fork_helper(
+                                &source_member_id,
+                                helper_member_id,
+                                task.as_str(),
+                                fork_context,
+                                options,
+                            )
+                            .await
+                            .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                }
+                Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&source) => Err(
+                    format!("generated source alias requires current identity authority: {source}"),
+                ),
+                Ok(None) => {
+                    match crate::member_comms_id::reserve_raw_member_target(
+                        identity_runtime_owned.as_ref(),
+                        helper_alias.as_str(),
+                    )
+                    .await
+                    {
+                        Err(error) => Err(error),
+                        Ok(raw_reservation) => {
+                            let helper_member_id =
+                                crate::member_comms_id::mob_member_id(raw_reservation.alias());
+                            let result = handle
+                                .fork_helper(
+                                    &source_member_id,
+                                    helper_member_id,
+                                    task.as_str(),
+                                    fork_context,
+                                    options,
+                                )
+                                .await
+                                .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
+                        }
+                    }
+                }
+            };
+            match fork_result {
                 Ok(result) => {
                     // See `handle_spawn_helper`: meerkat 0.6 retires the
                     // forked helper before returning, so session_id is
@@ -1983,9 +2425,11 @@ pub(super) async fn handle_fork_helper(
 
 pub(super) async fn handle_attach_existing_session(
     runtime: &UnifiedRuntime,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let role = params.get("role").and_then(Value::as_str);
     let agent_identity = params.get("agent_identity").and_then(Value::as_str);
     let session_id = params.get("session_id").and_then(Value::as_str);
@@ -2010,11 +2454,33 @@ pub(super) async fn handle_attach_existing_session(
                     };
                 }
             };
-            let identity = crate::member_comms_id::mob_member_id(mid);
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                mid,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
+            let identity = crate::member_comms_id::mob_member_id(raw_reservation.alias());
             let spec = SpawnMemberSpec::new(ProfileName::from(role), identity.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.mob_handle();
-            match Box::pin(handle.spawn_spec(spec)).await {
+            let spawn_result = Box::pin(handle.spawn_spec(spec)).await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(_) => match handle.member_status(&identity).await {
                     Ok(snapshot) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -2380,9 +2846,12 @@ pub(super) async fn handle_collect_completed(
 /// Symmetric counterpart to `handle_cross_mob_wire_local`.
 pub(super) async fn handle_cross_mob_unwire_local(
     runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let local_member_id = params.get("local_member_id").and_then(Value::as_str);
     let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
     let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
@@ -2410,9 +2879,45 @@ pub(super) async fn handle_cross_mob_unwire_local(
                 && !peer_id.is_empty()
                 && !addr.is_empty() =>
         {
-            match runtime
-                .unwire_local(local, comms_name, peer_id, addr, remote_pubkey)
-                .await
+            let owned_local = local.to_string();
+            let owned_comms_name = comms_name.to_string();
+            let owned_peer_id = peer_id.to_string();
+            let owned_addr = addr.to_string();
+            let owned_identity_runtime = identity_runtime.cloned();
+            let borrowed_identity_runtime = identity_runtime.cloned();
+            match run_cross_mob_local_member_operation(
+                runtime,
+                runtime_owner,
+                identity_runtime,
+                local,
+                move |runtime| async move {
+                    runtime
+                        .unwire_local_with_identity_runtime(
+                            &owned_local,
+                            &owned_comms_name,
+                            &owned_peer_id,
+                            &owned_addr,
+                            remote_pubkey,
+                            owned_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+                || async move {
+                    runtime
+                        .unwire_local_with_identity_runtime(
+                            local,
+                            comms_name,
+                            peer_id,
+                            addr,
+                            remote_pubkey,
+                            borrowed_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+            )
+            .await
             {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
@@ -2453,9 +2958,12 @@ pub(super) async fn handle_cross_mob_unwire_local(
 /// Only wires the local side — the remote side must do its own call.
 pub(super) async fn handle_cross_mob_wire_local(
     runtime: &UnifiedRuntime,
+    runtime_owner: Option<std::sync::Arc<UnifiedRuntime>>,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     response_id: Value,
     params: &Value,
 ) -> JsonRpcResponse {
+    let identity_runtime = identity_runtime.or_else(|| runtime.identity_runtime());
     let local_member_id = params.get("local_member_id").and_then(Value::as_str);
     let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
     let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
@@ -2483,9 +2991,45 @@ pub(super) async fn handle_cross_mob_wire_local(
                 && !peer_id.is_empty()
                 && !addr.is_empty() =>
         {
-            match runtime
-                .wire_local(local, comms_name, peer_id, addr, remote_pubkey)
-                .await
+            let owned_local = local.to_string();
+            let owned_comms_name = comms_name.to_string();
+            let owned_peer_id = peer_id.to_string();
+            let owned_addr = addr.to_string();
+            let owned_identity_runtime = identity_runtime.cloned();
+            let borrowed_identity_runtime = identity_runtime.cloned();
+            match run_cross_mob_local_member_operation(
+                runtime,
+                runtime_owner,
+                identity_runtime,
+                local,
+                move |runtime| async move {
+                    runtime
+                        .wire_local_with_identity_runtime(
+                            &owned_local,
+                            &owned_comms_name,
+                            &owned_peer_id,
+                            &owned_addr,
+                            remote_pubkey,
+                            owned_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+                || async move {
+                    runtime
+                        .wire_local_with_identity_runtime(
+                            local,
+                            comms_name,
+                            peer_id,
+                            addr,
+                            remote_pubkey,
+                            borrowed_identity_runtime.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string())
+                },
+            )
+            .await
             {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),

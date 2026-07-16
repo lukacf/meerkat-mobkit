@@ -4,6 +4,34 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Persistent gateway shutdown now negotiates an explicit bounded horizon and
+  keeps stdin/provider callbacks open until the gateway acknowledges runtime
+  cleanup. The stock 335-second horizon covers provider operations that meet
+  their public 120-second contract, a dedicated 125-second Python host
+  completion deadline, and the gateway's 130-second hard wire deadline.
+  Provider callback timeout cancels the event-loop future, malformed cleanup
+  acknowledgements fail closed, older/custom gateways retain the EOF protocol,
+  and blocking child-process waits remain off the asyncio event loop.
+- Failed gateway bootstrap now detaches and reaps its child process before a
+  reconnect can start a replacement, including provider callback failures and
+  cancellation while cleanup is in progress.
+
+### Identity bootstrap
+
+- Added `IdentityBootstrapMode` and
+  `MobKit.builder().identity_bootstrap_mode(...)` for eager, lazy, and bounded
+  background-warm gateway startup.
+- Every explicit bootstrap mode now requires `.roster(...)`, including eager;
+  omission continues to preserve the classic gateway when no roster is set.
+- A partially failed eager gateway bootstrap now completes ordered runtime
+  shutdown and exact lease release before returning the initialization error.
+- Added typed `identity_bootstrap_status()` and `wait_identity_bootstrap()`
+  runtime methods, including materialized and startup-ready barriers with
+  per-identity progress and terminal error details.
+- Documented the lease-renewal commit boundary: provider exceptions are
+  pre-commit and must leave every input grant unchanged; returned renewed or
+  lost results are committed per identity.
+
 ### Identity-first agent memory
 
 - Added `.agent_memory(...)` on `MobKit.builder()` for gateway-backed

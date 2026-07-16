@@ -6,8 +6,11 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
+import type { ProviderCallbackContext } from "./types.js";
 
 // -- Types ----------------------------------------------------------------
 
@@ -46,6 +49,7 @@ export type JsonRpcSyncTransport = (request: JsonRpcRequest) => unknown;
 export type CallbackHandler = (
   method: string,
   params: Record<string, unknown>,
+  context: ProviderCallbackContext,
 ) => Promise<unknown>;
 
 export type FetchLikeResponse = {
@@ -66,6 +70,29 @@ export type FetchLike = (
     signal?: AbortSignal;
   },
 ) => Promise<FetchLikeResponse>;
+
+/**
+ * Grace period for the persistent gateway to finish its own shutdown.
+ *
+ * Provider operations are publicly required to finish within 120 seconds;
+ * the stock Rust gateway gives each callback a hard 130-second wire deadline.
+ * Its advertised 335-second horizon covers two such callback windows,
+ * runtime event/mob drains, bounded RPC/HTTP/stdout phases, and
+ * response-delivery/process-reap margin. The same value is the safe fallback
+ * for handshake-capable gateways without the newer explicit capability.
+ */
+export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 335_000;
+export const PROVIDER_CALLBACK_COMPLETION_MS = 125_000;
+
+const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
+const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
+const MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647;
+const GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown";
+
+type ChildExitWaiter = (
+  child: ChildProcess,
+  timeoutMs: number,
+) => Promise<boolean>;
 
 // -- Helpers --------------------------------------------------------------
 
@@ -91,6 +118,109 @@ function sanitizeForJson(obj: unknown): unknown {
   return String(obj);
 }
 
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function validateGatewayShutdownResponse(response: unknown): void {
+  if (typeof response !== "object" || response === null) {
+    throw new Error("gateway shutdown returned a malformed response");
+  }
+  const envelope = response as Record<string, unknown>;
+  if (typeof envelope.error === "object" && envelope.error !== null) {
+    const message = String(
+      (envelope.error as Record<string, unknown>).message ?? "unknown gateway error",
+    );
+    throw new Error(`gateway shutdown failed: ${message}`);
+  }
+  const result = envelope.result;
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    (result as Record<string, unknown>).shutdown !== true ||
+    (result as Record<string, unknown>).runtime_cleanup_completed !== true
+  ) {
+    throw new Error("gateway shutdown did not complete runtime-owned cleanup");
+  }
+}
+
+async function waitForChildExit(
+  child: ChildProcess,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (childHasExited(child)) return true;
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      child.removeListener("exit", onExit);
+      child.removeListener("close", onExit);
+      if (timer !== null) clearTimeout(timer);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+
+    child.once("exit", onExit);
+    child.once("close", onExit);
+
+    // Close the check/listener race: the process may have exited between the
+    // initial fast path and listener registration.
+    if (childHasExited(child)) {
+      finish(true);
+      return;
+    }
+
+    timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    timer.unref?.();
+    if (settled) clearTimeout(timer);
+  });
+}
+
+/** @internal Exported for deterministic lifecycle policy tests. */
+export async function stopChildProcess(
+  child: ChildProcess,
+  waitForExit: ChildExitWaiter = waitForChildExit,
+  shutdownGraceMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS,
+): Promise<void> {
+  try {
+    child.stdin?.end();
+  } catch {
+    // Continue with signal-based cleanup if stdin is already unavailable.
+  }
+
+  if (
+    await waitForExit(child, shutdownGraceMs)
+  ) {
+    return;
+  }
+
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    // A concurrent exit is observed by the bounded wait below.
+  }
+
+  if (await waitForExit(child, PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS)) {
+    return;
+  }
+
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // Best effort: never make SDK shutdown unbounded on a failed kill call.
+  }
+
+  if (!(await waitForExit(child, PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS))) {
+    throw new Error(
+      "persistent transport: gateway process did not terminate after bounded cleanup",
+    );
+  }
+}
+
 // -- PersistentTransport --------------------------------------------------
 
 /**
@@ -102,9 +232,14 @@ function sanitizeForJson(obj: unknown): unknown {
  */
 export class PersistentTransport {
   private _process: ChildProcess | null = null;
+  private _stopping: Promise<void> | null = null;
   private readonly _env: Record<string, string>;
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
+  // Mutable only so deterministic tests can scale the 125-second contract.
+  private _providerCallbackCompletionMs = PROVIDER_CALLBACK_COMPLETION_MS;
+  private _supportsShutdownHandshake = false;
+  private _shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
   private readonly _pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -123,10 +258,17 @@ export class PersistentTransport {
   }
 
   start(): void {
+    if (this._stopping !== null) {
+      throw new Error("persistent transport is stopping");
+    }
     if (this._process !== null && this._process.exitCode === null) {
       return;
     }
 
+    // Capabilities are process-scoped and must be renegotiated on init after
+    // a child restart.
+    this._supportsShutdownHandshake = false;
+    this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
     this._process = spawn(this.gatewayBin, ["--persistent"], {
       env: this._env,
       stdio: ["pipe", "pipe", "ignore"],
@@ -180,7 +322,8 @@ export class PersistentTransport {
   }
 
   private _handleCallback(msg: Record<string, unknown>): void {
-    if (!this._callbackHandler) return;
+    const handler = this._callbackHandler;
+    if (!handler) return;
 
     const method = String(msg.method ?? "");
     const params = (
@@ -189,9 +332,35 @@ export class PersistentTransport {
         : {}
     ) as Record<string, unknown>;
     const callbackId = msg.id !== undefined ? String(msg.id) : null;
+    const controller = new AbortController();
+    const deadlineMs = Date.now() + this._providerCallbackCompletionMs;
+    let completed = false;
+    const timer = setTimeout(() => {
+      if (completed) return;
+      completed = true;
+      const error = new Error(
+        "provider callback exceeded its 125s host completion deadline",
+      );
+      controller.abort(error);
+      if (callbackId !== null) {
+        this._writeLine({
+          jsonrpc: "2.0",
+          id: callbackId,
+          error: { code: -32000, message: error.message },
+        });
+      }
+    }, this._providerCallbackCompletionMs);
+    timer.unref?.();
 
-    this._callbackHandler(method, params)
+    Promise.resolve()
+      .then(() => handler(method, params, {
+        signal: controller.signal,
+        deadlineMs,
+      }))
       .then((result) => {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timer);
         if (callbackId === null) return; // Notification — no response
         this._writeLine({
           jsonrpc: "2.0",
@@ -200,6 +369,9 @@ export class PersistentTransport {
         });
       })
       .catch((err: unknown) => {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timer);
         if (callbackId === null) return;
         this._writeLine({
           jsonrpc: "2.0",
@@ -216,14 +388,49 @@ export class PersistentTransport {
   }
 
   async sendAsync(request: Record<string, unknown>): Promise<unknown> {
-    this._ensureRunning();
+    const response = await this._sendAsyncWithTimeout(request, this._timeout);
+    if (request.method === "mobkit/init") {
+      const result =
+        typeof response === "object" && response !== null
+          ? (response as Record<string, unknown>).result
+          : null;
+      this._supportsShutdownHandshake =
+        typeof result === "object" &&
+        result !== null &&
+        (result as Record<string, unknown>).stdio_shutdown_handshake === true;
+      this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
+      if (this._supportsShutdownHandshake) {
+        const horizonMs = (result as Record<string, unknown>).stdio_shutdown_horizon_ms;
+        if (
+          typeof horizonMs === "number" &&
+          Number.isSafeInteger(horizonMs) &&
+          horizonMs > 0 &&
+          horizonMs <= MAX_GATEWAY_SHUTDOWN_HORIZON_MS
+        ) {
+          this._shutdownHorizonMs = horizonMs;
+        }
+      }
+    }
+    return response;
+  }
+
+  private async _sendAsyncWithTimeout(
+    request: Record<string, unknown>,
+    timeoutMs: number,
+    expectedChild?: ChildProcess,
+  ): Promise<unknown> {
+    if (expectedChild === undefined) {
+      this._ensureRunning();
+    } else if (this._process !== expectedChild || childHasExited(expectedChild)) {
+      throw new Error("persistent transport: subprocess is not running");
+    }
     const msgId = String(request.id ?? "");
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(msgId);
-        reject(new Error(`persistent transport: timeout after ${this._timeout}ms`));
-      }, this._timeout);
+        reject(new Error(`persistent transport: timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
 
       this._pending.set(msgId, {
         resolve: (value) => {
@@ -236,22 +443,71 @@ export class PersistentTransport {
         },
       });
 
-      this._writeLine(request as Record<string, unknown>);
+      try {
+        this._writeLine(request as Record<string, unknown>);
+      } catch (error) {
+        clearTimeout(timer);
+        this._pending.delete(msgId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
-  stop(): void {
-    if (this._process === null) return;
-    try {
-      if (this._process.stdin) {
-        this._process.stdin.end();
+  async stop(): Promise<void> {
+    if (this._stopping !== null) return this._stopping;
+
+    const child = this._process;
+    if (child === null) return;
+
+    const shutdownStarted = performance.now();
+    let childTerminated = false;
+    let stopping: Promise<void>;
+    stopping = (async () => {
+      let shutdownError: Error | null = null;
+      try {
+        // Keep stdin open while the gateway shuts its runtime down: external
+        // lease/continuity providers may still need callback round-trips.
+        // Capability negotiation keeps older/custom gateways on their EOF
+        // protocol instead of assuming method-not-found behavior.
+        if (this._supportsShutdownHandshake) {
+          const response = await this._sendAsyncWithTimeout(
+            {
+              jsonrpc: "2.0",
+              id: `mobkit-shutdown-${randomUUID()}`,
+              method: GATEWAY_SHUTDOWN_METHOD,
+              params: {},
+            },
+            this._shutdownHorizonMs,
+            child,
+          );
+          validateGatewayShutdownResponse(response);
+        }
+      } catch (error) {
+        shutdownError = error instanceof Error ? error : new Error(String(error));
       }
-      this._process.kill();
-    } catch {
-      // Ignore cleanup errors
-    } finally {
-      this._process = null;
-    }
+      const elapsedMs = performance.now() - shutdownStarted;
+      const remainingGraceMs = Math.max(
+        0,
+        this._shutdownHorizonMs - elapsedMs,
+      );
+      await stopChildProcess(child, waitForChildExit, remainingGraceMs);
+      childTerminated = true;
+      if (shutdownError !== null) {
+        throw new Error(
+          `persistent transport: gateway shutdown failed after bounded cleanup: ${shutdownError.message}`,
+        );
+      }
+    })().finally(() => {
+      if (
+        this._process === child &&
+        (childTerminated || childHasExited(child))
+      ) {
+        this._process = null;
+      }
+      if (this._stopping === stopping) this._stopping = null;
+    });
+    this._stopping = stopping;
+    return stopping;
   }
 
   isRunning(): boolean {
@@ -259,6 +515,9 @@ export class PersistentTransport {
   }
 
   private _ensureRunning(): void {
+    if (this._stopping !== null) {
+      throw new Error("persistent transport is stopping");
+    }
     if (!this.isRunning()) {
       this.start();
     }

@@ -115,6 +115,230 @@ describe("MobKitRuntime", () => {
     assert.equal(rt.isRunning, false);
   });
 
+  it("shutdown awaits persistent transport cleanup", async () => {
+    const { rt } = createMockRuntime();
+    let releaseStop: (() => void) | undefined;
+    let shutdownSettled = false;
+    const transport = {
+      stop: () =>
+        new Promise<void>((resolve) => {
+          releaseStop = resolve;
+        }),
+    };
+    (rt as any)._transport = transport;
+
+    const shutdown = rt.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+
+    assert.equal(shutdownSettled, false);
+    assert.equal(
+      (rt as any)._transport,
+      null,
+      "RPC admission closes before the gateway drain completes",
+    );
+
+    assert.ok(releaseStop);
+    releaseStop();
+    await shutdown;
+
+    assert.equal(shutdownSettled, true);
+    assert.equal((rt as any)._transport, null);
+  });
+
+  it("coalesces concurrent shutdown and delays reconnect until drain completes", async () => {
+    const { rt } = createMockRuntime();
+    let releaseStop: (() => void) | undefined;
+    let stopCalls = 0;
+    const transport = {
+      stop: () => {
+        stopCalls += 1;
+        return new Promise<void>((resolve) => {
+          releaseStop = resolve;
+        });
+      },
+    };
+    (rt as any)._transport = transport;
+
+    const firstShutdown = rt.shutdown();
+    const secondShutdown = rt.shutdown();
+    await Promise.resolve();
+
+    assert.equal(stopCalls, 1);
+    assert.equal((rt as any)._transport, null);
+    await assert.rejects(
+      (MobKitRuntime.prototype as any)._rpc.call(rt, "mobkit/status", {}),
+      NotConnectedError,
+    );
+
+    let bootstrapCalls = 0;
+    (rt as any)._bootstrap = async () => {
+      bootstrapCalls += 1;
+      (rt as any)._running = true;
+    };
+    const reconnect = rt.connect();
+    await Promise.resolve();
+    assert.equal(bootstrapCalls, 0);
+
+    assert.ok(releaseStop);
+    releaseStop();
+    await Promise.all([firstShutdown, secondShutdown, reconnect]);
+    assert.equal(stopCalls, 1);
+    assert.equal(bootstrapCalls, 1);
+    assert.equal(rt.isRunning, true);
+  });
+
+  it("coalesces concurrent connect attempts into one bootstrap", async () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._running = false;
+    (rt as any)._transport = null;
+
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseBootstrap: (() => void) | undefined;
+    const bootstrapGate = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    let bootstrapCalls = 0;
+    (rt as any)._bootstrap = async () => {
+      bootstrapCalls += 1;
+      markStarted?.();
+      await bootstrapGate;
+    };
+
+    const firstConnect = rt.connect();
+    const secondConnect = rt.connect();
+    await started;
+
+    assert.equal(bootstrapCalls, 1);
+    releaseBootstrap?.();
+    await Promise.all([firstConnect, secondConnect]);
+    assert.equal(bootstrapCalls, 1);
+    assert.equal(rt.isRunning, true);
+  });
+
+  it("orders shutdown behind an admitted connect and leaves the runtime stopped", async () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._running = false;
+    (rt as any)._transport = null;
+
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseBootstrap: (() => void) | undefined;
+    const bootstrapGate = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    let stopCalls = 0;
+    const transport = {
+      stop: async () => {
+        stopCalls += 1;
+      },
+    };
+    (rt as any)._bootstrap = async () => {
+      markStarted?.();
+      await bootstrapGate;
+      (rt as any)._transport = transport;
+    };
+
+    const connect = rt.connect();
+    await started;
+    let shutdownSettled = false;
+    const shutdown = rt.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+
+    assert.equal(rt.isRunning, false);
+    assert.equal(shutdownSettled, false);
+    releaseBootstrap?.();
+    await Promise.all([connect, shutdown]);
+
+    assert.equal(stopCalls, 1);
+    assert.equal(rt.isRunning, false);
+    assert.equal((rt as any)._transport, null);
+  });
+
+  it("preserves connect, shutdown, reconnect invocation order", async () => {
+    const { rt } = createMockRuntime();
+    (rt as any)._running = false;
+    (rt as any)._transport = null;
+
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseFirstBootstrap: (() => void) | undefined;
+    const firstBootstrapGate = new Promise<void>((resolve) => {
+      releaseFirstBootstrap = resolve;
+    });
+    let bootstrapCalls = 0;
+    let stopCalls = 0;
+    (rt as any)._bootstrap = async () => {
+      bootstrapCalls += 1;
+      if (bootstrapCalls === 1) {
+        markStarted?.();
+        await firstBootstrapGate;
+      }
+      (rt as any)._transport = {
+        stop: async () => {
+          stopCalls += 1;
+        },
+      };
+    };
+
+    const firstConnect = rt.connect();
+    await started;
+    const shutdown = rt.shutdown();
+    const reconnect = rt.connect();
+    releaseFirstBootstrap?.();
+    await Promise.all([firstConnect, shutdown, reconnect]);
+
+    assert.equal(bootstrapCalls, 2);
+    assert.equal(stopCalls, 1);
+    assert.equal(rt.isRunning, true);
+    assert.notEqual((rt as any)._transport, null);
+  });
+
+  it("preserves shutdown, reconnect, shutdown invocation order", async () => {
+    const { rt } = createMockRuntime();
+    let releaseFirstStop: (() => void) | undefined;
+    const firstStopGate = new Promise<void>((resolve) => {
+      releaseFirstStop = resolve;
+    });
+    let stopCalls = 0;
+    (rt as any)._transport = {
+      stop: async () => {
+        stopCalls += 1;
+        await firstStopGate;
+      },
+    };
+    let bootstrapCalls = 0;
+    (rt as any)._bootstrap = async () => {
+      bootstrapCalls += 1;
+      (rt as any)._transport = {
+        stop: async () => {
+          stopCalls += 1;
+        },
+      };
+    };
+
+    const firstShutdown = rt.shutdown();
+    const reconnect = rt.connect();
+    const finalShutdown = rt.shutdown();
+    releaseFirstStop?.();
+    await Promise.all([firstShutdown, reconnect, finalShutdown]);
+
+    assert.equal(bootstrapCalls, 1);
+    assert.equal(stopCalls, 2);
+    assert.equal(rt.isRunning, false);
+    assert.equal((rt as any)._transport, null);
+  });
+
   it("rustHttpBaseUrl getter and setter", () => {
     const { rt } = createMockRuntime();
     assert.equal(rt.rustHttpBaseUrl, null);

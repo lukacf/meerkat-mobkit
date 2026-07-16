@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+from meerkat_mobkit import IdentityBootstrapMode
 from meerkat_mobkit.builder import MobKit, MobKitBuilder
 from meerkat_mobkit.runtime import MobKitRuntime
 
@@ -19,6 +20,74 @@ class TestBuilderChain:
     def test_mob_sets_config_path(self):
         b = MobKit.builder().mob("config/mob.toml")
         assert b._config.mob_config_path == "config/mob.toml"
+
+    def test_identity_bootstrap_mode_defaults_to_omitted(self):
+        b = MobKit.builder()
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert "identity_bootstrap_mode" not in params["runtime_options"]
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            (
+                IdentityBootstrapMode.eager_materialize(),
+                {"mode": "eager_materialize"},
+            ),
+            (
+                IdentityBootstrapMode.lazy_materialize(),
+                {"mode": "lazy_materialize"},
+            ),
+            (
+                IdentityBootstrapMode.lazy_with_background_warm(concurrency=2),
+                {"mode": "lazy_with_background_warm", "concurrency": 2},
+            ),
+        ],
+    )
+    def test_identity_bootstrap_mode_reaches_strict_runtime_option(
+        self, mode, expected
+    ):
+        b = MobKit.builder().identity_bootstrap_mode(mode)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["identity_bootstrap_mode"] == expected
+
+    @pytest.mark.parametrize("concurrency", [0, -1, True, 1.5, None])
+    def test_background_warm_rejects_invalid_concurrency(self, concurrency):
+        with pytest.raises(ValueError, match="positive integer concurrency"):
+            IdentityBootstrapMode.lazy_with_background_warm(
+                concurrency=concurrency
+            )
+
+    def test_non_background_mode_rejects_concurrency(self):
+        with pytest.raises(ValueError, match="does not accept concurrency"):
+            IdentityBootstrapMode(mode="lazy_materialize", concurrency=2)
+
+    def test_background_warm_rejects_concurrency_above_gateway_cap(self):
+        with pytest.raises(ValueError, match="at most 16"):
+            IdentityBootstrapMode.lazy_with_background_warm(concurrency=17)
+
+    def test_identity_bootstrap_mode_rejects_untyped_values(self):
+        with pytest.raises(TypeError, match="IdentityBootstrapMode"):
+            MobKit.builder().identity_bootstrap_mode(
+                {"mode": "lazy_materialize"}
+            )
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            IdentityBootstrapMode.eager_materialize(),
+            IdentityBootstrapMode.lazy_materialize(),
+            IdentityBootstrapMode.lazy_with_background_warm(concurrency=2),
+        ],
+    )
+    def test_every_explicit_identity_bootstrap_mode_requires_roster(self, mode):
+        builder = MobKit.builder().identity_bootstrap_mode(mode)
+
+        with pytest.raises(ValueError, match=r"identity_bootstrap_mode.*roster"):
+            builder._validate()
+
+        builder.roster(object())._validate()
 
     def test_implicit_delegate_idle_retirement_sets_runtime_option(self):
         b = MobKit.builder().implicit_delegate_idle_retirement(30)

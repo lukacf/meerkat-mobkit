@@ -1449,6 +1449,30 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     });
   });
 
+  it("passes callback cancellation to authority-mutating lease providers", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | null = null;
+
+    dispatcher.registerLeaseProvider({
+      async acquireLeases() { return {}; },
+      async renewLeases(_grants, context) {
+        observedSignal = context?.signal ?? null;
+        return {};
+      },
+      async releaseLeases() {},
+    });
+
+    await dispatcher.handleCallback(
+      "callback/lease_provider/renew_leases",
+      { grants: [] },
+      { signal: controller.signal, deadlineMs: Date.now() + 125_000 },
+    );
+
+    assert.equal(observedSignal, controller.signal);
+  });
+
   it("routes callback/lease_provider/release_leases to LeaseProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();

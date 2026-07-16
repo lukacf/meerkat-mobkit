@@ -1414,3 +1414,108 @@ async fn disabled_and_read_only_modes_fail_closed_at_the_runtime_surface() {
     shutdown(&disabled).await;
     shutdown(&read_only).await;
 }
+
+#[tokio::test]
+async fn identity_reconcile_reports_dormant_endpoint_as_missing_and_incomplete() {
+    use meerkat_mobkit::identity_first::{
+        AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion,
+        ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec,
+        IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime,
+        IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, ManagedPeerEdge,
+        MobSessionBridge, RosterContext, RosterError, RosterProvider,
+    };
+
+    struct FixedRoster(Vec<DurableAgentSpec>);
+
+    #[async_trait::async_trait]
+    impl RosterProvider for FixedRoster {
+        async fn roster(
+            &self,
+            _context: &RosterContext,
+        ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn identity_spec(identity: &AgentIdentity) -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: identity.clone(),
+            profile: meerkat_mob::ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        }
+    }
+
+    fn continuity(identity: &AgentIdentity) -> ContinuityRecord {
+        ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0"))
+                .expect("runtime alias"),
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        }
+    }
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut unified = build_runtime(root.path(), "identity-dormant", "classic-member").await;
+    let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: Arc::new(LocalContinuityStore::in_memory().expect("continuity store")),
+        lease_provider: Arc::new(LocalLeaseProvider::new()),
+        runtime_instance_id: "identity-dormant".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(Arc::new(MobSessionBridge::new(unified.mob_handle()))),
+        default_timeout: None,
+    }));
+    let active = AgentIdentity::parse("domain:active").expect("active identity");
+    let dormant = AgentIdentity::parse("domain:dormant").expect("dormant identity");
+    let active_spec = identity_spec(&active);
+    let dormant_spec = identity_spec(&dormant);
+    identity_runtime
+        .register(
+            active_spec.clone(),
+            IdentityLifecycleState::Active,
+            Some(continuity(&active)),
+            None,
+        )
+        .await;
+    identity_runtime
+        .register(
+            dormant_spec.clone(),
+            IdentityLifecycleState::Dormant,
+            Some(continuity(&dormant)),
+            None,
+        )
+        .await;
+    let managed = ManagedPeerEdge::new(active.clone(), dormant.clone()).expect("managed edge");
+    identity_runtime.set_desired_peer_edges(vec![managed]).await;
+    unified.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+        identity_runtime,
+        Arc::new(FixedRoster(vec![active_spec, dormant_spec])),
+        None,
+        None,
+        Some(unified.mob_handle().definition().clone()),
+    )));
+
+    let report = unified.reconcile_edges().await;
+    let expected =
+        DesiredPeerEdge::new(active.to_string(), dormant.to_string()).expect("desired peer edge");
+    assert_eq!(report.desired_edges, vec![expected.clone()]);
+    assert_eq!(report.skipped_missing_members, vec![expected]);
+    assert!(report.wired_edges.is_empty());
+    assert!(report.failures.is_empty());
+    assert!(
+        !report.is_complete(),
+        "a desired edge with a dormant endpoint must remain incomplete"
+    );
+
+    shutdown(&unified).await;
+}

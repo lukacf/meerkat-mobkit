@@ -35,7 +35,7 @@ pub use local_lease::LocalLeaseProvider;
 pub use local_store::LocalContinuityStore;
 pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
-    lazy_register_flow, restore_flow,
+    lazy_register_flow, restore_flow, restore_flow_for_bootstrap,
 };
 pub use runtime::{
     ContinuityRepairPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,

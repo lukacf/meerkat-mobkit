@@ -1,9 +1,12 @@
 //! HTTP server and route assembly for the unified runtime.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
+use futures::StreamExt;
+use meerkat_core::comms::EventStream;
 
 use crate::console_aggregator::{
     ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
@@ -29,6 +32,117 @@ use super::UnifiedRuntime;
 /// choose a different outer limit, but the reference router itself defaults to
 /// a ceiling high enough for real console usage.
 pub const DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS: usize = 1024;
+
+async fn resolve_agent_event_member_id(
+    handle: &meerkat_mob::MobHandle,
+    agent_id: &str,
+) -> meerkat_mob::ids::AgentIdentity {
+    let direct = crate::member_comms_id::mob_member_id(agent_id);
+    if handle.get_member(&direct).await.ok().flatten().is_some() {
+        return direct;
+    }
+    handle
+        .list_members_including_retiring()
+        .await
+        .into_iter()
+        .find(|entry| {
+            crate::member_comms_id::durable_identity_label(&entry.labels)
+                .is_some_and(|identity| identity == agent_id)
+        })
+        .map(|entry| entry.agent_identity)
+        .unwrap_or(direct)
+}
+
+async fn identity_event_alias_is_current(
+    identity_runtime: &crate::identity_first::IdentityRuntime,
+    identity: &crate::identity_first::AgentIdentity,
+    expected_alias: &str,
+) -> bool {
+    identity_runtime.status(identity).await.is_ok_and(|status| {
+        status.state == crate::identity_first::IdentityLifecycleState::Active
+            && status
+                .agent_runtime_id
+                .as_ref()
+                .is_some_and(|runtime_id| runtime_id.as_str() == expected_alias)
+    })
+}
+
+/// Keep a per-agent event subscription bound to the exact identity generation
+/// that was current when the HTTP request was admitted. A reset replaces that
+/// generation while the lower-plane event stream can remain alive long enough
+/// to emit late output; forwarding it through the durable/current alias would
+/// make a stale owner appear authoritative.
+fn generation_authoritative_agent_event_stream(
+    mut event_stream: EventStream,
+    mut identity_events: tokio::sync::broadcast::Receiver<
+        crate::identity_first::runtime::IdentityEvent,
+    >,
+    identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
+    identity: crate::identity_first::AgentIdentity,
+    expected_alias: String,
+) -> EventStream {
+    Box::pin(async_stream::stream! {
+        // Reset currently updates the continuity entry without guaranteeing a
+        // state-change notification on the pre-reset identity channel. Poll
+        // the cheap in-memory status snapshot as a liveness backstop so an
+        // otherwise-idle SSE connection still closes promptly.
+        let mut authority_check = tokio::time::interval(Duration::from_millis(250));
+        authority_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                // Prefer lifecycle invalidation when both it and a stale
+                // lower-plane event are ready in the same scheduler turn.
+                biased;
+                lifecycle = identity_events.recv() => {
+                    match lifecycle {
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            if !identity_event_alias_is_current(
+                                identity_runtime.as_ref(),
+                                &identity,
+                                &expected_alias,
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = authority_check.tick() => {
+                    if !identity_event_alias_is_current(
+                        identity_runtime.as_ref(),
+                        &identity,
+                        &expected_alias,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                event = event_stream.next() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    // Reset marks the identity non-Active before publishing
+                    // the replacement generation. Recheck on every payload so
+                    // output racing that transition is dropped immediately,
+                    // even before the eventual Active lifecycle event arrives.
+                    if !identity_event_alias_is_current(
+                        identity_runtime.as_ref(),
+                        &identity,
+                        &expected_alias,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                    yield event;
+                }
+            }
+        }
+    })
+}
 
 impl UnifiedRuntime {
     pub fn build_console_json_router(&self, decisions: RuntimeDecisionState) -> Router {
@@ -82,6 +196,7 @@ impl UnifiedRuntime {
         visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     ) -> Router {
         let agent_runtime = self.mob_runtime.clone();
+        let agent_identity_runtime = self.identity_runtime().cloned();
         let mob_runtime = self.mob_runtime.clone();
         // Every SSE route shares the same `RuntimeDecisionState` the
         // console RPC route uses: when `require_app_auth` is on, requests
@@ -94,6 +209,9 @@ impl UnifiedRuntime {
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
         let access = self.access_controller().cloned();
+        let agent_sse_visibility_policy = visibility_policy.clone();
+        let mob_sse_visibility_policy = visibility_policy.clone();
+        let structural_sse_visibility_policy = visibility_policy.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
@@ -106,40 +224,79 @@ impl UnifiedRuntime {
             .merge(agent_events_sse_router_with_access_and_priming(
                 Arc::new(move |agent_id| {
                     let runtime = agent_runtime.clone();
+                    let identity_runtime = agent_identity_runtime.clone();
                     Box::pin(async move {
-                        // Accept every public spelling (issue #254 item 4,
-                        // the #252 canonicalization class): a plain member
-                        // name or runtime ALIAS ("rt:lead:0") encodes
-                        // straight to its roster id, but a DURABLE IDENTITY
-                        // ("lead") has no encodable roster form — resolve it
-                        // via the roster's `agent_identity` label (the same
-                        // durable→roster mapping list_members projects).
-                        // Unresolvable ids keep the direct encoding so the
-                        // route still 404s with member_not_found.
+                        let agent_id =
+                            crate::member_comms_id::runtime_alias_str(&agent_id).into_owned();
                         let handle = runtime.handle();
-                        let direct = crate::member_comms_id::mob_member_id(&agent_id);
-                        let member_id = if handle.get_member(&direct).await.ok().flatten().is_some()
-                        {
-                            direct
-                        } else if let Some(identity) = handle
-                            .roster()
-                            .await
-                            .find_by_label("agent_identity", &agent_id)
-                            .map(|entry| entry.agent_identity.clone())
-                        {
-                            identity
+                        let target = if let Some(identity_runtime) = identity_runtime.as_ref() {
+                            identity_runtime
+                                .member_alias_lifecycle_target(&agent_id)
+                                .await
+                                .map_err(|error| {
+                                    crate::MobRuntimeError::InvalidConfig(error.to_string())
+                                })?
                         } else {
-                            direct
+                            None
                         };
-                        handle
-                            .subscribe_agent_events(&member_id)
+                        if let Some(target) = target {
+                            let Some(authority_runtime) = identity_runtime.clone() else {
+                                return Err(crate::MobRuntimeError::InvalidConfig(
+                                    "identity event target resolved without identity runtime"
+                                        .to_string(),
+                                ));
+                            };
+                            let authority_identity = authority_runtime
+                                .identity_for_member_mutation(&agent_id)
+                                .await
+                                .ok_or_else(|| {
+                                    crate::MobRuntimeError::InvalidConfig(format!(
+                                        "identity event target lost authority before subscription: {agent_id}"
+                                    ))
+                                })?;
+                            let operation_agent_id = agent_id.clone();
+                            return crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                                vec![target],
+                                move || async move {
+                                    let identity_events = authority_runtime
+                                        .subscribe(&authority_identity)
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    let member_id = resolve_agent_event_member_id(
+                                        &handle,
+                                        &operation_agent_id,
+                                    )
+                                    .await;
+                                    let expected_alias = crate::member_comms_id::runtime_alias_str(
+                                        member_id.as_str(),
+                                    )
+                                    .into_owned();
+                                    let event_stream = handle
+                                        .subscribe_agent_events(&member_id)
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    Ok(generation_authoritative_agent_event_stream(
+                                        event_stream,
+                                        identity_events,
+                                        authority_runtime,
+                                        authority_identity,
+                                        expected_alias,
+                                    ))
+                                },
+                            )
                             .await
-                            .map_err(Into::into)
+                            .map_err(|error| {
+                                crate::MobRuntimeError::InvalidConfig(error.to_string())
+                            });
+                        }
+                        let member_id = resolve_agent_event_member_id(&handle, &agent_id).await;
+                        handle.subscribe_agent_events(&member_id).await.map_err(Into::into)
                     })
                 }),
                 Some(sse_decisions_a),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                Some(self.mob_runtime.clone()),
+                agent_sse_visibility_policy,
             ))
             .merge(mob_events_sse_router_with_access_and_priming(
                 Arc::new(move || {
@@ -148,14 +305,16 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_b),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                Some(self.mob_runtime.clone()),
+                mob_sse_visibility_policy,
             ))
             .merge(mob_structural_events_sse_router_with_access_and_priming(
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
-                access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                access,
+                Some(self.mob_runtime.clone()),
+                structural_sse_visibility_policy,
             ))
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,
@@ -164,11 +323,116 @@ impl UnifiedRuntime {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
-    use super::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use meerkat_client::TestClient;
+    use meerkat_core::comms::EventStream;
+    use meerkat_mob::{MobDefinition, MobRuntimeMode, ProfileName};
+
+    use super::{
+        DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, generation_authoritative_agent_event_stream,
+    };
+    use crate::identity_first::{
+        AgentAddressability, AgentIdentity, DurableAgentSpec, LocalContinuityStore,
+        LocalLeaseProvider, MutableRosterProvider,
+    };
+    use crate::unified_runtime::UnifiedRuntimeBuilder;
 
     #[test]
     fn reference_router_default_concurrency_allows_sse_fanout() {
         assert_eq!(DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, 1024);
+    }
+
+    #[tokio::test]
+    async fn durable_agent_event_stream_terminates_when_reset_replaces_generation() {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "generation-authoritative-agent-events"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+        let identity = AgentIdentity::parse("lead").expect("identity parses");
+        let roster = Arc::new(MutableRosterProvider::new(vec![DurableAgentSpec {
+            identity: identity.clone(),
+            profile: ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
+            backend: None,
+            binding: None,
+        }]));
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let runtime = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .continuity_store(Arc::new(
+                LocalContinuityStore::in_memory().expect("continuity store"),
+            ))
+            .lease_provider(Arc::new(LocalLeaseProvider::new()))
+            .roster_provider(roster)
+            .scratch_dir(scratch.path())
+            .identity_runtime_instance_id("generation-authoritative-agent-events")
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("identity-first runtime builds");
+
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime installed")
+            .clone();
+        let expected_alias = identity_runtime
+            .status(&identity)
+            .await
+            .expect("identity active")
+            .agent_runtime_id
+            .expect("active runtime alias")
+            .as_str()
+            .to_string();
+        let identity_events = identity_runtime
+            .subscribe(&identity)
+            .await
+            .expect("identity event subscription");
+        // A pending lower-plane stream proves termination comes from the
+        // identity generation gate, not from old-member channel teardown.
+        let lower_plane: EventStream = Box::pin(futures::stream::pending());
+        let mut guarded = generation_authoritative_agent_event_stream(
+            lower_plane,
+            identity_events,
+            identity_runtime.clone(),
+            identity.clone(),
+            expected_alias,
+        );
+
+        let replacement = identity_runtime
+            .reset(&identity)
+            .await
+            .expect("identity reset succeeds");
+        assert_eq!(replacement.generation.get(), 1);
+        let next = tokio::time::timeout(Duration::from_secs(5), guarded.next())
+            .await
+            .expect("generation gate terminates promptly");
+        assert!(
+            next.is_none(),
+            "stream opened on the prior generation must terminate after reset"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
     }
 }

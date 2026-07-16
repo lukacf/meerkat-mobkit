@@ -703,6 +703,11 @@ fn identity_first_types_continuity_store_error_variants() {
             presented: CheckpointVersion::new(1),
             current: CheckpointVersion::new(2),
         }),
+        Box::new(ContinuityStoreError::StaleContinuityGeneration {
+            identity: AgentIdentity::parse("a:b").expect("parse"),
+            presented: ContinuityGeneration::new(1),
+            current: ContinuityGeneration::new(2),
+        }),
         Box::new(ContinuityStoreError::NotFound {
             identity: AgentIdentity::parse("a:b").expect("parse"),
         }),

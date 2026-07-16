@@ -2,14 +2,35 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
+import time
 from typing import Any, Callable
+from uuid import uuid4
 
 _log = logging.getLogger("meerkat_mobkit")
+
+# Provider operations are publicly required to finish within 120 seconds.
+# Python gives their event-loop coroutine another five seconds of host
+# completion margin before cancellation; the stock Rust gateway owns the
+# final 130-second wire deadline.
+_PROVIDER_CALLBACK_COMPLETION_SECONDS = 125.0
+
+# The fallback matches the stock gateway's advertised shutdown horizon. It
+# covers two 130-second callback windows, runtime event/mob drains, bounded
+# RPC/HTTP/stdout phases, and response-delivery/process-reap margin.
+# It is also the safe fallback for handshake-capable custom gateways which do
+# not yet advertise an explicit horizon.
+_GATEWAY_SHUTDOWN_GRACE_SECONDS = 335.0
+_MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647
+_PROCESS_TERMINATE_GRACE_SECONDS = 5.0
+_PROCESS_KILL_GRACE_SECONDS = 5.0
+_GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown"
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -60,13 +81,24 @@ class PersistentTransport:
         self._callback_handler: Callable | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stderr_file = None
+        self._supports_shutdown_handshake = False
+        self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
 
+    @property
+    def request_timeout(self) -> float:
+        """Default timeout, in seconds, for one outbound RPC request."""
+        return self._timeout
+
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
+        # Transport capabilities belong to one gateway process. A restarted
+        # child must negotiate them again through mobkit/init.
+        self._supports_shutdown_handshake = False
+        self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
         # Capture event loop for async callback dispatch
         try:
             self._loop = asyncio.get_running_loop()
@@ -118,10 +150,18 @@ class PersistentTransport:
                 # Response to a pending request
                 msg_id = str(msg["id"])
                 with self._pending_lock:
-                    self._results[msg_id] = msg
                     event = self._pending.get(msg_id)
-                if event:
+                    if event is not None:
+                        self._results[msg_id] = msg
+                if event is not None:
                     event.set()
+                else:
+                    # The caller may already have timed out and removed its
+                    # pending entry. Do not retain an unclaimable late result.
+                    _log.debug(
+                        "transport: dropping response for non-pending id=%s",
+                        msg_id,
+                    )
             else:
                 _log.warning(
                     "transport: unrecognized message (no id or method): %s",
@@ -152,7 +192,26 @@ class PersistentTransport:
                 future = asyncio.run_coroutine_threadsafe(
                     self._callback_handler(method, params), self._loop
                 )
-                result = future.result(timeout=self._timeout)
+                try:
+                    result = future.result(
+                        timeout=_PROVIDER_CALLBACK_COMPLETION_SECONDS
+                    )
+                except FutureTimeoutError as exc:
+                    # `Future.result()` also propagates a TimeoutError raised
+                    # by the provider itself. A completed future therefore
+                    # represents the provider's own failure, not exhaustion
+                    # of the host wait, and must retain its original error.
+                    if future.done():
+                        raise
+                    # The ordinary request timeout is intentionally unrelated
+                    # to provider execution. If the dedicated host deadline is
+                    # exhausted, cancel the event-loop coroutine before Rust's
+                    # 130-second wire deadline so a timed-out provider cannot
+                    # continue toward a late authority commit unnoticed.
+                    future.cancel()
+                    raise TimeoutError(
+                        "provider callback exceeded its 125s host completion deadline"
+                    ) from exc
             else:
                 raise RuntimeError(
                     "PersistentTransport: no running event loop for callback dispatch"
@@ -188,8 +247,48 @@ class PersistentTransport:
                 self._process.stdin.write(data.encode("utf-8"))
                 self._process.stdin.flush()
 
-    def send_sync(self, request: dict[str, Any]) -> Any:
+    def send_sync(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         self._ensure_running()
+        response = self._send_sync_running(request, timeout=timeout)
+        if request.get("method") == "mobkit/init":
+            result = response.get("result") if isinstance(response, dict) else None
+            self._supports_shutdown_handshake = bool(
+                isinstance(result, dict)
+                and result.get("stdio_shutdown_handshake") is True
+            )
+            self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+            if self._supports_shutdown_handshake and isinstance(result, dict):
+                horizon_ms = result.get("stdio_shutdown_horizon_ms")
+                if (
+                    isinstance(horizon_ms, int)
+                    and not isinstance(horizon_ms, bool)
+                    and 0 < horizon_ms <= _MAX_GATEWAY_SHUTDOWN_HORIZON_MS
+                ):
+                    self._shutdown_horizon_seconds = horizon_ms / 1000.0
+        return response
+
+    def _send_sync_running(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        """Send on the current child without starting a replacement process."""
+        request_timeout = self._timeout if timeout is None else timeout
+        if (
+            isinstance(request_timeout, bool)
+            or not isinstance(request_timeout, (int, float))
+            or not math.isfinite(request_timeout)
+            or request_timeout <= 0
+        ):
+            raise ValueError(
+                "persistent transport: timeout must be a positive finite number"
+            )
         # Pre-fix, requests with no `id` (or two callers using the
         # same id) collided on `self._pending[""]`: the second
         # `_pending[msg_id] = event` clobbered the first caller's
@@ -215,12 +314,13 @@ class PersistentTransport:
         # Write request (lock only for write, release before wait)
         self._write_line(request)
         # Wait for response — no locks held
-        if not event.wait(timeout=self._timeout):
+        if not event.wait(timeout=request_timeout):
             with self._pending_lock:
                 self._pending.pop(msg_id, None)
                 self._results.pop(msg_id, None)
             raise RuntimeError(
-                f"persistent transport: timeout after {self._timeout}s waiting for response"
+                f"persistent transport: timeout after {request_timeout}s "
+                "waiting for response"
             )
         with self._pending_lock:
             self._pending.pop(msg_id, None)
@@ -229,23 +329,140 @@ class PersistentTransport:
             raise RuntimeError("persistent transport: subprocess closed stdout")
         return result
 
-    async def send_async(self, request: dict[str, Any]) -> Any:
-        return await asyncio.to_thread(self.send_sync, request)
+    def _request_gateway_shutdown(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        timeout: float,
+    ) -> None:
+        """Wait for runtime cleanup while the current child's stdin stays open."""
+        if self._process is not process or process.poll() is not None:
+            raise RuntimeError("gateway exited before shutdown handshake")
+        response = self._send_sync_running(
+            {
+                "jsonrpc": "2.0",
+                "id": f"mobkit-shutdown-{uuid4()}",
+                "method": _GATEWAY_SHUTDOWN_METHOD,
+                "params": {},
+            },
+            timeout=timeout,
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("gateway shutdown returned a malformed response")
+        error = response.get("error")
+        if isinstance(error, dict):
+            message = error.get("message", "unknown gateway error")
+            raise RuntimeError(f"gateway shutdown failed: {message}")
+        result = response.get("result")
+        if (
+            not isinstance(result, dict)
+            or result.get("shutdown") is not True
+            or result.get("runtime_cleanup_completed") is not True
+        ):
+            raise RuntimeError(
+                "gateway shutdown did not complete runtime-owned cleanup"
+            )
+
+    async def send_async(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        return await asyncio.to_thread(self.send_sync, request, timeout=timeout)
 
     def stop(self) -> None:
-        if self._process is None:
+        process = getattr(self, "_process", None)
+        if process is None:
             return
+        shutdown_horizon = getattr(
+            self,
+            "_shutdown_horizon_seconds",
+            _GATEWAY_SHUTDOWN_GRACE_SECONDS,
+        )
+        shutdown_error: Exception | None = None
+        process_reaped = False
+        reap_error: Exception | None = None
+        shutdown_started = time.monotonic()
         try:
-            if self._process.stdin:
-                self._process.stdin.close()
-            self._process.wait(timeout=5)
-        except Exception:
-            self._process.kill()
+            # The gateway may need to round-trip lease/continuity provider
+            # callbacks while UnifiedRuntime shuts down. Keep stdin open until
+            # a capable gateway acknowledges that cleanup is complete. Older
+            # or custom gateways stay on the EOF protocol below.
+            if getattr(self, "_supports_shutdown_handshake", False):
+                try:
+                    self._request_gateway_shutdown(
+                        process,
+                        timeout=shutdown_horizon,
+                    )
+                except Exception as exc:
+                    _log.debug("gateway shutdown handshake failed: %s", exc)
+                    shutdown_error = exc
+
+            elapsed = time.monotonic() - shutdown_started
+            remaining_grace = max(0.0, shutdown_horizon - elapsed)
+            if process.stdin:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    # A gateway that already closed its pipe still needs to be
+                    # reaped below.
+                    pass
+            try:
+                process.wait(timeout=remaining_grace)
+                process_reaped = True
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    process_reaped = process.poll() is not None
+                except OSError:
+                    process_reaped = False
+                if not process_reaped:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        # The child can exit between the timed wait and signal.
+                        pass
+                    try:
+                        process.wait(timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
+                        process_reaped = True
+                    except (OSError, subprocess.TimeoutExpired):
+                        try:
+                            process_reaped = process.poll() is not None
+                        except OSError:
+                            process_reaped = False
+                        if not process_reaped:
+                            try:
+                                process.kill()
+                            except OSError:
+                                pass
+                            try:
+                                process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+                                process_reaped = True
+                            except (OSError, subprocess.TimeoutExpired) as exc:
+                                try:
+                                    process_reaped = process.poll() is not None
+                                except OSError:
+                                    process_reaped = False
+                                if not process_reaped:
+                                    # Keep teardown bounded, but never attest
+                                    # success or discard ownership while the
+                                    # child remains live.
+                                    reap_error = exc
         finally:
-            self._process = None
-            if self._stderr_file is not None:
-                self._stderr_file.close()
-                self._stderr_file = None
+            if process_reaped:
+                self._process = None
+                stderr_file = getattr(self, "_stderr_file", None)
+                if stderr_file is not None:
+                    stderr_file.close()
+                    self._stderr_file = None
+        if reap_error is not None:
+            raise RuntimeError(
+                "persistent transport: gateway process did not terminate after bounded cleanup"
+            ) from reap_error
+        if shutdown_error is not None:
+            raise RuntimeError(
+                "persistent transport: gateway shutdown failed after bounded cleanup"
+            ) from shutdown_error
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -255,7 +472,12 @@ class PersistentTransport:
             self.start()
 
     def __del__(self) -> None:
-        self.stop()
+        try:
+            self.stop()
+        except Exception:
+            # Explicit shutdown surfaces handshake failures. Destructors run
+            # outside a caller-owned error channel and must stay best effort.
+            pass
 
 
 def create_persistent_transport(gateway_bin: str, **kwargs: Any) -> PersistentTransport:

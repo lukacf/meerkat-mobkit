@@ -402,10 +402,15 @@ impl ImplicitDelegateRetirementOverrides {
     }
 }
 
+pub(crate) type SharedIdentityRuntimeSlot =
+    Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>;
+
 struct AutoWireParentMobToolsFactory {
     inner: Arc<dyn meerkat_core::service::MobToolsFactory>,
     implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
     console_spawn_sink: SharedConsoleSpawnSinkSlot,
+    identity_runtime: SharedIdentityRuntimeSlot,
+    protected_mob_id: String,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -424,6 +429,8 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
                 .implicit_delegate_retirement_overrides
                 .clone(),
             console_spawn_sink: Arc::clone(&self.console_spawn_sink),
+            identity_runtime: Arc::clone(&self.identity_runtime),
+            protected_mob_id: self.protected_mob_id.clone(),
             spawner_comms_name,
         }))
     }
@@ -435,6 +442,10 @@ struct AutoWireParentMobToolDispatcher {
     /// Late-bound console sink; empty until a console-bearing runtime
     /// installs one, in which case successful spawns project into it.
     console_spawn_sink: SharedConsoleSpawnSinkSlot,
+    /// Identity authority attaches after the raw mob tool factory is built.
+    /// Every dispatcher reads this shared slot at call time.
+    identity_runtime: SharedIdentityRuntimeSlot,
+    protected_mob_id: String,
     /// Comms name of the agent owning this tool surface — identifies the
     /// spawning parent for console lineage.
     spawner_comms_name: Option<String>,
@@ -464,6 +475,68 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if matches!(
+            call.name,
+            "delegate"
+                | "mob_spawn_member"
+                | "mob_retire_member"
+                | "mob_wire"
+                | "mob_unwire"
+                | "mob_destroy"
+                | "spawn_member"
+                | "spawn_many_members"
+                | "retire_member"
+                | "force_cancel_member"
+                | "member_status"
+                | "wire_members"
+                | "unwire_members"
+        ) {
+            let args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
+                meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+            })?;
+            if let Some((field, alias)) = reserved_raw_member_tool_argument(call.name, &args) {
+                return Err(meerkat_core::ToolError::invalid_arguments(
+                    call.name,
+                    format!(
+                        "{field} '{alias}' uses MobKit's reserved rt:* / mk-- member namespace; use a public non-reserved alias or the IdentityRuntime authority"
+                    ),
+                ));
+            }
+            let identity_runtime = self
+                .identity_runtime
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(identity_runtime) = identity_runtime {
+                for (field, alias) in raw_member_tool_arguments(call.name, &args) {
+                    let alias = crate::member_comms_id::runtime_alias_str(&alias).into_owned();
+                    if identity_runtime
+                        .identity_for_member_mutation(&alias)
+                        .await
+                        .is_some()
+                    {
+                        return Err(meerkat_core::ToolError::invalid_arguments(
+                            call.name,
+                            format!(
+                                "{field} '{alias}' is owned by the attached IdentityRuntime; use the identity lifecycle/topology authority"
+                            ),
+                        ));
+                    }
+                }
+                if call.name == "mob_destroy"
+                    && args.get("mob_id").and_then(Value::as_str)
+                        == Some(self.protected_mob_id.as_str())
+                {
+                    return Err(meerkat_core::ToolError::invalid_arguments(
+                        call.name,
+                        format!(
+                            "mob '{}' is owned by the attached IdentityRuntime and cannot be destroyed through raw agent tools",
+                            self.protected_mob_id
+                        ),
+                    ));
+                }
+            }
+        }
         if call.name == "delegate" {
             return self.dispatch_delegate(call).await;
         }
@@ -504,6 +577,8 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             inner: outcome.into_dispatcher(),
             implicit_delegate_retirement_overrides: owned.implicit_delegate_retirement_overrides,
             console_spawn_sink: owned.console_spawn_sink,
+            identity_runtime: owned.identity_runtime,
+            protected_mob_id: owned.protected_mob_id,
             spawner_comms_name: owned.spawner_comms_name,
         });
         Ok(if was_bound {
@@ -512,6 +587,74 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             meerkat_core::agent::BindOutcome::Skipped(dispatcher)
         })
     }
+}
+
+/// Return the first raw mob-tool argument that attempts to create or mutate
+/// an identity-runtime alias. Agent tools dispatch directly to meerkat-mob's
+/// lower plane, so permitting either the public or encoded form here would
+/// bypass durable lifecycle and topology authority.
+fn reserved_raw_member_tool_argument(
+    tool_name: &str,
+    args: &Value,
+) -> Option<(&'static str, String)> {
+    raw_member_tool_arguments(tool_name, args)
+        .into_iter()
+        .find(|(_, value)| {
+            crate::member_comms_id::is_reserved_generated_alias(value)
+                || crate::member_comms_id::uses_reserved_roster_marker(value)
+        })
+        .map(|(field, value)| {
+            (
+                field,
+                crate::member_comms_id::runtime_alias_str(&value).into_owned(),
+            )
+        })
+}
+
+fn raw_member_tool_arguments(tool_name: &str, args: &Value) -> Vec<(&'static str, String)> {
+    let mut candidates = Vec::new();
+    match tool_name {
+        "delegate"
+        | "mob_spawn_member"
+        | "mob_retire_member"
+        | "spawn_member"
+        | "retire_member"
+        | "force_cancel_member"
+        | "member_status" => {
+            candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
+        }
+        "spawn_many_members" => {
+            if let Some(specs) = args.get("specs").and_then(Value::as_array) {
+                for spec in specs {
+                    candidates.push((
+                        "specs[].member_id",
+                        spec.get("member_id").and_then(Value::as_str),
+                    ));
+                }
+            }
+        }
+        "mob_wire" | "mob_unwire" => {
+            candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
+            candidates.push((
+                "peer.local",
+                args.get("peer")
+                    .and_then(|peer| peer.get("local"))
+                    .and_then(Value::as_str),
+            ));
+        }
+        "wire_members" | "unwire_members" => {
+            candidates.push(("member_id", args.get("member_id").and_then(Value::as_str)));
+            candidates.push((
+                "peer_member_id",
+                args.get("peer_member_id").and_then(Value::as_str),
+            ));
+        }
+        _ => return Vec::new(),
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(field, value)| value.map(|value| (field, value.to_string())))
+        .collect()
 }
 
 impl AutoWireParentMobToolDispatcher {
@@ -935,6 +1078,7 @@ fn install_agent_mob_tools(
     ImplicitDelegateRetirementOverrides,
     SharedDefaultLlmClientSlot,
     SharedConsoleSpawnSinkSlot,
+    SharedIdentityRuntimeSlot,
 ) {
     let default_llm_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
     let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
@@ -958,6 +1102,7 @@ fn install_agent_mob_tools(
     let state = Arc::new(state);
     let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
     let console_spawn_sink = new_console_spawn_sink_slot();
+    let identity_runtime = Arc::new(std::sync::RwLock::new(None));
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
@@ -965,6 +1110,8 @@ fn install_agent_mob_tools(
         inner,
         implicit_delegate_retirement_overrides: implicit_delegate_retirement_overrides.clone(),
         console_spawn_sink: Arc::clone(&console_spawn_sink),
+        identity_runtime: Arc::clone(&identity_runtime),
+        protected_mob_id: definition.id.to_string(),
     });
     *slot
         .write()
@@ -974,6 +1121,7 @@ fn install_agent_mob_tools(
         implicit_delegate_retirement_overrides,
         default_llm_client_slot,
         console_spawn_sink,
+        identity_runtime,
     )
 }
 
@@ -1456,6 +1604,26 @@ fn normalize_runtime_turn_request(
     req
 }
 
+/// Apply a machine-authorized cooperative cancel as an idempotent quiescence
+/// operation. Once the generated runtime machine has admitted the cancel,
+/// absence of a live session (or absence of a running turn) proves that there
+/// is no lower-plane work left to interrupt. Propagating either observation
+/// back as a failed effect wedges the machine in its pre-cancel phase and can
+/// make whole-mob shutdown retain otherwise releasable identity authority.
+async fn cancel_after_boundary_with_machine_authority_if_live(
+    service: &dyn MobSessionService,
+    session_id: &meerkat_core::types::SessionId,
+    authority: meerkat_runtime::MachineSessionControlAuthority,
+) -> Result<(), SessionError> {
+    service
+        .cancel_after_boundary_with_machine_authority(session_id, authority)
+        .await
+        .or_else(|error| match error {
+            SessionError::NotFound { .. } | SessionError::NotRunning { .. } => Ok(()),
+            error => Err(error),
+        })
+}
+
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
 /// overriding only `create_session` to apply the pre-build hook.
 macro_rules! delegate_mob_session_service {
@@ -1684,9 +1852,12 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
                 authority: meerkat_runtime::MachineSessionControlAuthority,
             ) -> Result<(), SessionError> {
-                self.inner
-                    .cancel_after_boundary_with_machine_authority(session_id, authority)
-                    .await
+                cancel_after_boundary_with_machine_authority_if_live(
+                    self.inner.as_ref(),
+                    session_id,
+                    authority,
+                )
+                .await
             }
             async fn session_belongs_to_mob(
                 &self,
@@ -2195,9 +2366,12 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
         authority: meerkat_runtime::MachineSessionControlAuthority,
     ) -> Result<(), SessionError> {
-        self.inner
-            .cancel_after_boundary_with_machine_authority(session_id, authority)
-            .await
+        cancel_after_boundary_with_machine_authority_if_live(
+            self.inner.as_ref(),
+            session_id,
+            authority,
+        )
+        .await
     }
     async fn session_belongs_to_mob(
         &self,
@@ -2399,6 +2573,7 @@ pub struct MobBootstrapSpec {
     pub(crate) implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     pub(crate) agent_mob_default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     pub(crate) console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
+    pub(crate) identity_runtime_slot: Option<SharedIdentityRuntimeSlot>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -2462,6 +2637,7 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides: None,
             agent_mob_default_llm_client_slot: None,
             console_spawn_sink_slot: None,
+            identity_runtime_slot: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -2512,6 +2688,7 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
+            identity_runtime_slot,
         ) = install_agent_mob_tools(
             &self.definition,
             mob_tools_slot,
@@ -2522,6 +2699,7 @@ impl MobBootstrapSpec {
         self.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         self.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         self.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        self.identity_runtime_slot = Some(identity_runtime_slot);
         self
     }
 
@@ -2764,6 +2942,7 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
+            identity_runtime_slot,
         ) = install_agent_mob_tools(
             &definition,
             mob_tools_slot,
@@ -2775,6 +2954,7 @@ impl MobBootstrapSpec {
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
@@ -2940,6 +3120,7 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
+            identity_runtime_slot,
         ) = install_agent_mob_tools(
             &definition,
             mob_tools_slot,
@@ -2951,6 +3132,7 @@ impl MobBootstrapSpec {
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = workgraph_service;
@@ -3084,6 +3266,7 @@ impl MobBootstrapSpec {
             implicit_delegate_retirement_overrides,
             agent_mob_default_llm_client_slot,
             console_spawn_sink_slot,
+            identity_runtime_slot,
         ) = install_agent_mob_tools(
             &definition,
             mob_tools_slot,
@@ -3095,6 +3278,7 @@ impl MobBootstrapSpec {
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
+        spec.identity_runtime_slot = Some(identity_runtime_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
@@ -3209,6 +3393,7 @@ pub struct MobRuntime {
     /// Slot shared with the agent mob-tool dispatchers. A console-bearing
     /// runtime fills it so agent-tool spawns project into the console.
     console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
+    identity_runtime_slot: Option<SharedIdentityRuntimeSlot>,
     /// Realm-scoped WorkGraph service carried over from the bootstrap spec
     /// so `UnifiedRuntime` can expose it to the RPC/console surfaces.
     workgraph_service: Option<meerkat::WorkGraphService>,
@@ -3236,6 +3421,7 @@ impl MobRuntime {
         let implicit_delegate_retirement_overrides =
             spec.implicit_delegate_retirement_overrides.clone();
         let console_spawn_sink_slot = spec.console_spawn_sink_slot.clone();
+        let identity_runtime_slot = spec.identity_runtime_slot.clone();
         let default_llm_client = spec
             .options
             .default_llm_client
@@ -3316,6 +3502,7 @@ impl MobRuntime {
             binary_blob_store,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot,
+            identity_runtime_slot,
             workgraph_service: spec.workgraph_service,
             workgraph_admission,
             _ephemeral_dir: ephemeral_dir,
@@ -3336,6 +3523,7 @@ impl MobRuntime {
             binary_blob_store: None,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             console_spawn_sink_slot: None,
+            identity_runtime_slot: None,
             workgraph_service: None,
             workgraph_admission,
             _ephemeral_dir: None,
@@ -3383,6 +3571,29 @@ impl MobRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         })
+    }
+
+    pub(crate) fn install_identity_runtime_authority(
+        &self,
+        identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
+    ) {
+        if let Some(slot) = self.identity_runtime_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_runtime);
+        }
+    }
+
+    /// Remove the late-bound identity authority after the mob has fully
+    /// quiesced. IdentityRuntime owns a MobHandle in its runtime services, so
+    /// retaining the reverse Arc here would form a shutdown cycle and keep
+    /// persistent controller locks alive after failed construction.
+    pub(crate) fn clear_identity_runtime_authority(&self) {
+        if let Some(slot) = self.identity_runtime_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
     }
 
     /// Console identity metadata registered by agent-tool spawns, keyed by
@@ -3898,8 +4109,151 @@ mod tests {
             inner: Arc::new(EmptyDispatcher),
             implicit_delegate_retirement_overrides: overrides,
             console_spawn_sink: new_console_spawn_sink_slot(),
+            identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+            protected_mob_id: "test-mob".to_string(),
             spawner_comms_name: None,
         }
+    }
+
+    #[test]
+    fn raw_mob_tools_detect_public_and_encoded_generated_aliases() {
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:worker:0").into_owned();
+        assert_eq!(
+            reserved_raw_member_tool_argument(
+                "mob_spawn_member",
+                &serde_json::json!({"member_id": "rt:worker:0"}),
+            ),
+            Some(("member_id", "rt:worker:0".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
+                "mob_wire",
+                &serde_json::json!({"member_id": "classic", "peer": {"local": encoded}}),
+            ),
+            Some(("peer.local", "rt:worker:0".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
+                "delegate",
+                &serde_json::json!({"member_id": "mk--victim"}),
+            ),
+            Some(("member_id", "victim".to_string()))
+        );
+        assert_eq!(
+            reserved_raw_member_tool_argument(
+                "spawn_many_members",
+                &serde_json::json!({
+                    "specs": [
+                        {"profile": "worker", "member_id": "classic"},
+                        {"profile": "worker", "member_id": encoded},
+                    ]
+                }),
+            ),
+            Some(("specs[].member_id", "rt:worker:0".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_mob_tool_dispatch_fails_closed_before_lower_plane() {
+        use meerkat_core::AgentToolDispatcher;
+
+        let dispatcher = wrapper_with_overrides(ImplicitDelegateRetirementOverrides::default());
+        let args = serde_json::value::RawValue::from_string(
+            serde_json::json!({"mob_id": "m", "member_id": "rt:worker:0"}).to_string(),
+        )
+        .expect("raw args");
+        let error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "call-reserved",
+                name: "mob_retire_member",
+                args: &args,
+            })
+            .await
+            .expect_err("reserved alias must not reach the raw dispatcher");
+
+        assert!(error.to_string().contains("reserved rt:* / mk--"));
+
+        let batch_args = serde_json::value::RawValue::from_string(
+            serde_json::json!({
+                "specs": [{"profile": "worker", "member_id": "rt:worker:0"}]
+            })
+            .to_string(),
+        )
+        .expect("raw args");
+        let batch_error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "call-reserved-batch",
+                name: "spawn_many_members",
+                args: &batch_args,
+            })
+            .await
+            .expect_err("reserved batch member must not reach the raw dispatcher");
+        assert!(batch_error.to_string().contains("specs[].member_id"));
+    }
+
+    #[tokio::test]
+    async fn raw_operator_tool_rejects_registered_plain_durable_identity() {
+        use meerkat_core::AgentToolDispatcher;
+
+        let dispatcher = wrapper_with_overrides(ImplicitDelegateRetirementOverrides::default());
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()
+                        .expect("continuity store"),
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "raw-operator-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity =
+            crate::identity_first::AgentIdentity::parse("lead").expect("durable identity");
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity,
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+        *dispatcher
+            .identity_runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_runtime);
+
+        let args = serde_json::value::RawValue::from_string(
+            serde_json::json!({"member_id": "lead"}).to_string(),
+        )
+        .expect("raw args");
+        let error = dispatcher
+            .dispatch(meerkat_core::types::ToolCallView {
+                id: "call-owned",
+                name: "force_cancel_member",
+                args: &args,
+            })
+            .await
+            .expect_err("registered durable identity must not reach raw force cancel");
+        assert!(
+            error
+                .to_string()
+                .contains("owned by the attached IdentityRuntime")
+        );
     }
 
     #[test]
@@ -3999,6 +4353,8 @@ mod tests {
             }),
             implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
             console_spawn_sink: new_console_spawn_sink_slot(),
+            identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+            protected_mob_id: "test-mob".to_string(),
             spawner_comms_name: None,
         });
 
@@ -5006,6 +5362,7 @@ realm_profile = "worker-v2"
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
+        cancel_outcome: std::sync::atomic::AtomicU8,
     }
 
     impl ForwardingProbe {
@@ -5021,6 +5378,11 @@ realm_profile = "worker-v2"
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
+        }
+
+        fn set_cancel_outcome(&self, outcome: u8) {
+            self.cancel_outcome
+                .store(outcome, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -5121,6 +5483,29 @@ realm_profile = "worker-v2"
             Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))
         }
 
+        async fn cancel_after_boundary_with_machine_authority(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            _authority: meerkat_runtime::MachineSessionControlAuthority,
+        ) -> Result<(), SessionError> {
+            self.record("cancel_after_boundary_with_machine_authority");
+            match self
+                .cancel_outcome
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                0 => Err(SessionError::NotFound {
+                    id: session_id.clone(),
+                }),
+                1 => Err(SessionError::NotRunning {
+                    id: session_id.clone(),
+                }),
+                2 => Err(SessionError::Unsupported(
+                    "synthetic cancel rejection".to_string(),
+                )),
+                _ => Ok(()),
+            }
+        }
+
         async fn archive_with_mob_lifecycle_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -5178,6 +5563,17 @@ realm_profile = "worker-v2"
         };
         let session_id = meerkat_core::types::SessionId::new();
 
+        MobSessionService::cancel_after_boundary_with_machine_authority(
+            &wrapped,
+            &session_id,
+            wrapped
+                .runtime_adapter()
+                .expect("wrapper should expose runtime adapter")
+                .session_control_authority(),
+        )
+        .await
+        .expect("machine-authorized cancel should treat a missing live session as quiesced");
+
         MobSessionService::archive_with_mob_lifecycle_authority(&wrapped, &session_id)
             .await
             .expect("archive_with_mob_lifecycle_authority should forward to inner service");
@@ -5234,6 +5630,7 @@ realm_profile = "worker-v2"
         assert_eq!(
             probe.calls(),
             vec![
+                "cancel_after_boundary_with_machine_authority",
                 "archive_with_mob_lifecycle_authority",
                 "stage_tool_results",
                 "active_turn_system_context_boundary_available",
@@ -5241,6 +5638,48 @@ realm_profile = "worker-v2"
                 "discard_runtime_system_context_for_active_turn",
                 "session_known_to_archive_authority",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_authorized_boundary_cancel_only_normalizes_quiesced_liveness() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        for quiesced_outcome in [0, 1] {
+            probe.set_cancel_outcome(quiesced_outcome);
+            MobSessionService::cancel_after_boundary_with_machine_authority(
+                &wrapped,
+                &session_id,
+                wrapped
+                    .runtime_adapter()
+                    .expect("wrapper should expose runtime adapter")
+                    .session_control_authority(),
+            )
+            .await
+            .expect("NotFound and NotRunning both prove lower-plane quiescence");
+        }
+
+        probe.set_cancel_outcome(2);
+        let error = MobSessionService::cancel_after_boundary_with_machine_authority(
+            &wrapped,
+            &session_id,
+            wrapped
+                .runtime_adapter()
+                .expect("wrapper should expose runtime adapter")
+                .session_control_authority(),
+        )
+        .await
+        .expect_err("non-liveness cancellation failures must remain fatal");
+        assert!(
+            matches!(error, SessionError::Unsupported(ref detail) if detail == "synthetic cancel rejection"),
+            "unexpected fail-closed cancellation error: {error}"
         );
     }
 
@@ -6071,6 +6510,8 @@ image_generation = true
                 implicit_delegate_retirement_overrides:
                     ImplicitDelegateRetirementOverrides::default(),
                 console_spawn_sink,
+                identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+                protected_mob_id: "test-mob".to_string(),
                 spawner_comms_name: Some("ob3/orchestrator/ops-lead".to_string()),
             }
         }
