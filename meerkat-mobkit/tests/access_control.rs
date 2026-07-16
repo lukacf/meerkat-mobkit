@@ -12,16 +12,18 @@ use axum::http::{Request, StatusCode, header};
 use futures::StreamExt;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
+use meerkat_core::types::HandlingMode;
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
 use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::runtime::ConsoleMember;
 use meerkat_mobkit::{
-    AccessControlConfig, AccessController, AccessGroup, AccessRule, AuthPolicy, BigQueryNaming,
-    ConsoleAccessRequest, ConsoleLiveSnapshot, ConsoleModelCapabilities, ConsolePolicy,
-    ConsoleRestJsonRequest, ConsoleVisibilityPolicy, DiscoverySpec, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy, TopologyControlMode,
-    TopologyControlPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    AccessControlConfig, AccessController, AccessGroup, AccessRule, AgentResourceAttributes,
+    AuthPolicy, BigQueryNaming, ConsoleAccessRequest, ConsoleLiveSnapshot,
+    ConsoleModelCapabilities, ConsolePolicy, ConsoleRestJsonRequest, ConsoleVisibilityPolicy,
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TopologyControlMode, TopologyControlPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, build_runtime_decision_state,
     handle_console_rest_json_route_with_snapshot_and_access,
 };
 use serde_json::{Value, json};
@@ -573,6 +575,30 @@ async fn assert_sse_replay_emits_no_data(response: axum::response::Response) {
     }
 }
 
+async fn assert_sse_emits_no_identity(response: axum::response::Response, identity: &str) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    let mut observed = String::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Err(_) | Ok(None) => break,
+            Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+            Ok(Some(Ok(bytes))) => {
+                observed.push_str(&String::from_utf8_lossy(&bytes));
+                assert!(
+                    !observed.contains(identity),
+                    "hidden identity {identity} leaked through SSE: {observed}"
+                );
+            }
+        }
+    }
+}
+
 /// Anonymous callers (open console) only match rules with no subject
 /// constraints: visible/sendable only what those rules grant.
 fn anonymous_router_only_config() -> AccessControlConfig {
@@ -878,6 +904,118 @@ async fn structural_sse_replay_fails_closed_without_live_visibility_projection()
         .await
         .expect("historical visibility SSE response");
     assert_sse_replay_emits_no_data(response).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn long_lived_sse_reauthorizes_stale_alias_when_new_generation_appears() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "label-transition";
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    // Model the additive cache entry left by a prior embodiment of this alias.
+    // The new live generation below has different labels; a long-lived stream
+    // must not treat this known-but-stale entry as current authority.
+    controller.record_agent_attributes(AgentResourceAttributes {
+        identity: identity.to_string(),
+        agent_id: Some(identity.to_string()),
+        role: Some("lead".to_string()),
+        labels: BTreeMap::from([("org".to_string(), "public".to_string())]),
+    });
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    assert!(controller.view_for_subject(None).knows_agent(identity));
+    let after_seq = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .expect("cursor before new generation");
+
+    // Open both long-lived routes while the alias is absent. Their initial
+    // prime therefore cannot overwrite the cached public labels.
+    let mob_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mob/events")
+                .body(Body::empty())
+                .expect("mob SSE request"),
+        )
+        .await
+        .expect("mob SSE response");
+    let structural_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("structural SSE request"),
+        )
+        .await
+        .expect("structural SSE response");
+
+    let mut secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("secret member".into()),
+        None,
+        None,
+    );
+    secret_spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime
+        .spawn(secret_spec)
+        .await
+        .expect("spawn secret member");
+    let member_id = MeerkatId::from(identity);
+    let mut proof_stream = runtime
+        .mob_handle()
+        .subscribe_agent_events(&member_id)
+        .await
+        .expect("proof event stream");
+    runtime
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("secret member handle")
+        .send("emit a test event", HandlingMode::Queue)
+        .await
+        .expect("secret member turn");
+    tokio::time::timeout(Duration::from_secs(2), proof_stream.next())
+        .await
+        .expect("secret member should emit an event")
+        .expect("proof stream should remain open");
+
+    assert_sse_emits_no_identity(mob_response, identity).await;
+    assert_sse_emits_no_identity(structural_response, identity).await;
     runtime.shutdown().await;
 }
 

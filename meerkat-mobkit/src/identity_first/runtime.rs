@@ -4738,11 +4738,224 @@ impl IdentityRuntime {
         }
     }
 
+    /// Transfer a provider-returned active grant into runtime ownership before
+    /// any fallible continuity or bridge projection. The provider call is the
+    /// authority commit: once it returns, retaining only the previous token is
+    /// unsafe because exact-token release would become a no-op.
+    async fn stage_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        expected_previous: Option<FencingToken>,
+        grant: &LeaseGrant,
+    ) -> Result<Option<ContinuityRecord>, IdentityRuntimeError> {
+        let staged = {
+            let mut entries = self.entries.write().await;
+            (|| {
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                if entry.state != IdentityLifecycleState::Active {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity: identity.clone(),
+                        state: entry.state,
+                        operation: "stage_active_grant",
+                    });
+                }
+                let current = entry
+                    .lease
+                    .as_ref()
+                    .ok_or_else(|| IdentityRuntimeError::NoActiveLease(identity.clone()))?;
+                if let Some(expected) = expected_previous
+                    && current.fencing_token != expected
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "active lease for {identity} changed from fencing token {expected} to {} before renewed authority could be staged",
+                        current.fencing_token
+                    )));
+                }
+                if let Some(pending) = entry.pending_lease_release.as_ref() {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "active identity {identity} already has pending fencing token {} while staging {}",
+                        pending.fencing_token, grant.fencing_token
+                    )));
+                }
+
+                let continuity = entry.continuity.clone();
+                // Broken + pending is the fail-closed intermediate state.
+                // The lifecycle lock prevents another operation from
+                // observing it as a completed transition, while a dropped
+                // caller still leaves repair/shutdown an exact token.
+                entry.state = IdentityLifecycleState::Broken;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant.clone());
+                Ok(continuity)
+            })()
+        };
+
+        match staged {
+            Ok(continuity) => Ok(continuity),
+            Err(error) => {
+                if let Err(cleanup_error) = self
+                    .release_or_park_untracked_leases(std::slice::from_ref(grant))
+                    .await
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "{error}; exact grant cleanup failed: {cleanup_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn fail_staged_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        detail: String,
+    ) {
+        let retained_by_entry = {
+            let mut entries = self.entries.write().await;
+            entries.get_mut(identity).is_some_and(|entry| {
+                if entry
+                    .pending_lease_release
+                    .as_ref()
+                    .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.state = IdentityLifecycleState::Broken;
+                    entry.lease = None;
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if !retained_by_entry {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+        }
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Broken, Some(detail));
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Broken,
+            },
+        )
+        .await;
+    }
+
+    async fn commit_staged_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        continuity: Option<ContinuityRecord>,
+    ) -> Result<(), IdentityRuntimeError> {
+        let committed = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry)
+                    if entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token) =>
+                {
+                    if let Some(record) = continuity {
+                        entry.checkpoint_version = record.checkpoint_version;
+                        entry.continuity = Some(record);
+                    }
+                    entry.pending_lease_release = None;
+                    entry.lease = Some(Self::lease_entry_from_grant(grant));
+                    entry.state = IdentityLifecycleState::Active;
+                    Ok(())
+                }
+                Some(entry) => Err(IdentityRuntimeError::Internal(format!(
+                    "staged fencing token {} for {identity} was replaced before commit (state {:?})",
+                    grant.fencing_token, entry.state
+                ))),
+                None => Err(IdentityRuntimeError::UnknownIdentity(identity.clone())),
+            }
+        };
+        if let Err(error) = committed {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn publish_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        expected_previous: Option<FencingToken>,
+        grant: &LeaseGrant,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let mut continuity = self
+            .stage_active_grant(identity, expected_previous, grant)
+            .await?;
+
+        if let Some(record) = continuity.as_mut() {
+            if let Err(error) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+            {
+                let runtime_error = IdentityRuntimeError::Store(error);
+                self.fail_staged_active_grant(
+                    identity,
+                    grant,
+                    format!("active grant continuity publication failed: {runtime_error}"),
+                )
+                .await;
+                return Err(runtime_error);
+            }
+            if let Some(bridge) = self.bridge.as_ref() {
+                match bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                {
+                    Ok(version) => {
+                        record.checkpoint_version = CheckpointVersion::new(
+                            record.checkpoint_version.get().max(version.get()),
+                        );
+                    }
+                    Err(error) => {
+                        let runtime_error = IdentityRuntimeError::Internal(format!(
+                            "bridge refresh session runtime state after active grant publication: {error}"
+                        ));
+                        self.fail_staged_active_grant(identity, grant, runtime_error.to_string())
+                            .await;
+                        return Err(runtime_error);
+                    }
+                }
+            }
+        }
+
+        self.commit_staged_active_grant(identity, grant, continuity)
+            .await?;
+        self.lease_renewal_notify.notify_one();
+        self.emit_event(
+            identity,
+            IdentityEvent::LeaseUpdated {
+                identity: identity.clone(),
+                fencing_token: grant.fencing_token,
+            },
+        )
+        .await;
+        Ok(grant.fencing_token)
+    }
+
     async fn ensure_active_lease(
         &self,
         identity: &AgentIdentity,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let (grant, continuity) = {
+        let grant = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -4752,14 +4965,11 @@ impl IdentityRuntime {
                 Some(lease) => lease,
                 None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
             };
-            (
-                LeaseGrant {
-                    identity: identity.clone(),
-                    fencing_token: lease.fencing_token,
-                    ttl: lease.ttl,
-                },
-                entry.continuity.clone(),
-            )
+            LeaseGrant {
+                identity: identity.clone(),
+                fencing_token: lease.fencing_token,
+                ttl: lease.ttl,
+            }
         };
 
         let renewed = self
@@ -4775,53 +4985,8 @@ impl IdentityRuntime {
             }
         };
 
-        if let Some(record) = continuity.as_ref() {
-            self.continuity_store
-                .upsert_continuity_record(record, renewed_grant.fencing_token)
-                .await
-                .map_err(IdentityRuntimeError::Store)?;
-            if let Some(bridge) = self.bridge.as_ref() {
-                bridge
-                    .register_session_runtime_state(
-                        &record.session_id,
-                        identity,
-                        record.generation,
-                        record.checkpoint_version,
-                        renewed_grant.fencing_token,
-                    )
-                    .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge refresh session runtime state after lease renewal: {err}"
-                        ))
-                    })?;
-            }
-        }
-
-        let fencing_token = renewed_grant.fencing_token;
-        let mut entries = self.entries.write().await;
-        let entry = entries
-            .get_mut(identity)
-            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-        match entry.lease.as_ref() {
-            Some(current) if current.fencing_token == grant.fencing_token => {
-                entry.lease = Some(Self::lease_entry_from_grant(&renewed_grant));
-            }
-            Some(current) => return Ok(current.fencing_token),
-            None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
-        }
-        drop(entries);
-        self.lease_renewal_notify.notify_one();
-
-        self.emit_event(
-            identity,
-            IdentityEvent::LeaseUpdated {
-                identity: identity.clone(),
-                fencing_token,
-            },
-        )
-        .await;
-        Ok(fencing_token)
+        self.publish_active_grant(identity, Some(grant.fencing_token), &renewed_grant)
+            .await
     }
 
     async fn mark_lifecycle_in_progress(
@@ -4990,71 +5155,9 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         grant: &LeaseGrant,
     ) -> Result<(), IdentityRuntimeError> {
-        let record = {
-            let entries = self.entries.read().await;
-            let entry = entries
-                .get(identity)
-                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            if entry.state != IdentityLifecycleState::Active {
-                return Err(IdentityRuntimeError::InvalidState {
-                    identity: identity.clone(),
-                    state: entry.state,
-                    operation: "refresh_active_restore_grant",
-                });
-            }
-            entry.continuity.clone()
-        };
-
-        if let Some(record) = record.as_ref()
-            && let Err(err) = self
-                .continuity_store
-                .upsert_continuity_record(record, grant.fencing_token)
-                .await
-        {
-            let mut entries = self.entries.write().await;
-            if let Some(entry) = entries.get_mut(identity) {
-                entry.state = IdentityLifecycleState::Broken;
-                entry.lease = None;
-            }
-            drop(entries);
-            self.mark_bootstrap_from_lifecycle(
-                identity,
-                IdentityLifecycleState::Broken,
-                Some(err.to_string()),
-            );
-            self.emit_event(
-                identity,
-                IdentityEvent::StateChanged {
-                    identity: identity.clone(),
-                    new_state: IdentityLifecycleState::Broken,
-                },
-            )
-            .await;
-            return Err(IdentityRuntimeError::Store(err));
-        }
-
-        let mut entries = self.entries.write().await;
-        let entry = entries
-            .get_mut(identity)
-            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-        if entry.state != IdentityLifecycleState::Active {
-            return Err(IdentityRuntimeError::InvalidState {
-                identity: identity.clone(),
-                state: entry.state,
-                operation: "refresh_active_restore_grant",
-            });
-        }
-        entry.lease = Some(Self::lease_entry_from_grant(grant));
-        drop(entries);
-        self.emit_event(
-            identity,
-            IdentityEvent::LeaseUpdated {
-                identity: identity.clone(),
-                fencing_token: grant.fencing_token,
-            },
-        )
-        .await;
-        Ok(())
+        self.publish_active_grant(identity, None, grant)
+            .await
+            .map(|_| ())
     }
 
     /// Publish a fail-closed local state and relinquish the fresh external
@@ -7677,7 +7780,8 @@ mod reset_reprofile_tests {
     use super::super::local_lease::LocalLeaseProvider;
     use super::super::local_store::LocalContinuityStore;
     use super::super::types::{
-        AgentBuildDraft, ContinuityResolveState, CustomizerError, RosterError, SessionSnapshot,
+        AgentBuildDraft, ContinuityResolveState, CustomizerError, LeaseAcquireResult,
+        LeaseRenewResult, RosterError, SessionSnapshot,
     };
 
     struct MutableRoster {
@@ -7856,6 +7960,7 @@ mod reset_reprofile_tests {
         hanging_retire_runtime_ids: AsyncMutex<BTreeSet<String>>,
         failing_register_session_ids: AsyncMutex<BTreeSet<String>>,
         failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
+        registered_fencing_tokens: AsyncMutex<Vec<FencingToken>>,
     }
 
     impl RecordingBridge {
@@ -7890,6 +7995,10 @@ mod reset_reprofile_tests {
                 .lock()
                 .await
                 .insert(session_id.to_string());
+        }
+
+        async fn registered_fencing_tokens(&self) -> Vec<FencingToken> {
+            self.registered_fencing_tokens.lock().await.clone()
         }
     }
 
@@ -7980,8 +8089,12 @@ mod reset_reprofile_tests {
             _identity: &AgentIdentity,
             _generation: ContinuityGeneration,
             checkpoint_version: CheckpointVersion,
-            _fencing_token: FencingToken,
+            fencing_token: FencingToken,
         ) -> Result<CheckpointVersion, BridgeError> {
+            self.registered_fencing_tokens
+                .lock()
+                .await
+                .push(fencing_token);
             if self
                 .failing_register_session_ids
                 .lock()
@@ -9311,6 +9424,126 @@ mod reset_reprofile_tests {
             status.profile.map(|profile| profile.to_string()).as_deref(),
             Some("security")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_grant_bridge_failure_parks_rotated_token_for_exact_shutdown_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:bridge-fence")?;
+        let runtime_instance = "active-grant-bridge-failure-test";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease = Arc::new(LocalLeaseProvider::new());
+        let bridge = Arc::new(RecordingBridge::default());
+        let first = match lease
+            .acquire_leases(std::slice::from_ref(&identity), runtime_instance)
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant,
+            other => return Err(format!("initial lease was not acquired: {other:?}").into()),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:bridge-fence:0")?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, first.fencing_token)
+            .await?;
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider: lease.clone(),
+            runtime_instance_id: runtime_instance.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(first.clone()),
+            )
+            .await;
+
+        let rotated = match lease
+            .renew_leases(std::slice::from_ref(&first))
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseRenewResult::Renewed(grant)) => grant,
+            other => return Err(format!("lease did not rotate: {other:?}").into()),
+        };
+        runtime
+            .refresh_active_restore_grant(&identity, &rotated)
+            .await?;
+        {
+            let entries = runtime.entries.read().await;
+            let entry = entries
+                .get(&identity)
+                .ok_or("identity entry disappeared after active grant refresh")?;
+            assert_eq!(entry.state, IdentityLifecycleState::Active);
+            assert_eq!(
+                entry.lease.as_ref().map(|lease| lease.fencing_token),
+                Some(rotated.fencing_token)
+            );
+        }
+
+        let failed_grant = match lease
+            .renew_leases(std::slice::from_ref(&rotated))
+            .await?
+            .remove(&identity)
+        {
+            Some(LeaseRenewResult::Renewed(grant)) => grant,
+            other => return Err(format!("second lease did not rotate: {other:?}").into()),
+        };
+        bridge.fail_register_for(&record.session_id).await;
+        let error = match runtime
+            .refresh_active_restore_grant(&identity, &failed_grant)
+            .await
+        {
+            Ok(()) => return Err("bridge publication failure unexpectedly succeeded".into()),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic live-session rebind failure")
+        );
+        assert_eq!(
+            bridge.registered_fencing_tokens().await,
+            vec![rotated.fencing_token, failed_grant.fencing_token],
+            "every active refresh must project the provider-committed token into the bridge"
+        );
+        {
+            let entries = runtime.entries.read().await;
+            let entry = entries
+                .get(&identity)
+                .ok_or("identity entry disappeared after bridge failure")?;
+            assert_eq!(entry.state, IdentityLifecycleState::Broken);
+            assert!(entry.lease.is_none());
+            assert_eq!(
+                entry
+                    .pending_lease_release
+                    .as_ref()
+                    .map(|grant| grant.fencing_token),
+                Some(failed_grant.fencing_token)
+            );
+        }
+
+        assert_eq!(runtime.release_all_leases_for_shutdown().await?, 1);
+        let failover = lease
+            .acquire_leases(std::slice::from_ref(&identity), "bridge-failure-failover")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
         Ok(())
     }
 }

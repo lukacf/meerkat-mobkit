@@ -466,10 +466,11 @@ async fn mob_events_sse_handler(
 
     let stream = stream! {
         let mut seq = 0_u64;
-        // Agents we've already attempted a cache re-prime for, so an agent that
-        // genuinely has no roster attributes does not trigger a re-prime on
-        // every event.
-        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Roster role/labels are immutable for one concrete member generation.
+        // Re-prime on the first event and whenever the same public alias moves
+        // to a new generated runtime source, so a respawn cannot inherit stale
+        // authorization attributes from the previous embodiment.
+        let mut authorized_source_by_alias = std::collections::HashMap::<String, String>::new();
         while let Some(attributed) = router_handle.event_rx.recv().await {
             // Decode the comms-safe roster member id back to the public
             // alias space: SDK `EventStream` consumers filter by alias, and
@@ -482,15 +483,12 @@ async fn mob_events_sse_handler(
             // policy evaluation must not append a second generation to an
             // identity-first runtime alias.
             let authorization_alias = mob_event_authorization_alias(&attributed.source);
-            // Cold-cache fail-open guard: a member spawned after the one-time
-            // subscribe prime has no cached attributes, so a label/role-scoped
-            // `agent.view` deny would NOT match and the member's events would
-            // leak. Re-prime the shared cache once per newly-seen unknown agent
-            // before the decision so the deny resolves fail-closed.
-            if let Some(view) = stream_view.as_ref()
-                && !view.knows_agent(&authorization_alias)
-                && reprimed.insert(authorization_alias.clone())
-            {
+            let concrete_source = attributed.source.to_string();
+            let source_changed = authorized_source_by_alias
+                .insert(authorization_alias.clone(), concrete_source.clone())
+                .as_deref()
+                != Some(concrete_source.as_str());
+            if stream_view.is_some() && source_changed {
                 prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref()).await;
             }
             // Historical/live-tail events can outlive the operational roster
@@ -936,9 +934,6 @@ async fn mob_structural_events_sse_handler(
     let visibility_handle = state.handle.clone();
     let visibility_policy = state.visibility_policy;
     let stream = stream! {
-        // Agents we've already attempted a cache re-prime for, so an agent that
-        // genuinely has no roster attributes does not re-prime on every event.
-        let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(event) = subscription.event_rx.recv().await {
             let envelope = store.project_event_for_query(&event).await;
             if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
@@ -947,16 +942,12 @@ async fn mob_structural_events_sse_handler(
             // Agent-attributed structural events are gated by `agent.view`
             // on their agent; mob-level events (no attribution) pass on the
             // `mob.observe` grant alone.
-            if let Some(identity) = envelope.agent_identity.as_deref() {
-                // Cold-cache fail-open guard: a member spawned after the
-                // one-time subscribe prime has no cached attributes, so a
-                // label/role-scoped `agent.view` deny would NOT match and the
-                // member's lifecycle would leak. Re-prime the shared cache once
-                // per newly-seen unknown agent before deciding.
-                if let Some(view) = stream_view.as_ref()
-                    && !view.knows_agent(identity)
-                    && reprimed.insert(identity.to_string())
-                {
+            if envelope.agent_identity.is_some() {
+                // Structural envelopes carry the durable alias but not the
+                // concrete member generation. Refresh the live projection for
+                // every attributed event before deciding; the subsequent
+                // visibility lookup fails closed if the alias disappeared.
+                if stream_view.is_some() {
                     if reprime_runtime.is_some() {
                         prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref())
                             .await;

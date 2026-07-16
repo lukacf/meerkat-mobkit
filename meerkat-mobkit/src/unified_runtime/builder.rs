@@ -72,6 +72,7 @@ pub struct UnifiedRuntimeBuilder {
     agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
+    identity_bootstrap_mode_configured: bool,
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
@@ -262,6 +263,7 @@ impl UnifiedRuntimeBuilder {
     /// Set how identity-first durable agents are materialized during build.
     pub fn identity_bootstrap_mode(mut self, mode: IdentityBootstrapMode) -> Self {
         self.identity_bootstrap_mode = mode;
+        self.identity_bootstrap_mode_configured = true;
         self
     }
 
@@ -489,7 +491,8 @@ impl UnifiedRuntimeBuilder {
             || has_roster_provider
             || has_topology_provider
             || has_agent_customizer
-            || has_identity_runtime_instance_id;
+            || has_identity_runtime_instance_id
+            || self.identity_bootstrap_mode_configured;
         if self.agent_memory_provider.is_some() && self.agent_memory_from_persistent_state {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                 "agent_memory() and persistent_agent_memory() are mutually exclusive".to_string(),
@@ -879,17 +882,6 @@ impl UnifiedRuntimeBuilder {
         } else {
             (None, None)
         };
-        if let Some(context) = identity_first_context.as_ref() {
-            runtime
-                .mob_runtime
-                .install_identity_runtime_authority(Arc::clone(&context.runtime));
-            *runtime
-                .implicit_delegate_identity_runtime
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(Arc::clone(&context.runtime));
-        }
-
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
             access_controller: self.access_controller,
@@ -1008,14 +1000,27 @@ impl UnifiedRuntimeBuilder {
             );
         }
 
-        // All fallible builder-only setup is complete. Identity bootstrap may
-        // now launch background warming; if bootstrap itself fails, drive the
-        // fully assembled runtime through the same cooperative shutdown path
-        // used by embedders so partially acquired authority is not detached.
+        // All fallible builder-only setup is complete. Install the circular
+        // MobRuntime <-> IdentityRuntime authority only now: earlier hook or
+        // memory-stack errors can return by ordinary drop without retaining
+        // the runtime and its persistent controller locks.
         if let (Some(context), Some(roster_specs)) = (
             runtime.identity_first_context.as_ref(),
             identity_roster_specs.as_ref(),
         ) {
+            runtime
+                .mob_runtime
+                .install_identity_runtime_authority(Arc::clone(&context.runtime));
+            *runtime
+                .implicit_delegate_identity_runtime
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Arc::clone(&context.runtime));
+
+            // Identity bootstrap may now launch background warming; if it
+            // fails, drive the fully assembled runtime through the same
+            // cooperative shutdown path used by embedders so partially
+            // acquired authority is not detached.
             if let Err(err) = context.bootstrap_roster(roster_specs).await {
                 let build_error = UnifiedRuntimeBuilderError::Bootstrap(
                     UnifiedRuntimeBootstrapError::IdentityFirst(format!(
@@ -1041,11 +1046,15 @@ impl UnifiedRuntimeBuilder {
             let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
-            runtime
-                .spawn_many(spawn_specs)
-                .await
-                .map_err(UnifiedRuntimeBootstrapError::Mob)
-                .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+            if let Err(err) = runtime.spawn_many(spawn_specs).await {
+                let build_error =
+                    UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::Mob(err));
+                // The full memory stack may already own infinite observer and
+                // steward supervisors. Dropping their JoinHandles detaches
+                // them, so failed classic discovery follows normal shutdown.
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
         }
 
         // Run initial edge reconciliation after spawn completes

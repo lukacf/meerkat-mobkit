@@ -570,6 +570,11 @@ async fn restore_flow_with_snapshot_policy(
                     cleanup_error,
                 )));
             };
+            // `refresh_active_restore_grant` takes ownership of the provider's
+            // exact grant before its first fallible projection. Exclude it
+            // from generic unactivated cleanup even on error; the runtime
+            // retains it on the Broken entry (or in the orphan ledger).
+            activated_identities.insert(identity.clone());
             if let Err(err) = runtime.refresh_active_restore_grant(identity, grant).await {
                 let cleanup_error =
                     release_unactivated_restore_grants(runtime, &grants, &activated_identities)
@@ -579,7 +584,6 @@ async fn restore_flow_with_snapshot_policy(
                     cleanup_error,
                 )));
             }
-            activated_identities.insert(identity.clone());
         }
 
         let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {
@@ -1532,6 +1536,11 @@ pub async fn lazy_register_flow(
     // published, so a queued reset/delete cannot invalidate the batch result
     // while preserving O(1) store round trips for large lazy rosters.
     let mut authority_guards = acquire_roster_authority_guards(runtime, &identities).await?;
+    // Restore/materialization can fail before an IdentityEntry exists. Exact
+    // grants from that phase live in the runtime-owned orphan ledger; both
+    // eager and lazy reconcile must drain it before publishing a repair or
+    // allowing later on-demand materialization to reacquire authority.
+    runtime.release_parked_unactivated_leases().await?;
     let resolved = runtime
         .continuity_store()
         .resolve_many(&identities)
