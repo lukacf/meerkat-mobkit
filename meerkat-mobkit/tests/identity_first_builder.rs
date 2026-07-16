@@ -24,13 +24,13 @@ use meerkat_mobkit::identity_first::contracts::{
 };
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, BridgeError,
-    CheckpointVersion, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
-    ContinuityStoreError, CustomizerError, DurabilityPolicy, DurableAgentSpec, FencingToken,
-    IdentityBootstrapState, IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime,
-    IdentityRuntimeConfig, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    LocalContinuityStore, ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome,
-    RosterContext, RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
-    restore_flow,
+    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
+    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapState,
+    IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
+    LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalContinuityStore,
+    ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome, RosterContext,
+    RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError, restore_flow,
 };
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
@@ -45,6 +45,8 @@ use serde_json::json;
 // ---------------------------------------------------------------------------
 
 struct StubContinuityStore;
+
+struct BrokenContinuityStore;
 
 struct GatedCustomizer {
     entered: AtomicUsize,
@@ -108,6 +110,66 @@ impl ContinuityStore for StubContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    async fn delete_continuity_record(
+        &self,
+        _identity: &AgentIdentity,
+        _ft: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for BrokenContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                (
+                    identity.clone(),
+                    ContinuityResolveState::Broken {
+                        failure: ContinuityFailure {
+                            identity: identity.clone(),
+                            kind: ContinuityFailureKind::StoreUnavailable,
+                            record: None,
+                            detail: "injected broken continuity".to_string(),
+                        },
+                    },
+                )
+            })
+            .collect())
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        _sid: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        Ok(None)
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        _identity: &AgentIdentity,
+        _sid: &meerkat_core::types::SessionId,
+        _gen: ContinuityGeneration,
+        _ver: CheckpointVersion,
+        _ft: FencingToken,
+        _snap: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        _record: &ContinuityRecord,
+        _ft: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
     async fn delete_continuity_record(
         &self,
         _identity: &AgentIdentity,
@@ -1369,6 +1431,47 @@ async fn identity_first_builder_rejects_excessive_background_warm_concurrency() 
 }
 
 #[tokio::test]
+async fn identity_first_builder_eager_broken_continuity_is_terminal_without_timeout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(BrokenContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                "agent:alpha",
+            )])))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-eager-broken-terminal-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("typed Broken continuity is a terminal bootstrap result");
+
+    let identity_runtime = runtime.identity_runtime().expect("identity runtime");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_millis(50))
+        .await;
+    assert!(
+        !timed_out,
+        "Broken is terminal and must not wait as Dormant"
+    );
+    assert!(status.complete);
+    assert!(!status.ready);
+    assert_eq!(status.counts.broken, 1);
+    let alpha = status
+        .identities
+        .get(&AgentIdentity::parse("agent:alpha").unwrap())
+        .expect("alpha bootstrap entry");
+    assert_eq!(alpha.state, IdentityBootstrapState::Broken);
+    assert_eq!(alpha.error.as_deref(), Some("injected broken continuity"));
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn identity_first_builder_background_warm_is_tracked_to_active() {
     let tmp = tempfile::tempdir().unwrap();
     let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
@@ -1409,6 +1512,54 @@ async fn identity_first_builder_background_warm_is_tracked_to_active() {
     );
 
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_builder_failed_pre_spawn_hook_never_starts_background_warm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits,
+        failing_identity: None,
+    });
+    let hook: meerkat_mobkit::unified_runtime::PreSpawnHook = Box::new(|| {
+        Box::pin(async {
+            // Give an incorrectly early background warmer a deterministic
+            // scheduling window before the builder fails.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Err(
+                Box::new(std::io::Error::other("injected pre-spawn failure"))
+                    as Box<dyn std::error::Error + Send>,
+            )
+        })
+    });
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+            "agent:alpha",
+        )])))
+        .agent_customizer(customizer.clone())
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-failed-hook-background-warm-test")
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 1 })
+        .pre_spawn_hook(hook)
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
+
+    Box::pin(assert_build_err_contains(
+        builder,
+        "injected pre-spawn failure",
+    ))
+    .await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        customizer.entered.load(Ordering::SeqCst),
+        0,
+        "a failed build must not leave background identity work behind"
+    );
 }
 
 #[tokio::test]

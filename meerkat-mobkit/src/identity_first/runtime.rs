@@ -663,10 +663,15 @@ impl IdentityFirstRuntimeContext {
                 tokio::select! {
                     () = tokio::time::sleep(backoff) => {}
                     changed = cancellation.changed() => {
-                        if changed.is_ok() && *cancellation.borrow() {
-                            return;
+                        match changed {
+                            Ok(()) if *cancellation.borrow() => return,
+                            Ok(()) => continue,
+                            // Dropping the runtime-owned supervisor drops the
+                            // only sender. Treat that as cancellation; looping
+                            // on the permanently closed receiver would spin a
+                            // detached task at 100% CPU.
+                            Err(_) => return,
                         }
-                        continue;
                     }
                 }
             } else {
@@ -1206,24 +1211,31 @@ impl IdentityRuntime {
             identities: BTreeMap::new(),
         };
         for spec in roster {
+            let broken_outcome = result.outcomes.get(&spec.identity).and_then(|outcome| {
+                if let super::orchestrator::RestoreOutcome::Broken(failure) = outcome {
+                    Some(failure.detail.clone())
+                } else {
+                    None
+                }
+            });
             let lifecycle = self
                 .status(&spec.identity)
                 .await
                 .ok()
                 .map(|item| item.state);
-            let (state, error) = match lifecycle {
-                Some(IdentityLifecycleState::Active) => (IdentityBootstrapState::Active, None),
-                Some(IdentityLifecycleState::Broken) => {
-                    let detail = result.outcomes.get(&spec.identity).and_then(|outcome| {
-                        if let super::orchestrator::RestoreOutcome::Broken(failure) = outcome {
-                            Some(failure.detail.clone())
-                        } else {
-                            None
-                        }
-                    });
-                    (IdentityBootstrapState::Broken, detail)
+            let (state, error) = match (broken_outcome, lifecycle) {
+                // A store-projected Broken result is itself authoritative.
+                // restore_flow intentionally does not fabricate a lifecycle
+                // entry for it, so consulting lifecycle alone would default
+                // to Dormant and make a terminal wait barrier time out.
+                (Some(detail), _) => (IdentityBootstrapState::Broken, Some(detail)),
+                (None, Some(IdentityLifecycleState::Active)) => {
+                    (IdentityBootstrapState::Active, None)
                 }
-                _ => (IdentityBootstrapState::Dormant, None),
+                (None, Some(IdentityLifecycleState::Broken)) => {
+                    (IdentityBootstrapState::Broken, None)
+                }
+                (None, _) => (IdentityBootstrapState::Dormant, None),
             };
             status.identities.insert(
                 spec.identity.clone(),
@@ -4886,17 +4898,39 @@ impl IdentityRuntime {
     ) {
         entry.state = IdentityLifecycleState::Broken;
         entry.lease = None;
+        // Park the exact grant before the provider call. If release fails (or
+        // this future is abandoned after publication), reconcile/shutdown can
+        // retry the same fencing token instead of leaving an invisible owner.
+        entry.pending_lease_release = Some(grant.clone());
         self.restore_entry(identity, entry).await;
-        if let Err(err) = self
+        match self
             .lease_provider
             .release_leases(std::slice::from_ref(grant))
             .await
         {
-            tracing::warn!(
-                %identity,
-                error = %err,
-                "failed to release lease after lifecycle transaction became Broken"
-            );
+            Ok(()) => {
+                let mut entries = self.entries.write().await;
+                if let Some(entry) = entries.get_mut(identity)
+                    && entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+            }
+            Err(err) => {
+                self.mark_bootstrap_from_lifecycle(
+                    identity,
+                    IdentityLifecycleState::Broken,
+                    Some(format!("pending lease release: {err}")),
+                );
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to release lease after lifecycle transaction became Broken; exact grant parked for retry"
+                );
+            }
         }
     }
 
@@ -6934,17 +6968,39 @@ impl IdentityRuntime {
             .release_leases(std::slice::from_ref(&grant))
             .await;
 
-        // Remove from runtime tracking even when release reports an error: the
-        // member and authoritative continuity row are already gone.
-        self.event_channels.write().await.remove(identity);
-        self.entries.write().await.remove(identity);
-        // The identity remains part of the desired bootstrap roster until a
-        // roster reconcile removes it. Deleting continuity therefore makes
-        // readiness Dormant, never silently ready via a missing runtime row.
-        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
-
-        release_result.map_err(IdentityRuntimeError::Lease)?;
-        Ok(())
+        match release_result {
+            Ok(()) => {
+                self.event_channels.write().await.remove(identity);
+                self.entries.write().await.remove(identity);
+                // The identity remains part of the desired bootstrap roster
+                // until a roster reconcile removes it. Successful deletion
+                // therefore makes readiness Dormant.
+                self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
+                Ok(())
+            }
+            Err(error) => {
+                // The physical member and continuity row are already gone,
+                // but the provider still owns this exact fencing grant. Keep
+                // an explicit Broken tombstone so reconcile and shutdown can
+                // retry it; removing the entry here would make non-expiring
+                // provider authority permanently unreachable.
+                let mut entries = self.entries.write().await;
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                entry.state = IdentityLifecycleState::Broken;
+                entry.continuity = None;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant);
+                drop(entries);
+                self.mark_bootstrap_from_lifecycle(
+                    identity,
+                    IdentityLifecycleState::Broken,
+                    Some(format!("lease release after delete: {error}")),
+                );
+                Err(IdentityRuntimeError::Lease(error))
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -9109,6 +9165,46 @@ mod lease_renewal_backoff_tests {
         // Saturates at the cap for arbitrarily many failures (no shift overflow).
         assert_eq!(lease_renewal_failure_backoff(99, max), max);
         assert!(lease_renewal_failure_backoff(2, max) > lease_renewal_failure_backoff(1, max));
+    }
+}
+
+#[cfg(test)]
+mod continuity_repair_supervisor_tests {
+    use super::*;
+    use crate::identity_first::{LocalContinuityStore, LocalLeaseProvider, MutableRosterProvider};
+
+    #[tokio::test]
+    async fn repair_loop_exits_when_supervisor_sender_is_dropped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "dropped-repair-supervisor-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let context = Arc::new(IdentityFirstRuntimeContext::new(
+            runtime,
+            Arc::new(MutableRosterProvider::new(Vec::new())),
+            None,
+            None,
+            None,
+        ));
+        let TrackedContinuityRepairTask { cancel, join } = context
+            .spawn_tracked_broken_identity_repair_task(ContinuityRepairPolicy {
+                initial_backoff: Duration::from_mins(1),
+                max_backoff: Duration::from_mins(1),
+            });
+
+        // This is what happens if the owning runtime is dropped without an
+        // explicit shutdown: JoinHandle detaches, while the sender disappears.
+        drop(cancel);
+        tokio::time::timeout(Duration::from_millis(100), join)
+            .await
+            .map_err(|_| "repair loop spun after its cancellation channel closed")??;
+        Ok(())
     }
 }
 

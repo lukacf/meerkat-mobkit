@@ -781,7 +781,7 @@ impl UnifiedRuntimeBuilder {
             .await
             .map_err(|error| UnifiedRuntimeBuilderError::Io(error.to_string()))?;
 
-        let identity_first_context = if wants_identity_first {
+        let (identity_first_context, identity_roster_specs) = if wants_identity_first {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
@@ -875,29 +875,10 @@ impl UnifiedRuntimeBuilder {
                 Some(runtime.mob_runtime.handle().definition().clone()),
                 self.identity_bootstrap_mode.clone(),
             ));
-            identity_context
-                .bootstrap_roster(&roster_specs)
-                .await
-                .map_err(|err| {
-                    UnifiedRuntimeBuilderError::Bootstrap(
-                        UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                            "identity bootstrap failed: {err}"
-                        )),
-                    )
-                })?;
-
-            Some(identity_context)
+            (Some(identity_context), Some(roster_specs))
         } else {
-            None
+            (None, None)
         };
-        let identity_lease_renewal_task = identity_first_context
-            .as_ref()
-            .map(|context| context.runtime.clone().spawn_lease_renewal_task());
-        let identity_continuity_repair_task = identity_first_context.as_ref().map(|context| {
-            context
-                .clone()
-                .spawn_tracked_broken_identity_repair_task(Default::default())
-        });
         if let Some(context) = identity_first_context.as_ref() {
             runtime
                 .mob_runtime
@@ -928,12 +909,25 @@ impl UnifiedRuntimeBuilder {
             contact_directory: self.contact_directory,
             session_bridge,
             identity_first_context,
-            identity_lease_renewal_task: tokio::sync::Mutex::new(identity_lease_renewal_task),
-            identity_continuity_repair_task: tokio::sync::Mutex::new(
-                identity_continuity_repair_task,
-            ),
+            identity_lease_renewal_task: tokio::sync::Mutex::new(None),
+            identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             console_log_store,
             ..runtime
+        };
+
+        // Run the host's last fallible pre-bootstrap hook before identity
+        // hydration can start any runtime-owned background work. In
+        // particular, LazyWithBackgroundWarm spawns materialization from
+        // bootstrap_roster; a later hook failure must not detach that task or
+        // leave its leases alive after build() returns an error.
+        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
+            hook().await.map_err(|err| {
+                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
+                    err.to_string(),
+                ))
+            })?
+        } else {
+            serde_json::Value::Null
         };
 
         // Classic-path bundled-store wiring: the console Memory panel (§9.3),
@@ -1012,15 +1006,33 @@ impl UnifiedRuntimeBuilder {
             );
         }
 
-        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
-            hook().await.map_err(|err| {
-                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
-                    err.to_string(),
-                ))
-            })?
-        } else {
-            serde_json::Value::Null
-        };
+        // All fallible builder-only setup is complete. Identity bootstrap may
+        // now launch background warming; if bootstrap itself fails, drive the
+        // fully assembled runtime through the same cooperative shutdown path
+        // used by embedders so partially acquired authority is not detached.
+        if let (Some(context), Some(roster_specs)) = (
+            runtime.identity_first_context.as_ref(),
+            identity_roster_specs.as_ref(),
+        ) {
+            if let Err(err) = context.bootstrap_roster(roster_specs).await {
+                let build_error = UnifiedRuntimeBuilderError::Bootstrap(
+                    UnifiedRuntimeBootstrapError::IdentityFirst(format!(
+                        "identity bootstrap failed: {err}"
+                    )),
+                );
+                runtime.shutdown().await;
+                return Err(build_error);
+            }
+
+            *runtime.identity_lease_renewal_task.lock().await =
+                Some(context.runtime.clone().spawn_lease_renewal_task());
+            *runtime.identity_continuity_repair_task.lock().await = Some(
+                context
+                    .clone()
+                    .spawn_tracked_broken_identity_repair_task(Default::default()),
+            );
+        }
+
         if runtime.identity_first_context.is_none()
             && let Some(ref discovery) = runtime.discovery
         {

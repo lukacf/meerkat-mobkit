@@ -3719,11 +3719,94 @@ async fn identity_first_runtime_delete_surfaces_success_path_lease_release_failu
     let err = runtime.delete_identity(&id).await.unwrap_err();
     assert!(matches!(err, IdentityRuntimeError::Lease(_)));
     assert!(err.to_string().contains("synthetic release failure"));
-    assert!(!runtime.contains(&id).await);
+    assert!(
+        runtime.contains(&id).await,
+        "failed provider release must retain a retryable tombstone"
+    );
+    let tombstone = runtime.status(&id).await.unwrap();
+    assert_eq!(tombstone.state, IdentityLifecycleState::Broken);
+    assert!(tombstone.agent_runtime_id.is_none());
+    assert!(tombstone.session_id.is_none());
+    assert!(tombstone.generation.is_none());
+    assert!(tombstone.lease.is_none());
     let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
     assert_eq!(
         resolved.get(&id),
         Some(&ContinuityResolveState::Uninitialized)
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reconcile_releases_deleted_tombstone_grant_before_recreate() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::default());
+    let runtime = Arc::new(make_runtime(store.clone(), lease.clone()));
+    let id = make_identity("triage:deleted-pending-release");
+    let initial_grant = lease
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    let LeaseAcquireResult::Acquired(initial_grant) = initial_grant else {
+        panic!("initial lease should be acquired");
+    };
+    let record = make_record(id.as_str(), 0, 0);
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    let spec = make_spec(id.as_str());
+    runtime
+        .register(
+            spec.clone(),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+
+    runtime
+        .delete_identity(&id)
+        .await
+        .expect_err("the first provider release must fail");
+    let held_after_delete = lease
+        .held_grant(&id)
+        .expect("delete failure must keep exact provider authority held");
+    let tombstone = runtime.status(&id).await.unwrap();
+    assert_eq!(tombstone.state, IdentityLifecycleState::Broken);
+    assert!(tombstone.agent_runtime_id.is_none());
+    assert!(tombstone.session_id.is_none());
+    assert!(tombstone.generation.is_none());
+    assert!(tombstone.lease.is_none());
+
+    let context = meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+        runtime.clone(),
+        Arc::new(StaticRosterProvider::new(vec![spec])),
+        None,
+        None,
+        None,
+    );
+    context
+        .refresh_desired_topology()
+        .await
+        .expect("reconcile must release the tombstone grant before recreating");
+
+    let active = runtime.status(&id).await.unwrap();
+    assert_eq!(active.state, IdentityLifecycleState::Active);
+    let active_grant = active.lease.expect("recreated identity owns a new grant");
+    assert!(active_grant.fencing_token > held_after_delete.fencing_token);
+    let release_attempts = lease.release_attempts();
+    assert_eq!(release_attempts.len(), 2);
+    assert!(
+        release_attempts
+            .iter()
+            .all(|grant| grant.fencing_token == held_after_delete.fencing_token),
+        "both delete and reconcile must address the exact parked grant"
+    );
+    assert_eq!(
+        lease.held_grant(&id).map(|grant| grant.fencing_token),
+        Some(active_grant.fencing_token)
     );
 }
 

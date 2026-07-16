@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use futures::StreamExt;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
@@ -519,6 +520,59 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
         .status()
 }
 
+async fn retire_historical_secret_member(runtime: &UnifiedRuntime, identity: &str) -> u64 {
+    let before_spawn = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .expect("latest cursor before historical member");
+    let mut spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("historical secret member".into()),
+        None,
+        None,
+    );
+    spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime.spawn(spec).await.expect("spawn historical member");
+    runtime
+        .mob_handle()
+        .retire(MeerkatId::from(identity))
+        .await
+        .expect("retire historical member");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let still_present = runtime
+                .mob_handle()
+                .list_members_including_retiring()
+                .await
+                .iter()
+                .any(|member| member.agent_identity.as_str() == identity);
+            if !still_present {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("retired member should leave the operational roster");
+    before_spawn
+}
+
+async fn assert_sse_replay_emits_no_data(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    match tokio::time::timeout(Duration::from_millis(200), stream.next()).await {
+        Err(_) | Ok(None) => {}
+        Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+        Ok(Some(Ok(bytes))) => panic!(
+            "historical hidden member leaked through SSE replay: {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+    }
+}
+
 /// Anonymous callers (open console) only match rules with no subject
 /// constraints: visible/sendable only what those rules grant.
 fn anonymous_router_only_config() -> AccessControlConfig {
@@ -706,6 +760,93 @@ async fn http_router_enforces_access_end_to_end() {
     );
 
     let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn structural_sse_replay_fails_closed_when_historical_agent_attributes_are_unknown() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "historical-secret";
+    let after_seq = retire_historical_secret_member(&runtime, identity).await;
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    assert!(
+        !controller.view_for_subject(None).knows_agent(identity),
+        "the replay regression requires a genuinely cold historical identity"
+    );
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("historical structural SSE request"),
+        )
+        .await
+        .expect("historical structural SSE response");
+    assert_sse_replay_emits_no_data(response).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn structural_sse_replay_fails_closed_without_live_visibility_projection() {
+    #[derive(Debug)]
+    struct HideHistoricalSecret;
+
+    impl ConsoleVisibilityPolicy for HideHistoricalSecret {
+        fn member_visible(&self, member: &ConsoleMember) -> bool {
+            member.agent_identity != "historical-secret"
+        }
+    }
+
+    let (_temp_dir, runtime) = build_access_runtime_fixture().await;
+    let identity = "historical-secret";
+    let after_seq = retire_historical_secret_member(&runtime, identity).await;
+    let app = runtime.build_reference_app_router_with_console_visibility_policy(
+        decision_state(false),
+        Arc::new(HideHistoricalSecret),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={after_seq}&identity={identity}"
+                ))
+                .body(Body::empty())
+                .expect("historical visibility SSE request"),
+        )
+        .await
+        .expect("historical visibility SSE response");
+    assert_sse_replay_emits_no_data(response).await;
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

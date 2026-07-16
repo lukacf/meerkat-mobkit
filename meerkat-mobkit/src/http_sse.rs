@@ -377,6 +377,14 @@ async fn prime_sse_access_cache(
     }
 }
 
+/// An enforced SSE view may authorize only identities whose current resource
+/// attributes are known. This intentionally composes `knows_agent` with the
+/// normal decision: label/role-scoped denies cannot match a cold identity, so
+/// calling `can_view_agent` alone would turn missing attributes into an allow.
+fn sse_access_allows_known_agent(view: Option<&AccessView>, identity: &str) -> bool {
+    view.is_none_or(|view| view.knows_agent(identity) && view.can_view_agent(identity))
+}
+
 async fn mob_events_sse_handler(
     State(state): State<MobSseState>,
     headers: HeaderMap,
@@ -446,21 +454,28 @@ async fn mob_events_sse_handler(
             {
                 prime_sse_access_cache(reprime_runtime.as_ref(), reprime_access.as_ref()).await;
             }
-            if stream_view
-                .as_ref()
-                .is_some_and(|view| !view.can_view_agent(&authorization_alias))
-            {
+            // Historical/live-tail events can outlive the operational roster
+            // entry that supplied their role and labels. A broad allow plus a
+            // label/role-scoped deny fails open when those attributes are
+            // absent, so an identity that is still unknown after the single
+            // re-prime is not safe to disclose.
+            if !sse_access_allows_known_agent(stream_view.as_ref(), &authorization_alias) {
                 continue;
             }
-            let policy_identity = if let Some(runtime) = visibility_runtime.as_ref()
-                && let Some((identity, visible)) =
+            let policy_identity = if let Some(runtime) = visibility_runtime.as_ref() {
+                let Some((identity, visible)) =
                     crate::http_console::sse_member_identity_visibility(
                         &runtime.handle(),
                         visibility_policy.as_ref(),
                         &authorization_alias,
                     )
                     .await
-            {
+                else {
+                    // Visibility policies are roster projections. Once the
+                    // attributed member is gone we no longer have the record
+                    // needed to prove it visible, so replay must fail closed.
+                    continue;
+                };
                 if !visible {
                     continue;
                 }
@@ -503,6 +518,8 @@ async fn mob_events_sse_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{AccessControlConfig, AccessEffect, AccessRule, AgentResourceAttributes};
+    use std::collections::BTreeMap;
 
     struct RedactAndFilterPolicy;
 
@@ -527,6 +544,53 @@ mod tests {
             project_sse_payload(&policy, "agent", "hidden", 1, json!({"secret": true})),
             None
         );
+    }
+
+    #[test]
+    fn enforced_sse_access_rejects_unknown_agent_before_label_deny_can_fail_open()
+    -> Result<(), crate::access::AccessConfigError> {
+        let controller = AccessController::new(AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![
+                AccessRule {
+                    id: "view-all".to_string(),
+                    actions: vec![ACTION_AGENT_VIEW.to_string()],
+                    agents: vec!["*".to_string()],
+                    ..AccessRule::default()
+                },
+                AccessRule {
+                    id: "deny-secret".to_string(),
+                    effect: AccessEffect::Deny,
+                    actions: vec![ACTION_AGENT_VIEW.to_string()],
+                    match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                    ..AccessRule::default()
+                },
+            ],
+            ..AccessControlConfig::default()
+        })?;
+        let view = controller.view_for_subject(None);
+
+        // The broad allow wins if the cold cache is evaluated directly. Both
+        // merged and structural SSE call the helper after their one re-prime,
+        // so a completed member that remains unknown is instead denied.
+        assert!(view.can_view_agent("historical-secret"));
+        assert!(!sse_access_allows_known_agent(
+            Some(&view),
+            "historical-secret"
+        ));
+
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "historical-secret".to_string(),
+            agent_id: Some("historical-secret".to_string()),
+            role: Some("lead".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+        });
+        assert!(!sse_access_allows_known_agent(
+            Some(&view),
+            "historical-secret"
+        ));
+        Ok(())
     }
 
     #[test]
@@ -868,29 +932,29 @@ async fn mob_structural_events_sse_handler(
                         .await;
                     }
                 }
-                if stream_view
-                    .as_ref()
-                    .is_some_and(|view| !view.can_view_agent(identity))
-                {
+                if !sse_access_allows_known_agent(stream_view.as_ref(), identity) {
                     continue;
                 }
             }
             let policy_identity = if let Some(identity) = envelope.agent_identity.as_deref() {
-                if let Some((console_identity, visible)) =
+                let Some((console_identity, visible)) =
                     crate::http_console::sse_member_identity_visibility(
                         &visibility_handle,
                         visibility_policy.as_ref(),
                         identity,
                     )
                     .await
-                {
-                    if !visible {
-                        continue;
-                    }
-                    console_identity
-                } else {
-                    identity.to_string()
+                else {
+                    // Structural catch-up can replay an attributed lifecycle
+                    // event after the member has completed and left the live
+                    // roster. Without the historical member projection the
+                    // visibility policy cannot authorize it.
+                    continue;
+                };
+                if !visible {
+                    continue;
                 }
+                console_identity
             } else {
                 crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string()
             };
