@@ -1516,16 +1516,20 @@ function buildConsoleDockPresetState({
   suggestTargets
 }) {
   const requestedCount = presetId === "grid" ? 4 : presetId === "single" ? 1 : 2;
-  const [firstTarget, ...remainingTargets] = suggestDockTargets({
-    count: requestedCount,
-    preferred: preferredTarget,
-    excludedIds: [],
+  const reservedPrimaryTarget = preferredTarget ?? preferredPanel?.target ?? null;
+  const suggestionCount = requestedCount - (reservedPrimaryTarget ? 1 : 0);
+  const suggestedTargets = suggestionCount > 0 ? suggestDockTargets({
+    count: suggestionCount,
+    preferred: reservedPrimaryTarget ? null : preferredTarget,
+    excludedIds: reservedPrimaryTarget ? [reservedPrimaryTarget.id] : [],
     suggestTargets
-  });
+  }) : [];
+  const [firstTarget, ...remainingTargets] = reservedPrimaryTarget ? [reservedPrimaryTarget, ...suggestedTargets] : suggestedTargets;
   const [secondTarget, thirdTarget, suggestedFourthTarget] = remainingTargets.filter(
     (target) => Boolean(target)
   );
-  const fourthTarget = suggestedFourthTarget || (presetId === "grid" && thirdTarget && preferredTarget && thirdTarget.id !== preferredTarget.id ? preferredTarget : null);
+  const fourthTarget = suggestedFourthTarget || null;
+  const createEmptyFourthSlot = presetId === "grid" && Boolean(thirdTarget) && !fourthTarget;
   const primary = createPanelState({
     target: preferredPanel ? preferredTarget ?? preferredPanel.target : firstTarget || null,
     sourcePanel: preferredPanel || null
@@ -1593,7 +1597,7 @@ function buildConsoleDockPresetState({
     };
   }
   const leftBottom = createPanelState({ target: thirdTarget, sourcePanel: preferredPanel || primary });
-  if (!fourthTarget) {
+  if (!fourthTarget && !createEmptyFourthSlot) {
     return {
       presetId,
       layout: {
@@ -1615,7 +1619,10 @@ function buildConsoleDockPresetState({
       focusedPanelId: primary.id
     };
   }
-  const rightBottom = createPanelState({ target: fourthTarget, sourcePanel: preferredPanel || primary });
+  const rightBottom = createPanelState({
+    target: fourthTarget,
+    sourcePanel: preferredPanel || primary
+  });
   return {
     presetId,
     layout: {
@@ -4024,10 +4031,10 @@ function ConnectionPicker({
   const health = management.health || "ready";
   const featureDisabled = management.policy.mode === "disabled";
   const resolvedDescription = description ?? (interactionMode === "direct" ? "Choose an endpoint to see or change its peer connections." : "Choose an endpoint, then inspect or change its peer connections.");
-  return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit", "data-testid": "connection-picker", "data-management-mode": management.policy.mode, children: /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__column", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__intro", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: title }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: resolvedDescription })
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "topo-edit", "data-testid": "connection-picker", "data-management-mode": management.policy.mode, children: /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "topo-edit__column", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "topo-edit__intro", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("strong", { children: title }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: resolvedDescription })
     ] }),
     featureDisabled ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "topo-edit__notice is-disabled", role: "status", children: management.policy.reason || "Connection management is disabled for this runtime." }) : null,
     health !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: `topo-edit__notice is-${health}`, role: "status", children: [
@@ -4061,10 +4068,10 @@ function ConnectionPicker({
           action.id
         );
       }) }) : null
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__notice", role: "status", children: interactionMode === "direct" ? "Pick an endpoint below to see its connections." : "Pick an endpoint below to inspect its connections." }),
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("label", { className: "topo-edit__search", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { "aria-hidden": "true", children: "\u2315" }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "topo-edit__notice", role: "status", children: interactionMode === "direct" ? "Pick an endpoint below to see its connections." : "Pick an endpoint below to inspect its connections." }),
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("label", { className: "topo-edit__search", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { "aria-hidden": "true", children: "\u2315" }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
         "input",
         {
           "aria-label": "Search endpoints",
@@ -4111,7 +4118,7 @@ function ConnectionPicker({
           const status = inspectionAvailable ? "Not inspected" : unresolvedDirectPair ? pairIsResolving ? "Loading\u2026" : "Unavailable" : operationStatus(receipt) || stateStatus(state);
           const rawDetail = unresolvedDirectPair ? pairIsResolving ? "Loading current connection status from MobKit." : "Current connection status is unavailable." : receipt?.message || affordance?.message || actionState?.reason;
           const detail = interactionMode === "direct" ? unresolvedDirectPair ? rawDetail : directConnectionDetail(state, receipt, actionState) : rawDetail;
-          return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
+          return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
             "div",
             {
               className: `topo-edit__row is-${state}${endpoint.presentation.crossScope ? " is-cross-scope" : ""}`,
@@ -4149,9 +4156,9 @@ function ConnectionPicker({
                       children: "Check"
                     }
                   )
-                ] }) : source && edge && unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__action", children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: `topo-edit__status${pairIsResolving ? " is-running" : " is-unavailable"}`, children: status }) }) : source && actionState && !unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__action", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: `topo-edit__status is-${receipt?.status || state}`, children: status }),
-                  /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+                ] }) : source && edge && unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "topo-edit__action", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: `topo-edit__status${pairIsResolving ? " is-running" : " is-unavailable"}`, children: status }) }) : source && actionState && !unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "topo-edit__action", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: `topo-edit__status is-${receipt?.status || state}`, children: status }),
+                  /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
                     "button",
                     {
                       className: `topo-edit__toggle is-${actionState.action}${actionState.approvalRequired ? " requires-approval" : ""}`,
