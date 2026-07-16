@@ -21,10 +21,16 @@ use axum::http::{Request, StatusCode};
 use futures::{Stream, stream};
 use meerkat::AgentToolDispatcher;
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
-use meerkat_core::StopReason;
+use meerkat_core::lifecycle::run_primitive::ModelId;
+use meerkat_core::types::{ContentInput, HandlingMode};
+use meerkat_core::{AgentEvent, Provider, StopReason};
+use meerkat_mob::{MobDefinition, MobError, SpawnMemberSpec};
+use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
+use meerkat_mobkit::{MemberTurnOptions, UnifiedRuntime};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt;
 
 #[path = "../../examples/001-incident-command-center-pack/incident_command_center.rs"]
@@ -35,7 +41,19 @@ use incident_command_center::{
     scenario_path,
 };
 
-struct IncidentPackTestClient;
+#[derive(Clone, Default)]
+struct IncidentPackTestClient {
+    requested_models: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl IncidentPackTestClient {
+    fn requested_models(&self) -> Vec<String> {
+        self.requested_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
 
 impl meerkat_client::LlmClient for IncidentPackTestClient {
     fn project_replay_messages(
@@ -47,8 +65,12 @@ impl meerkat_client::LlmClient for IncidentPackTestClient {
 
     fn stream<'a>(
         &'a self,
-        _request: &'a LlmRequest,
+        request: &'a LlmRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        self.requested_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request.model.clone());
         Box::pin(stream::iter([
             Ok(LlmEvent::TextDelta {
                 delta: "ok".to_string(),
@@ -269,7 +291,7 @@ impl AgentToolDispatcher for RecorderMarkerDispatcher {
 async fn incident_pack_exposes_seeded_stock_console_state() {
     let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
-        Arc::new(IncidentPackTestClient),
+        Arc::new(IncidentPackTestClient::default()),
     ))
     .await
     .expect("incident runtime bundle");
@@ -403,7 +425,7 @@ async fn incident_pack_exposes_seeded_stock_console_state() {
 async fn incident_pack_gating_approval_notification_fires_from_async_context() {
     let bundle = Box::pin(build_runtime_bundle_with_default_client(
         &scenario_path().expect("incident scenario path"),
-        Arc::new(IncidentPackTestClient),
+        Arc::new(IncidentPackTestClient::default()),
     ))
     .await
     .expect("incident runtime bundle");
@@ -477,4 +499,154 @@ async fn incident_pack_gating_approval_notification_fires_from_async_context() {
         pending_created["detail"]["approval_notification_error"].is_null(),
         "approval notification must not fail: {pending_created:?}"
     );
+}
+
+#[tokio::test]
+async fn unified_runtime_member_turn_returns_exact_session_and_committed_completion() {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "member-turn-wrapper-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse turn-driven test definition");
+    let llm_client = Arc::new(IncidentPackTestClient::default());
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(llm_client.clone())
+            .timeout(Duration::from_secs(5))
+            .build(),
+    )
+    .await
+    .expect("build turn-driven unified runtime");
+    runtime
+        .spawn(SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "console-worker".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .expect("spawn turn-driven console worker");
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let mut admission = runtime
+        .start_member_turn(
+            "console-worker",
+            ContentInput::Text("report status".to_string()),
+            HandlingMode::Queue,
+            MemberTurnOptions::new()
+                .with_model(ModelId::new("gpt-5.6"))
+                .with_provider(Provider::OpenAI),
+            Some(event_tx),
+        )
+        .await
+        .expect("admit completion-bearing member turn");
+    assert_eq!(
+        admission.turn.session_id().map(ToString::to_string),
+        Some(admission.session_id.clone()),
+        "the wrapper must expose the exact bridge session captured by admission"
+    );
+    let applied_identity = tokio::time::timeout(
+        Duration::from_secs(2),
+        admission.turn.wait_for_applied_llm_identity(),
+    )
+    .await
+    .expect("applied identity acknowledgement should resolve")
+    .expect("stock runtime should apply the requested identity")
+    .expect("turn requested a non-default identity");
+    assert_eq!(applied_identity.model, "gpt-5.6");
+    assert_eq!(applied_identity.provider, Provider::OpenAI);
+
+    let receipt = tokio::time::timeout(Duration::from_secs(2), admission.turn.wait())
+        .await
+        .expect("turn completion should resolve")
+        .expect("turn should commit successfully");
+    assert_eq!(receipt.handling_mode, HandlingMode::Queue);
+
+    let mut observed_text_output = false;
+    let mut observed_committed_completion = false;
+    let mut observed_events = Vec::new();
+    while !observed_committed_completion {
+        let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("live member-turn event should arrive")
+            .expect("member-turn event channel should remain open through completion");
+        observed_events.push(format!("{:?}", event.payload));
+        match event.payload {
+            AgentEvent::TextDelta { delta } => {
+                observed_text_output |= delta == "ok";
+            }
+            AgentEvent::TextComplete { content } => {
+                observed_text_output |= content == "ok";
+            }
+            AgentEvent::RunCompleted { session_id, .. } => {
+                assert_eq!(
+                    session_id.to_string(),
+                    admission.session_id,
+                    "the committed terminal must carry the exact admitted session"
+                );
+                observed_committed_completion = true;
+            }
+            AgentEvent::RunFailed { error_report, .. } => {
+                panic!("member turn unexpectedly failed: {error_report:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        observed_text_output,
+        "the stock incident-console path must forward model output before completion; observed {observed_events:?}"
+    );
+    assert!(
+        llm_client
+            .requested_models()
+            .iter()
+            .any(|model| model == "gpt-5.6"),
+        "the stock incident-console constructor must deliver the applied model to LlmRequest"
+    );
+
+    let _ = runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn stock_incident_commander_rejects_unrepresentable_tracked_turn() {
+    let bundle = Box::pin(build_runtime_bundle_with_default_client(
+        &scenario_path().expect("incident scenario path"),
+        Arc::new(IncidentPackTestClient::default()),
+    ))
+    .await
+    .expect("incident runtime bundle");
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+
+    let error = bundle
+        .runtime
+        .start_member_turn(
+            "incident-commander",
+            ContentInput::Text("tracked console turn".to_string()),
+            HandlingMode::Queue,
+            MemberTurnOptions::default(),
+            Some(event_tx),
+        )
+        .await
+        .expect_err("stock autonomous profiles must not silently drop tracking semantics");
+    assert!(
+        matches!(
+            error,
+            MobRuntimeError::Mob(MobError::UnsupportedForMode { .. })
+        ),
+        "expected typed unsupported-mode rejection, got {error}"
+    );
+
+    let _ = bundle.runtime.shutdown().await;
 }

@@ -123,6 +123,7 @@ pub use identity_first::{
     AgentMemoryRuntimeInjector, AgentMemorySelection, AuthoredWriteReceipt, MEMORY_TOOL_NAME,
     MarkdownAgentMemoryStore, NewAgentMemory,
 };
+pub use meerkat_mob::{MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions};
 pub use memory::{
     CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DistillCause,
     DistillerConfig, DistillerEngine, DreamOutcome, DreamRun, HygieneCause, HygieneOutcome,
@@ -203,10 +204,11 @@ pub use unified_runtime::{
     DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, DesiredPeerEdge, DesiredPeerEdgeError,
     Discovery, EdgeDiscovery, EdgeReconcileFailure, ErrorEvent, ErrorHook, EventLogConfig,
     EventLogStore, EventQuery, IdentityAuthorityReleaseOutcome, IdentityBootstrapMode,
-    PersistedEvent, PostReconcileHook, PostSpawnHook, PreSpawnContext, PreSpawnHook,
-    RediscoverReport, ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError,
-    UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
-    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport, discovery_spec_to_spawn_spec,
+    MemberTurnAdmission, PersistedEvent, PostReconcileHook, PostSpawnHook, PreSpawnContext,
+    PreSpawnHook, RediscoverReport, ShutdownDrainReport, UnifiedRuntime,
+    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    discovery_spec_to_spawn_spec,
 };

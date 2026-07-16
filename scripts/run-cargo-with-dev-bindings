@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -lt 4 || ( "$3" != "--" && "$3" != "--unbound" ) ]]; then
+  echo "usage: run-cargo-with-dev-bindings <workspace-root> <cargo-config> [--|--unbound] <cargo> [args...]" >&2
+  exit 64
+fi
+
+workspace_root="$(cd "$1" && pwd)"
+config_path="$2"
+if [[ "${config_path}" != /* ]]; then
+  config_path="${PWD}/${config_path}"
+fi
+mode="$3"
+shift 3
+
+if [[ "${mode}" == "--" && ! -f "${config_path}" ]]; then
+  echo "error: development binding config is missing: ${config_path}" >&2
+  exit 66
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+  lock_key="$(printf '%s' "${workspace_root}" | shasum | cut -c1-10)"
+else
+  lock_key="$(printf '%s' "${workspace_root}" | sha256sum | cut -c1-10)"
+fi
+# The guard is workspace-owned, never config-owned. Multiple app worktrees can
+# supply different external configs for the same MobKit checkout; they must all
+# serialize swaps of that checkout's one production Cargo.lock.
+locks_root="${workspace_root}/.dev-bindings/locks/${lock_key}"
+guard="${locks_root}/active"
+production_lock="${workspace_root}/Cargo.lock"
+dev_lock="${locks_root}/Cargo.lock"
+
+mkdir -p "${locks_root}"
+
+recover_stale_guard() {
+  [[ -d "${guard}" ]] || return 0
+  local owner_pid=""
+  owner_pid="$(cat "${guard}/owner-pid" 2>/dev/null || true)"
+  if [[ -n "${owner_pid}" ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+    echo "error: another Cargo command is active for ${workspace_root} (pid ${owner_pid})" >&2
+    exit 75
+  fi
+  if [[ -f "${guard}/unbound" ]]; then
+    rm -rf "${guard}"
+    return 0
+  fi
+  if [[ -f "${guard}/production-present" ]]; then
+    if [[ ! -f "${guard}/Cargo.lock.production" ]]; then
+      echo "error: stale binding guard has no production lock backup: ${guard}" >&2
+      exit 74
+    fi
+    [[ ! -f "${production_lock}" ]] || cp -p "${production_lock}" "${dev_lock}"
+    cp -p "${guard}/Cargo.lock.production" "${production_lock}"
+  elif [[ -f "${guard}/production-absent" ]]; then
+    [[ ! -f "${production_lock}" ]] || cp -p "${production_lock}" "${dev_lock}"
+    rm -f "${production_lock}"
+  else
+    echo "error: stale binding guard has no recovery marker: ${guard}" >&2
+    exit 74
+  fi
+  rm -rf "${guard}"
+}
+
+recover_stale_guard
+if ! mkdir "${guard}" 2>/dev/null; then
+  echo "error: could not acquire bound Cargo lock guard: ${guard}" >&2
+  exit 75
+fi
+printf '%s\n' "$$" >"${guard}/owner-pid"
+
+if [[ "${mode}" == "--unbound" ]]; then
+  : >"${guard}/unbound"
+  cleanup_unbound_guard() {
+    rm -rf "${guard}"
+  }
+  trap cleanup_unbound_guard EXIT HUP INT TERM
+  set +e
+  "$@"
+  status=$?
+  set -e
+  cleanup_unbound_guard
+  trap - EXIT HUP INT TERM
+  exit "${status}"
+fi
+
+if [[ -f "${production_lock}" ]]; then
+  cp -p "${production_lock}" "${guard}/Cargo.lock.production"
+  : >"${guard}/production-present"
+else
+  : >"${guard}/production-absent"
+fi
+
+if [[ -f "${dev_lock}" ]]; then
+  cp -p "${dev_lock}" "${production_lock}"
+elif [[ -f "${guard}/Cargo.lock.production" ]]; then
+  cp -p "${guard}/Cargo.lock.production" "${production_lock}"
+fi
+
+restored=false
+restore_production_lock() {
+  if [[ "${restored}" == "true" ]]; then
+    return
+  fi
+  restored=true
+  if [[ -f "${production_lock}" ]]; then
+    cp -p "${production_lock}" "${dev_lock}"
+  fi
+  if [[ -f "${guard}/production-present" ]]; then
+    cp -p "${guard}/Cargo.lock.production" "${production_lock}"
+  else
+    rm -f "${production_lock}"
+  fi
+  rm -rf "${guard}"
+}
+trap restore_production_lock EXIT HUP INT TERM
+
+set +e
+"$1" --config "${config_path}" "${@:2}"
+status=$?
+set -e
+restore_production_lock
+trap - EXIT HUP INT TERM
+exit "${status}"

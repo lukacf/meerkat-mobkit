@@ -11,7 +11,7 @@
 //
 // Agent editor control plane for the Flow Editor. Moved verbatim from the
 // controller.js agent-editor range: agent list/selection states, the agent
-// editor control state with its budget affordance and source provenance
+// editor control state with its source provenance
 // sections, the agent definition catalog/add controls, the *ErrorState
 // quartet, and schemaEditorControlState. agentListState is re-homed here
 // from the residue's view-state range (extraction design S12; its
@@ -19,16 +19,11 @@
 // (needed by sourceDefinitionRefRows) is facade-internal, so it moved early
 // to its design-destined home in registry/flow-registry.ts (S15).
 import {
-  contractDefaultValue,
   profileBackendOptions,
   profileBindingOptions,
   profileBindingRestriction,
   runtimeModeOptions,
 } from "../contract/options";
-import {
-  canonicalBudgetSplitPolicyKind,
-  normalizeBudgetSplitPolicy,
-} from "../flow/launch-modes";
 import { normalizeAgentDefinitionRows } from "../registry/flow-registry";
 import { operationErrorText } from "../rpc/client";
 import {
@@ -211,7 +206,6 @@ export function agentEditorControlState({ member, instances = [], schemas = [], 
   if (member?.model && !modelOptions.some((model) => model.value === member.model)) {
     modelOptions.push({ value: member.model, label: member.model, model: null });
   }
-  const budgetSection = memberBudgetAffordanceState(member, contract, view);
   return {
     placedAt,
     placedCount,
@@ -256,7 +250,6 @@ export function agentEditorControlState({ member, instances = [], schemas = [], 
     applySkeletonLabel: view.applySkeletonLabel,
     applySkeletonTitle: view.applySkeletonTitle,
     systemPromptPlaceholder: view.systemPromptPlaceholder,
-    budgetSection,
     schema,
     profileBinding,
     bindingOptions,
@@ -277,36 +270,6 @@ export function agentEditorControlState({ member, instances = [], schemas = [], 
     emptySchemaHint: view.emptySchemaHint,
     modelOptions,
     sourceProvenance: agentSourceProvenanceState(member, agentDetailView),
-  };
-}
-
-export function memberBudgetAffordanceState(member, contract, agentDetailView = null) {
-  const view = agentDetailViewForState(agentDetailView);
-  const policies = Array.isArray(contract?.mob_definition?.budget_split_policies)
-    ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind).filter(Boolean)
-    : [];
-  const authored = normalizeBudgetSplitPolicy(member?.budget || member?.budgetSplitPolicy || member?.budget_split_policy);
-  const defaultKind = canonicalBudgetSplitPolicyKind(contractDefaultValue(contract, "budget_split_policy"));
-  const selectedKind = authored?.kind || defaultKind || policies[0] || "";
-  const allPolicies = [...new Set([...policies, selectedKind].filter(Boolean))];
-  const options = allPolicies.map((kind) => ({
-    value: kind,
-    label: view.budgetSplitPolicyLabels[kind] || kind,
-    disabled: false,
-  }));
-  return {
-    title: view.budgetTitle,
-    disabled: true,
-    disabledReason: view.budgetDisabledReason,
-    value: selectedKind,
-    options,
-    showWeight: authored?.kind === "Proportional",
-    weightLabel: view.budgetWeightLabel,
-    weightValue: authored?.weight || 1,
-    showTokenCap: authored?.kind === "Fixed",
-    tokenCapLabel: view.budgetTokenCapLabel,
-    tokenCapValue: authored?.limit || authored?.value || 4096,
-    contractLabel: view.budgetSplitPoliciesContractLabel,
   };
 }
 

@@ -1708,16 +1708,19 @@ function setConsoleDockPanelMode(state, panelId, mode) {
     } : panel)
   };
 }
-function createConsoleDockTab(state, options) {
+function createConsoleDockTab(state, options, behavior = {}) {
   const normalized = normalizeConsoleDockState(state);
-  const preferredPanel = normalized.focusedPanelId ? normalized.panels.find((panel) => panel.id === normalized.focusedPanelId) || null : null;
+  const preferredPanel = !behavior.blank && normalized.focusedPanelId ? normalized.panels.find((panel) => panel.id === normalized.focusedPanelId) || null : null;
   const presetState = buildConsoleDockPresetState({
     presetId: "single",
     preferredTarget: preferredPanel?.target || null,
     preferredPanel,
     createPanelState: options.createPanelState,
     createSplitId: options.createSplitId,
-    suggestTargets: options.suggestTargets
+    // An explicitly blank tab is a drafting surface. Target suggestions are
+    // useful for layout presets, but must not silently turn New tab into a
+    // duplicate or arbitrary conversation.
+    suggestTargets: behavior.blank ? void 0 : options.suggestTargets
   });
   const tabId = options.createTabId();
   return {
@@ -1937,7 +1940,7 @@ function applyConsoleDockPreset(state, options) {
 function applyConsoleDockAction(state, action, options) {
   switch (action.type) {
     case "create_tab":
-      return createConsoleDockTab(state, options);
+      return createConsoleDockTab(state, options, { blank: action.blank });
     case "select_tab":
       return action.tabId ? selectConsoleDockTab(state, action.tabId) : state;
     case "close_tab":
@@ -3776,7 +3779,7 @@ function useConsoleDockController({
     focusedPanelId: state.focusedPanelId,
     focusedTarget: focusedPanel?.target || null,
     dispatch,
-    createTab: () => dispatch({ type: "create_tab" }),
+    createTab: (options) => dispatch({ type: "create_tab", blank: options?.blank }),
     selectTab: (tabId) => dispatch({ type: "select_tab", tabId }),
     closeTab: (tabId) => dispatch({ type: "close_tab", tabId }),
     focusPanel: (panelId) => dispatch({ type: "focus_panel", panelId }),
@@ -3880,7 +3883,35 @@ function stateStatus(state) {
       return "Conflict";
   }
 }
-function buildActionState(management, source, target, edge, state, receipt, hasMutationHandler, hasRetryHandler) {
+function directConnectionDetail(state, receipt, actionState) {
+  if (receipt) {
+    switch (receipt.status) {
+      case "pending_approval":
+        return "Waiting for approval to change this connection.";
+      case "queued":
+      case "running":
+        return "Connection change in progress.";
+      case "partial":
+      case "failed":
+      case "cancelled":
+        return "The last connection change did not complete.";
+      case "conflict":
+        return "The connection changed while this action was running.";
+      case "denied":
+        return "You do not have permission to change this connection.";
+      case "succeeded":
+        break;
+    }
+  }
+  if (actionState?.reason) {
+    return actionState.approvalRequired ? "Approval is required to change this connection." : "This connection cannot be changed right now.";
+  }
+  if (state === "degraded" || state === "conflict") {
+    return "This connection needs repair.";
+  }
+  return null;
+}
+function buildActionState(management, source, target, edge, state, receipt, hasMutationHandler, hasRetryHandler, binaryLabels) {
   const affordance = topologyAffordanceFor(management, edge);
   const action = preferredAction(state, receipt, affordance?.preferredAction);
   const pairCapability = affordance?.actions[action];
@@ -3899,6 +3930,9 @@ function buildActionState(management, source, target, edge, state, receipt, hasM
   else if (pending) label = receipt?.status === "pending_approval" ? "Awaiting approval" : "Pending";
   else if (approvalRequired) label = "Request approval";
   else if (reason) label = reason.toLocaleLowerCase().includes("denied") ? "Denied" : label;
+  if (binaryLabels) {
+    label = action === "disconnect" ? "Disconnect" : "Connect";
+  }
   return {
     action,
     label,
@@ -3946,13 +3980,15 @@ function ConnectionPicker({
   onSourceChange,
   onRequestMutation,
   onRequestPairInspection,
+  interactionMode = "explicit",
+  resolvingPairKeys = /* @__PURE__ */ new Set(),
   onRetryOperation,
   bulkActions = [],
   onRequestBulkAction,
   allowSourceChange = true,
   visibleLimit = DEFAULT_VISIBLE_LIMIT,
   title = "Connections",
-  description = "Choose an endpoint, then inspect or change its peer connections."
+  description
 }) {
   const [uncontrolledSourceId, setUncontrolledSourceId] = import_react11.default.useState(defaultSourceId);
   const [query, setQuery] = import_react11.default.useState("");
@@ -3984,10 +4020,11 @@ function ConnectionPicker({
   }
   const health = management.health || "ready";
   const featureDisabled = management.policy.mode === "disabled";
+  const resolvedDescription = description ?? (interactionMode === "direct" ? "Choose an endpoint to see or change its peer connections." : "Choose an endpoint, then inspect or change its peer connections.");
   return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit", "data-testid": "connection-picker", "data-management-mode": management.policy.mode, children: /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__column", children: [
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__intro", children: [
       /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: title }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: description })
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: resolvedDescription })
     ] }),
     featureDisabled ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__notice is-disabled", role: "status", children: management.policy.reason || "Connection management is disabled for this runtime." }) : null,
     health !== "ready" ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: `topo-edit__notice is-${health}`, role: "status", children: [
@@ -4021,7 +4058,7 @@ function ConnectionPicker({
           action.id
         );
       }) }) : null
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__notice", role: "status", children: "Pick an endpoint below to inspect its connections." }),
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__notice", role: "status", children: interactionMode === "direct" ? "Pick an endpoint below to see its connections." : "Pick an endpoint below to inspect its connections." }),
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("label", { className: "topo-edit__search", children: [
       /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { "aria-hidden": "true", children: "\u2315" }),
       /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
@@ -4055,14 +4092,22 @@ function ConnectionPicker({
             state,
             receipt,
             Boolean(onRequestMutation),
-            Boolean(onRetryOperation)
+            Boolean(onRetryOperation),
+            interactionMode === "direct"
           ) : null;
           const affordance = edge ? topologyAffordanceFor(management, edge) : null;
           const inspectionAvailable = Boolean(
-            source && edge && !affordance && onRequestPairInspection
+            interactionMode === "explicit" && source && edge && !affordance && onRequestPairInspection
           );
-          const status = inspectionAvailable ? "Not inspected" : operationStatus(receipt) || stateStatus(state);
-          const detail = receipt?.message || affordance?.message || actionState?.reason;
+          const unresolvedDirectPair = Boolean(
+            interactionMode === "direct" && source && edge && !affordance
+          );
+          const pairIsResolving = Boolean(
+            edge && resolvingPairKeys.has(topologyEdgeKey(edge))
+          );
+          const status = inspectionAvailable ? "Not inspected" : unresolvedDirectPair ? pairIsResolving ? "Loading\u2026" : "Unavailable" : operationStatus(receipt) || stateStatus(state);
+          const rawDetail = unresolvedDirectPair ? pairIsResolving ? "Loading current connection status from MobKit." : "Current connection status is unavailable." : receipt?.message || affordance?.message || actionState?.reason;
+          const detail = interactionMode === "direct" ? unresolvedDirectPair ? rawDetail : directConnectionDetail(state, receipt, actionState) : rawDetail;
           return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
             "div",
             {
@@ -4101,7 +4146,7 @@ function ConnectionPicker({
                       children: "Check"
                     }
                   )
-                ] }) : source && actionState ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__action", children: [
+                ] }) : source && edge && unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "topo-edit__action", children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: `topo-edit__status${pairIsResolving ? " is-running" : " is-unavailable"}`, children: status }) }) : source && actionState && !unresolvedDirectPair ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-edit__action", children: [
                   /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: `topo-edit__status is-${receipt?.status || state}`, children: status }),
                   /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
                     "button",
@@ -4110,7 +4155,7 @@ function ConnectionPicker({
                       type: "button",
                       disabled: actionState.disabled,
                       "aria-label": actionState.ariaLabel,
-                      title: actionState.reason || void 0,
+                      title: interactionMode === "direct" ? directConnectionDetail(state, receipt, actionState) || void 0 : actionState.reason || void 0,
                       onClick: () => {
                         if (actionState.retryReceipt) {
                           void onRetryOperation?.(actionState.retryReceipt);
@@ -5826,6 +5871,8 @@ function TopologyPanel({
   onConnectionSourceChange,
   onRequestMutation,
   onRequestPairInspection,
+  interactionMode = "explicit",
+  resolvingPairKeys,
   onRetryOperation,
   bulkActions,
   onRequestBulkAction
@@ -5989,6 +6036,8 @@ function TopologyPanel({
               onSourceChange: onConnectionSourceChange,
               onRequestMutation,
               onRequestPairInspection,
+              interactionMode,
+              resolvingPairKeys,
               onRetryOperation,
               bulkActions,
               onRequestBulkAction

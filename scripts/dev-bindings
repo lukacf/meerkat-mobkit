@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && git rev-parse --show-toplevel)"
+bindings_root="${repo_root}/.dev-bindings"
+config_path="${bindings_root}/cargo-config.toml"
+state_path="${bindings_root}/meerkat-root"
+
+fail() {
+  echo "[dev-bindings] $*" >&2
+  exit 1
+}
+
+verify_provenance() {
+  [[ -f "${config_path}" && -f "${state_path}" ]] \
+    || fail "not configured; run scripts/dev-bindings configure --meerkat <path>"
+  command -v python3 >/dev/null 2>&1 || fail "python3 is required to verify Cargo package provenance"
+  local meerkat_root metadata_path
+  meerkat_root="$(cat "${state_path}")"
+  metadata_path="${bindings_root}/metadata-$$.json"
+  trap 'rm -f "${metadata_path}"' RETURN
+  MEERKAT_DEV_BINDINGS=1 "${repo_root}/scripts/repo-cargo" \
+    metadata --format-version 1 >"${metadata_path}"
+  MEERKAT_ROOT="${meerkat_root}" python3 - "${metadata_path}" <<'PY'
+import json
+import os
+import sys
+
+meerkat_root = os.path.realpath(os.environ["MEERKAT_ROOT"])
+with open(sys.argv[1], encoding="utf-8") as handle:
+    metadata = json.load(handle)
+
+seen = []
+failures = []
+for package in metadata.get("packages", []):
+    name = package.get("name", "")
+    if name == "meerkat-mobkit" or not (name == "meerkat" or name.startswith("meerkat-")):
+        continue
+    manifest = os.path.realpath(package.get("manifest_path", ""))
+    source = package.get("source")
+    seen.append(name)
+    try:
+        local = os.path.commonpath([manifest, meerkat_root]) == meerkat_root
+    except ValueError:
+        local = False
+    if source is not None or not local:
+        failures.append(f"{name}: {source or manifest}")
+
+if "meerkat" not in seen:
+    failures.append("meerkat facade was not resolved")
+if failures:
+    raise SystemExit("development binding provenance failed:\n  " + "\n  ".join(failures))
+print(f"[dev-bindings] verified {len(seen)} Meerkat packages from {meerkat_root}")
+PY
+  rm -f "${metadata_path}"
+  trap - RETURN
+}
+
+command="${1:-status}"
+shift || true
+
+case "${command}" in
+  configure)
+    meerkat_root="${MEERKAT_ROOT:-}"
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --meerkat)
+          [[ "$#" -ge 2 ]] || fail "--meerkat requires a path"
+          meerkat_root="$2"
+          shift 2
+          ;;
+        *) fail "unknown argument: $1" ;;
+      esac
+    done
+    [[ -n "${meerkat_root}" ]] || fail "configure requires --meerkat <path> or MEERKAT_ROOT"
+    meerkat_root="$(cd "${meerkat_root}" 2>/dev/null && pwd)" \
+      || fail "Meerkat checkout does not exist: ${meerkat_root}"
+    generator="${meerkat_root}/scripts/generate-patch-config.sh"
+    [[ -x "${generator}" ]] || fail "Meerkat checkout lacks executable scripts/generate-patch-config.sh: ${meerkat_root}"
+    mkdir -p "${bindings_root}"
+    temporary="${config_path}.tmp-$$"
+    trap 'rm -f "${temporary}"' EXIT
+    "${generator}" "${meerkat_root}" >"${temporary}"
+    mv "${temporary}" "${config_path}"
+    trap - EXIT
+    printf '%s\n' "${meerkat_root}" >"${state_path}"
+    verify_provenance
+    echo "[dev-bindings] MobKit -> ${meerkat_root}"
+    echo "[dev-bindings] production manifests and lockfile are unchanged"
+    ;;
+  verify)
+    verify_provenance
+    echo "[dev-bindings] verified MobKit -> $(cat "${state_path}")"
+    ;;
+  status)
+    if [[ -f "${config_path}" && -f "${state_path}" ]]; then
+      echo "[dev-bindings] configured: MobKit -> $(cat "${state_path}")"
+      echo "[dev-bindings] activate with MEERKAT_DEV_BINDINGS=1"
+    else
+      echo "[dev-bindings] not configured"
+    fi
+    ;;
+  clear)
+    # Clearing is a workspace mutation too: serialize it with bound and
+    # unbound Cargo commands so an in-flight transaction cannot lose the
+    # production Cargo.lock backup stored below .dev-bindings.
+    "${repo_root}/scripts/run-cargo-with-dev-bindings" \
+      "${repo_root}" "${config_path}" --unbound rm -rf "${bindings_root}"
+    echo "[dev-bindings] cleared; production manifests were never changed"
+    ;;
+  *) fail "unknown command: ${command}" ;;
+esac

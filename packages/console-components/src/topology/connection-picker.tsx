@@ -42,6 +42,15 @@ export interface ConnectionPickerProps {
   onRequestMutation?: (intent: TopologyMutationIntent) => void | Promise<void>;
   /** Explicitly ask the host to prepare/query a pair that has no live affordance yet. */
   onRequestPairInspection?: (edge: TopologyEdgeRef) => void | Promise<void>;
+  /**
+   * Direct interaction is an opt-in host mode for smaller, user-facing
+   * rosters. The host resolves pair state automatically; the picker never
+   * exposes a preparatory Check action and keeps repair semantics behind the
+   * simpler Connect / Disconnect controls.
+   */
+  interactionMode?: "explicit" | "direct";
+  /** Stable pair keys currently being resolved by a direct-mode host. */
+  resolvingPairKeys?: ReadonlySet<string>;
   onRetryOperation?: (receipt: TopologyOperationReceipt) => void | Promise<void>;
   bulkActions?: readonly TopologyBoundedAction[];
   onRequestBulkAction?: (action: TopologyBoundedAction) => void | Promise<void>;
@@ -155,6 +164,35 @@ function stateStatus(state: TopologyConnectionState): string {
   }
 }
 
+function directConnectionDetail(
+  state: TopologyConnectionState,
+  receipt: TopologyOperationReceipt | null,
+  actionState: ActionState | null,
+): string | null {
+  if (receipt) {
+    switch (receipt.status) {
+      case "pending_approval": return "Waiting for approval to change this connection.";
+      case "queued":
+      case "running": return "Connection change in progress.";
+      case "partial":
+      case "failed":
+      case "cancelled": return "The last connection change did not complete.";
+      case "conflict": return "The connection changed while this action was running.";
+      case "denied": return "You do not have permission to change this connection.";
+      case "succeeded": break;
+    }
+  }
+  if (actionState?.reason) {
+    return actionState.approvalRequired
+      ? "Approval is required to change this connection."
+      : "This connection cannot be changed right now.";
+  }
+  if (state === "degraded" || state === "conflict") {
+    return "This connection needs repair.";
+  }
+  return null;
+}
+
 function buildActionState(
   management: TopologyManagementState,
   source: TopologyEndpoint,
@@ -164,6 +202,7 @@ function buildActionState(
   receipt: TopologyOperationReceipt | null,
   hasMutationHandler: boolean,
   hasRetryHandler: boolean,
+  binaryLabels: boolean,
 ): ActionState {
   const affordance = topologyAffordanceFor(management, edge);
   const action = preferredAction(state, receipt, affordance?.preferredAction);
@@ -188,6 +227,10 @@ function buildActionState(
   else if (pending) label = receipt?.status === "pending_approval" ? "Awaiting approval" : "Pending";
   else if (approvalRequired) label = "Request approval";
   else if (reason) label = reason.toLocaleLowerCase().includes("denied") ? "Denied" : label;
+
+  if (binaryLabels) {
+    label = action === "disconnect" ? "Disconnect" : "Connect";
+  }
 
   return {
     action,
@@ -242,13 +285,15 @@ export function ConnectionPicker({
   onSourceChange,
   onRequestMutation,
   onRequestPairInspection,
+  interactionMode = "explicit",
+  resolvingPairKeys = new Set<string>(),
   onRetryOperation,
   bulkActions = [],
   onRequestBulkAction,
   allowSourceChange = true,
   visibleLimit = DEFAULT_VISIBLE_LIMIT,
   title = "Connections",
-  description = "Choose an endpoint, then inspect or change its peer connections.",
+  description,
 }: ConnectionPickerProps): React.JSX.Element {
   const [uncontrolledSourceId, setUncontrolledSourceId] = React.useState<string | null>(defaultSourceId);
   const [query, setQuery] = React.useState("");
@@ -286,13 +331,16 @@ export function ConnectionPicker({
 
   const health = management.health || "ready";
   const featureDisabled = management.policy.mode === "disabled";
+  const resolvedDescription = description ?? (interactionMode === "direct"
+    ? "Choose an endpoint to see or change its peer connections."
+    : "Choose an endpoint, then inspect or change its peer connections.");
 
   return (
     <div className="topo-edit" data-testid="connection-picker" data-management-mode={management.policy.mode}>
       <div className="topo-edit__column">
         <div className="topo-edit__intro">
           <strong>{title}</strong>
-          <span>{description}</span>
+          <span>{resolvedDescription}</span>
         </div>
 
         {featureDisabled ? (
@@ -342,7 +390,9 @@ export function ConnectionPicker({
           </section>
         ) : (
           <div className="topo-edit__notice" role="status">
-            Pick an endpoint below to inspect its connections.
+            {interactionMode === "direct"
+              ? "Pick an endpoint below to see its connections."
+              : "Pick an endpoint below to inspect its connections."}
           </div>
         )}
 
@@ -380,18 +430,40 @@ export function ConnectionPicker({
                       receipt,
                       Boolean(onRequestMutation),
                       Boolean(onRetryOperation),
+                      interactionMode === "direct",
                     )
                   : null;
                 const affordance = edge ? topologyAffordanceFor(management, edge) : null;
                 const inspectionAvailable = Boolean(
-                  source && edge && !affordance && onRequestPairInspection,
+                  interactionMode === "explicit"
+                  && source
+                  && edge
+                  && !affordance
+                  && onRequestPairInspection,
+                );
+                const unresolvedDirectPair = Boolean(
+                  interactionMode === "direct" && source && edge && !affordance,
+                );
+                const pairIsResolving = Boolean(
+                  edge && resolvingPairKeys.has(topologyEdgeKey(edge)),
                 );
                 const status = inspectionAvailable
                   ? "Not inspected"
-                  : operationStatus(receipt) || stateStatus(state);
-                const detail = receipt?.message
-                  || affordance?.message
-                  || actionState?.reason;
+                  : unresolvedDirectPair
+                    ? pairIsResolving ? "Loading…" : "Unavailable"
+                    : operationStatus(receipt) || stateStatus(state);
+                const rawDetail = unresolvedDirectPair
+                  ? pairIsResolving
+                    ? "Loading current connection status from MobKit."
+                    : "Current connection status is unavailable."
+                  : receipt?.message
+                    || affordance?.message
+                    || actionState?.reason;
+                const detail = interactionMode === "direct"
+                  ? unresolvedDirectPair
+                    ? rawDetail
+                    : directConnectionDetail(state, receipt, actionState)
+                  : rawDetail;
                 return (
                   <div
                     className={`topo-edit__row is-${state}${endpoint.presentation.crossScope ? " is-cross-scope" : ""}`}
@@ -426,7 +498,13 @@ export function ConnectionPicker({
                           Check
                         </button>
                       </div>
-                    ) : source && actionState ? (
+                    ) : source && edge && unresolvedDirectPair ? (
+                      <div className="topo-edit__action">
+                        <span className={`topo-edit__status${pairIsResolving ? " is-running" : " is-unavailable"}`}>
+                          {status}
+                        </span>
+                      </div>
+                    ) : source && actionState && !unresolvedDirectPair ? (
                       <div className="topo-edit__action">
                         <span className={`topo-edit__status is-${receipt?.status || state}`}>{status}</span>
                         <button
@@ -434,7 +512,9 @@ export function ConnectionPicker({
                           type="button"
                           disabled={actionState.disabled}
                           aria-label={actionState.ariaLabel}
-                          title={actionState.reason || undefined}
+                          title={interactionMode === "direct"
+                            ? directConnectionDetail(state, receipt, actionState) || undefined
+                            : actionState.reason || undefined}
                           onClick={() => {
                             if (actionState.retryReceipt) {
                               void onRetryOperation?.(actionState.retryReceipt);

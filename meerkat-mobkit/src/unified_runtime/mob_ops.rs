@@ -6,7 +6,11 @@
 //! operations — status, discover, reconcile, retire, helpers, etc. — are now
 //! on `MobHandle` directly; callers reach through `runtime.mob_handle()`.
 
-use meerkat_mob::{MobError, MobHandle, SpawnMemberSpec, SpawnResult};
+use meerkat_core::types::{ContentInput, HandlingMode};
+use meerkat_mob::{
+    MemberTurnEventSender, MemberTurnHandle, MemberTurnOptions, MobError, MobHandle,
+    SpawnMemberSpec, SpawnResult,
+};
 use std::future::Future;
 
 use crate::mob_handle_runtime::MobRuntimeError;
@@ -17,6 +21,20 @@ use super::UnifiedRuntime;
 // fail-fast enqueue in meerkat-mob 0.6.x. Keep bulk discovery bootstrap
 // serialized until the upstream signal path is backpressured.
 const MAX_CONCURRENT_SPAWN_MANY: usize = 1;
+
+/// Canonical admission for a completion-bearing member turn.
+///
+/// `session_id` identifies the exact bridge session captured with the
+/// admitted member runtime binding. Hosts can start correlated history reads
+/// immediately while concurrently selecting over their event receiver and
+/// [`MemberTurnHandle::wait`].
+#[derive(Debug)]
+pub struct MemberTurnAdmission {
+    /// Exact bridge session captured with the member runtime binding.
+    pub session_id: String,
+    /// Completion-bearing turn; select its event receiver alongside `wait()`.
+    pub turn: MemberTurnHandle,
+}
 
 /// Default ceiling for `mobkit/wait_ready` when the caller omits `timeout_ms`.
 ///
@@ -52,6 +70,37 @@ impl UnifiedRuntime {
     /// Access the underlying `MobRuntime` (owns the session service + ephemeral dir).
     pub fn mob_runtime(&self) -> &crate::mob_handle_runtime::MobRuntime {
         &self.mob_runtime
+    }
+
+    /// Start a completion-bearing turn for a public member alias.
+    ///
+    /// Admission proves that the runtime input was accepted; it does not prove
+    /// that a requested per-turn LLM identity has reached the serialized
+    /// executor boundary. Call
+    /// [`MemberTurnHandle::wait_for_applied_llm_identity`](meerkat_mob::MemberTurnHandle::wait_for_applied_llm_identity)
+    /// for that distinct fact. Nonterminal events stream through `event_tx` as
+    /// they occur; terminal events and `turn.wait()` remain gated on the
+    /// committed runtime completion boundary.
+    pub async fn start_member_turn(
+        &self,
+        member_alias: &str,
+        content: ContentInput,
+        handling_mode: HandlingMode,
+        options: MemberTurnOptions,
+        event_tx: Option<MemberTurnEventSender>,
+    ) -> Result<MemberTurnAdmission, MobRuntimeError> {
+        let identity = crate::member_comms_id::mob_member_id(member_alias);
+        let member = self.mob_handle().member(&identity).await?;
+        let turn = member
+            .start_turn(content, handling_mode, options, event_tx)
+            .await?;
+        let session_id = turn
+            .session_id()
+            .ok_or(MobRuntimeError::InvalidInput(
+                "completion-bearing member turns require a session-backed member",
+            ))?
+            .to_string();
+        Ok(MemberTurnAdmission { session_id, turn })
     }
 
     /// Spawn a member, firing `post_spawn_hook` on success and the shared error

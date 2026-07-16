@@ -107,8 +107,13 @@ fn author_definition(model: &str) -> MobDefinition {
     ] {
         profiles.insert(
             ProfileName::from(name),
-            ProfileBinding::Inline(Profile {
+            ProfileBinding::Inline(Box::new(Profile {
                 model: model.to_string(),
+                provider: None,
+                self_hosted_server_id: None,
+                image_generation_provider: None,
+                auto_compact_threshold: None,
+                resume_overrides: Vec::new(),
                 skills: vec![],
                 tools: ToolConfig {
                     comms: true,
@@ -121,7 +126,7 @@ fn author_definition(model: &str) -> MobDefinition {
                 max_inline_peer_notifications: None,
                 output_schema: None,
                 provider_params: None,
-            }),
+            })),
         );
     }
 
@@ -144,8 +149,13 @@ fn critic_definition(model: &str) -> MobDefinition {
     ] {
         profiles.insert(
             ProfileName::from(name),
-            ProfileBinding::Inline(Profile {
+            ProfileBinding::Inline(Box::new(Profile {
                 model: model.to_string(),
+                provider: None,
+                self_hosted_server_id: None,
+                image_generation_provider: None,
+                auto_compact_threshold: None,
+                resume_overrides: Vec::new(),
                 skills: vec![],
                 tools: ToolConfig {
                     comms: true,
@@ -158,7 +168,7 @@ fn critic_definition(model: &str) -> MobDefinition {
                 max_inline_peer_notifications: None,
                 output_schema: None,
                 provider_params: None,
-            }),
+            })),
         );
     }
 

@@ -343,15 +343,11 @@ const TEST_LAUNCH_VIEW_SCHEMA = {
   fork_source_label: "Fork from",
   fork_context_label: "Fork context",
   graph_fork_context_label: "Context",
-  budget_policy_label: "Budget split policy",
-  fixed_budget_label: "Fixed token budget",
-  fixed_budget_default_value: 4096,
   unsupported_label_separator: " — not in MobKit ",
   unsupported_reason_prefix: "Unsupported by the MobKit ",
   unsupported_reason_suffix: " contract.",
   launch_modes_contract_label: "launch_modes",
   fork_contexts_contract_label: "mob_definition.fork_contexts",
-  budget_split_policies_contract_label: "budget_split_policies",
   launch_mode_labels: {
     Fresh: "Fresh — empty context",
     Resume: "Resume — existing bridge session",
@@ -362,12 +358,6 @@ const TEST_LAUNCH_VIEW_SCHEMA = {
     last_messages: "last_messages — last N messages",
     FullHistory: "FullHistory — legacy alias for full_history",
   },
-  budget_split_policy_labels: {
-    Equal: "Equal — split remaining budget evenly",
-    Proportional: "Proportional — MobKit proportional split",
-    Remaining: "Remaining — grant all remaining budget",
-    Fixed: "Fixed — token cap for this spawn",
-  },
 };
 const TEST_LAUNCH_VIEW = {
   launchTitle: "Launch mode",
@@ -377,18 +367,13 @@ const TEST_LAUNCH_VIEW = {
   forkSourceLabel: "Fork from",
   forkContextLabel: "Fork context",
   graphForkContextLabel: "Context",
-  budgetPolicyLabel: "Budget split policy",
-  fixedBudgetLabel: "Fixed token budget",
-  fixedBudgetDefaultValue: 4096,
   unsupportedLabelSeparator: " — not in MobKit ",
   unsupportedReasonPrefix: "Unsupported by the MobKit ",
   unsupportedReasonSuffix: " contract.",
   launchModesContractLabel: "launch_modes",
   forkContextsContractLabel: "mob_definition.fork_contexts",
-  budgetSplitPoliciesContractLabel: "budget_split_policies",
   launchModeLabels: TEST_LAUNCH_VIEW_SCHEMA.launch_mode_labels,
   forkContextLabels: TEST_LAUNCH_VIEW_SCHEMA.fork_context_labels,
-  budgetSplitPolicyLabels: TEST_LAUNCH_VIEW_SCHEMA.budget_split_policy_labels,
 };
 const TEST_CONDITION_VIEW_SCHEMA = {
   empty_value_label: "—",
@@ -580,10 +565,6 @@ assert.deepEqual(controller.deployDefaultsFromSchema(null), {
 });
 assert.equal(controller.normalizeDeploySettings(controller.deployDefaultsFromSchema(null)).command, "");
 assert.equal(controller.mobDefaultsFromSchema(null).backendDefault, "");
-assert.equal(controller.normalizeBudgetSplitPolicy(null), null);
-assert.equal(controller.normalizeBudgetSplitPolicy(undefined), null);
-assert.deepEqual(controller.normalizeBudgetSplitPolicy({ kind: "adaptive_pool" }), { kind: "adaptive_pool" });
-assert.deepEqual(controller.normalizeBudgetSplitPolicy({ type: "AdaptivePool" }), { kind: "AdaptivePool" });
 assert.deepEqual(controller.topRailState({
   contract: null,
   deploySettings: controller.deployDefaultsFromSchema(null),
@@ -1428,17 +1409,6 @@ const hydratedContractAndCatalogFixture = {
       apply_skeleton_label: "APPLY SKELETON",
       apply_skeleton_title: "Apply a MobKit profile prompt skeleton",
       system_prompt_placeholder: "Describe the member mandate. This text is exported as the profile peer_description.",
-      budget_title: "BUDGET",
-      budget_disabled_reason: "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members.",
-      budget_weight_label: "Weight",
-      budget_token_cap_label: "Token cap",
-      budget_split_policies_contract_label: "budget_split_policies",
-      budget_split_policy_labels: {
-        Equal: "Equal — split among siblings",
-        Proportional: "Proportional — weighted",
-        Remaining: "Remaining — take what's left",
-        Fixed: "Fixed — hard cap",
-      },
       output_schema_title: "OUTPUT SCHEMA",
       schema_none_label: "— none —",
       schema_required_label: "req",
@@ -2053,17 +2023,6 @@ assert.deepEqual(hydratedCatalogs.agentDetailView, {
   applySkeletonLabel: "APPLY SKELETON",
   applySkeletonTitle: "Apply a MobKit profile prompt skeleton",
   systemPromptPlaceholder: "Describe the member mandate. This text is exported as the profile peer_description.",
-  budgetTitle: "BUDGET",
-  budgetDisabledReason: "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members.",
-  budgetWeightLabel: "Weight",
-  budgetTokenCapLabel: "Token cap",
-  budgetSplitPoliciesContractLabel: "budget_split_policies",
-  budgetSplitPolicyLabels: {
-    Equal: "Equal — split among siblings",
-    Proportional: "Proportional — weighted",
-    Remaining: "Remaining — take what's left",
-    Fixed: "Fixed — hard cap",
-  },
   outputSchemaTitle: "OUTPUT SCHEMA",
   schemaNoneLabel: "— none —",
   schemaRequiredLabel: "req",
@@ -3448,7 +3407,6 @@ const flow = controller.graphToFlow({
     launchMode: {
       kind: "Resume",
       sessionId: "session-123",
-      budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
     },
     dispatchMode: "one_to_one",
     collection: "quorum",
@@ -3566,7 +3524,6 @@ assert.deepEqual(flow.steps[1], {
   launchMode: {
     kind: "Resume",
     sessionId: "session-123",
-    budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
   },
   dispatchMode: "one_to_one",
   collection: "quorum",
@@ -3799,11 +3756,6 @@ assert.deepEqual(document.launch_modes, [{
   launch_mode: {
     kind: "Resume",
     sessionId: "session-123",
-    budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
-  },
-  budget_split_policy: {
-    type: "fixed",
-    value: 2048,
   },
 }]);
 
@@ -3942,7 +3894,6 @@ assert.deepEqual(explicitFreshNoBudgetDocument.launch_modes[0], {
   profile: "reviewer",
   launch_mode: { kind: "Fresh" },
 });
-assert(!("budget_split_policy" in explicitFreshNoBudgetDocument.launch_modes[0]));
 
 const schemaSyncedFlow = controller.reconcileFlowMemberSchemas({
   name: "main",
@@ -4559,7 +4510,7 @@ const launchSourceFlow = controller.reconcileFlowLaunchSources({
           id: "review_fork",
           type: "member",
           role: "m_reviewer",
-          launchMode: { kind: "Fork", from: "deleted_step", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } },
+          launchMode: { kind: "Fork", from: "deleted_step", context: "full_history" },
         }],
       }],
       fallback: [],
@@ -4568,7 +4519,6 @@ const launchSourceFlow = controller.reconcileFlowLaunchSources({
 }, [members[0]]);
 assert.deepEqual(launchSourceFlow.steps[1].branches[0].steps[0].launchMode, {
   kind: "Fresh",
-  budgetSplitPolicy: { kind: "Fixed", limit: 512 },
 });
 const validLaunchSourceFlow = controller.reconcileFlowLaunchSources({
   name: "launch-source-valid-proof",
@@ -5515,17 +5465,6 @@ const agentEditorState = controller.agentEditorControlState({
     applySkeletonLabel: "SKELETON",
     applySkeletonTitle: "Apply skeleton",
     systemPromptPlaceholder: "Describe the mandate.",
-    budgetTitle: "BUDGET",
-    budgetDisabledReason: "Flow-step launch budgets own deployable budget semantics.",
-    budgetWeightLabel: "Weight",
-    budgetTokenCapLabel: "Token cap",
-    budgetSplitPoliciesContractLabel: "budget_split_policies",
-    budgetSplitPolicyLabels: {
-      Equal: "Equal — split among siblings",
-      Proportional: "Proportional — weighted",
-      Remaining: "Remaining — take what's left",
-      Fixed: "Fixed — hard cap",
-    },
     outputSchemaTitle: "OUTPUT CONTRACT",
     schemaNoneLabel: "none",
     schemaRequiredLabel: "required",
@@ -5554,10 +5493,6 @@ const agentEditorState = controller.agentEditorControlState({
       },
       runtime_modes: ["turn_driven"],
       profile_backends: ["session", "external"],
-      budget_split_policies: ["equal", "proportional", "remaining", "fixed"],
-      defaults: {
-        budget_split_policy: "equal",
-      },
     },
   },
 });
@@ -5608,32 +5543,6 @@ assert.equal(agentEditorState.systemPromptTitle, "PEER DESCRIPTION");
 assert.equal(agentEditorState.applySkeletonLabel, "SKELETON");
 assert.equal(agentEditorState.applySkeletonTitle, "Apply skeleton");
 assert.equal(agentEditorState.systemPromptPlaceholder, "Describe the mandate.");
-assert.deepEqual(agentEditorState.budgetSection, {
-  title: "BUDGET",
-  disabled: true,
-  disabledReason: "Flow-step launch budgets own deployable budget semantics.",
-  value: "Equal",
-  options: [
-    { value: "Equal", label: "Equal — split among siblings", disabled: false },
-    { value: "Proportional", label: "Proportional — weighted", disabled: false },
-    { value: "Remaining", label: "Remaining — take what's left", disabled: false },
-    { value: "Fixed", label: "Fixed — hard cap", disabled: false },
-  ],
-  showWeight: false,
-  weightLabel: "Weight",
-  weightValue: 1,
-  showTokenCap: false,
-  tokenCapLabel: "Token cap",
-  tokenCapValue: 4096,
-  contractLabel: "budget_split_policies",
-});
-assert.equal(controller.memberBudgetAffordanceState({
-  budget: { kind: "Fixed", limit: 2048 },
-}, {
-  mob_definition: {
-    budget_split_policies: ["fixed"],
-  },
-}, hydratedCatalogs.agentDetailView).tokenCapValue, 2048);
 assert.deepEqual(controller.agentEditorControlState({
   member: { id: "m_unplaced", name: "Unplaced", role: "writer" },
   instances: [],
@@ -6493,7 +6402,7 @@ assert.deepEqual(controller.studioDeleteInstancePatch({
 assert.deepEqual(controller.studioDeleteInstancePatch({
   instances: [
     { id: "source", memberId: "m_source" },
-    { id: "review", memberId: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } },
+    { id: "review", memberId: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history" } },
     { id: "done", isTerminal: true },
   ],
   edges: [
@@ -6502,7 +6411,7 @@ assert.deepEqual(controller.studioDeleteInstancePatch({
   ],
 }, "source"), {
   instances: [
-    { id: "review", memberId: "m_review", launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } },
+    { id: "review", memberId: "m_review", launchMode: { kind: "Fresh" } },
     { id: "done", isTerminal: true },
   ],
   edges: [
@@ -9674,10 +9583,8 @@ const launchControlContract = {
     ...graphShapeContract.mob_definition,
     defaults: {
       ...graphShapeContract.mob_definition.defaults,
-      budget_split_policy: "equal",
       fork_context: "full_history",
     },
-    budget_split_policies: ["equal", "fixed"],
     fork_contexts: ["full_history", "last_messages"],
   },
 };
@@ -9689,16 +9596,9 @@ assert.equal(blankLaunchState.resumeSessionPlaceholder, "session id");
 assert.equal(blankLaunchState.forkSourceLabel, "Fork from");
 assert.equal(blankLaunchState.forkContextLabel, "Fork context");
 assert.equal(blankLaunchState.graphForkContextLabel, "Context");
-assert.equal(blankLaunchState.budgetPolicyLabel, "Budget split policy");
-assert.equal(blankLaunchState.fixedBudgetLabel, "Fixed token budget");
-assert.equal(blankLaunchState.fixedBudgetValue, 4096);
 assert.equal(blankLaunchState.launchKind, "Fresh");
 assert.deepEqual(blankLaunchState.launchMode, { kind: "Fresh" });
-assert.equal(blankLaunchState.budgetSplitPolicy.kind, "Equal");
 assert.equal(blankLaunchState.forkContextValue, "full_history");
-assert.equal(controller.launchModeControlState({
-  launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 2048 } },
-}, launchControlContract, TEST_LAUNCH_VIEW).fixedBudgetValue, 2048);
 assert.deepEqual(controller.launchModeKindPatch({}, "Fork", launchControlContract, {
   firstForkSourceId: "plan_step",
 }), { launchMode: { kind: "Fork", from: "plan_step", context: "full_history" } });
@@ -9706,7 +9606,16 @@ assert.deepEqual(controller.launchModeKindPatch({
   launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 2048 } },
 }, "Fork", launchControlContract, {
   firstForkSourceId: "plan_step",
-}), { launchMode: { kind: "Fork", budgetSplitPolicy: { kind: "Fixed", limit: 2048 }, from: "plan_step", context: "full_history" } });
+}), { launchMode: { kind: "Fork", from: "plan_step", context: "full_history" } });
+assert.deepEqual(controller.launchModeMergePatch({ launchMode: { kind: "Fresh" } }, {
+  budgetSplitPolicy: { kind: "Fixed", limit: 2048 },
+}), {});
+assert.deepEqual(controller.launchModeMergePatch({ launchMode: { kind: "Fresh" } }, {
+  budget_split_policy: { type: "fixed", value: 2048 },
+}), {});
+assert.deepEqual(controller.launchModeMergePatch({ launchMode: { kind: "Fresh" } }, {
+  budget: { kind: "Fixed", limit: 2048 },
+}), {});
 assert.deepEqual(controller.launchModeKindPatch({
   launchMode: { kind: "Fresh" },
 }, "Teleport", launchControlContract), {});
@@ -9734,57 +9643,6 @@ assert.deepEqual(controller.launchModeForkContextPatch({
 assert.deepEqual(controller.launchModeForkContextPatch({
   launchMode: { kind: "Fork", from: "plan_step", context: "last_messages" },
 }, "entire_universe", launchControlContract), {});
-assert.deepEqual(controller.launchBudgetKindPatch({
-  launchMode: { kind: "Fork", from: "plan_step", context: "full_history" },
-}, "fixed", launchControlContract), {
-  launchMode: {
-    kind: "Fork",
-    from: "plan_step",
-    context: "full_history",
-    budgetSplitPolicy: { kind: "Fixed", limit: 4096 },
-  },
-});
-assert.deepEqual(controller.launchBudgetFixedLimitPatch({
-  launchMode: { kind: "Fork", from: "plan_step", context: "full_history" },
-}, 1024, launchControlContract), {
-  launchMode: {
-    kind: "Fork",
-    from: "plan_step",
-    context: "full_history",
-    budgetSplitPolicy: { kind: "Fixed", limit: 1024 },
-  },
-});
-assert.deepEqual(controller.launchBudgetFixedLimitPatch({
-  launchMode: { kind: "Fresh" },
-}, "3072", launchControlContract), {
-  launchMode: {
-    kind: "Fresh",
-    budgetSplitPolicy: { kind: "Fixed", limit: 3072 },
-  },
-});
-assert.deepEqual(controller.launchBudgetKindPatch({
-  launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "Fixed", limit: 1024 } },
-}, "lottery", launchControlContract), {});
-assert.deepEqual(controller.launchBudgetKindPatch({
-  launchMode: { kind: "Fresh" },
-}, "adaptive_pool", {
-  mob_definition: {
-    ...launchControlContract.mob_definition,
-    defaults: {
-      ...launchControlContract.mob_definition.defaults,
-      budget_split_policy: "adaptive_pool",
-    },
-    budget_split_policies: ["adaptive_pool"],
-  },
-}), { launchMode: { kind: "Fresh", budgetSplitPolicy: { kind: "adaptive_pool" } } });
-assert.deepEqual(controller.launchBudgetFixedLimitPatch({
-  launchMode: { kind: "Fresh" },
-}, 1024, {
-  mob_definition: {
-    ...launchControlContract.mob_definition,
-    budget_split_policies: ["equal"],
-  },
-}), {});
 const memberStepControlContract = {
   mob_definition: {
     ...launchControlContract.mob_definition,
@@ -10162,7 +10020,7 @@ const deletedRefFlow = controller.flowStepDeletePatch({
         id: "br1",
         cond: { namespace: "steps", stepId: "source", field: "verdict", op: "==", val: "green" },
         condition: 'steps.source.verdict == "green"',
-        steps: [{ id: "review", type: "member", role: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history", budgetSplitPolicy: { kind: "Fixed", limit: 512 } } }],
+        steps: [{ id: "review", type: "member", role: "m_review", launchMode: { kind: "Fork", from: "source", context: "full_history" } }],
       }],
       fallback: [],
     },
@@ -10180,7 +10038,6 @@ assert.deepEqual(deletedRefFlow.steps[0].branches[0].cond, {});
 assert.equal(deletedRefFlow.steps[0].branches[0].condition, "");
 assert.deepEqual(deletedRefFlow.steps[0].branches[0].steps[0].launchMode, {
   kind: "Fresh",
-  budgetSplitPolicy: { kind: "Fixed", limit: 512 },
 });
 assert.deepEqual(deletedRefFlow.steps[1].cond, {});
 assert.equal(deletedRefFlow.steps[1].until, "");

@@ -34,6 +34,17 @@ fi
 export CARGO_HOME="${cache_root}/${repo_key}/cargo-home"
 export CARGO_TARGET_DIR="${cache_root}/${repo_key}/targets/${lane_key}"
 
+dev_bindings_enabled=false
+dev_bindings_config="${MEERKAT_DEV_BINDINGS_CONFIG:-${repo_root}/.dev-bindings/cargo-config.toml}"
+if [[ "${MEERKAT_DEV_BINDINGS:-0}" == "1" ]]; then
+  dev_bindings_enabled=true
+  if [[ ! -f "${dev_bindings_config}" ]]; then
+    echo "error: development bindings are enabled but not configured" >&2
+    echo "run: scripts/dev-bindings configure --meerkat <path>" >&2
+    exit 66
+  fi
+fi
+
 mkdir -p "${CARGO_HOME}" "${CARGO_TARGET_DIR}"
 
 if [[ "${1-}" == "--print-env" ]]; then
@@ -44,6 +55,8 @@ repo_key=${repo_key}
 lane_key=${lane_key}
 CARGO_HOME=${CARGO_HOME}
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR}
+MEERKAT_DEV_BINDINGS=$([[ "${dev_bindings_enabled}" == "true" ]] && printf 1 || printf 0)
+MEERKAT_DEV_BINDINGS_CONFIG=$([[ "${dev_bindings_enabled}" == "true" ]] && printf '%s' "${dev_bindings_config}" || true)
 EOF
   exit 0
 fi
@@ -68,4 +81,9 @@ EOF
 fi
 
 cd "${workspace_root}"
-exec cargo "$@"
+if [[ "${dev_bindings_enabled}" == "true" ]]; then
+  exec "${repo_root}/scripts/run-cargo-with-dev-bindings" \
+    "${workspace_root}" "${dev_bindings_config}" -- cargo "$@"
+fi
+exec "${repo_root}/scripts/run-cargo-with-dev-bindings" \
+  "${workspace_root}" "${dev_bindings_config}" --unbound cargo "$@"

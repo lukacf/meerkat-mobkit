@@ -11,8 +11,8 @@ use meerkat_mob::definition::{
     FlowStepSpec, FrameSpec, SkillSource, StepOutputFormat,
 };
 use meerkat_mob::{
-    BudgetSplitPolicy, ForkContext, MemberLaunchMode, MobBackendKind, MobDefinition,
-    MobRuntimeMode, ProfileBinding, ToolConfig,
+    ForkContext, MemberLaunchMode, MobBackendKind, MobDefinition, MobRuntimeMode, ProfileBinding,
+    ToolConfig,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -400,18 +400,6 @@ fn fork_context_values() -> Vec<String> {
         vec![
             json!({ "type": "full_history" }),
             json!({ "type": "last_messages", "count": 5 }),
-        ],
-    )
-}
-
-fn budget_split_policy_values() -> Vec<String> {
-    serialized_tag_values::<BudgetSplitPolicy>(
-        "type",
-        vec![
-            json!({ "type": "equal" }),
-            json!({ "type": "proportional" }),
-            json!({ "type": "remaining" }),
-            json!({ "type": "fixed", "value": 4096 }),
         ],
     )
 }
@@ -2265,20 +2253,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
     editor_agent_detail_view["source_schema_path_label"] = json!("Schema path");
     editor_agent_detail_view["source_tools_label"] = json!("Tool refs");
     editor_agent_detail_view["source_skills_label"] = json!("Skill refs");
-    editor_agent_detail_view["budget_title"] = json!("BUDGET");
-    editor_agent_detail_view["budget_disabled_reason"] = json!(
-        "MobKit budgets are authored on flow launch modes (document.launch_modes[].budget_split_policy), not profile members."
-    );
-    editor_agent_detail_view["budget_weight_label"] = json!("Weight");
-    editor_agent_detail_view["budget_token_cap_label"] = json!("Token cap");
-    editor_agent_detail_view["budget_split_policies_contract_label"] =
-        json!("budget_split_policies");
-    editor_agent_detail_view["budget_split_policy_labels"] = json!({
-        "Equal": "Equal — split among siblings",
-        "Proportional": "Proportional — weighted",
-        "Remaining": "Remaining — take what's left",
-        "Fixed": "Fixed — hard cap"
-    });
     let editor_agent_access_view = json!({
         "tool_invalid_error": "Use a MobKit-listed runtime tool or configured MCP/Rust source.",
         "tool_empty_error": "Choose a tool first.",
@@ -2484,15 +2458,11 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "fork_source_label": "Fork from",
         "fork_context_label": "Fork context",
         "graph_fork_context_label": "Context",
-        "budget_policy_label": "Budget split policy",
-        "fixed_budget_label": "Fixed token budget",
-        "fixed_budget_default_value": 4096,
         "unsupported_label_separator": " — not in MobKit ",
         "unsupported_reason_prefix": "Unsupported by the MobKit ",
         "unsupported_reason_suffix": " contract.",
         "launch_modes_contract_label": "launch_modes",
         "fork_contexts_contract_label": "mob_definition.fork_contexts",
-        "budget_split_policies_contract_label": "budget_split_policies",
         "launch_mode_labels": {
             "Fresh": "Fresh — empty context",
             "Resume": "Resume — existing bridge session",
@@ -2502,12 +2472,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
             "full_history": "full_history — entire transcript",
             "last_messages": "last_messages — last N messages",
             "FullHistory": "FullHistory — legacy alias for full_history"
-        },
-        "budget_split_policy_labels": {
-            "Equal": "Equal — split remaining budget evenly",
-            "Proportional": "Proportional — MobKit proportional split",
-            "Remaining": "Remaining — grant all remaining budget",
-            "Fixed": "Fixed — token cap for this spawn"
         }
     });
     let mut editor_basic_view = json!({
@@ -2827,7 +2791,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
             "runtime_mode": "turn_driven",
             "launch_mode": "fresh",
             "fork_context": "full_history",
-            "budget_split_policy": "equal",
             "dispatch_mode": "fan_out",
             "collection_policy": "all",
             "dependency_mode": "all",
@@ -2865,8 +2828,6 @@ pub fn mobpack_schema_response_with_runtime(runtime: Option<&MobpackRuntimeCatal
         "launch_mode_document_path": "document.launch_modes[]",
         "fork_contexts": fork_context_values(),
         "fork_context_document_path": "document.launch_modes[].context",
-        "budget_split_policies": budget_split_policy_values(),
-        "budget_split_policy_document_path": "document.launch_modes[].budget_split_policy",
         "input_schema_document_path": "document.flow.steps[type=input].inputParams",
         "input_schema_archive_path": "schemas/main-input.json",
         "editor_input_param_draft": {
@@ -8521,7 +8482,6 @@ fn apply_flow_step_edit_operation(
                 if !graph_launch_kind_allowed(&kind) {
                     return Err(format!("unsupported launch mode: {kind}"));
                 }
-                let budget = graph_launch_budget_patch(&launch_mode);
                 let mut next = serde_json::Map::new();
                 next.insert("kind".to_string(), Value::String(kind.clone()));
                 if kind == "Fork" {
@@ -8567,9 +8527,6 @@ fn apply_flow_step_edit_operation(
                         ),
                     );
                 }
-                if let Some(budget) = budget {
-                    next.insert("budgetSplitPolicy".to_string(), budget);
-                }
                 object.insert("launchMode".to_string(), Value::Object(next));
             }
             "set_launch_session" => {
@@ -8599,35 +8556,6 @@ fn apply_flow_step_edit_operation(
                     return Err(format!("unsupported fork context: {context}"));
                 }
                 launch_mode.insert("context".to_string(), Value::String(context));
-                object.insert("launchMode".to_string(), Value::Object(launch_mode));
-            }
-            "set_launch_budget_kind" => {
-                let kind = canonical_graph_budget_kind(&operation_string_value(
-                    operation,
-                    &["budget_kind", "budgetKind", "kind", "value"],
-                ));
-                if !graph_budget_kind_allowed(&kind) {
-                    return Err(format!("unsupported budget split policy: {kind}"));
-                }
-                let policy = if kind == "Fixed" {
-                    json!({ "kind": "Fixed", "limit": 4096 })
-                } else {
-                    json!({ "kind": kind })
-                };
-                launch_mode.insert("budgetSplitPolicy".to_string(), policy);
-                object.insert("launchMode".to_string(), Value::Object(launch_mode));
-            }
-            "set_launch_budget_limit" => {
-                let limit = positive_integer_or_default(
-                    operation.get("limit").or_else(|| operation.get("value")),
-                    "limit",
-                    4096,
-                    "set_launch_budget_limit",
-                )?;
-                launch_mode.insert(
-                    "budgetSplitPolicy".to_string(),
-                    json!({ "kind": "Fixed", "limit": limit }),
-                );
                 object.insert("launchMode".to_string(), Value::Object(launch_mode));
             }
             other => return Err(format!("unsupported apply_flow_step_edit action: {other}")),
@@ -10122,23 +10050,6 @@ fn graph_launch_kind_allowed(kind: &str) -> bool {
         .any(|allowed| allowed == &lower)
 }
 
-fn canonical_graph_budget_kind(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "equal" => "Equal".to_string(),
-        "proportional" => "Proportional".to_string(),
-        "remaining" => "Remaining".to_string(),
-        "fixed" => "Fixed".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn graph_budget_kind_allowed(kind: &str) -> bool {
-    let lower = kind.trim().to_ascii_lowercase();
-    budget_split_policy_values()
-        .iter()
-        .any(|allowed| allowed == &lower)
-}
-
 fn graph_fork_context_allowed(context: &str) -> bool {
     let value = context.trim();
     value.is_empty() || fork_context_values().iter().any(|allowed| allowed == value)
@@ -10188,12 +10099,6 @@ fn graph_launch_mode_object(instance: &Value) -> serde_json::Map<String, Value> 
             );
             mode
         })
-}
-
-fn graph_launch_budget_patch(mode: &serde_json::Map<String, Value>) -> Option<Value> {
-    mode.get("budgetSplitPolicy")
-        .or_else(|| mode.get("budget_split_policy"))
-        .cloned()
 }
 
 fn apply_graph_node_edit_operation(
@@ -10364,7 +10269,6 @@ fn apply_graph_node_edit_operation(
                 if !graph_launch_kind_allowed(&kind) {
                     return Err(format!("unsupported launch mode: {kind}"));
                 }
-                let budget = graph_launch_budget_patch(&launch_mode);
                 let mut next = serde_json::Map::new();
                 next.insert("kind".to_string(), Value::String(kind.clone()));
                 if kind == "Fork" {
@@ -10410,9 +10314,6 @@ fn apply_graph_node_edit_operation(
                         ),
                     );
                 }
-                if let Some(budget) = budget {
-                    next.insert("budgetSplitPolicy".to_string(), budget);
-                }
                 object.insert("launchMode".to_string(), Value::Object(next));
             }
             "set_launch_session" => {
@@ -10442,35 +10343,6 @@ fn apply_graph_node_edit_operation(
                     return Err(format!("unsupported fork context: {context}"));
                 }
                 launch_mode.insert("context".to_string(), Value::String(context));
-                object.insert("launchMode".to_string(), Value::Object(launch_mode));
-            }
-            "set_launch_budget_kind" => {
-                let kind = canonical_graph_budget_kind(&operation_string_value(
-                    operation,
-                    &["budget_kind", "budgetKind", "kind", "value"],
-                ));
-                if !graph_budget_kind_allowed(&kind) {
-                    return Err(format!("unsupported budget split policy: {kind}"));
-                }
-                let policy = if kind == "Fixed" {
-                    json!({ "kind": "Fixed", "limit": 4096 })
-                } else {
-                    json!({ "kind": kind })
-                };
-                launch_mode.insert("budgetSplitPolicy".to_string(), policy);
-                object.insert("launchMode".to_string(), Value::Object(launch_mode));
-            }
-            "set_launch_budget_limit" => {
-                let limit = positive_integer_or_default(
-                    operation.get("limit").or_else(|| operation.get("value")),
-                    "limit",
-                    4096,
-                    "set_launch_budget_limit",
-                )?;
-                launch_mode.insert(
-                    "budgetSplitPolicy".to_string(),
-                    json!({ "kind": "Fixed", "limit": limit }),
-                );
                 object.insert("launchMode".to_string(), Value::Object(launch_mode));
             }
             other => return Err(format!("unsupported apply_graph_node_edit action: {other}")),
@@ -10587,13 +10459,6 @@ fn clear_deleted_launch_source(source: &mut Value, deleted_id: &str) {
     }
     let mut next = serde_json::Map::new();
     next.insert("kind".to_string(), json!("Fresh"));
-    if let Some(policy) = mode
-        .get("budgetSplitPolicy")
-        .or_else(|| mode.get("budget_split_policy"))
-        .or_else(|| mode.get("budget"))
-    {
-        next.insert("budgetSplitPolicy".to_string(), policy.clone());
-    }
     object.insert(launch_key.to_string(), Value::Object(next));
 }
 
@@ -15937,49 +15802,10 @@ fn launch_modes_from_instances(instances: &[Value]) -> Value {
                     "launch_mode".to_string(),
                     instance.get("launchMode").cloned().unwrap_or(Value::Null),
                 );
-                if let Some(policy) =
-                    budget_split_policy_from_launch_mode(instance.get("launchMode"))
-                {
-                    entry.insert("budget_split_policy".to_string(), policy);
-                }
                 Value::Object(entry)
             })
             .collect::<Vec<_>>(),
     )
-}
-
-fn budget_split_policy_from_launch_mode(launch_mode: Option<&Value>) -> Option<Value> {
-    let launch_mode = launch_mode.filter(|mode| mode.is_object())?;
-    launch_mode
-        .get("budgetSplitPolicy")
-        .or_else(|| launch_mode.get("budget_split_policy"))
-        .or_else(|| launch_mode.get("budget"))
-        .and_then(normalize_budget_split_policy_value)
-}
-
-fn normalize_budget_split_policy_value(policy: &Value) -> Option<Value> {
-    let kind = policy
-        .get("type")
-        .or_else(|| policy.get("kind"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?
-        .to_ascii_lowercase();
-    if kind == "fixed" {
-        let Some(value) = policy
-            .get("value")
-            .or_else(|| policy.get("limit"))
-            .or_else(|| policy.get("tokens"))
-            .and_then(Value::as_u64)
-        else {
-            return Some(json!({ "type": "fixed" }));
-        };
-        return Some(json!({ "type": "fixed", "value": value }));
-    }
-    if matches!(kind.as_str(), "equal" | "proportional" | "remaining") {
-        return Some(json!({ "type": kind }));
-    }
-    Some(json!({ "type": kind }))
 }
 
 fn last_step_id_in_frame(frame: &FrameSpec) -> Option<String> {
@@ -17752,6 +17578,7 @@ fn validate_document(document: &MobpackDocument) -> MobpackValidationResult {
             path: Some("name".to_string()),
         });
     }
+    diagnostics.extend(validate_removed_budget_split_policies(document));
     diagnostics.extend(validate_launch_modes(document));
     diagnostics.extend(validate_deploy_settings(&document.deploy));
     diagnostics.extend(validate_deploy_runtime_modes(document));
@@ -17903,6 +17730,75 @@ fn validation_display_rows(
         });
     }
     rows
+}
+
+fn validate_removed_budget_split_policies(document: &MobpackDocument) -> Vec<MobpackDiagnostic> {
+    let mut paths = BTreeSet::new();
+    collect_removed_budget_split_policy_paths(
+        &document.launch_modes,
+        "launch_modes",
+        false,
+        &mut paths,
+    );
+    collect_removed_budget_split_policy_paths(&document.flow, "flow", false, &mut paths);
+    collect_removed_budget_split_policy_paths(&document.instances, "instances", false, &mut paths);
+    if let Some(members) = document.members.as_array() {
+        for (index, member) in members.iter().enumerate() {
+            collect_removed_budget_split_policy_paths(
+                member,
+                &format!("members[{index}]"),
+                true,
+                &mut paths,
+            );
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| MobpackDiagnostic {
+            severity: "error".to_string(),
+            code: "unsupported_budget_split_policy".to_string(),
+            message: "budget split policies are no longer supported because Meerkat has no enforceable split-policy runtime seam; use explicit per-member budget limits instead"
+                .to_string(),
+            path: Some(path),
+        })
+        .collect()
+}
+
+fn collect_removed_budget_split_policy_paths(
+    value: &Value,
+    path: &str,
+    accepts_budget_alias: bool,
+    paths: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = format!("{path}.{key}");
+                if matches!(key.as_str(), "budgetSplitPolicy" | "budget_split_policy")
+                    || (accepts_budget_alias && key == "budget")
+                {
+                    paths.insert(child_path.clone());
+                }
+                collect_removed_budget_split_policy_paths(
+                    child,
+                    &child_path,
+                    matches!(key.as_str(), "launchMode" | "launch_mode"),
+                    paths,
+                );
+            }
+        }
+        Value::Array(values) => {
+            for (index, child) in values.iter().enumerate() {
+                collect_removed_budget_split_policy_paths(
+                    child,
+                    &format!("{path}[{index}]"),
+                    false,
+                    paths,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn validate_launch_modes(document: &MobpackDocument) -> Vec<MobpackDiagnostic> {
@@ -18131,19 +18027,6 @@ fn validate_launch_modes(document: &MobpackDocument) -> Vec<MobpackDiagnostic> {
                 path: Some(path),
             }),
         }
-        if let Some(policy) = item
-            .get("budget_split_policy")
-            .or_else(|| item.get("budgetSplitPolicy"))
-            .or_else(|| mode.get("budget_split_policy"))
-            .or_else(|| mode.get("budgetSplitPolicy"))
-            .or_else(|| mode.get("budget"))
-        {
-            validate_budget_split_policy(
-                policy,
-                format!("launch_modes[{index}].budget_split_policy"),
-                &mut diagnostics,
-            );
-        }
     }
     if !step_ids.is_empty() {
         for step_id in step_ids.difference(&launch_step_ids) {
@@ -18156,64 +18039,6 @@ fn validate_launch_modes(document: &MobpackDocument) -> Vec<MobpackDiagnostic> {
         }
     }
     diagnostics
-}
-
-fn validate_budget_split_policy(
-    policy: &Value,
-    path: String,
-    diagnostics: &mut Vec<MobpackDiagnostic>,
-) {
-    let Some(object) = policy.as_object() else {
-        diagnostics.push(MobpackDiagnostic {
-            severity: "error".to_string(),
-            code: "invalid_budget_split_policy".to_string(),
-            message: "budget_split_policy must be an object".to_string(),
-            path: Some(path),
-        });
-        return;
-    };
-    let kind = object
-        .get("type")
-        .or_else(|| object.get("kind"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
-    let Some(kind) = kind else {
-        diagnostics.push(MobpackDiagnostic {
-            severity: "error".to_string(),
-            code: "invalid_budget_split_policy".to_string(),
-            message: "budget_split_policy must declare a non-empty type".to_string(),
-            path: Some(path),
-        });
-        return;
-    };
-    match kind.as_str() {
-        "equal" | "proportional" | "remaining" => {}
-        "fixed" => {
-            let valid_value = object
-                .get("value")
-                .or_else(|| object.get("limit"))
-                .or_else(|| object.get("tokens"))
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > 0);
-            if !valid_value {
-                diagnostics.push(MobpackDiagnostic {
-                    severity: "error".to_string(),
-                    code: "invalid_budget_split_policy".to_string(),
-                    message: "fixed budget_split_policy requires a positive integer value"
-                        .to_string(),
-                    path: Some(path),
-                });
-            }
-        }
-        _ => diagnostics.push(MobpackDiagnostic {
-            severity: "error".to_string(),
-            code: "invalid_budget_split_policy".to_string(),
-            message: format!("unsupported budget_split_policy type '{kind}'"),
-            path: Some(path),
-        }),
-    }
 }
 
 fn validate_editor_flow_step_types(flow: &Value) -> Vec<MobpackDiagnostic> {
@@ -20374,7 +20199,6 @@ struct EditorGraphLaunchMode {
     session_id: Option<String>,
     source: Option<String>,
     context: Option<String>,
-    budget_split_policy: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -20993,7 +20817,6 @@ fn editor_graph_launch_mode(value: Option<&Value>) -> EditorGraphLaunchMode {
             session_id: None,
             source: None,
             context: None,
-            budget_split_policy: String::new(),
         };
     };
     let kind = mode
@@ -21031,31 +20854,17 @@ fn editor_graph_launch_mode(value: Option<&Value>) -> EditorGraphLaunchMode {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(canonical_fork_context_value);
-    let policy = mode
-        .get("budgetSplitPolicy")
-        .or_else(|| mode.get("budget_split_policy"))
-        .or_else(|| mode.get("budget"))
-        .and_then(normalize_budget_split_policy_value);
     EditorGraphLaunchMode {
         kind: canonical_kind,
         session_id,
         source,
         context,
-        budget_split_policy: policy.map(|policy| policy.to_string()).unwrap_or_default(),
     }
 }
 
 fn editor_launch_mode_entry_mode(item: &Value, mode: &Value) -> EditorGraphLaunchMode {
-    let mut launch_mode = editor_graph_launch_mode(Some(mode));
-    if let Some(policy) = item
-        .get("budget_split_policy")
-        .or_else(|| item.get("budgetSplitPolicy"))
-    {
-        launch_mode.budget_split_policy = normalize_budget_split_policy_value(policy)
-            .map(|policy| policy.to_string())
-            .unwrap_or_default();
-    }
-    launch_mode
+    let _ = item;
+    editor_graph_launch_mode(Some(mode))
 }
 
 fn validate_deploy_string_enum(
@@ -24223,14 +24032,12 @@ description = "Generated by MobKit Flow Editor"
             {
                 "step_id": "plan",
                 "member_id": "m_planner",
-                "launch_mode": { "kind": "Fork", "from": "coder", "context": "FullHistory" },
-                "budget_split_policy": { "type": "fixed", "value": 4096 }
+                "launch_mode": { "kind": "Fork", "from": "coder", "context": "FullHistory" }
             },
             {
                 "step_id": "review",
                 "member_id": "m_reviewer",
-                "launch_mode": { "kind": "Resume", "sessionId": "session-123" },
-                "budget_split_policy": { "kind": "Remaining" }
+                "launch_mode": { "kind": "Resume", "sessionId": "session-123" }
             }
         ]);
         assert!(validate_document(&document).ok);
@@ -24256,7 +24063,7 @@ description = "Generated by MobKit Flow Editor"
                 "step_id": "plan",
                 "member_id": "m_planner",
                 "launch_mode": { "kind": "Fresh" },
-                "budget_split_policy": { "type": "fixed", "value": 0 }
+                "budget_split_policy": { "type": "fixed", "value": 4096 }
             }
         ]);
         let result = validate_document(&document);
@@ -24265,27 +24072,31 @@ description = "Generated by MobKit Flow Editor"
             result
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "invalid_budget_split_policy")
+                .any(|diagnostic| diagnostic.code == "unsupported_budget_split_policy")
         );
 
         document.launch_modes = json!([
             {
                 "step_id": "plan",
                 "member_id": "m_planner",
-                "launch_mode": { "kind": "Fresh" },
-                "budget_split_policy": {}
+                "launch_mode": {
+                    "kind": "Fresh",
+                    "budgetSplitPolicy": { "kind": "Remaining" }
+                }
             }
         ]);
         let result = validate_document(&document);
         assert!(!result.ok);
         assert!(result.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "invalid_budget_split_policy"
-                && diagnostic.message.contains("non-empty type")
+            diagnostic.code == "unsupported_budget_split_policy"
+                && diagnostic
+                    .message
+                    .contains("no enforceable split-policy runtime seam")
         }));
     }
 
     #[test]
-    fn graph_launch_projection_omits_absent_budget_split_policy() {
+    fn graph_launch_projection_does_not_translate_legacy_budget_split_policy() {
         let instances = vec![
             json!({
                 "id": "plan",
@@ -24309,12 +24120,13 @@ description = "Generated by MobKit Flow Editor"
         assert_eq!(rows[0]["launch_mode"], json!({ "kind": "Fresh" }));
         assert!(
             rows[0].get("budget_split_policy").is_none(),
-            "absent graph budget policy must not become equal"
+            "projection must not invent a split policy"
         );
         assert_eq!(
-            rows[1]["budget_split_policy"],
-            json!({ "type": "fixed", "value": 2048 })
+            rows[1]["launch_mode"]["budgetSplitPolicy"],
+            json!({ "kind": "Fixed", "limit": 2048 })
         );
+        assert!(rows[1].get("budget_split_policy").is_none());
     }
 
     #[test]
@@ -24365,7 +24177,7 @@ description = "Generated by MobKit Flow Editor"
     }
 
     #[test]
-    fn rejects_launch_budget_entry_drift_from_flow_step() {
+    fn rejects_legacy_launch_budget_fields() {
         let mut document = document_with_real_launch_modes();
         document.flow["steps"][2]["launchMode"]["budgetSplitPolicy"] = json!({ "type": "equal" });
         let launch_modes = document
@@ -24377,8 +24189,8 @@ description = "Generated by MobKit Flow Editor"
 
         assert!(!result.ok);
         assert!(result.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "launch_mode_flow_mismatch"
-                && diagnostic.path.as_deref() == Some("launch_modes[1].launch_mode")
+            diagnostic.code == "unsupported_budget_split_policy"
+                && diagnostic.path.as_deref() == Some("launch_modes[1].budget_split_policy")
         }));
     }
 
@@ -25471,8 +25283,7 @@ description = "Generated by MobKit Flow Editor"
             "step_id": "review",
             "member_id": "m_reviewer",
             "profile": "reviewer",
-            "launch_mode": { "kind": "Fresh" },
-            "budget_split_policy": { "type": "equal" }
+            "launch_mode": { "kind": "Fresh" }
         }]);
 
         let result =
@@ -32140,7 +31951,7 @@ depends_on_mode = "all"
             launch_edited["document"]["flow"]["steps"][2]["launchMode"]["from"],
             json!("plan")
         );
-        let launch_budget_edited = apply_mobpack_authoring_operation(&json!({
+        let launch_budget_error = apply_mobpack_authoring_operation(&json!({
             "document": launch_edited["document"],
             "operation": {
                 "type": "apply_flow_step_edit",
@@ -32149,14 +31960,11 @@ depends_on_mode = "all"
                 "limit": "3072"
             }
         }))
-        .expect("semantic flow step launch budget edit accepts string numeric input");
-        assert_eq!(
-            launch_budget_edited["document"]["flow"]["steps"][2]["launchMode"]["budgetSplitPolicy"],
-            json!({ "kind": "Fixed", "limit": 3072 })
-        );
+        .expect_err("removed flow launch budget action must be rejected");
+        assert!(launch_budget_error.contains("unsupported apply_flow_step_edit action"));
 
         let branch_condition_edited = apply_mobpack_authoring_operation(&json!({
-            "document": launch_budget_edited["document"],
+            "document": launch_edited["document"],
             "operation": {
                 "type": "apply_flow_step_edit",
                 "step_id": "route",
@@ -32482,7 +32290,7 @@ depends_on_mode = "all"
             node_edited["document"]["instances"][1]["launchMode"]["from"],
             json!("n_plan")
         );
-        let node_budget_edited = apply_mobpack_authoring_operation(&json!({
+        let node_budget_error = apply_mobpack_authoring_operation(&json!({
             "document": node_edited["document"],
             "operation": {
                 "type": "apply_graph_node_edit",
@@ -32491,14 +32299,11 @@ depends_on_mode = "all"
                 "limit": "2048"
             }
         }))
-        .expect("semantic graph node launch budget edit accepts string numeric input");
-        assert_eq!(
-            node_budget_edited["document"]["instances"][1]["launchMode"]["budgetSplitPolicy"],
-            json!({ "kind": "Fixed", "limit": 2048 })
-        );
+        .expect_err("removed graph launch budget action must be rejected");
+        assert!(node_budget_error.contains("unsupported apply_graph_node_edit action"));
 
         let semantic_edge = apply_mobpack_authoring_operation(&json!({
-            "document": node_budget_edited["document"],
+            "document": node_edited["document"],
             "operation": {
                 "type": "apply_graph_edge_edit",
                 "edge_id": "e_n_plan_i_reviewer",
@@ -33924,7 +33729,7 @@ depends_on_mode = "all"
         assert_eq!(defaults["runtime_mode"], json!("turn_driven"));
         assert_eq!(defaults["launch_mode"], json!("fresh"));
         assert_eq!(defaults["fork_context"], json!("full_history"));
-        assert_eq!(defaults["budget_split_policy"], json!("equal"));
+        assert!(defaults.get("budget_split_policy").is_none());
         assert_eq!(defaults["dispatch_mode"], json!("fan_out"));
         assert_eq!(defaults["collection_policy"], json!("all"));
         assert_eq!(defaults["dependency_mode"], json!("all"));
@@ -34031,10 +33836,7 @@ depends_on_mode = "all"
             mob_definition["fork_contexts"],
             json!(fork_context_values())
         );
-        assert_eq!(
-            mob_definition["budget_split_policies"],
-            json!(budget_split_policy_values())
-        );
+        assert!(mob_definition.get("budget_split_policies").is_none());
         assert_eq!(
             mob_definition["editor_schema_field_types"],
             json!(editor_schema_field_type_values())
@@ -34390,13 +34192,10 @@ depends_on_mode = "all"
             mob_definition["editor_agent_detail_view"]["system_prompt_title"],
             json!("SYSTEM PROMPT")
         );
-        assert_eq!(
-            mob_definition["editor_agent_detail_view"]["budget_title"],
-            json!("BUDGET")
-        );
-        assert_eq!(
-            mob_definition["editor_agent_detail_view"]["budget_split_policy_labels"]["Fixed"],
-            json!("Fixed — hard cap")
+        assert!(
+            mob_definition["editor_agent_detail_view"]
+                .get("budget_split_policy_labels")
+                .is_none()
         );
         assert_eq!(
             mob_definition["editor_agent_detail_view"]["empty_schema_hint"],

@@ -394,21 +394,6 @@ function InstanceInspector({ studio, flow, inst, selectMember, clearSelection, e
               {launchState.selectedForkContext?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{launchState.selectedForkContext.reason}</div>}
             </>
           )}
-          <div className="field" style={{ marginTop: 8 }}>
-            <label className="field__label">{launchState.budgetPolicyLabel}</label>
-            <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
-              {launchState.budgetOptions.map(option => (
-                <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
-              ))}
-            </select>
-            {launchState.selectedBudgetPolicy?.reason && <div className="hint__line" style={{ color: "var(--warn)" }}>{launchState.selectedBudgetPolicy.reason}</div>}
-          </div>
-          {launchState.budgetSplitPolicy.kind === "Fixed" && (
-            <div className="field">
-              <label className="field__label">{launchState.fixedBudgetLabel}</label>
-              <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value })} />
-            </div>
-          )}
         </div>
 
         <div className="section">

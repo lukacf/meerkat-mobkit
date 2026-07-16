@@ -167,6 +167,8 @@ export interface ConsoleDockAction<TTarget extends ConsoleDockTarget = ConsoleDo
   intent?: ConsoleDockOpenIntent;
   direction?: ConsoleDockPanelSplitDirection;
   presetId?: ConsoleDockPresetId;
+  /** Start a genuinely empty tab instead of cloning the focused panel. */
+  blank?: boolean;
 }
 
 export interface ConsoleDockResolvePanelViewArgs<TTarget extends ConsoleDockTarget = ConsoleDockTarget> {
@@ -768,9 +770,10 @@ export function setConsoleDockPanelMode<TTarget extends ConsoleDockTarget>(
 export function createConsoleDockTab<TTarget extends ConsoleDockTarget>(
   state: ConsoleDockState<TTarget>,
   options: Omit<CreateConsoleDockStateOptions<TTarget>, "initialPresetId" | "initialTarget">,
+  behavior: { blank?: boolean } = {},
 ): ConsoleDockState<TTarget> {
   const normalized = normalizeConsoleDockState<TTarget>(state);
-  const preferredPanel = normalized.focusedPanelId
+  const preferredPanel = !behavior.blank && normalized.focusedPanelId
     ? normalized.panels.find((panel) => panel.id === normalized.focusedPanelId) || null
     : null;
   const presetState = buildConsoleDockPresetState({
@@ -779,7 +782,10 @@ export function createConsoleDockTab<TTarget extends ConsoleDockTarget>(
     preferredPanel,
     createPanelState: options.createPanelState,
     createSplitId: options.createSplitId,
-    suggestTargets: options.suggestTargets,
+    // An explicitly blank tab is a drafting surface. Target suggestions are
+    // useful for layout presets, but must not silently turn New tab into a
+    // duplicate or arbitrary conversation.
+    suggestTargets: behavior.blank ? undefined : options.suggestTargets,
   });
   const tabId = options.createTabId();
 
@@ -1089,7 +1095,7 @@ export function applyConsoleDockAction<TTarget extends ConsoleDockTarget>(
 ): ConsoleDockState<TTarget> {
   switch (action.type) {
     case "create_tab":
-      return createConsoleDockTab(state, options);
+      return createConsoleDockTab(state, options, { blank: action.blank });
     case "select_tab":
       return action.tabId ? selectConsoleDockTab(state, action.tabId) : state;
     case "close_tab":

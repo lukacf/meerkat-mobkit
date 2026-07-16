@@ -5,6 +5,7 @@ import {
   consoleDockSplitDirectionAxis,
   consoleDockSplitDirectionPrecedes,
   createConsoleDockState,
+  createConsoleDockTab,
   findConsoleDockFirstPanelId,
   normalizeConsoleDockViewState,
   openConsoleDockTarget,
@@ -310,6 +311,32 @@ describe("dock helpers", () => {
 
     expect(state.panels).toHaveLength(2);
     expect(state.panels.map((panel) => panel.target?.id)).toEqual(["thread:alpha", "thread:alpha"]);
+  });
+
+  test("can create an explicitly blank tab without changing the default clone behavior", () => {
+    type TestTarget = ConsoleDockTarget & { kind: "thread"; threadId: string };
+    const alpha: TestTarget = { id: "thread:alpha", kind: "thread", title: "Alpha", threadId: "alpha" };
+    let panelIdCounter = 0;
+    let tabIdCounter = 0;
+    const createPanelState = ({ target }: { target: TestTarget | null }): ConsoleDockPanelState<TestTarget> => ({
+      id: `panel-${++panelIdCounter}`,
+      target,
+      mode: "console",
+    });
+    const createTabId = () => `tab-${++tabIdCounter}`;
+    const createSplitId = () => "split-unused";
+    const initial = createConsoleDockState<TestTarget>({
+      initialTarget: alpha,
+      createPanelState,
+      createTabId,
+      createSplitId,
+    });
+
+    const cloned = createConsoleDockTab(initial, { createPanelState, createTabId, createSplitId });
+    expect(cloned.panels.find((panel) => panel.id === cloned.focusedPanelId)?.target?.id).toBe(alpha.id);
+
+    const blank = createConsoleDockTab(initial, { createPanelState, createTabId, createSplitId }, { blank: true });
+    expect(blank.panels.find((panel) => panel.id === blank.focusedPanelId)?.target).toBeNull();
   });
 
   test("presets do not create empty panels when there are no suggested targets", () => {

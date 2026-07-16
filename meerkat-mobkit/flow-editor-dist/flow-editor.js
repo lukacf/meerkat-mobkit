@@ -391,12 +391,6 @@
       applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
       applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
       systemPromptPlaceholder: String(view.system_prompt_placeholder || "").trim(),
-      budgetTitle: String(view.budget_title || "").trim(),
-      budgetDisabledReason: String(view.budget_disabled_reason || "").trim(),
-      budgetWeightLabel: String(view.budget_weight_label || "").trim(),
-      budgetTokenCapLabel: String(view.budget_token_cap_label || "").trim(),
-      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
-      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
       outputSchemaTitle: String(view.output_schema_title || "").trim(),
       schemaNoneLabel: String(view.schema_none_label || "").trim(),
       schemaRequiredLabel: String(view.schema_required_label || "").trim(),
@@ -412,7 +406,7 @@
       sourceToolsLabel: String(view.source_tools_label || "").trim(),
       sourceSkillsLabel: String(view.source_skills_label || "").trim()
     };
-    return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.deleteCancelLabel && out.cellSingular && out.cellPlural && out.deleteConfirmCellsSuffix && out.usageTitlePrefix && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback && out.modelLabel && out.runtimeModeLabel && out.runtimeSectionTitle && out.missingRuntimeModeLabel && out.backendLabel && out.backendDefinitionDefaultLabel && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0 && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder && out.budgetTitle && out.budgetDisabledReason && out.budgetWeightLabel && out.budgetTokenCapLabel && out.budgetSplitPoliciesContractLabel && Object.keys(out.budgetSplitPolicyLabels).length && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel && out.sourceToolsLabel && out.sourceSkillsLabel ? out : null;
+    return out.usedInLabel && out.instanceSingular && out.instancePlural && out.deleteLabel && out.deleteConfirmIntro && out.deleteConfirmPlacedPrefix && out.deleteCancelLabel && out.cellSingular && out.cellPlural && out.deleteConfirmCellsSuffix && out.usageTitlePrefix && out.emptyUsageHint && out.agentEyebrowPrefix && out.identityTitle && out.profileBindingLabel && out.missingProfileBindingLabel && out.realmProfileLabel && out.realmProfilePlaceholder && out.realmProfileImportHintFallback && out.realmProfileTitle && out.realmProfileReferenceHintBefore && out.realmProfileReferenceHintAfterFallback && out.modelLabel && out.runtimeModeLabel && out.runtimeSectionTitle && out.missingRuntimeModeLabel && out.backendLabel && out.backendDefinitionDefaultLabel && out.inlinePeerNotificationsLabel && out.inlinePeerNotificationsPlaceholder && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0 && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel && out.sourceToolsLabel && out.sourceSkillsLabel ? out : null;
   }
   function agentDetailViewForState(agentDetailView) {
     const view = agentDetailView && typeof agentDetailView === "object" ? agentDetailView : null;
@@ -456,12 +450,6 @@
       applySkeletonLabel: String(view?.applySkeletonLabel || ""),
       applySkeletonTitle: String(view?.applySkeletonTitle || ""),
       systemPromptPlaceholder: String(view?.systemPromptPlaceholder || ""),
-      budgetTitle: String(view?.budgetTitle || ""),
-      budgetDisabledReason: String(view?.budgetDisabledReason || ""),
-      budgetWeightLabel: String(view?.budgetWeightLabel || ""),
-      budgetTokenCapLabel: String(view?.budgetTokenCapLabel || ""),
-      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
-      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
       outputSchemaTitle: String(view?.outputSchemaTitle || ""),
       schemaNoneLabel: String(view?.schemaNoneLabel || ""),
       schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
@@ -1071,18 +1059,13 @@
       forkSourceLabel: String(view.fork_source_label || "").trim(),
       forkContextLabel: String(view.fork_context_label || "").trim(),
       graphForkContextLabel: String(view.graph_fork_context_label || "").trim(),
-      budgetPolicyLabel: String(view.budget_policy_label || "").trim(),
-      fixedBudgetLabel: String(view.fixed_budget_label || "").trim(),
-      fixedBudgetDefaultValue: Number(view.fixed_budget_default_value),
       unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
       unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
       unsupportedReasonSuffix: String(view.unsupported_reason_suffix || ""),
       launchModesContractLabel: String(view.launch_modes_contract_label || "").trim(),
       forkContextsContractLabel: String(view.fork_contexts_contract_label || "").trim(),
-      budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
       launchModeLabels: viewStringMapFromSchema(view.launch_mode_labels),
-      forkContextLabels: viewStringMapFromSchema(view.fork_context_labels),
-      budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels)
+      forkContextLabels: viewStringMapFromSchema(view.fork_context_labels)
     };
     const stringsOk = Object.entries(out).every(([key, value]) => {
       if (typeof value === "number") return Number.isFinite(value) && value > 0;
@@ -1101,18 +1084,13 @@
       forkSourceLabel: String(view?.forkSourceLabel || ""),
       forkContextLabel: String(view?.forkContextLabel || ""),
       graphForkContextLabel: String(view?.graphForkContextLabel || ""),
-      budgetPolicyLabel: String(view?.budgetPolicyLabel || ""),
-      fixedBudgetLabel: String(view?.fixedBudgetLabel || ""),
-      fixedBudgetDefaultValue: Number(view?.fixedBudgetDefaultValue || 0),
       unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
       unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
       unsupportedReasonSuffix: String(view?.unsupportedReasonSuffix || ""),
       launchModesContractLabel: String(view?.launchModesContractLabel || ""),
       forkContextsContractLabel: String(view?.forkContextsContractLabel || ""),
-      budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
       launchModeLabels: view?.launchModeLabels && typeof view.launchModeLabels === "object" ? view.launchModeLabels : {},
-      forkContextLabels: view?.forkContextLabels && typeof view.forkContextLabels === "object" ? view.forkContextLabels : {},
-      budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {}
+      forkContextLabels: view?.forkContextLabels && typeof view.forkContextLabels === "object" ? view.forkContextLabels : {}
     };
   }
   function graphTemplateViewFromSchema(schema) {
@@ -1766,12 +1744,8 @@
     if (!mode || mode.kind !== "Fork" || String(mode.from || "").trim() !== deletedId) return source;
     return {
       ...source,
-      launchMode: freshLaunchModePreservingBudget(mode)
+      launchMode: { kind: "Fresh" }
     };
-  }
-  function freshLaunchModePreservingBudget(mode) {
-    const budgetSplitPolicy = mode?.budgetSplitPolicy;
-    return budgetSplitPolicy ? { kind: "Fresh", budgetSplitPolicy } : { kind: "Fresh" };
   }
   function clearDeletedStepCondition(cond, deletedId) {
     if (!cond || typeof cond !== "object") return cond;
@@ -2428,7 +2402,7 @@
     if (mode.kind !== "Fork" || !mode.from || allowedSources.has(mode.from)) return source;
     return {
       ...source,
-      launchMode: freshLaunchModePreservingBudget(mode)
+      launchMode: { kind: "Fresh" }
     };
   }
   function reconcileControlRolesInSteps(steps, memberIds) {
@@ -3310,44 +3284,31 @@
     if (!mode || typeof mode !== "object") return null;
     const kind = canonicalLaunchModeKind(mode.kind);
     if (!kind) return null;
-    const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
-    const budgetSplitPolicy = rawBudgetSplitPolicy ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy) : null;
-    const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
     if (kind === "Resume") {
       return {
         kind: "Resume",
-        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
-        ...budgetPatch
+        sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim()
       };
     }
     if (kind === "Fork") {
       return {
         kind: "Fork",
         from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
-        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
-        ...budgetPatch
+        context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context)
       };
     }
-    return { kind, ...budgetPatch };
+    return { kind };
   }
   function launchModeControlState(source, contract, launchView = null) {
     const view = launchViewForState(launchView);
     const authoredLaunchMode = source && typeof source === "object" ? source.launchMode ?? source.launch_mode : null;
     const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
-    const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object" ? authoredLaunchMode : { kind: defaultLaunchMode };
+    const launchMode = normalizeLaunchMode(authoredLaunchMode) || { kind: defaultLaunchMode };
     const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
-    const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
-      launchMode.budgetSplitPolicy || launchMode.budget_split_policy
-    );
-    const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
-    const budgetSplitPolicy = authoredBudgetSplitPolicy || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null) || { kind: "" };
-    const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
     const launchOptions = launchModeOptions(contract, launchKind, view);
-    const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
     const defaultForkContext = contractDefaultValue(contract, "fork_context");
     const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
     const forkOptions = forkContextOptions(contract, forkContextValue, view);
-    const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
     return {
       launchTitle: view.launchTitle,
       graphLaunchTitle: view.graphLaunchTitle,
@@ -3356,19 +3317,11 @@
       forkSourceLabel: view.forkSourceLabel,
       forkContextLabel: view.forkContextLabel,
       graphForkContextLabel: view.graphForkContextLabel,
-      budgetPolicyLabel: view.budgetPolicyLabel,
-      fixedBudgetLabel: view.fixedBudgetLabel,
-      fixedBudgetValue: fixedLimitValue,
       launchMode,
       launchKind,
       defaultLaunchMode,
       launchOptions,
       selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
-      authoredBudgetSplitPolicy,
-      budgetSplitPolicy,
-      budgetLaunchPatch,
-      budgetOptions,
-      selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
       defaultForkContext,
       forkContextValue,
       forkContextOptions: forkOptions,
@@ -3385,8 +3338,7 @@
           ...state.launchMode,
           kind: "Fork",
           from: options.firstForkSourceId || state.launchMode.from || "",
-          context: state.launchMode.context || state.defaultForkContext,
-          ...state.budgetLaunchPatch
+          context: state.launchMode.context || state.defaultForkContext
         }
       };
     }
@@ -3395,16 +3347,16 @@
         launchMode: {
           ...state.launchMode,
           kind: "Resume",
-          sessionId: state.launchMode.sessionId || "",
-          ...state.budgetLaunchPatch
+          sessionId: state.launchMode.sessionId || ""
         }
       };
     }
-    return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
+    return { launchMode: { kind: nextKind } };
   }
   function launchModeMergePatch(source, patch, contract) {
     const state = launchModeControlState(source, contract);
     const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
+    if (["budgetSplitPolicy", "budget_split_policy", "budget"].some((key) => key in nextPatch)) return {};
     if ("kind" in nextPatch) {
       const kind = canonicalLaunchModeKind(nextPatch.kind);
       if (!launchModeKindAllowed(contract, kind)) return {};
@@ -3415,7 +3367,8 @@
       if (!forkContextAllowed(contract, context)) return {};
       nextPatch.context = context;
     }
-    return { launchMode: { ...state.launchMode, ...nextPatch } };
+    const launchMode = normalizeLaunchMode({ ...state.launchMode, ...nextPatch });
+    return launchMode ? { launchMode } : {};
   }
   function launchModeSessionPatch(source, sessionId, contract) {
     return launchModeMergePatch(source, { sessionId: String(sessionId || "") }, contract);
@@ -3432,27 +3385,6 @@
   }
   function launchModeForkContextPatch(source, context, contract) {
     return launchModeMergePatch(source, { context }, contract);
-  }
-  function launchModeBudgetPatch(source, patch, contract) {
-    const state = launchModeControlState(source, contract);
-    if (patch && typeof patch === "object" && "kind" in patch) {
-      const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
-      if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
-    }
-    const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
-    if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
-    return {
-      launchMode: {
-        ...state.launchMode,
-        budgetSplitPolicy: nextPolicy
-      }
-    };
-  }
-  function launchBudgetKindPatch(source, kind, contract) {
-    return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
-  }
-  function launchBudgetFixedLimitPatch(source, limit, contract) {
-    return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
   }
   function canonicalLaunchModeKind(value) {
     const raw = String(value || "").trim();
@@ -3590,56 +3522,6 @@
     const contractPolicies = Array.isArray(contract?.mob_definition?.collection_policies) ? contract.mob_definition.collection_policies.map(String) : [];
     return contractPolicies.includes(value);
   }
-  function normalizeBudgetSplitPolicy(policy) {
-    if (!policy || typeof policy !== "object") return null;
-    const rawKind = String(policy.kind || policy.type || "").trim();
-    if (!rawKind) return null;
-    const kind = canonicalBudgetSplitPolicyKind(rawKind);
-    if (kind === "Fixed") {
-      const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
-      return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
-    }
-    return { kind };
-  }
-  function canonicalBudgetSplitPolicyKind(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const lower = raw.toLowerCase();
-    if (lower === "fixed") return "Fixed";
-    if (lower === "proportional") return "Proportional";
-    if (lower === "remaining") return "Remaining";
-    if (lower === "equal") return "Equal";
-    return raw;
-  }
-  function budgetSplitPolicyAllowed(contract, kind) {
-    const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
-    if (!canonicalKind) return false;
-    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    return policies.includes(canonicalKind);
-  }
-  function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
-    const view = launchViewForState(launchView);
-    const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind) : [];
-    const policies = [...contractPolicies];
-    const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
-    const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
-    if (current && !policies.includes(current)) policies.push(current);
-    return policies.map((policy) => {
-      const supported = contractPolicies.includes(policy);
-      return {
-        value: policy,
-        label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
-        disabled: !supported,
-        reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel)
-      };
-    });
-  }
-  function mobKitBudgetSplitPolicy(policy) {
-    const normalized = normalizeBudgetSplitPolicy(policy);
-    if (!normalized) return null;
-    if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
-    return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
-  }
   function launchModesFromFlow(flow, members) {
     const out = [];
     collectVisualSteps(flow?.steps || [], (step) => {
@@ -3652,10 +3534,6 @@
         profile: profileName(member || { id: step.role }),
         launch_mode: launchMode
       };
-      if (launchMode?.budgetSplitPolicy) {
-        const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
-        if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
-      }
       out.push(row);
     });
     return out;
@@ -7402,8 +7280,6 @@ ${kind}` : "";
         return contractDefaultFromList(contract, "condition_operator", mob.condition_operators);
       case "fork_context":
         return contractDefaultFromList(contract, "fork_context", mob.fork_contexts, normalizeForkContext);
-      case "budget_split_policy":
-        return contractDefaultFromList(contract, "budget_split_policy", mob.budget_split_policies, canonicalBudgetSplitPolicyKind);
       case "graph_gate_kind":
         return contractDefaultFromList(contract, "graph_gate_kind", mob.graph_gate_kinds);
       case "graph_edge_kind":
@@ -9645,7 +9521,6 @@ ${JSON.stringify(document2)}`;
     if (member?.model && !modelOptions.some((model) => model.value === member.model)) {
       modelOptions.push({ value: member.model, label: member.model, model: null });
     }
-    const budgetSection = memberBudgetAffordanceState(member, contract, view);
     return {
       placedAt,
       placedCount,
@@ -9686,7 +9561,6 @@ ${JSON.stringify(document2)}`;
       applySkeletonLabel: view.applySkeletonLabel,
       applySkeletonTitle: view.applySkeletonTitle,
       systemPromptPlaceholder: view.systemPromptPlaceholder,
-      budgetSection,
       schema,
       profileBinding,
       bindingOptions,
@@ -9707,33 +9581,6 @@ ${JSON.stringify(document2)}`;
       emptySchemaHint: view.emptySchemaHint,
       modelOptions,
       sourceProvenance: agentSourceProvenanceState(member, agentDetailView)
-    };
-  }
-  function memberBudgetAffordanceState(member, contract, agentDetailView = null) {
-    const view = agentDetailViewForState(agentDetailView);
-    const policies = Array.isArray(contract?.mob_definition?.budget_split_policies) ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind).filter(Boolean) : [];
-    const authored = normalizeBudgetSplitPolicy(member?.budget || member?.budgetSplitPolicy || member?.budget_split_policy);
-    const defaultKind = canonicalBudgetSplitPolicyKind(contractDefaultValue(contract, "budget_split_policy"));
-    const selectedKind = authored?.kind || defaultKind || policies[0] || "";
-    const allPolicies = [...new Set([...policies, selectedKind].filter(Boolean))];
-    const options = allPolicies.map((kind) => ({
-      value: kind,
-      label: view.budgetSplitPolicyLabels[kind] || kind,
-      disabled: false
-    }));
-    return {
-      title: view.budgetTitle,
-      disabled: true,
-      disabledReason: view.budgetDisabledReason,
-      value: selectedKind,
-      options,
-      showWeight: authored?.kind === "Proportional",
-      weightLabel: view.budgetWeightLabel,
-      weightValue: authored?.weight || 1,
-      showTokenCap: authored?.kind === "Fixed",
-      tokenCapLabel: view.budgetTokenCapLabel,
-      tokenCapValue: authored?.limit || authored?.value || 4096,
-      contractLabel: view.budgetSplitPoliciesContractLabel
     };
   }
   function agentDeleteConfirmationState(editorState, open = false) {
@@ -9920,7 +9767,6 @@ ${JSON.stringify(document2)}`;
   var init_agent_editor = __esm({
     "../packages/flow-editor-core/src/editors/agent-editor.ts"() {
       init_options();
-      init_launch_modes();
       init_flow_registry();
       init_client();
       init_view_config();
@@ -10816,18 +10662,13 @@ ${JSON.stringify(document2)}`;
       normalizeMobSettings,
       mobSettingsForUi,
       mobDefaultsFromSchema,
-      normalizeBudgetSplitPolicy,
       launchModeControlState,
       launchModeKindPatch,
       launchModeMergePatch,
       launchModeSessionPatch,
       launchModeForkSourcePatch,
       launchModeForkContextPatch,
-      launchModeBudgetPatch,
-      launchBudgetKindPatch,
-      launchBudgetFixedLimitPatch,
       launchModeOptions,
-      budgetSplitPolicyOptions,
       dispatchModeOptions,
       dependencyModeOptions,
       collectionPolicyOptions,
@@ -11132,8 +10973,7 @@ ${JSON.stringify(document2)}`;
       advancedMobSettingsDraftPatch,
       agentDefinitionsFromCatalogs,
       agentDefinitionCatalogState,
-      agentDeleteConfirmationState,
-      memberBudgetAffordanceState
+      agentDeleteConfirmationState
     };
     if (includeTestExports) {
       Object.assign(MobKitFlowController, {
@@ -12395,7 +12235,7 @@ ${JSON.stringify(document2)}`;
     const launchState = memberStepState.launchState;
     return /* @__PURE__ */ React.createElement("div", { className: "bld-panel__inner" }, /* @__PURE__ */ React.createElement(PanelHead, { icon: "\u25C6", iconTint: "accent", title: memberStepState.panelTitle, sub: memberStepState.panelSub, onClose: onDelete, deleteMode: true }), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.memberFieldLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: step.role || "", onChange: (e) => editStep(step.id, "set_member_role", { role: e.target.value }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, memberStepState.memberPlaceholderLabel), memberStepState.memberOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.launchTitle }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchKind, onChange: (e) => {
       editStep(step.id, "set_launch_kind", { kind: e.target.value, first_fork_source_id: memberStepState.firstLaunchSourceId });
-    } }, launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement(Field, { label: launchState.resumeSessionLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", value: launchState.launchMode.sessionId || "", placeholder: launchState.resumeSessionPlaceholder, onChange: (e) => editStep(step.id, "set_launch_session", { session_id: e.target.value }) })), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: launchState.forkSourceLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editStep(step.id, "set_launch_fork_source", { from: e.target.value }) }, memberStepState.launchSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.forkContextLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editStep(step.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement(Field, { label: launchState.budgetPolicyLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editStep(step.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement(Field, { label: launchState.fixedBudgetLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.instructionLabel }, /* @__PURE__ */ React.createElement(EchoTextArea, { key: step.id, className: "field__textarea", rows: 4, placeholder: memberStepState.instructionPlaceholder, value: step.instruction || "", onChangeText: (value) => editStep(step.id, "set_instruction", { value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dispatchValue, onChange: (e) => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value }) }, memberStepState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, memberStepState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedCollection.reason), memberStepState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: memberStepState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: step.quorum ?? "", placeholder: memberStepState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.timeoutLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", placeholder: memberStepState.timeoutPlaceholder, value: step.timeoutMs ?? "", onChange: (e) => editStep(step.id, "set_timeout_ms", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.outputFormatLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.outputValue, onChange: (e) => editStep(step.id, "set_output_format", { value: e.target.value }) }, memberStepState.outputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedOutput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedOutput.reason), /* @__PURE__ */ React.createElement(
+    } }, launchState.launchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedLaunchMode?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedLaunchMode.reason), launchState.launchKind === "Resume" && /* @__PURE__ */ React.createElement(Field, { label: launchState.resumeSessionLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", value: launchState.launchMode.sessionId || "", placeholder: launchState.resumeSessionPlaceholder, onChange: (e) => editStep(step.id, "set_launch_session", { session_id: e.target.value }) })), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Field, { label: launchState.forkSourceLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editStep(step.id, "set_launch_fork_source", { from: e.target.value }) }, memberStepState.launchSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement(Field, { label: launchState.forkContextLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editStep(step.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.instructionLabel }, /* @__PURE__ */ React.createElement(EchoTextArea, { key: step.id, className: "field__textarea", rows: 4, placeholder: memberStepState.instructionPlaceholder, value: step.instruction || "", onChangeText: (value) => editStep(step.id, "set_instruction", { value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.dispatchLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.dispatchValue, onChange: (e) => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value }) }, memberStepState.dispatchOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedDispatch?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedDispatch.reason), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.collectionLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.collectionValue, onChange: (e) => editStep(step.id, "set_collection", { collection: e.target.value }) }, memberStepState.collectionOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedCollection?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedCollection.reason), memberStepState.showQuorum && /* @__PURE__ */ React.createElement(Field, { label: memberStepState.quorumLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: step.quorum ?? "", placeholder: memberStepState.quorumPlaceholder, onChange: (e) => editStep(step.id, "set_quorum", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.timeoutLabel }, /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", placeholder: memberStepState.timeoutPlaceholder, value: step.timeoutMs ?? "", onChange: (e) => editStep(step.id, "set_timeout_ms", { value: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: memberStepState.outputFormatLabel }, /* @__PURE__ */ React.createElement("select", { className: "field__select", value: memberStepState.outputValue, onChange: (e) => editStep(step.id, "set_output_format", { value: e.target.value }) }, memberStepState.outputOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), memberStepState.selectedOutput?.reason && /* @__PURE__ */ React.createElement("div", { className: "bld-hint", style: { color: "var(--warn)" } }, memberStepState.selectedOutput.reason), /* @__PURE__ */ React.createElement(
       ToolScopeEditor,
       {
         label: memberStepState.allowedToolsLabel,
@@ -13096,7 +12936,7 @@ ${JSON.stringify(document2)}`;
         placeholder: launchState.resumeSessionPlaceholder,
         onChange: (e) => editGraphNode?.(inst.id, "set_launch_session", { session_id: e.target.value })
       }
-    )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason)), /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.budgetPolicyLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.budgetSplitPolicy.kind, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_kind", { budget_kind: e.target.value }) }, launchState.budgetOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label))), launchState.selectedBudgetPolicy?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedBudgetPolicy.reason)), launchState.budgetSplitPolicy.kind === "Fixed" && /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.fixedBudgetLabel), /* @__PURE__ */ React.createElement("input", { className: "field__input", type: "number", min: "1", step: "1", value: launchState.fixedBudgetValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_budget_limit", { limit: e.target.value }) }))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
+    )), launchState.launchKind === "Fork" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "field", style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.forkSourceLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.launchMode.from || "", onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_source", { from: e.target.value }) }, instanceState.forkSourceOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "field__label" }, launchState.graphForkContextLabel), /* @__PURE__ */ React.createElement("select", { className: "field__select", value: launchState.forkContextValue, onChange: (e) => editGraphNode?.(inst.id, "set_launch_fork_context", { context: e.target.value }) }, launchState.forkContextOptions.map((option) => /* @__PURE__ */ React.createElement("option", { key: option.value, value: option.value, disabled: option.disabled }, option.label)))), launchState.selectedForkContext?.reason && /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { color: "var(--warn)" } }, launchState.selectedForkContext.reason))), /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.positionTitle), /* @__PURE__ */ React.createElement("dl", { className: "kv kv--small" }, instanceState.positionRows.map((row) => /* @__PURE__ */ React.createElement(React.Fragment, { key: row.key }, /* @__PURE__ */ React.createElement("dt", null, row.label), /* @__PURE__ */ React.createElement("dd", null, row.value))))), member && /* @__PURE__ */ React.createElement("div", { className: "section" }, /* @__PURE__ */ React.createElement("div", { className: "section__title" }, instanceState.outputTitle), instanceState.outputSchema && /* @__PURE__ */ React.createElement("ul", { className: "schema-fields" }, instanceState.outputFieldRows.map((f) => /* @__PURE__ */ React.createElement("li", { key: f.id }, /* @__PURE__ */ React.createElement("span", { className: "sf__name" }, f.name), /* @__PURE__ */ React.createElement("span", { className: "sf__type" }, f.type), f.required && /* @__PURE__ */ React.createElement("span", { className: "sf__req" }, f.requiredLabel)))), /* @__PURE__ */ React.createElement("div", { className: "hint__line", style: { marginTop: 6 } }, instanceState.outputHint, " ", /* @__PURE__ */ React.createElement("button", { className: "link", onClick: () => selectMember(instanceState.memberId) }, instanceState.outputOpenMemberLabel)))));
   }
   function GraphCondValue({ field, value, onChange, conditionView = null }) {
     const control = window.MobKitFlowController.conditionValueControl(field, value, conditionView);

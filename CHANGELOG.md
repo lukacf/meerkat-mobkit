@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   bounded background task. Typed status and wait RPCs report per-identity
   `dormant`, `warming`, `active`, and `broken` progress and support an exact
   startup-readiness barrier.
+- `UnifiedRuntime::start_member_turn` now exposes completion-bearing member
+  turns through `MemberTurnAdmission`. Callers can observe the exact bridge
+  session, await the executor-applied model/provider/self-hosted route, stream
+  live events, and separately await committed runtime completion without
+  treating ingress admission as execution success.
 
 ### Changed
 
@@ -53,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   so identity-owned cross-mob mutations remain supervised if the requesting
   connection disappears. The borrowed dispatcher fails those mutations
   closed because it cannot transfer runtime ownership into the supervisor.
+- MobKit session-service wrappers now preserve Meerkat's runtime-turn-apply
+  capability, allowing optional per-turn model selection in stock console
+  integrations while unsupported autonomous, direct-session, and external
+  member paths fail closed before admission.
 
 ### Fixed
 

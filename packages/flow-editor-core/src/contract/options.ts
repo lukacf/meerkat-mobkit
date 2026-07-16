@@ -27,7 +27,6 @@ import { profileName } from "../domain/tool-skill-access";
 import { basicEditorViewState } from "../editors/basic-editor";
 import { graphCanvasViewState, graphCellXY } from "../editors/graph-editor";
 import {
-  canonicalBudgetSplitPolicyKind,
   canonicalLaunchModeKind,
   launchOptionLabel,
   launchUnsupportedReason,
@@ -599,8 +598,6 @@ export function contractDefaultValue(contract, name) {
       return contractDefaultFromList(contract, "condition_operator", mob.condition_operators);
     case "fork_context":
       return contractDefaultFromList(contract, "fork_context", mob.fork_contexts, normalizeForkContext);
-    case "budget_split_policy":
-      return contractDefaultFromList(contract, "budget_split_policy", mob.budget_split_policies, canonicalBudgetSplitPolicyKind);
     case "graph_gate_kind":
       return contractDefaultFromList(contract, "graph_gate_kind", mob.graph_gate_kinds);
     case "graph_edge_kind":

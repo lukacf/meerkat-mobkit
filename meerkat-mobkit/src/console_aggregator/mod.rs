@@ -5264,6 +5264,33 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn create_session_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.inner
+                .create_session_under_runtime_turn_boundary(req)
+                .await
+        }
+
+        async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
+                .await
+        }
+
+        async fn discard_live_session_under_runtime_turn_boundary(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .discard_live_session_under_runtime_turn_boundary(session_id)
+                .await
+        }
+
         fn supports_persistent_sessions(&self) -> bool {
             self.inner.supports_persistent_sessions()
         }

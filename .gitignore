@@ -4,6 +4,8 @@
 # MobKit internal
 .rct/
 .rkat/
+.dev-bindings/
+.ci/
 .release-hook-done
 /.rct-legacy/
 /.rct-legacy-*/

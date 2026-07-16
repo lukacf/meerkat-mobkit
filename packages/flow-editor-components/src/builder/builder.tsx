@@ -807,19 +807,6 @@ function StepInspector({ studio, members, flow, setFlow, step, update, editStep,
           {launchState.selectedForkContext?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{launchState.selectedForkContext.reason}</div>}
         </>
       )}
-      <Field label={launchState.budgetPolicyLabel}>
-        <select className="field__select" value={launchState.budgetSplitPolicy.kind} onChange={e => editStep(step.id, "set_launch_budget_kind", { budget_kind: e.target.value })}>
-          {launchState.budgetOptions.map(option => (
-            <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
-          ))}
-        </select>
-      </Field>
-      {launchState.selectedBudgetPolicy?.reason && <div className="bld-hint" style={{ color: "var(--warn)" }}>{launchState.selectedBudgetPolicy.reason}</div>}
-      {launchState.budgetSplitPolicy.kind === "Fixed" && (
-        <Field label={launchState.fixedBudgetLabel}>
-          <input className="field__input" type="number" min="1" step="1" value={launchState.fixedBudgetValue} onChange={e => editStep(step.id, "set_launch_budget_limit", { limit: e.target.value })} />
-        </Field>
-      )}
       <Field label={memberStepState.instructionLabel}><EchoTextArea key={step.id} className="field__textarea" rows={4} placeholder={memberStepState.instructionPlaceholder} value={step.instruction || ""} onChangeText={value => editStep(step.id, "set_instruction", { value })} /></Field>
       <Field label={memberStepState.dispatchLabel}>
         <select className="field__select" value={memberStepState.dispatchValue} onChange={e => editStep(step.id, "set_dispatch_mode", { dispatch: e.target.value })}>

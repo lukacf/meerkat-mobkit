@@ -1516,6 +1516,21 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         );
     }
 
+    // One machine-owned lifecycle boundary spans generated admission and all
+    // provider/transport materialization. Retaining the lease prevents a
+    // concurrent retire from proving the live registry empty before this open
+    // installs its channel.
+    let _live_lifecycle_lease = match machine.acquire_live_open_lifecycle_lease(session_id).await {
+        Ok(lease) => lease,
+        Err(err) => {
+            return live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                format!("live open lifecycle authority unavailable: {err}"),
+            );
+        }
+    };
+
     let live_open_identity = open_config.llm_identity.clone();
     let candidate_channel_id = LiveChannelId::random_uuid();
     let open_authority = match machine
@@ -1543,6 +1558,11 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
                 rpc_id,
                 INTERNAL_ERROR_CODE,
                 format!("generated duplicate live channel id {candidate_channel_id}"),
+            ),
+            Some(LiveOpenAdmissionRejection::LifecycleClosed) => live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                "session lifecycle is closed to live channel admission",
             ),
             None => live_error(
                 rpc_id,
