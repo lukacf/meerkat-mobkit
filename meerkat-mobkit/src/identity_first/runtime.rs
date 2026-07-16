@@ -2985,8 +2985,34 @@ impl IdentityRuntime {
     pub(crate) async fn release_parked_unactivated_leases(
         &self,
     ) -> Result<usize, IdentityRuntimeError> {
+        self.release_parked_unactivated_leases_matching(None).await
+    }
+
+    /// Retry parked pre-publication grants for one identity before a direct
+    /// lazy materialization attempts to acquire fresh authority. The caller
+    /// holds that identity's lifecycle lock, so another same-identity path
+    /// cannot park a replacement grant between this drain and acquisition.
+    async fn release_parked_unactivated_leases_for_identity(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<usize, IdentityRuntimeError> {
+        self.release_parked_unactivated_leases_matching(Some(identity))
+            .await
+    }
+
+    async fn release_parked_unactivated_leases_matching(
+        &self,
+        identity: Option<&AgentIdentity>,
+    ) -> Result<usize, IdentityRuntimeError> {
         let _release_guard = self.pending_unactivated_lease_release_gate.lock().await;
-        let grants = self.pending_unactivated_lease_releases.read().await.clone();
+        let grants = self
+            .pending_unactivated_lease_releases
+            .read()
+            .await
+            .iter()
+            .filter(|grant| identity.is_none_or(|identity| grant.identity == *identity))
+            .cloned()
+            .collect::<Vec<_>>();
         if grants.is_empty() {
             return Ok(0);
         }
@@ -3626,6 +3652,14 @@ impl IdentityRuntime {
         // can now fail without a transient or terminal mutation of the
         // replacement generation's bootstrap entry.
         self.mark_bootstrap_materialization_started(identity, bootstrap_generation);
+
+        // A previous customization/installation failure can leave its exact
+        // unactivated grant parked when provider cleanup itself fails. Strict
+        // providers reject reacquisition while that grant still exists, so a
+        // direct lazy retry must drain this identity's orphan before acquiring
+        // fresh authority. Other identities' cleanup failures remain isolated.
+        self.release_parked_unactivated_leases_for_identity(identity)
+            .await?;
 
         // Establish single-embodiment ownership before invoking arbitrary
         // host customizer code, preserving the public ordering contract. No
@@ -4669,8 +4703,14 @@ impl IdentityRuntime {
         let entry = entries
             .get_mut(identity)
             .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        entry.state = IdentityLifecycleState::Broken;
         entry.lease = None;
         drop(entries);
+        self.mark_bootstrap_from_lifecycle(
+            identity,
+            IdentityLifecycleState::Broken,
+            Some("external lease authority was lost".to_string()),
+        );
         self.emit_event(
             identity,
             IdentityEvent::LeaseLost {
@@ -4751,6 +4791,12 @@ impl IdentityRuntime {
         let staged = {
             let mut entries = self.entries.write().await;
             (|| {
+                if grant.identity != *identity {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "provider returned grant for {} while publishing active authority for {identity}",
+                        grant.identity
+                    )));
+                }
                 let entry = entries
                     .get_mut(identity)
                     .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
@@ -4845,6 +4891,87 @@ impl IdentityRuntime {
         .await;
     }
 
+    async fn suspend_bridge_continuity(
+        &self,
+        continuity: Option<&ContinuityRecord>,
+    ) -> Result<(), IdentityRuntimeError> {
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+        bridge
+            .suspend_session_runtime_state(&record.session_id)
+            .await
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "suspend bridge session runtime state before authority rotation: {error}"
+                ))
+            })
+    }
+
+    async fn resume_bridge_continuity(
+        &self,
+        identity: &AgentIdentity,
+        continuity: Option<&ContinuityRecord>,
+        grant: &LeaseGrant,
+    ) -> Result<(), IdentityRuntimeError> {
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+        bridge
+            .register_session_runtime_state(
+                &record.session_id,
+                identity,
+                record.generation,
+                record.checkpoint_version,
+                grant.fencing_token,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                IdentityRuntimeError::Internal(format!(
+                    "resume bridge session runtime state after pre-commit renewal failure: {error}"
+                ))
+            })
+    }
+
+    async fn break_existing_active_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+        detail: String,
+    ) {
+        let retained = {
+            let mut entries = self.entries.write().await;
+            entries.get_mut(identity).is_some_and(|entry| {
+                if entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.fencing_token == grant.fencing_token)
+                {
+                    entry.state = IdentityLifecycleState::Broken;
+                    entry.lease = None;
+                    entry.pending_lease_release = Some(grant.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if !retained {
+            self.park_unactivated_lease_releases(std::slice::from_ref(grant))
+                .await;
+        }
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Broken, Some(detail));
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Broken,
+            },
+        )
+        .await;
+    }
+
     async fn commit_staged_active_grant(
         &self,
         identity: &AgentIdentity,
@@ -4894,6 +5021,16 @@ impl IdentityRuntime {
             .stage_active_grant(identity, expected_previous, grant)
             .await?;
 
+        // `ensure_active_lease` suspends before invoking the provider so no
+        // stale-token save can overlap the authority rotation. Keep this
+        // idempotent suspension here as a defensive boundary for callers that
+        // already hold a provider-returned active grant (restore compatibility).
+        if let Err(error) = self.suspend_bridge_continuity(continuity.as_ref()).await {
+            self.fail_staged_active_grant(identity, grant, error.to_string())
+                .await;
+            return Err(error);
+        }
+
         if let Some(record) = continuity.as_mut() {
             if let Err(error) = self
                 .continuity_store
@@ -4929,6 +5066,7 @@ impl IdentityRuntime {
                         let runtime_error = IdentityRuntimeError::Internal(format!(
                             "bridge refresh session runtime state after active grant publication: {error}"
                         ));
+                        let _ = self.suspend_bridge_continuity(Some(record)).await;
                         self.fail_staged_active_grant(identity, grant, runtime_error.to_string())
                             .await;
                         return Err(runtime_error);
@@ -4937,8 +5075,18 @@ impl IdentityRuntime {
             }
         }
 
-        self.commit_staged_active_grant(identity, grant, continuity)
-            .await?;
+        let session_to_reference = continuity.as_ref().map(|record| record.session_id.clone());
+        if let Err(error) = self
+            .commit_staged_active_grant(identity, grant, continuity)
+            .await
+        {
+            if let (Some(bridge), Some(session_id)) =
+                (self.bridge.as_ref(), session_to_reference.as_ref())
+            {
+                let _ = bridge.suspend_session_runtime_state(session_id).await;
+            }
+            return Err(error);
+        }
         self.lease_renewal_notify.notify_one();
         self.emit_event(
             identity,
@@ -4955,7 +5103,7 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let grant = {
+        let (grant, continuity) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -4965,18 +5113,63 @@ impl IdentityRuntime {
                 Some(lease) => lease,
                 None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
             };
-            LeaseGrant {
-                identity: identity.clone(),
-                fencing_token: lease.fencing_token,
-                ttl: lease.ttl,
-            }
+            (
+                LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: lease.fencing_token,
+                    ttl: lease.ttl,
+                },
+                entry.continuity.clone(),
+            )
         };
 
-        let renewed = self
+        // Drain every already-admitted persistence mutation before asking the
+        // provider to rotate N to N+1. Once this returns, all session-store
+        // mutations fail closed until register_session_runtime_state publishes
+        // the exact replacement token.
+        if let Err(suspend_error) = self.suspend_bridge_continuity(continuity.as_ref()).await {
+            if let Err(resume_error) = self
+                .resume_bridge_continuity(identity, continuity.as_ref(), &grant)
+                .await
+            {
+                self.break_existing_active_grant(
+                    identity,
+                    &grant,
+                    format!("{suspend_error}; bridge rollback failed: {resume_error}"),
+                )
+                .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "{suspend_error}; bridge rollback failed: {resume_error}"
+                )));
+            }
+            return Err(suspend_error);
+        }
+
+        let renewed = match self
             .lease_provider
             .renew_leases(std::slice::from_ref(&grant))
             .await
-            .map_err(IdentityRuntimeError::Lease)?;
+        {
+            Ok(renewed) => renewed,
+            Err(error) => {
+                let runtime_error = IdentityRuntimeError::Lease(error);
+                if let Err(resume_error) = self
+                    .resume_bridge_continuity(identity, continuity.as_ref(), &grant)
+                    .await
+                {
+                    self.break_existing_active_grant(
+                        identity,
+                        &grant,
+                        format!("{runtime_error}; bridge rollback failed: {resume_error}"),
+                    )
+                    .await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "{runtime_error}; bridge rollback failed: {resume_error}"
+                    )));
+                }
+                return Err(runtime_error);
+            }
+        };
         let renewed_grant = match renewed.get(identity) {
             Some(super::types::LeaseRenewResult::Renewed(grant)) => grant.clone(),
             Some(super::types::LeaseRenewResult::Lost { .. }) | None => {
@@ -5150,14 +5343,45 @@ impl IdentityRuntime {
         }
     }
 
-    pub(crate) async fn refresh_active_restore_grant(
+    /// Reuse an already-active embodiment during roster reconciliation.
+    ///
+    /// The lifecycle reservation held by the restore controller makes this
+    /// snapshot stable. Crucially, this path preserves the exact live lease
+    /// grant instead of reacquiring/rotating authority for a member that is
+    /// already running.
+    pub(crate) async fn reuse_active_restore_state(
         &self,
-        identity: &AgentIdentity,
-        grant: &LeaseGrant,
-    ) -> Result<(), IdentityRuntimeError> {
-        self.publish_active_grant(identity, None, grant)
-            .await
-            .map(|_| ())
+        spec: &DurableAgentSpec,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        // The restore controller still owns this identity's lifecycle guard,
+        // so validate time-sensitive external authority before snapshotting or
+        // mutating the local projection. Healthy grants return unchanged;
+        // due grants publish their exact renewal, and Lost authority marks the
+        // identity Broken instead of reporting a successful active reconcile.
+        self.ensure_active_lease(&spec.identity).await?;
+
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(&spec.identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(spec.identity.clone()))?;
+        if entry.state != IdentityLifecycleState::Active {
+            return Err(IdentityRuntimeError::InvalidState {
+                identity: spec.identity.clone(),
+                state: entry.state,
+                operation: "reuse active restore state",
+            });
+        }
+        if entry.lease.is_none() {
+            return Err(IdentityRuntimeError::NoActiveLease(spec.identity.clone()));
+        }
+        let record = entry.continuity.clone().ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "active identity {} has no continuity record",
+                spec.identity
+            ))
+        })?;
+        entry.spec = spec.clone();
+        Ok(record)
     }
 
     /// Publish a fail-closed local state and relinquish the fresh external
@@ -7780,7 +8004,7 @@ mod reset_reprofile_tests {
     use super::super::local_lease::LocalLeaseProvider;
     use super::super::local_store::LocalContinuityStore;
     use super::super::types::{
-        AgentBuildDraft, ContinuityResolveState, CustomizerError, LeaseAcquireResult,
+        AgentBuildDraft, ContinuityResolveState, CustomizerError, LeaseAcquireResult, LeaseError,
         LeaseRenewResult, RosterError, SessionSnapshot,
     };
 
@@ -7961,6 +8185,7 @@ mod reset_reprofile_tests {
         failing_register_session_ids: AsyncMutex<BTreeSet<String>>,
         failing_unregister_session_ids: AsyncMutex<BTreeSet<String>>,
         registered_fencing_tokens: AsyncMutex<Vec<FencingToken>>,
+        authority_transitions: AsyncMutex<Vec<String>>,
     }
 
     impl RecordingBridge {
@@ -7999,6 +8224,10 @@ mod reset_reprofile_tests {
 
         async fn registered_fencing_tokens(&self) -> Vec<FencingToken> {
             self.registered_fencing_tokens.lock().await.clone()
+        }
+
+        async fn authority_transitions(&self) -> Vec<String> {
+            self.authority_transitions.lock().await.clone()
         }
     }
 
@@ -8095,6 +8324,10 @@ mod reset_reprofile_tests {
                 .lock()
                 .await
                 .push(fencing_token);
+            self.authority_transitions
+                .lock()
+                .await
+                .push(format!("register:{}", fencing_token.get()));
             if self
                 .failing_register_session_ids
                 .lock()
@@ -8106,6 +8339,17 @@ mod reset_reprofile_tests {
                 ));
             }
             Ok(checkpoint_version)
+        }
+
+        async fn suspend_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), BridgeError> {
+            self.authority_transitions
+                .lock()
+                .await
+                .push(format!("suspend:{session_id}"));
+            Ok(())
         }
 
         async fn unregister_session_runtime_state(
@@ -9428,6 +9672,113 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
+    async fn active_renewal_suspends_bridge_before_publishing_replacement_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct RotatingLeaseProvider;
+
+        #[async_trait::async_trait]
+        impl LeaseProvider for RotatingLeaseProvider {
+            async fn acquire_leases(
+                &self,
+                _identities: &[AgentIdentity],
+                _runtime_instance: &str,
+            ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+                Ok(BTreeMap::new())
+            }
+
+            async fn renew_leases(
+                &self,
+                grants: &[LeaseGrant],
+            ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+                Ok(grants
+                    .iter()
+                    .map(|grant| {
+                        let renewed = LeaseGrant {
+                            identity: grant.identity.clone(),
+                            fencing_token: FencingToken::new(grant.fencing_token.get() + 1),
+                            ttl: Duration::from_mins(5),
+                        };
+                        (grant.identity.clone(), LeaseRenewResult::Renewed(renewed))
+                    })
+                    .collect())
+            }
+
+            async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+                Ok(())
+            }
+        }
+
+        let identity = AgentIdentity::parse("domain:renewal-barrier")?;
+        let runtime_instance = "active-renewal-barrier-test";
+        let store = Arc::new(LocalContinuityStore::in_memory()?);
+        let lease = Arc::new(RotatingLeaseProvider);
+        let bridge = Arc::new(RecordingBridge::default());
+        let first = LeaseGrant {
+            identity: identity.clone(),
+            fencing_token: FencingToken::new(1),
+            ttl: Duration::ZERO,
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:domain:renewal-barrier:0")?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, first.fencing_token)
+            .await?;
+        bridge
+            .register_session_runtime_state(
+                &record.session_id,
+                &identity,
+                record.generation,
+                record.checkpoint_version,
+                first.fencing_token,
+            )
+            .await?;
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: store,
+            lease_provider: lease,
+            runtime_instance_id: runtime_instance.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                durable_spec(identity.clone(), "domain"),
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(first.clone()),
+            )
+            .await;
+
+        let renewed_token = runtime.ensure_active_lease(&identity).await?;
+        assert!(renewed_token > first.fencing_token);
+        assert_eq!(
+            bridge.authority_transitions().await,
+            vec![
+                format!("register:{}", first.fencing_token.get()),
+                format!("suspend:{}", record.session_id),
+                format!("suspend:{}", record.session_id),
+                format!("register:{}", renewed_token.get()),
+            ],
+            "the old bridge authority must be quiesced before replacement publication"
+        );
+        assert_eq!(
+            runtime
+                .status(&identity)
+                .await?
+                .lease
+                .map(|lease| lease.fencing_token),
+            Some(renewed_token)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn active_grant_bridge_failure_parks_rotated_token_for_exact_shutdown_release()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:bridge-fence")?;
@@ -9480,7 +9831,7 @@ mod reset_reprofile_tests {
             other => return Err(format!("lease did not rotate: {other:?}").into()),
         };
         runtime
-            .refresh_active_restore_grant(&identity, &rotated)
+            .publish_active_grant(&identity, None, &rotated)
             .await?;
         {
             let entries = runtime.entries.read().await;
@@ -9504,10 +9855,10 @@ mod reset_reprofile_tests {
         };
         bridge.fail_register_for(&record.session_id).await;
         let error = match runtime
-            .refresh_active_restore_grant(&identity, &failed_grant)
+            .publish_active_grant(&identity, None, &failed_grant)
             .await
         {
-            Ok(()) => return Err("bridge publication failure unexpectedly succeeded".into()),
+            Ok(_) => return Err("bridge publication failure unexpectedly succeeded".into()),
             Err(error) => error,
         };
         assert!(

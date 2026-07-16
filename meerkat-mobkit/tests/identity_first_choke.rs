@@ -889,16 +889,23 @@ async fn identity_first_choke_13_lease_loss_behavioral_transition() {
     // After loss: operations rejected immediately
     assert!(matches!(
         runtime.send(&id, &make_content()).await,
-        Err(IdentityRuntimeError::NoActiveLease(_))
+        Err(IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        })
     ));
     assert!(matches!(
         runtime.dispatch(&id, &make_dispatch_input()).await,
-        Err(IdentityRuntimeError::NoActiveLease(_))
+        Err(IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        })
     ));
 
     // Status reflects lost lease
     let status = runtime.status(&id).await.unwrap();
     assert!(status.lease.is_none(), "status should reflect lost lease");
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
 }
 
 // ===========================================================================

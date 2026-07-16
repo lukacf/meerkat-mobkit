@@ -232,6 +232,11 @@ pub struct ContinuitySessionStoreAdapter {
     /// actors must fail closed instead of becoming pre-registration pending
     /// snapshots for a future session with the same id.
     unregistered_sessions: Mutex<HashSet<String>>,
+    /// Sessions whose persistence authority is temporarily quiesced while the
+    /// identity runtime rotates an external fencing grant. Unlike permanent
+    /// unregistration, suspension preserves the registry/version state so a
+    /// successful publication can resume the same session at the new token.
+    suspended_sessions: Mutex<HashSet<String>>,
     /// Per-session serialization for registry, pending, version, and durable
     /// load/guard/write transitions. Weak values let inactive locks be reclaimed
     /// without ever creating a second lock while an operation or waiter exists.
@@ -246,6 +251,7 @@ impl ContinuitySessionStoreAdapter {
             session_registry: Mutex::new(HashMap::new()),
             pending_unregistered: Mutex::new(HashMap::new()),
             unregistered_sessions: Mutex::new(HashSet::new()),
+            suspended_sessions: Mutex::new(HashSet::new()),
             session_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -292,6 +298,16 @@ impl ContinuitySessionStoreAdapter {
         let _guard = self.lock_session(session_id).await;
         let session_key = session_id.to_string();
         let checkpoint_version = state.checkpoint_version.get();
+        let was_unregistered = self
+            .unregistered_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_key);
+        let was_suspended = self
+            .suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_key);
         let previous_registry = {
             let mut registry = self
                 .session_registry
@@ -299,18 +315,13 @@ impl ContinuitySessionStoreAdapter {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             registry.insert(session_key.clone(), state.clone())
         };
-        self.unregistered_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_key);
-
         let previous_version = {
             let mut versions = self
                 .versions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let counter = versions
-                .entry(session_key)
+                .entry(session_key.clone())
                 .or_insert_with(|| AtomicU64::new(checkpoint_version));
             let previous_version = counter.load(Ordering::Relaxed);
             counter.fetch_max(checkpoint_version, Ordering::Relaxed);
@@ -341,6 +352,18 @@ impl ContinuitySessionStoreAdapter {
                         previous_registry,
                         previous_version,
                     );
+                    if was_unregistered {
+                        self.unregistered_sessions
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(session_key.clone());
+                    }
+                    if was_suspended {
+                        self.suspended_sessions
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(session_key.clone());
+                    }
                     return Err(err);
                 }
             }
@@ -362,6 +385,25 @@ impl ContinuitySessionStoreAdapter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&key);
+        self.suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key);
+    }
+
+    /// Quiesce persistence for one registered session. Acquiring the existing
+    /// per-session lock is the drain barrier: every save admitted before this
+    /// call completes first, and every later mutation observes `Suspended`.
+    pub(crate) async fn suspend_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), ContinuityStoreError> {
+        let _guard = self.lock_session(session_id).await;
+        self.suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_string());
+        Ok(())
     }
 
     pub(crate) async fn unregister_session(
@@ -382,6 +424,30 @@ impl ContinuitySessionStoreAdapter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&session_id.to_string())
+    }
+
+    fn session_was_suspended(&self, session_id: &meerkat_core::types::SessionId) -> bool {
+        self.suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&session_id.to_string())
+    }
+
+    fn ensure_session_mutation_allowed(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        if self.session_was_unregistered(session_id) {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {session_id} was unregistered from identity runtime state"
+            )));
+        }
+        if self.session_was_suspended(session_id) {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {session_id} persistence is suspended during identity authority rotation"
+            )));
+        }
+        Ok(())
     }
 
     /// Get the next checkpoint version for a session, starting at 1.
@@ -583,12 +649,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
-        if self.session_was_unregistered(session.id()) {
-            return Err(meerkat_store::SessionStoreError::Internal(format!(
-                "session {} was unregistered from identity runtime state",
-                session.id()
-            )));
-        }
+        self.ensure_session_mutation_allowed(session.id())?;
 
         // Serialize once up front. Stores that can prove the exact bytes and
         // ownership/CAS tuple are already durable avoid loading and reparsing
@@ -690,12 +751,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         commit: &meerkat_core::TranscriptRewriteCommit,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
-        if self.session_was_unregistered(session.id()) {
-            return Err(meerkat_store::SessionStoreError::Internal(format!(
-                "session {} was unregistered from identity runtime state",
-                session.id()
-            )));
-        }
+        self.ensure_session_mutation_allowed(session.id())?;
         let previous = self.load_previous_session_for_save(session.id()).await?;
         meerkat_core::session_store::transcript_rewrite_save_guard(
             session,
@@ -727,6 +783,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        self.ensure_session_mutation_allowed(session.id())?;
         let data = serde_json::to_vec(session)
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
@@ -752,6 +809,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         expected_current_revision: Option<String>,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        self.ensure_session_mutation_allowed(session.id())?;
         let previous = self.load_persisted_session(session.id()).await?;
         meerkat_core::session_store::authoritative_projection_current_revision_guard(
             session,
@@ -805,6 +863,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(id).await;
+        self.ensure_session_mutation_allowed(id)?;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
             return Ok(());
@@ -832,6 +891,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         expected_current_revision: &str,
     ) -> Result<bool, meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(id).await;
+        self.ensure_session_mutation_allowed(id)?;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
             return Ok(false);
@@ -998,6 +1058,7 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -1012,6 +1073,9 @@ mod tests {
     struct FailSaveContinuityStore {
         inner: Arc<LocalContinuityStore>,
         fail_save: AtomicBool,
+        block_next_save: AtomicBool,
+        save_entered: tokio::sync::Semaphore,
+        release_save: tokio::sync::Semaphore,
     }
 
     impl FailSaveContinuityStore {
@@ -1019,11 +1083,30 @@ mod tests {
             Self {
                 inner,
                 fail_save: AtomicBool::new(false),
+                block_next_save: AtomicBool::new(false),
+                save_entered: tokio::sync::Semaphore::new(0),
+                release_save: tokio::sync::Semaphore::new(0),
             }
         }
 
         fn fail_saves(&self, fail: bool) {
             self.fail_save.store(fail, AtomicOrdering::SeqCst);
+        }
+
+        fn block_one_save(&self) {
+            self.block_next_save.store(true, AtomicOrdering::SeqCst);
+        }
+
+        async fn wait_for_blocked_save(&self) {
+            self.save_entered
+                .acquire()
+                .await
+                .expect("save-entered semaphore remains open")
+                .forget();
+        }
+
+        fn release_blocked_save(&self) {
+            self.release_save.add_permits(1);
         }
     }
 
@@ -1081,6 +1164,14 @@ mod tests {
             fencing_token: FencingToken,
             snapshot: &SessionSnapshot,
         ) -> Result<(), ContinuityStoreError> {
+            if self.block_next_save.swap(false, AtomicOrdering::SeqCst) {
+                self.save_entered.add_permits(1);
+                self.release_save
+                    .acquire()
+                    .await
+                    .expect("release-save semaphore remains open")
+                    .forget();
+            }
             if self.fail_save.load(AtomicOrdering::SeqCst) {
                 return Err(ContinuityStoreError::Io("forced save failure".to_string()));
             }
@@ -1493,6 +1584,194 @@ mod tests {
                 .is_none(),
             "stale post-unregister save must not flush on a later registration"
         );
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_suspension_blocks_every_mutation_until_reregister() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut session = meerkat_core::Session::new();
+        session.append_external_user_content(meerkat_core::ContentInput::Text(
+            "before rotation".to_string(),
+        ));
+        let identity = AgentIdentity::parse("agent:suspended").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:suspended:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let old_token = FencingToken::new(7);
+        store
+            .upsert_continuity_record(&record, old_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: record.generation,
+                    fencing_token: old_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("seed snapshot");
+
+        let parent_revision = session.transcript_revision().expect("parent revision");
+        let mut rewritten = session.clone();
+        let rewrite_commit = rewritten
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::UserMessage::text("rewritten".to_string()),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("rotation-test"),
+                Some("mobkit-test".to_string()),
+                Some(parent_revision),
+            )
+            .expect("rewrite commit");
+
+        adapter
+            .suspend_session(session.id())
+            .await
+            .expect("suspend");
+
+        let save_error = meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect_err("ordinary save must fail while suspended");
+        let rewrite_error =
+            meerkat::SessionStore::save_transcript_rewrite(&adapter, &rewritten, &rewrite_commit)
+                .await
+                .expect_err("transcript rewrite must fail while suspended");
+        let projection_error =
+            meerkat::SessionStore::save_authoritative_projection(&adapter, &session)
+                .await
+                .expect_err("authoritative projection must fail while suspended");
+        let projection_cas_error =
+            meerkat::SessionStore::save_authoritative_projection_if_current_revision(
+                &adapter, &session, None,
+            )
+            .await
+            .expect_err("authoritative projection CAS must fail while suspended");
+        let delete_error = meerkat::SessionStore::delete(&adapter, session.id())
+            .await
+            .expect_err("delete must fail while suspended");
+        let delete_cas_error = meerkat::SessionStore::delete_if_current_revision(
+            &adapter,
+            session.id(),
+            "row-sha256:any",
+        )
+        .await
+        .expect_err("delete CAS must fail while suspended");
+
+        for error in [
+            save_error,
+            rewrite_error,
+            projection_error,
+            projection_cas_error,
+            delete_error,
+            delete_cas_error,
+        ] {
+            assert!(
+                error.to_string().contains("persistence is suspended"),
+                "unexpected suspension error: {error}"
+            );
+        }
+
+        let new_token = FencingToken::new(8);
+        store
+            .upsert_continuity_record(&record, new_token)
+            .await
+            .expect("publish replacement authority");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token: new_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("re-register replacement authority");
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("writes resume only after exact replacement registration");
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_suspension_drains_admitted_save() {
+        let inner = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let store = Arc::new(FailSaveContinuityStore::new(inner.clone()));
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(store.clone()));
+        let session = meerkat_core::Session::new();
+        let identity = AgentIdentity::parse("agent:suspend-drain").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:suspend-drain:0")
+                .expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(17);
+        inner
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+
+        store.block_one_save();
+        let save_adapter = adapter.clone();
+        let save_session = session.clone();
+        let save_task = tokio::spawn(async move {
+            meerkat::SessionStore::save(save_adapter.as_ref(), &save_session).await
+        });
+        store.wait_for_blocked_save().await;
+
+        let suspend_adapter = adapter.clone();
+        let session_id = session.id().clone();
+        let mut suspend_task =
+            tokio::spawn(async move { suspend_adapter.suspend_session(&session_id).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut suspend_task)
+                .await
+                .is_err(),
+            "suspension must wait for the already-admitted save to leave the session lock"
+        );
+
+        store.release_blocked_save();
+        save_task
+            .await
+            .expect("save task joins")
+            .expect("admitted save completes before suspension");
+        suspend_task
+            .await
+            .expect("suspend task joins")
+            .expect("suspension completes after drain");
+
+        let error = meerkat::SessionStore::save(adapter.as_ref(), &session)
+            .await
+            .expect_err("later saves must see the suspension barrier");
+        assert!(error.to_string().contains("persistence is suspended"));
     }
 
     #[tokio::test]

@@ -468,14 +468,33 @@ async fn restore_flow_with_snapshot_policy(
             )));
         }
     }
-    let lease_results = runtime
-        .lease_provider()
-        .acquire_leases(&identities, runtime.runtime_instance_id())
-        .await
-        .map_err(IdentityRuntimeError::Lease)?;
+    // A live Active entry already owns exact provider authority. Reconcile is
+    // metadata convergence for that member, not a second embodiment attempt;
+    // reacquiring here either rotates the token needlessly or deadlocks strict
+    // providers that correctly report the existing holder as AlreadyHeld.
+    let mut already_active_identities = BTreeSet::new();
+    for identity in &identities {
+        if runtime.is_active(identity).await {
+            already_active_identities.insert(identity.clone());
+        }
+    }
+    let identities_to_acquire = identities
+        .iter()
+        .filter(|identity| !already_active_identities.contains(*identity))
+        .cloned()
+        .collect::<Vec<_>>();
+    let lease_results = if identities_to_acquire.is_empty() {
+        BTreeMap::new()
+    } else {
+        runtime
+            .lease_provider()
+            .acquire_leases(&identities_to_acquire, runtime.runtime_instance_id())
+            .await
+            .map_err(IdentityRuntimeError::Lease)?
+    };
     let mut restore_grants = BTreeMap::new();
     let mut ownership_error = None;
-    for identity in &identities {
+    for identity in &identities_to_acquire {
         match lease_results.get(identity) {
             Some(LeaseAcquireResult::Acquired(grant)) => {
                 restore_grants.insert(identity.clone(), grant.clone());
@@ -518,11 +537,15 @@ async fn restore_flow_with_snapshot_policy(
                 "validated resolve state disappeared for {identity}"
             ))
         })?;
-        let grant = restore_grants.remove(identity).ok_or_else(|| {
-            IdentityRuntimeError::Internal(format!(
-                "validated restore grant disappeared for {identity}"
-            ))
-        })?;
+        let grant = if already_active_identities.contains(identity) {
+            None
+        } else {
+            Some(restore_grants.remove(identity).ok_or_else(|| {
+                IdentityRuntimeError::Internal(format!(
+                    "validated restore grant disappeared for {identity}"
+                ))
+            })?)
+        };
         let guards = authority_guards.remove(identity).ok_or_else(|| {
             IdentityRuntimeError::Internal(format!(
                 "validated authority reservation disappeared for {identity}"
@@ -546,6 +569,7 @@ async fn restore_flow_with_snapshot_policy(
         .map(|(index, spec, persisted_resolve_state, grant, authority_guards)| {
             let identities = identities.clone();
             let managed_edges = managed_edges.clone();
+            let already_active_identities = already_active_identities.clone();
             async move {
                 let _authority_guards = authority_guards;
                 let member_started_at = Instant::now();
@@ -553,37 +577,46 @@ async fn restore_flow_with_snapshot_policy(
                 let mut outcomes = BTreeMap::new();
                 let spec = &spec;
                 let identity = &spec.identity;
-        let grants = BTreeMap::from([(identity.clone(), grant)]);
+        let grants = grant
+            .map(|grant| BTreeMap::from([(identity.clone(), grant)]))
+            .unwrap_or_default();
 
         // If this identity is already registered and in Active state
         // (from a previous restore_flow call), skip bridge operations — the
         // mob member already exists. Identities in Retiring/Suspended state
         // need re-activation through the bridge.
-        let already_active = runtime.is_active(identity).await;
+        let already_active = already_active_identities.contains(identity);
         if already_active {
-            let Some(grant) = grants.get(identity) else {
-                let cleanup_error =
-                    release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                        .await;
-                return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                    format!("missing lease grant for already-active identity {identity}"),
-                    cleanup_error,
-                )));
+            let record = runtime.reuse_active_restore_state(spec).await?;
+            let snapshot = if snapshot_policy == RestoreSnapshotPolicy::PreserveOutcomePayload {
+                runtime
+                    .continuity_store()
+                    .load_session_snapshot(&record.session_id)
+                    .await
+                    .map_err(IdentityRuntimeError::Store)?
+                    .unwrap_or(SessionSnapshot { data: Vec::new() })
+            } else {
+                SessionSnapshot { data: Vec::new() }
             };
-            // `refresh_active_restore_grant` takes ownership of the provider's
-            // exact grant before its first fallible projection. Exclude it
-            // from generic unactivated cleanup even on error; the runtime
-            // retains it on the Broken entry (or in the orphan ledger).
-            activated_identities.insert(identity.clone());
-            if let Err(err) = runtime.refresh_active_restore_grant(identity, grant).await {
-                let cleanup_error =
-                    release_unactivated_restore_grants(runtime, &grants, &activated_identities)
-                        .await;
-                return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                    format!("refresh active restore lease for {identity}: {err}"),
-                    cleanup_error,
-                )));
-            }
+            let draft = AgentBuildDraft {
+                model: None,
+                system_prompt: None,
+                additional_instructions: spec.additional_instructions.clone(),
+                labels: spec.labels.clone(),
+                app_context: spec.context.clone(),
+                external_tools: Vec::new(),
+                local_external_tools: Default::default(),
+            };
+            outcomes.insert(
+                identity.clone(),
+                RestoreOutcome::Resumed {
+                    record,
+                    snapshot,
+                    draft,
+                },
+            );
+            trace_identity_restore_completed(identity, member_started_at);
+            return Ok((index, outcomes));
         }
 
         let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {

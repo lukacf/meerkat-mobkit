@@ -414,6 +414,36 @@ impl AccessView {
         if lineage.is_empty() {
             return self.decide(action, &AccessResource::for_identity(identity));
         }
+        self.decide_agent_lineage(action, identity, &lineage)
+    }
+
+    /// Full decision for an action against an exact, caller-supplied agent
+    /// attribute snapshot.
+    ///
+    /// Event authorization uses this after binding an event's runtime id and
+    /// fence token to one concrete roster entry. The event's own role and
+    /// labels therefore never come from the alias-keyed shared cache, where a
+    /// later incarnation of the same alias could otherwise replace the
+    /// authority being evaluated. Trusted cached ancestors still participate
+    /// in spawn-lineage inheritance.
+    pub(crate) fn decide_agent_with_attributes(
+        &self,
+        action: &str,
+        attributes: &AgentResourceAttributes,
+    ) -> AccessDecision {
+        if !self.config.enabled {
+            return AccessDecision::Allow;
+        }
+        let lineage = self.lineage_for_attributes(attributes);
+        self.decide_agent_lineage(action, attributes.identity.as_str(), &lineage)
+    }
+
+    fn decide_agent_lineage(
+        &self,
+        action: &str,
+        fallback_identity: &str,
+        lineage: &[LineageLink],
+    ) -> AccessDecision {
         let resources = lineage
             .iter()
             .enumerate()
@@ -423,7 +453,7 @@ impl AccessView {
                     agent_id: attributes
                         .agent_id
                         .as_deref()
-                        .or((index == 0).then_some(identity)),
+                        .or((index == 0).then_some(fallback_identity)),
                     role: attributes.role.as_deref(),
                     labels: Some(&attributes.labels),
                 },
@@ -438,7 +468,6 @@ impl AccessView {
     /// cached attributes still contributes an identity-only resource so
     /// identity-selector rules naming the parent apply to its descendants.
     fn lineage_for(&self, identity: &str) -> Vec<LineageLink> {
-        const MAX_LINEAGE_DEPTH: usize = 8;
         let cache = self
             .inner
             .attributes
@@ -455,6 +484,34 @@ impl AccessView {
         let Some(own) = resolve(identity) else {
             return Vec::new();
         };
+        Self::lineage_from_attributes(own, &resolve)
+    }
+
+    /// Resolve spawn ancestors while pinning the first lineage link to the
+    /// supplied exact snapshot. In particular, do not resolve the first link
+    /// by identity or agent id from the shared cache.
+    fn lineage_for_attributes(&self, attributes: &AgentResourceAttributes) -> Vec<LineageLink> {
+        let cache = self
+            .inner
+            .attributes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolve = |key: &str| {
+            cache.get(key).cloned().or_else(|| {
+                cache
+                    .values()
+                    .find(|candidate| candidate.agent_id.as_deref() == Some(key))
+                    .cloned()
+            })
+        };
+        Self::lineage_from_attributes(Arc::new(attributes.clone()), &resolve)
+    }
+
+    fn lineage_from_attributes(
+        own: Arc<AgentResourceAttributes>,
+        resolve: &impl Fn(&str) -> Option<Arc<AgentResourceAttributes>>,
+    ) -> Vec<LineageLink> {
+        const MAX_LINEAGE_DEPTH: usize = 8;
         let mut visited = BTreeSet::from([own.identity.clone()]);
         let mut lineage = vec![LineageLink {
             identity: own.identity.clone(),
@@ -644,6 +701,52 @@ mod tests {
         });
         assert!(bob.can_view_agent("identity:pay-1"));
         assert!(!bob.can_view_agent("identity:other"));
+    }
+
+    #[test]
+    fn exact_event_attributes_override_newer_alias_cache_entry() {
+        let controller = AccessController::new(AccessControlConfig {
+            enabled: true,
+            admins: vec!["root@example.test".to_string()],
+            rules: vec![
+                AccessRule {
+                    id: "view-all".to_string(),
+                    actions: vec!["agent.view".to_string()],
+                    agents: vec!["*".to_string()],
+                    ..AccessRule::default()
+                },
+                AccessRule {
+                    id: "deny-secret".to_string(),
+                    effect: AccessEffect::Deny,
+                    actions: vec!["agent.view".to_string()],
+                    match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                    ..AccessRule::default()
+                },
+            ],
+            ..AccessControlConfig::default()
+        })
+        .expect("controller");
+        controller.record_agent_attributes(AgentResourceAttributes {
+            identity: "reused-alias".to_string(),
+            agent_id: Some("reused-alias".to_string()),
+            role: Some("lead".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "public".to_string())]),
+        });
+        let historical_secret = AgentResourceAttributes {
+            identity: "reused-alias".to_string(),
+            agent_id: Some("reused-alias".to_string()),
+            role: Some("lead".to_string()),
+            labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+        };
+        let view = controller.view_for_subject(None);
+
+        assert!(view.can_view_agent("reused-alias"));
+        assert!(
+            !view
+                .decide_agent_with_attributes(ACTION_AGENT_VIEW, &historical_secret)
+                .is_allow(),
+            "the newer public cache entry must not authorize the historical secret event"
+        );
     }
 
     #[test]

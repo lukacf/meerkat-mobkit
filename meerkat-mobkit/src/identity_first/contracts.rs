@@ -217,6 +217,13 @@ pub trait LeaseProvider: Send + Sync {
     ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError>;
 
     /// Renew existing lease grants.
+    ///
+    /// Returning `Err` is a pre-commit failure: the provider must leave every
+    /// supplied grant authoritative. Per-identity authority loss is reported as
+    /// [`LeaseRenewResult::Lost`], and a committed rotation is returned as
+    /// [`LeaseRenewResult::Renewed`] with the exact replacement token. This
+    /// distinction lets runtimes safely quiesce and then either resume the old
+    /// bridge authority or publish the returned replacement.
     async fn renew_leases(
         &self,
         grants: &[LeaseGrant],

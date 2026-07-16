@@ -321,6 +321,7 @@ struct FailOnceStrictReleaseLeaseProvider {
     held: Mutex<BTreeMap<AgentIdentity, StrictHeldLease>>,
     next_token: AtomicUsize,
     fail_first_release: AtomicBool,
+    allow_same_holder_refresh: bool,
     release_attempts: Mutex<Vec<LeaseGrant>>,
 }
 
@@ -330,12 +331,20 @@ impl Default for FailOnceStrictReleaseLeaseProvider {
             held: Mutex::new(BTreeMap::new()),
             next_token: AtomicUsize::new(1),
             fail_first_release: AtomicBool::new(true),
+            allow_same_holder_refresh: true,
             release_attempts: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl FailOnceStrictReleaseLeaseProvider {
+    fn without_same_holder_refresh() -> Self {
+        Self {
+            allow_same_holder_refresh: false,
+            ..Self::default()
+        }
+    }
+
     fn fail_next_release(&self) {
         self.fail_first_release.store(true, Ordering::SeqCst);
     }
@@ -379,7 +388,9 @@ impl LeaseProvider for FailOnceStrictReleaseLeaseProvider {
         for identity in identities {
             match held.get_mut(identity) {
                 Some(current)
-                    if current.holder == runtime_instance && !current.same_holder_refresh_used =>
+                    if self.allow_same_holder_refresh
+                        && current.holder == runtime_instance
+                        && !current.same_holder_refresh_used =>
                 {
                     let grant = self.next_grant(identity);
                     current.grant = grant.clone();
@@ -6625,7 +6636,7 @@ async fn identity_first_runtime_repair_supervisor_heals_eager_provider_broken_en
 }
 
 #[tokio::test]
-async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer_failure() {
+async fn identity_first_runtime_restore_flow_reuses_exact_active_lease_without_customizing() {
     struct FailingCustomizer;
 
     #[async_trait]
@@ -6673,30 +6684,27 @@ async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer
         None,
         Some(&FailingCustomizer),
     )
-    .await;
-    assert!(result.is_err());
+    .await
+    .expect("an already-active identity must bypass rebuild customization");
+    assert!(matches!(
+        result.outcomes.get(&identity),
+        Some(RestoreOutcome::Resumed { .. })
+    ));
 
     let status = runtime.status(&identity).await.unwrap();
     assert_eq!(status.state, IdentityLifecycleState::Active);
-    let refreshed_lease = status
+    let preserved_lease = status
         .lease
         .expect("already-active identity keeps a current runtime lease");
-    assert!(
-        refreshed_lease.fencing_token > initial_grant.fencing_token,
-        "restore_flow must refresh the active runtime lease before customizer work"
+    assert_eq!(
+        preserved_lease.fencing_token, initial_grant.fencing_token,
+        "reconcile must preserve the exact live grant instead of rotating authority"
     );
     let send_token = runtime.send(&identity, &make_content()).await.unwrap();
     assert_eq!(
-        send_token, refreshed_lease.fencing_token,
-        "active runtime must not continue sending with the stale pre-restore token"
+        send_token, initial_grant.fencing_token,
+        "the live runtime must keep sending with its unchanged exact authority"
     );
-    assert_old_token_snapshot_write_rejected(
-        store.as_ref(),
-        &identity,
-        &record,
-        initial_grant.fencing_token,
-    )
-    .await;
 
     let acquired = lease
         .acquire_leases(
@@ -6710,7 +6718,119 @@ async fn identity_first_runtime_restore_flow_releases_active_lease_on_customizer
             acquired.get(&identity),
             Some(LeaseAcquireResult::AlreadyHeld { .. })
         ),
-        "customizer failure must not release the refreshed lease for an already-active identity: {acquired:?}"
+        "reconcile must not release the preserved active lease: {acquired:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_renews_expired_active_lease_before_reuse() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = make_runtime_with_store(store.clone(), lease.clone());
+    let identity = make_identity("review:expired-active");
+    let record = make_record("review:expired-active", 0, 0);
+    let initial_grant = acquire_controlled_grant(&lease, &identity).await;
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec(identity.as_str()),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant.clone()),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let mut desired = make_spec(identity.as_str());
+    desired
+        .labels
+        .insert("reconciled".to_string(), "true".to_string());
+    let result = restore_flow(&runtime, std::slice::from_ref(&desired), None, None)
+        .await
+        .expect("active reconcile must renew due authority before reuse");
+    assert!(matches!(
+        result.outcomes.get(&identity),
+        Some(RestoreOutcome::Resumed { .. })
+    ));
+
+    let status = runtime.status(&identity).await.unwrap();
+    let renewed = status
+        .lease
+        .expect("successful active reconcile must retain renewed authority");
+    assert!(
+        renewed.fencing_token > initial_grant.fencing_token,
+        "expired active authority must rotate before reconcile succeeds"
+    );
+    assert!(renewed.healthy);
+    assert_eq!(lease.renew_calls(), 1);
+    assert_eq!(
+        status.labels.get("reconciled").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        runtime.send(&identity, &make_content()).await.unwrap(),
+        renewed.fencing_token,
+        "post-reconcile work must use the renewed exact grant"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_lost_active_lease_breaks_before_spec_update() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::Lost,
+    ));
+    let runtime = make_runtime_with_store(store.clone(), lease.clone());
+    let identity = make_identity("review:lost-active");
+    let record = make_record("review:lost-active", 0, 0);
+    let initial_grant = acquire_controlled_grant(&lease, &identity).await;
+    store
+        .upsert_continuity_record(&record, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    let mut original = make_spec(identity.as_str());
+    original
+        .labels
+        .insert("revision".to_string(), "old".to_string());
+    runtime
+        .register(
+            original,
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(initial_grant),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let mut desired = make_spec(identity.as_str());
+    desired
+        .labels
+        .insert("revision".to_string(), "new".to_string());
+    let error = restore_flow(&runtime, &[desired], None, None)
+        .await
+        .expect_err("lost authority must fail active reconcile");
+    assert!(matches!(
+        error,
+        IdentityRuntimeError::LeaseLost(ref lost) if lost == &identity
+    ));
+
+    let status = runtime.status(&identity).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert!(status.lease.is_none());
+    assert_eq!(lease.renew_calls(), 1);
+    assert_eq!(
+        status.labels.get("revision").map(String::as_str),
+        Some("old"),
+        "a failed authority preflight must not publish the requested spec update"
     );
 }
 
@@ -6765,6 +6885,76 @@ async fn identity_first_runtime_materialize_releases_lease_on_customizer_failure
             Some(LeaseAcquireResult::Acquired(_))
         ),
         "materialize customizer failure must release the acquired lease: {acquired:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_direct_materialize_drains_parked_grant_before_reacquire() {
+    struct FailOnceCustomizer(AtomicBool);
+
+    #[async_trait]
+    impl AgentCustomizer for FailOnceCustomizer {
+        async fn customize_build(
+            &self,
+            _context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            _draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            if self.0.swap(false, Ordering::SeqCst) {
+                Err(CustomizerError::BuildFailed("boom once".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::without_same_holder_refresh());
+    let runtime = Arc::new(make_runtime_with_store(store, lease.clone()));
+    let identity = make_identity("review:direct-orphan-retry");
+    lazy_register_flow(
+        &runtime,
+        std::slice::from_ref(&make_spec(identity.as_str())),
+        None,
+    )
+    .await
+    .unwrap();
+    runtime
+        .set_agent_customizer(Some(Arc::new(FailOnceCustomizer(AtomicBool::new(true)))))
+        .await;
+
+    let first_error = runtime
+        .materialize_tracked(&identity)
+        .await
+        .expect_err("customization and the first exact-grant cleanup must fail");
+    assert!(first_error.to_string().contains("boom once"));
+    assert!(first_error.to_string().contains("lease cleanup failed"));
+    assert_eq!(
+        runtime.status(&identity).await.unwrap().state,
+        IdentityLifecycleState::Dormant
+    );
+    let parked = lease
+        .held_grant(&identity)
+        .expect("failed cleanup must retain provider authority");
+    assert_eq!(lease.release_attempts(), vec![parked.clone()]);
+
+    runtime
+        .materialize_tracked(&identity)
+        .await
+        .expect("direct retry must release the orphan before strict reacquisition");
+
+    let active = runtime.status(&identity).await.unwrap();
+    assert_eq!(active.state, IdentityLifecycleState::Active);
+    let active_grant = active.lease.expect("retry must publish fresh authority");
+    assert!(active_grant.fencing_token > parked.fencing_token);
+    assert_eq!(
+        lease.release_attempts(),
+        vec![parked.clone(), parked],
+        "the failure cleanup and direct retry must release the same exact token"
+    );
+    assert_eq!(
+        lease.held_grant(&identity).map(|grant| grant.fencing_token),
+        Some(active_grant.fencing_token)
     );
 }
 
@@ -7720,7 +7910,10 @@ async fn identity_first_runtime_inv02_lease_loss_blocks_send() {
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        IdentityRuntimeError::NoActiveLease(_)
+        IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        }
     ));
 }
 
@@ -7749,7 +7942,10 @@ async fn identity_first_runtime_inv02_lease_loss_blocks_dispatch() {
         .await;
     assert!(matches!(
         result.unwrap_err(),
-        IdentityRuntimeError::NoActiveLease(_)
+        IdentityRuntimeError::InvalidState {
+            state: IdentityLifecycleState::Broken,
+            ..
+        }
     ));
 }
 

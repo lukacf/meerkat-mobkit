@@ -73,6 +73,22 @@ class TestBuilderChain:
                 {"mode": "lazy_materialize"}
             )
 
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            IdentityBootstrapMode.eager_materialize(),
+            IdentityBootstrapMode.lazy_materialize(),
+            IdentityBootstrapMode.lazy_with_background_warm(concurrency=2),
+        ],
+    )
+    def test_every_explicit_identity_bootstrap_mode_requires_roster(self, mode):
+        builder = MobKit.builder().identity_bootstrap_mode(mode)
+
+        with pytest.raises(ValueError, match=r"identity_bootstrap_mode.*roster"):
+            builder._validate()
+
+        builder.roster(object())._validate()
+
     def test_implicit_delegate_idle_retirement_sets_runtime_option(self):
         b = MobKit.builder().implicit_delegate_idle_retirement(30)
         params = MobKitRuntime(b._config)._build_init_params()

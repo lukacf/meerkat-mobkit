@@ -14,6 +14,7 @@ use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::types::HandlingMode;
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
+use meerkat_mob::event::MobEventKind;
 use meerkat_mob::ids::AgentIdentity as MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::runtime::ConsoleMember;
@@ -599,6 +600,39 @@ async fn assert_sse_emits_no_identity(response: axum::response::Response, identi
     }
 }
 
+async fn assert_structural_sse_excludes_and_includes_cursor(
+    response: axum::response::Response,
+    excluded_cursor: u64,
+    included_cursor: u64,
+) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let excluded = format!("id: mob-evt-{excluded_cursor}");
+    let included = format!("id: mob-evt-{included_cursor}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut observed = String::new();
+    while !observed.contains(&included) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "expected current public cursor {included_cursor} in structural SSE: {observed}"
+        );
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Err(_) | Ok(None) => panic!(
+                "expected current public cursor {included_cursor} in structural SSE: {observed}"
+            ),
+            Ok(Some(Err(error))) => panic!("unexpected SSE body error: {error}"),
+            Ok(Some(Ok(bytes))) => {
+                observed.push_str(&String::from_utf8_lossy(&bytes));
+                assert!(
+                    !observed.contains(&excluded),
+                    "historical secret cursor {excluded_cursor} leaked through structural SSE: {observed}"
+                );
+            }
+        }
+    }
+}
+
 /// Anonymous callers (open console) only match rules with no subject
 /// constraints: visible/sendable only what those rules grant.
 fn anonymous_router_only_config() -> AccessControlConfig {
@@ -1016,6 +1050,344 @@ async fn long_lived_sse_reauthorizes_stale_alias_when_new_generation_appears() {
 
     assert_sse_emits_no_identity(mob_response, identity).await;
     assert_sse_emits_no_identity(structural_response, identity).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn event_surfaces_do_not_reauthorize_secret_generation_as_public_same_alias() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let identity = "secret-then-public";
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "observe-mob".to_string(),
+                actions: vec!["mob.observe".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "view-all".to_string(),
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["*".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-secret-label".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                match_labels: BTreeMap::from([("org".to_string(), "secret".to_string())]),
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("access controller");
+    runtime.set_access_controller(controller.clone());
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let events_view = runtime.mob_handle().events();
+    let before_secret = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before secret generation");
+
+    let mut secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        identity.to_string(),
+        Some("secret generation".into()),
+        None,
+        None,
+    );
+    secret_spec.labels = Some(BTreeMap::from([("org".to_string(), "secret".to_string())]));
+    runtime
+        .spawn(secret_spec)
+        .await
+        .expect("spawn secret generation");
+    let secret_spawn_cursor = events_view
+        .poll_strict(before_secret, 128)
+        .await
+        .expect("secret spawn events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned) if spawned.agent_identity.as_str() == identity => {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("secret member_spawned cursor");
+
+    // Subscribe while the secret incarnation is current, then leave the body
+    // unpolled so its attributed event remains queued until after the alias is
+    // rebound to a public incarnation.
+    let mob_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mob/events")
+                .body(Body::empty())
+                .expect("mob SSE request"),
+        )
+        .await
+        .expect("mob SSE response");
+    let member_id = MeerkatId::from(identity);
+    let mut proof_stream = runtime
+        .mob_handle()
+        .subscribe_agent_events(&member_id)
+        .await
+        .expect("secret proof event stream");
+    runtime
+        .mob_handle()
+        .member(&member_id)
+        .await
+        .expect("secret member handle")
+        .send("emit a secret event", HandlingMode::Queue)
+        .await
+        .expect("secret member turn");
+    tokio::time::timeout(Duration::from_secs(2), proof_stream.next())
+        .await
+        .expect("secret member should emit an event")
+        .expect("proof stream should remain open");
+
+    let before_public = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before public alias projection");
+    // A second exact member binding projects to the same durable console
+    // alias. Its raw id sorts after the first in the roster projection, so the
+    // legacy alias-keyed ABAC cache sees this public row as current. Protected
+    // event surfaces must nevertheless authorize each event by runtime+fence.
+    let public_runtime_identity = "zz-public-incarnation";
+    let mut public_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        public_runtime_identity.to_string(),
+        Some("public alias incarnation".into()),
+        None,
+        None,
+    );
+    public_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "public".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(public_spec)
+        .await
+        .expect("spawn exact public binding for the reused alias");
+    let public_spawn_cursor = events_view
+        .poll_strict(before_public, 128)
+        .await
+        .expect("public alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == public_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("public alias member_spawned cursor");
+
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({
+                "after_seq": before_secret,
+                "event_types": ["member_spawned"],
+                "limit": 1,
+            }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        let cursors = page["result"]["events"]
+            .as_array()
+            .expect("event array")
+            .iter()
+            .filter_map(|event| event["cursor"].as_u64())
+            .collect::<Vec<_>>();
+        assert!(
+            !cursors.contains(&secret_spawn_cursor),
+            "historical secret generation leaked through {method}: {page:#?}"
+        );
+        assert!(
+            cursors.contains(&public_spawn_cursor),
+            "current public binding should remain visible in {method}: {page:#?}"
+        );
+        assert_eq!(
+            cursors.len(),
+            1,
+            "authorization-denied rows must not consume the visible page limit: {page:#?}"
+        );
+        assert_eq!(page["result"]["next_after_seq"], public_spawn_cursor);
+    }
+
+    let structural_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/mobkit/mob_events/stream?after_seq={before_secret}"
+                ))
+                .body(Body::empty())
+                .expect("structural SSE request"),
+        )
+        .await
+        .expect("structural SSE response");
+    assert_structural_sse_excludes_and_includes_cursor(
+        structural_response,
+        secret_spawn_cursor,
+        public_spawn_cursor,
+    )
+    .await;
+
+    // Reverse the starvation order as well: a newer hidden generation must
+    // not consume a backwards snapshot's limit and hide the earlier public
+    // generation. Empty forward pages still advance over the hidden raw row,
+    // and subscribe resumes from that frontier without losing the next public
+    // event.
+    let before_latest_secret = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before latest secret alias projection");
+    let latest_secret_runtime_identity = "zzz-secret-incarnation";
+    let mut latest_secret_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        latest_secret_runtime_identity.to_string(),
+        Some("latest secret alias incarnation".into()),
+        None,
+        None,
+    );
+    latest_secret_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "secret".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(latest_secret_spec)
+        .await
+        .expect("spawn latest exact secret binding");
+    let latest_secret_cursor = events_view
+        .poll_strict(before_latest_secret, 128)
+        .await
+        .expect("latest secret alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == latest_secret_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("latest secret alias member_spawned cursor");
+    let latest_secret_frontier = events_view
+        .latest_cursor()
+        .await
+        .expect("raw frontier after latest secret alias projection");
+
+    let backward = rpc(
+        &app,
+        "mobkit/mob_events/query",
+        json!({ "event_types": ["member_spawned"], "limit": 1 }),
+    )
+    .await;
+    assert_eq!(backward["error"], Value::Null, "{backward:#?}");
+    assert_eq!(
+        backward["result"]["events"][0]["cursor"],
+        public_spawn_cursor
+    );
+    assert_eq!(backward["result"]["events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        backward["result"]["next_after_seq"], latest_secret_frontier,
+        "backwards snapshot must expose the raw ledger frontier"
+    );
+
+    let empty_subscribe = rpc(
+        &app,
+        "mobkit/mob_events/subscribe",
+        json!({
+            "after_seq": public_spawn_cursor,
+            "event_types": ["member_spawned"],
+            "limit": 1,
+        }),
+    )
+    .await;
+    assert_eq!(
+        empty_subscribe["error"],
+        Value::Null,
+        "{empty_subscribe:#?}"
+    );
+    assert!(
+        empty_subscribe["result"]["events"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "hidden-only snapshot should remain empty: {empty_subscribe:#?}"
+    );
+    assert_eq!(
+        empty_subscribe["result"]["next_after_seq"],
+        latest_secret_frontier
+    );
+
+    let before_next_public = events_view
+        .latest_cursor()
+        .await
+        .expect("cursor before next public alias projection");
+    let next_public_runtime_identity = "zzzz-public-incarnation";
+    let mut next_public_spec = SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        next_public_runtime_identity.to_string(),
+        Some("next public alias incarnation".into()),
+        None,
+        None,
+    );
+    next_public_spec.labels = Some(BTreeMap::from([
+        ("agent_identity".to_string(), identity.to_string()),
+        ("org".to_string(), "public".to_string()),
+    ]));
+    runtime
+        .mob_handle()
+        .spawn_spec(next_public_spec)
+        .await
+        .expect("spawn next exact public binding");
+    let next_public_cursor = events_view
+        .poll_strict(before_next_public, 128)
+        .await
+        .expect("next public alias events")
+        .into_iter()
+        .find_map(|event| match event.kind {
+            MobEventKind::MemberSpawned(spawned)
+                if spawned.agent_identity.as_str() == next_public_runtime_identity =>
+            {
+                Some(event.cursor)
+            }
+            _ => None,
+        })
+        .expect("next public alias member_spawned cursor");
+    let subscribe_url = empty_subscribe["result"]["subscribe_url"]
+        .as_str()
+        .expect("subscribe URL");
+    let resumed_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(subscribe_url)
+                .body(Body::empty())
+                .expect("resumed structural SSE request"),
+        )
+        .await
+        .expect("resumed structural SSE response");
+    assert_structural_sse_excludes_and_includes_cursor(
+        resumed_response,
+        latest_secret_cursor,
+        next_public_cursor,
+    )
+    .await;
+    assert_sse_emits_no_identity(mob_response, identity).await;
+
     runtime.shutdown().await;
 }
 

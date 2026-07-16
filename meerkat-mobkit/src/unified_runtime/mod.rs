@@ -647,6 +647,41 @@ impl UnifiedRuntime {
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
     ) {
+        self.install_identity_first_context_authority(context);
+        self.start_identity_first_supervisors();
+    }
+
+    /// Install identity authority before applying the initial roster.
+    ///
+    /// The gateway builds its base [`UnifiedRuntime`] before callback-backed
+    /// identity providers are available. Identity bootstrap can partially
+    /// materialize a roster before a later member fails, so the context must be
+    /// visible to [`Self::shutdown`] before bootstrap starts. On failure this
+    /// method drives the complete runtime shutdown order before returning the
+    /// error; on success it starts the long-lived lease and repair supervisors.
+    pub async fn install_and_bootstrap_identity_first_context(
+        &mut self,
+        context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
+        roster: &[crate::identity_first::DurableAgentSpec],
+    ) -> Result<crate::identity_first::RestoreFlowResult, crate::identity_first::IdentityRuntimeError>
+    {
+        self.install_identity_first_context_authority(Arc::clone(&context));
+        match context.bootstrap_roster(roster).await {
+            Ok(result) => {
+                self.start_identity_first_supervisors();
+                Ok(result)
+            }
+            Err(error) => {
+                self.shutdown().await;
+                Err(error)
+            }
+        }
+    }
+
+    fn install_identity_first_context_authority(
+        &mut self,
+        context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
+    ) {
         self.mob_runtime
             .install_identity_runtime_authority(Arc::clone(&context.runtime));
         *self
@@ -654,6 +689,13 @@ impl UnifiedRuntime {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
+        self.identity_first_context = Some(context);
+    }
+
+    fn start_identity_first_supervisors(&mut self) {
+        let Some(context) = self.identity_first_context.clone() else {
+            return;
+        };
         // Gateways attach identity-first after the base UnifiedRuntime has
         // been built, so they do not pass through the builder's supervisor
         // installation below. Active callback/local-provider leases need the
@@ -672,9 +714,7 @@ impl UnifiedRuntime {
         // identity "pending reconcile retry", and this task is what runs
         // that retry in a live process (delivery and materialize both
         // refuse the Broken state by design).
-        let repair_task = context
-            .clone()
-            .spawn_tracked_broken_identity_repair_task(Default::default());
+        let repair_task = context.spawn_tracked_broken_identity_repair_task(Default::default());
         if let Some(previous) = self
             .identity_continuity_repair_task
             .get_mut()
@@ -683,7 +723,6 @@ impl UnifiedRuntime {
             previous.cancel();
             tokio::spawn(previous.cancel_and_join());
         }
-        self.identity_first_context = Some(context);
     }
 
     pub async fn refresh_desired_topology(

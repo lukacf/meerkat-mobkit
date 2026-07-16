@@ -23,8 +23,8 @@ use meerkat_mobkit::identity_first::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, BridgeError,
-    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeServices,
+    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
     ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
     DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapState,
     IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
@@ -69,6 +69,12 @@ struct GatedCustomizer {
     failing_identity: Option<AgentIdentity>,
 }
 
+struct FailAfterPeerActiveCustomizer {
+    runtime: Arc<IdentityRuntime>,
+    peer: AgentIdentity,
+    failing_identity: AgentIdentity,
+}
+
 #[derive(Default)]
 struct FailOnceCustomizer {
     attempts: AtomicUsize,
@@ -109,6 +115,35 @@ impl AgentCustomizer for GatedCustomizer {
             return Err(CustomizerError::BuildFailed("injected warm failure".into()));
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentCustomizer for FailAfterPeerActiveCustomizer {
+    async fn customize_build(
+        &self,
+        _context: &AgentBuildContext,
+        spec: &DurableAgentSpec,
+        _draft: &mut AgentBuildDraft,
+    ) -> Result<(), CustomizerError> {
+        if spec.identity != self.failing_identity {
+            return Ok(());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !self.runtime.is_active(&self.peer).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            CustomizerError::BuildFailed(format!(
+                "timed out waiting for {} to become active",
+                self.peer
+            ))
+        })?;
+        Err(CustomizerError::BuildFailed(
+            "injected failure after peer activation".to_string(),
+        ))
     }
 }
 
@@ -308,6 +343,13 @@ impl ContinuityStore for CountingReadyContinuityStore {
 struct StubLeaseProvider;
 
 #[derive(Default)]
+struct ExactTrackingLeaseProvider {
+    held: Mutex<BTreeMap<AgentIdentity, LeaseGrant>>,
+    released: Mutex<Vec<LeaseGrant>>,
+    renew_calls: AtomicUsize,
+}
+
+#[derive(Default)]
 struct TrackingLeaseProvider {
     acquired: AtomicUsize,
     released: AtomicUsize,
@@ -337,6 +379,36 @@ struct GatedCommittedRenewLeaseProvider {
     renew_notify: tokio::sync::Notify,
     renew_permits: tokio::sync::Semaphore,
     released: Mutex<Vec<LeaseGrant>>,
+}
+
+impl ExactTrackingLeaseProvider {
+    fn token_for(identity: &AgentIdentity) -> FencingToken {
+        match identity.as_str() {
+            "agent:alpha" => FencingToken::new(101),
+            "agent:beta" => FencingToken::new(202),
+            other => panic!("unexpected identity in exact lease test: {other}"),
+        }
+    }
+
+    fn released(&self) -> Vec<LeaseGrant> {
+        self.released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn held(&self) -> Vec<LeaseGrant> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn renew_calls(&self) -> usize {
+        self.renew_calls.load(Ordering::SeqCst)
+    }
 }
 
 impl GatedCommittedRenewLeaseProvider {
@@ -415,6 +487,77 @@ impl LeaseProvider for StubLeaseProvider {
         Ok(BTreeMap::new())
     }
     async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LeaseProvider for ExactTrackingLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        runtime_instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                let result = match held.get(identity) {
+                    Some(_) => LeaseAcquireResult::AlreadyHeld {
+                        identity: identity.clone(),
+                        holder: runtime_instance.to_string(),
+                    },
+                    None => {
+                        let grant = LeaseGrant {
+                            identity: identity.clone(),
+                            fencing_token: Self::token_for(identity),
+                            ttl: Duration::from_mins(5),
+                        };
+                        held.insert(identity.clone(), grant.clone());
+                        LeaseAcquireResult::Acquired(grant)
+                    }
+                };
+                (identity.clone(), result)
+            })
+            .collect())
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        self.renew_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(grants
+            .iter()
+            .map(|grant| {
+                (
+                    grant.identity.clone(),
+                    LeaseRenewResult::Renewed(grant.clone()),
+                )
+            })
+            .collect())
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        self.released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(grants);
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants {
+            if held
+                .get(&grant.identity)
+                .is_some_and(|current| current.fencing_token == grant.fencing_token)
+            {
+                held.remove(&grant.identity);
+            }
+        }
         Ok(())
     }
 }
@@ -1719,15 +1862,102 @@ async fn identity_first_builder_rejects_excessive_background_warm_concurrency() 
 }
 
 #[tokio::test]
-async fn identity_first_builder_explicit_lazy_mode_requires_roster_provider() {
-    let tmp = tempfile::tempdir().unwrap();
-    let builder = UnifiedRuntimeBuilder::default()
-        .definition(test_definition())
-        .persistent_state(tmp.path())
-        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
-        .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
+async fn identity_first_builder_every_explicit_mode_requires_roster_provider() {
+    for mode in [
+        IdentityBootstrapMode::EagerMaterialize,
+        IdentityBootstrapMode::LazyMaterialize,
+        IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .persistent_state(tmp.path())
+            .identity_bootstrap_mode(mode)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
 
-    Box::pin(assert_build_err_contains(builder, "roster_provider")).await;
+        Box::pin(assert_build_err_contains(builder, "roster_provider")).await;
+    }
+}
+
+#[tokio::test]
+async fn gateway_initializer_releases_exact_active_grant_after_partial_eager_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .persistent_state(tmp.path().join("classic-state"))
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("classic runtime should build before gateway identity installation");
+    assert!(runtime.identity_runtime().is_none());
+
+    let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
+    let alpha = specs[0].identity.clone();
+    let beta = specs[1].identity.clone();
+    let lease_provider = Arc::new(ExactTrackingLeaseProvider::default());
+    let identity_runtime = Arc::new(
+        IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(StubContinuityStore),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "gateway-partial-eager-cleanup-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: runtime.session_bridge().cloned(),
+            default_timeout: None,
+        })
+        .with_runtime_services(AgentRuntimeServices::new(runtime.mob_handle())),
+    );
+    let customizer = Arc::new(FailAfterPeerActiveCustomizer {
+        runtime: identity_runtime.clone(),
+        peer: alpha.clone(),
+        failing_identity: beta.clone(),
+    });
+    let context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+        identity_runtime,
+        Arc::new(StubRosterProvider::new(specs.clone())),
+        None,
+        Some(customizer),
+        Some(runtime.mob_handle().definition().clone()),
+        IdentityBootstrapMode::EagerMaterialize,
+    ));
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.install_and_bootstrap_identity_first_context(context, &specs),
+    )
+    .await
+    .expect("failed identity bootstrap shutdown must not hang")
+    .expect_err("beta failure after alpha activation must fail eager bootstrap");
+    assert!(
+        error
+            .to_string()
+            .contains("injected failure after peer activation"),
+        "unexpected bootstrap error: {error}"
+    );
+
+    let released = lease_provider.released();
+    assert_eq!(
+        released.len(),
+        2,
+        "beta cleanup plus alpha shutdown release"
+    );
+    let released = released
+        .into_iter()
+        .map(|grant| (grant.identity, grant.fencing_token))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(released.get(&alpha), Some(&FencingToken::new(101)));
+    assert_eq!(released.get(&beta), Some(&FencingToken::new(202)));
+    assert!(
+        lease_provider.held().is_empty(),
+        "failed gateway init must leave no exact provider authority"
+    );
+    assert_eq!(
+        lease_provider.renew_calls(),
+        0,
+        "long-lived supervisors must start only after bootstrap succeeds"
+    );
 }
 
 #[tokio::test]
@@ -2408,6 +2638,8 @@ async fn identity_first_shutdown_joins_abandoned_foreground_materialization_clea
 #[tokio::test]
 async fn identity_first_shutdown_joins_abandoned_reconcile_transaction() {
     let tmp = tempfile::tempdir().unwrap();
+    let alpha_spec = durable_spec("agent:alpha");
+    let roster = Arc::new(StubRosterProvider::new(vec![alpha_spec.clone()]));
     let permits = Arc::new(tokio::sync::Semaphore::new(1));
     let customizer = Arc::new(GatedCustomizer {
         entered: AtomicUsize::new(0),
@@ -2421,9 +2653,7 @@ async fn identity_first_shutdown_joins_abandoned_reconcile_transaction() {
                 .definition(test_definition())
                 .continuity_store(Arc::new(StubContinuityStore))
                 .lease_provider(lease_provider.clone())
-                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
-                    "agent:alpha",
-                )])))
+                .roster_provider(roster.clone())
                 .agent_customizer(customizer.clone())
                 .scratch_dir(tmp.path())
                 .identity_runtime_instance_id("builder-abandoned-reconcile-shutdown-test")
@@ -2433,6 +2663,13 @@ async fn identity_first_shutdown_joins_abandoned_reconcile_transaction() {
         .await
         .expect("initial eager bootstrap should consume the first customizer permit"),
     );
+
+    // Active identities are now reconciled in place without rebuilding or
+    // re-running their customizer. Add a new desired identity so this refresh
+    // still exercises an abandoned runtime-owned materialization transaction.
+    roster
+        .set(vec![alpha_spec, durable_spec("agent:beta")])
+        .await;
 
     let outer = tokio::spawn({
         let runtime = Arc::clone(&runtime);
@@ -2444,7 +2681,7 @@ async fn identity_first_shutdown_joins_abandoned_reconcile_transaction() {
         }
     })
     .await
-    .expect("reconcile should enter customization under its runtime-owned task");
+    .expect("reconcile should customize the new identity under its runtime-owned task");
     outer.abort();
     assert!(outer.await.unwrap_err().is_cancelled());
 

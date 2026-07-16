@@ -474,8 +474,10 @@ class MobKitBuilder:
     ) -> MobKitBuilder:
         """Set the identity materialization policy used during gateway init.
 
-        The option is omitted unless this method is called, preserving the
-        eager default and compatibility with older strict gateways.
+        Calling this method declares identity-first intent and therefore
+        requires ``roster(...)``, including for explicit eager mode. The option
+        is omitted unless this method is called, preserving the classic gateway
+        when no roster is configured and the eager default when one is.
         """
         if not isinstance(mode, IdentityBootstrapMode):
             raise TypeError("mode must be an IdentityBootstrapMode")
@@ -492,6 +494,14 @@ class MobKitBuilder:
         if self._config.mob_config_path and self._config.mob_config_inline:
             raise ValueError(
                 "mob() and mob_inline() are mutually exclusive"
+            )
+        if (
+            self._config.identity_bootstrap_mode is not None
+            and self._config.roster_provider is None
+        ):
+            raise ValueError(
+                "identity_bootstrap_mode() requires roster() because every "
+                "explicit bootstrap mode is identity-first"
             )
         has_external = (
             self._config.continuity_store is not None

@@ -2709,6 +2709,12 @@ export interface LeaseProvider {
     identities: string[],
     runtimeInstance: string,
   ): Promise<Record<string, LeaseAcquireResult>>;
+  /**
+   * Renew atomically from the caller's perspective. A rejected Promise is a
+   * pre-commit failure and MUST leave every input grant unchanged. Every
+   * returned `renewed` or `lost` result is committed for that identity before
+   * the Promise resolves.
+   */
   renewLeases(grants: LeaseGrant[]): Promise<Record<string, LeaseRenewResult>>;
   releaseLeases(grants: LeaseGrant[]): Promise<void>;
 }

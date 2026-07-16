@@ -16,10 +16,12 @@
 //! and catch-up share the same ordered stream.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use meerkat_mob::MobError;
 use meerkat_mob::event::{AttributedEvent, MobEvent, MobEventKind};
+use meerkat_mob::ids::{AgentRuntimeId, FenceToken};
 use meerkat_mob::runtime::MobEventsView;
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -37,6 +39,35 @@ pub(crate) const DEFAULT_QUERY_LIMIT: usize = 256;
 
 /// Capacity of the broadcast channel used by in-process subscribers.
 const MOB_EVENTS_CHANNEL_CAP: usize = 512;
+
+/// Exact generation-scoped authority carried by structural event variants
+/// that persist both binding atoms. Kept as an internal sidecar so the public
+/// [`MobStructuralEventEnvelope`] wire contract remains unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MobEventMemberAuthority {
+    pub(crate) runtime_id: AgentRuntimeId,
+    pub(crate) fence_token: FenceToken,
+}
+
+/// Internal projection used by protected console transports. The envelope is
+/// still the public payload; `member_authority` is authorization metadata and
+/// is deliberately never serialized.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProjectedMobEvent {
+    pub(crate) envelope: MobStructuralEventEnvelope,
+    pub(crate) member_authority: Option<MobEventMemberAuthority>,
+}
+
+/// Result of scanning a structural-event snapshot through a caller-provided
+/// selector. `resume_after_seq` is the exact raw ledger frontier represented
+/// by the page, including structurally filtered or authorization-denied rows.
+/// Consumers can therefore resume after it without replaying hidden rows or
+/// skipping a visible event that lay beyond them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MobEventsQueryPage<T> {
+    pub(crate) items: Vec<T>,
+    pub(crate) resume_after_seq: u64,
+}
 
 /// Thin projection layer for structural mob events.
 ///
@@ -119,6 +150,16 @@ impl MobEventsStore {
     /// disturbing the live broadcast.
     pub async fn project_event_for_query(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
         self.build_envelope(event).await
+    }
+
+    /// Project one ledger event together with any exact member authority it
+    /// durably carries. Variants without both runtime id and fence token stay
+    /// unbound and must fail closed on protected transports.
+    pub(crate) async fn project_event_with_authority(&self, event: &MobEvent) -> ProjectedMobEvent {
+        ProjectedMobEvent {
+            envelope: self.build_envelope(event).await,
+            member_authority: extract_member_authority(&event.kind),
+        }
     }
 
     async fn build_envelope(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
@@ -323,25 +364,60 @@ pub(crate) async fn query_ledger_with_filter(
     store: &MobEventsStore,
     query: &EventQuery,
 ) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
-    let limit = query.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    if let Some(after_seq) = query.after_seq {
-        return scan_forward(events, store, query, after_seq, limit).await;
-    }
-    scan_backward(events, store, query, limit).await
+    Ok(
+        query_ledger_with_filter_selected(events, store, query, |projection| async move {
+            Some(projection.envelope)
+        })
+        .await?
+        .items,
+    )
 }
 
-async fn scan_forward(
+/// Scan and select structural events while enforcing `limit` on the selected
+/// output, not on the pre-authorization candidate set. Protected transports
+/// use this seam to apply generation-bound authorization inside pagination;
+/// otherwise denied rows could consume the page budget and starve later
+/// visible rows.
+pub(crate) async fn query_ledger_with_filter_selected<T, F, Fut>(
+    events: &MobEventsView,
+    store: &MobEventsStore,
+    query: &EventQuery,
+    mut selector: F,
+) -> Result<MobEventsQueryPage<T>, MobEventsQueryError>
+where
+    F: FnMut(ProjectedMobEvent) -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let limit = query.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
+    if limit == 0 {
+        let resume_after_seq = match query.after_seq {
+            Some(after_seq) => after_seq,
+            None => events.latest_cursor().await?,
+        };
+        return Ok(MobEventsQueryPage {
+            items: Vec::new(),
+            resume_after_seq,
+        });
+    }
+    if let Some(after_seq) = query.after_seq {
+        return scan_forward(events, store, query, after_seq, limit, &mut selector).await;
+    }
+    scan_backward(events, store, query, limit, &mut selector).await
+}
+
+async fn scan_forward<T, F, Fut>(
     events: &MobEventsView,
     store: &MobEventsStore,
     query: &EventQuery,
     after_seq: u64,
     limit: usize,
-) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
-    let mut results: Vec<MobStructuralEventEnvelope> =
-        Vec::with_capacity(limit.min(QUERY_BATCH_SIZE));
+    selector: &mut F,
+) -> Result<MobEventsQueryPage<T>, MobEventsQueryError>
+where
+    F: FnMut(ProjectedMobEvent) -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let mut results: Vec<T> = Vec::with_capacity(limit.min(QUERY_BATCH_SIZE));
     let mut cursor = after_seq;
     loop {
         let batch = events.poll_strict(cursor, QUERY_BATCH_SIZE).await?;
@@ -351,11 +427,16 @@ async fn scan_forward(
         let cursor_before_batch = cursor;
         for event in batch {
             cursor = cursor.max(event.cursor);
-            let envelope = store.project_event_for_query(&event).await;
-            if envelope_matches(&envelope, query) {
-                results.push(envelope);
+            let projection = store.project_event_with_authority(&event).await;
+            if envelope_matches(&projection.envelope, query)
+                && let Some(selected) = selector(projection).await
+            {
+                results.push(selected);
                 if results.len() >= limit {
-                    return Ok(results);
+                    return Ok(MobEventsQueryPage {
+                        items: results,
+                        resume_after_seq: cursor,
+                    });
                 }
             }
         }
@@ -368,22 +449,33 @@ async fn scan_forward(
             break;
         }
     }
-    Ok(results)
+    Ok(MobEventsQueryPage {
+        items: results,
+        resume_after_seq: cursor,
+    })
 }
 
-async fn scan_backward(
+async fn scan_backward<T, F, Fut>(
     events: &MobEventsView,
     store: &MobEventsStore,
     query: &EventQuery,
     limit: usize,
-) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
+    selector: &mut F,
+) -> Result<MobEventsQueryPage<T>, MobEventsQueryError>
+where
+    F: FnMut(ProjectedMobEvent) -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
     let latest = events.latest_cursor().await?;
     if latest == 0 {
-        return Ok(Vec::new());
+        return Ok(MobEventsQueryPage {
+            items: Vec::new(),
+            resume_after_seq: 0,
+        });
     }
     let batch_size = QUERY_BATCH_SIZE as u64;
     let mut window_end = latest;
-    let mut accumulator: Vec<MobStructuralEventEnvelope> = Vec::new();
+    let mut accumulator: Vec<T> = Vec::new();
     loop {
         let from = window_end.saturating_sub(batch_size);
         let take = (window_end - from) as usize;
@@ -394,11 +486,13 @@ async fn scan_backward(
         if batch.is_empty() {
             break;
         }
-        let mut window_matches: Vec<MobStructuralEventEnvelope> = Vec::with_capacity(batch.len());
+        let mut window_matches: Vec<T> = Vec::with_capacity(batch.len());
         for event in batch {
-            let envelope = store.project_event_for_query(&event).await;
-            if envelope_matches(&envelope, query) {
-                window_matches.push(envelope);
+            let projection = store.project_event_with_authority(&event).await;
+            if envelope_matches(&projection.envelope, query)
+                && let Some(selected) = selector(projection).await
+            {
+                window_matches.push(selected);
             }
         }
         // Prepend (cursor-ascending order preserved across windows).
@@ -415,7 +509,36 @@ async fn scan_backward(
         let drop = accumulator.len() - limit;
         accumulator.drain(0..drop);
     }
-    Ok(accumulator)
+    Ok(MobEventsQueryPage {
+        items: accumulator,
+        resume_after_seq: latest,
+    })
+}
+
+fn extract_member_authority(kind: &MobEventKind) -> Option<MobEventMemberAuthority> {
+    let (runtime_id, fence_token) = match kind {
+        MobEventKind::MemberSpawned(event) => (&event.agent_runtime_id, event.fence_token),
+        MobEventKind::MemberReset {
+            agent_runtime_id,
+            fence_token,
+            ..
+        }
+        | MobEventKind::RemoteMemberRuntimeRetired {
+            agent_runtime_id,
+            fence_token,
+            ..
+        }
+        | MobEventKind::RemoteMemberSupervisorRevoked {
+            agent_runtime_id,
+            fence_token,
+            ..
+        } => (agent_runtime_id, *fence_token),
+        _ => return None,
+    };
+    Some(MobEventMemberAuthority {
+        runtime_id: runtime_id.clone(),
+        fence_token,
+    })
 }
 
 /// Snake-case label for a `MobEventKind` matching the `serde(tag="type",
@@ -666,6 +789,63 @@ mod tests {
             .await;
         assert_eq!(envelope.kind, "member_spawned");
         assert_eq!(envelope.agent_identity.as_deref(), Some("researcher"));
+    }
+
+    #[tokio::test]
+    async fn internal_projection_binds_spawn_to_exact_runtime_and_fence() {
+        let store = MobEventsStore::new();
+        let identity = AgentIdentity::from("generation-bound");
+        let runtime_id = AgentRuntimeId::initial(identity.clone());
+        let fence_token = FenceToken::new(41);
+        let event = mob_event(
+            9,
+            MobEventKind::MemberSpawned(MemberSpawnedEvent::new(
+                identity,
+                Generation::INITIAL,
+                fence_token,
+                runtime_id.clone(),
+                ProfileName::from("worker"),
+            )),
+        );
+
+        let public = store.project_event_for_query(&event).await;
+        let projected = store.project_event_with_authority(&event).await;
+
+        assert_eq!(projected.envelope, public);
+        assert_eq!(
+            projected.member_authority,
+            Some(MobEventMemberAuthority {
+                runtime_id,
+                fence_token,
+            })
+        );
+        let wire = serde_json::to_value(&projected.envelope).expect("public envelope wire value");
+        assert!(
+            wire.get("member_authority").is_none(),
+            "internal authority must not alter the public envelope contract"
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_projection_leaves_fenceless_agent_event_unbound() {
+        let store = MobEventsStore::new();
+        let identity = AgentIdentity::from("fenceless-target");
+        let projected = store
+            .project_event_with_authority(&mob_event(
+                10,
+                MobEventKind::StepDispatched {
+                    run_id: RunId::new(),
+                    step_id: StepId::from("step-a"),
+                    target: AgentRuntimeId::initial(identity),
+                },
+            ))
+            .await;
+
+        assert_eq!(
+            projected.envelope.agent_identity.as_deref(),
+            Some("fenceless-target")
+        );
+        assert_eq!(projected.member_authority, None);
     }
 
     #[tokio::test]

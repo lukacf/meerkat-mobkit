@@ -229,7 +229,7 @@ class TestIdentityFirstRuntimeAPIs:
         assert rt.is_running
 
     @pytest.mark.asyncio
-    async def test_create_reaps_gateway_when_lazy_bootstrap_has_no_roster(
+    async def test_runtime_reaps_gateway_when_explicit_mode_bypasses_builder_validation(
         self, tmp_path, monkeypatch
     ):
         gateway = _write_test_gateway(
@@ -240,12 +240,12 @@ import sys
 for raw_line in sys.stdin:
     request = json.loads(raw_line)
     params = request.get("params", {})
-    mode = params.get("runtime_options", {}).get("identity_bootstrap_mode", {})
-    invalid_lazy = (
-        mode.get("mode") == "lazy_materialize"
+    runtime_options = params.get("runtime_options", {})
+    invalid_explicit_mode = (
+        "identity_bootstrap_mode" in runtime_options
         and not params.get("has_roster_provider", False)
     )
-    if invalid_lazy:
+    if invalid_explicit_mode:
         response = {
             "jsonrpc": "2.0",
             "id": request["id"],
@@ -268,13 +268,18 @@ for raw_line in sys.stdin:
             "meerkat_mobkit.runtime.PersistentTransport", tracking_transport
         )
 
+        # Normal MobKitBuilder.build() rejects this locally. Constructing the
+        # runtime directly keeps the gateway's defensive validation and failed
+        # transport reaping covered for callers that bypass the builder.
+        config = (
+            MobKit.builder()
+            .gateway(str(gateway))
+            .identity_bootstrap_mode(IdentityBootstrapMode.eager_materialize())
+            ._config
+        )
+        runtime = MobKitRuntime(config)
         with pytest.raises(RpcError) as rejected:
-            await (
-                MobKit.builder()
-                .gateway(str(gateway))
-                .identity_bootstrap_mode(IdentityBootstrapMode.lazy_materialize())
-                .build()
-            )
+            await runtime.connect()
 
         assert rejected.value.code == -32602
         assert len(tracking_transport.instances) == 1

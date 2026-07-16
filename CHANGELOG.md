@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Explicit identity bootstrap modes now consistently declare identity-first
+  intent and require a roster provider, including explicit eager mode; an
+  omitted mode still preserves the classic gateway when no roster is present.
 - Identity bootstrap and reconcile now share one mode-aware controller;
   background work is cancelled during shutdown and the concrete Mob bridge
   skips unused checkpoint payload reads without weakening custom bridge
@@ -37,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Quiesced session persistence before lease rotation, retained exact committed
+  grants across failed authority publication, reused live grants during eager
+  reconcile, and drained identity-scoped orphan grants before direct lazy retry.
+- Bound merged and protected structural event authorization to the emitting
+  member's exact runtime incarnation and fence token, preventing a later
+  public respawn of the same alias from disclosing an earlier secret event.
+- Failed gateway identity bootstrap now installs runtime authority before
+  materialization and runs the full ordered shutdown before returning the init
+  error, releasing exact grants held by members that activated before a later
+  eager-roster member failed.
 - Serialized continuity generation changes with foreground materialization and
   reconcile, physically retired removed or changed roster members, and kept
   typed bootstrap readiness synchronized with lifecycle transitions.

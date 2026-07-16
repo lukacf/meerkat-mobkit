@@ -452,6 +452,19 @@ pub trait SessionBridge: Send + Sync {
         Ok(checkpoint_version)
     }
 
+    /// Temporarily quiesce persistence for a concrete bridge session while
+    /// external lease authority is rotated. Implementations must drain writes
+    /// admitted before this call and reject later mutations until a successful
+    /// [`Self::register_session_runtime_state`] publishes the replacement
+    /// fencing token. The compatibility default uses permanent unregister;
+    /// bridges with an in-process session-store adapter should preserve state.
+    async fn suspend_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        self.unregister_session_runtime_state(session_id).await
+    }
+
     /// Remove identity ownership metadata for a concrete bridge session.
     ///
     /// This is used when an identity lifecycle operation aborts after session
@@ -1662,6 +1675,19 @@ impl SessionBridge for MobSessionBridge {
                 .map_err(|err| BridgeError::Mob(format!("continuity register_session: {err}")));
         }
         Ok(checkpoint_version)
+    }
+
+    async fn suspend_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        if let Some(adapter) = self.continuity_session_store.as_ref() {
+            adapter
+                .suspend_session(session_id)
+                .await
+                .map_err(|err| BridgeError::Mob(format!("continuity suspend_session: {err}")))?;
+        }
+        Ok(())
     }
 
     async fn unregister_session_runtime_state(

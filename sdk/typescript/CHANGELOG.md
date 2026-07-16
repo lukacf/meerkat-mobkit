@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Lease renewal authority
+
+- Documented the `LeaseProvider.renewLeases()` commit boundary: rejected
+  promises are pre-commit and must leave every input grant unchanged; returned
+  renewed or lost results are committed per identity.
+
 ### Graceful gateway shutdown
 
 - `MobKitRuntime.shutdown()` now closes the persistent gateway's stdin and

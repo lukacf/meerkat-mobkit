@@ -65,7 +65,9 @@ struct GatewayGatingConfig {
 
 struct GatewayRuntimeOptions {
     runtime_options: RuntimeOptions,
-    identity_bootstrap_mode: meerkat_mobkit::IdentityBootstrapMode,
+    /// Presence is identity-first intent. `None` preserves the classic gateway
+    /// when no roster is configured; a roster still defaults to eager restore.
+    identity_bootstrap_mode: Option<meerkat_mobkit::IdentityBootstrapMode>,
     max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
     schedules: Vec<ScheduleDefinition>,
@@ -175,7 +177,7 @@ impl Default for GatewayRuntimeOptions {
     fn default() -> Self {
         Self {
             runtime_options: RuntimeOptions::default(),
-            identity_bootstrap_mode: meerkat_mobkit::IdentityBootstrapMode::default(),
+            identity_bootstrap_mode: None,
             max_sessions: 16,
             routing_routes: Vec::new(),
             schedules: Vec::new(),
@@ -1853,10 +1855,7 @@ actions = ["agent.view"]
         use meerkat_mobkit::IdentityBootstrapMode;
 
         let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
-        assert_eq!(
-            defaults.identity_bootstrap_mode,
-            IdentityBootstrapMode::EagerMaterialize
-        );
+        assert_eq!(defaults.identity_bootstrap_mode, None);
 
         for (wire, expected) in [
             (
@@ -1877,7 +1876,7 @@ actions = ["agent.view"]
                 None,
             )
             .expect("valid bootstrap mode");
-            assert_eq!(options.identity_bootstrap_mode, expected);
+            assert_eq!(options.identity_bootstrap_mode, Some(expected));
         }
 
         for invalid in [
@@ -1928,6 +1927,28 @@ actions = ["agent.view"]
             .expect_err("close must reject callbacks admitted after EOF");
         assert!(late_error.contains("transport closed"), "{late_error}");
         assert!(bridge.state.lock().await.pending.is_empty());
+    }
+
+    #[test]
+    fn gateway_explicit_identity_bootstrap_mode_always_requires_roster() {
+        use meerkat_mobkit::IdentityBootstrapMode;
+
+        validate_gateway_identity_bootstrap_intent(None, false)
+            .expect("omitted mode preserves the classic gateway");
+        validate_gateway_identity_bootstrap_intent(None, true)
+            .expect("a roster may use the eager compatibility default");
+
+        for mode in [
+            IdentityBootstrapMode::EagerMaterialize,
+            IdentityBootstrapMode::LazyMaterialize,
+            IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+        ] {
+            let error = validate_gateway_identity_bootstrap_intent(Some(&mode), false)
+                .expect_err("every explicit identity mode requires a roster");
+            assert!(error.contains("roster provider"), "{error}");
+            validate_gateway_identity_bootstrap_intent(Some(&mode), true)
+                .expect("an explicit mode with a roster is valid");
+        }
     }
 }
 
@@ -1999,6 +2020,19 @@ fn parse_gateway_identity_bootstrap_mode(
     Ok(parsed)
 }
 
+fn validate_gateway_identity_bootstrap_intent(
+    configured_mode: Option<&meerkat_mobkit::IdentityBootstrapMode>,
+    has_roster_provider: bool,
+) -> Result<(), String> {
+    if configured_mode.is_some() && !has_roster_provider {
+        return Err(
+            "runtime_options.identity_bootstrap_mode requires an identity-first roster provider"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn parse_gateway_runtime_options(
     params: &Value,
     persistent_state: Option<&std::path::Path>,
@@ -2045,7 +2079,7 @@ fn parse_gateway_runtime_options(
 
     let mut parsed = GatewayRuntimeOptions::default();
     if let Some(value) = runtime_options.get("identity_bootstrap_mode") {
-        parsed.identity_bootstrap_mode = parse_gateway_identity_bootstrap_mode(value)?;
+        parsed.identity_bootstrap_mode = Some(parse_gateway_identity_bootstrap_mode(value)?);
     }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
@@ -4109,14 +4143,11 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
-    if gateway_options.identity_bootstrap_mode.is_lazy() && !has_roster_provider {
-        fail_init(
-            &request_id,
-            -32602,
-            "runtime_options.identity_bootstrap_mode requires an identity-first roster provider"
-                .to_string(),
-        );
-    }
+    validate_gateway_identity_bootstrap_intent(
+        gateway_options.identity_bootstrap_mode.as_ref(),
+        has_roster_provider,
+    )
+    .unwrap_or_else(|error| fail_init(&request_id, -32602, error));
     if gateway_options.agent_memory.is_some() && !has_roster_provider {
         fail_init(
             &request_id,
@@ -5223,17 +5254,29 @@ external_addressable = true
             topology.clone(),
             customizer.clone(),
             Some(runtime.mob_handle().definition().clone()),
-            gateway_options.identity_bootstrap_mode.clone(),
+            gateway_options
+                .identity_bootstrap_mode
+                .clone()
+                .unwrap_or_default(),
         ));
-        if let Err(e) = identity_context.bootstrap_roster(&roster_specs).await {
+        if let Err(e) = runtime
+            .install_and_bootstrap_identity_first_context(
+                Arc::clone(&identity_context),
+                &roster_specs,
+            )
+            .await
+        {
+            // `install_and_bootstrap_identity_first_context` has already run
+            // the full UnifiedRuntime shutdown sequence. Keep the callback
+            // bridge/stdin reader alive until that returns: external lease
+            // release is itself a callback that must be acknowledged before
+            // the process emits the init error and exits.
             fail_init(
                 &request_id,
                 -32603,
                 format!("identity-first bootstrap failed: {e}"),
             );
         }
-
-        runtime.attach_identity_first_context(identity_context);
 
         Some(meerkat_mobkit::rpc::IdentityFirstContext {
             runtime: irt,

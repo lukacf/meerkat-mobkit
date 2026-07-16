@@ -15,7 +15,7 @@ use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_core::event::agent_event_type;
 use meerkat_mob::MobState;
-use meerkat_mob::ids::{AgentIdentity, MobId};
+use meerkat_mob::ids::{AgentIdentity, AgentRuntimeId, FenceToken, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{
@@ -3830,6 +3830,16 @@ struct ConsoleRuntimeIdentityAlias {
     session_id: Option<String>,
 }
 
+/// Exact roster snapshot used to authorize one attributed event. Its fields
+/// are derived only after the event's runtime id and fence token match the
+/// same live roster entry, preventing a newer incarnation of the alias from
+/// supplying authorization attributes for an older event.
+pub(crate) struct SseMemberAuthorizationProjection {
+    pub(crate) identity: String,
+    pub(crate) attributes: AgentResourceAttributes,
+    pub(crate) visible: bool,
+}
+
 /// Legacy live-only compatibility applies only to genuinely raw member ids.
 /// A generated `rt:*` projection remains identity-owned even if target
 /// resolution races the interval between durable deletion and member cleanup.
@@ -3958,6 +3968,51 @@ pub(crate) async fn sse_member_identity_visibility(
         .iter()
         .any(|alias| runtime_alias_visible_to_console(handle, visibility_policy, alias));
     Some((identity, visible))
+}
+
+/// Resolve an attributed event to the exact live roster binding that emitted
+/// it, then snapshot both ABAC attributes and console visibility from that
+/// entry. `None` means the authority can no longer be proven and protected
+/// event surfaces must fail closed.
+pub(crate) async fn sse_member_authorization_projection(
+    handle: &MobHandle,
+    runtime: Option<&MobRuntime>,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+    requested_identity: &str,
+    expected_runtime_id: &AgentRuntimeId,
+    expected_fence_token: FenceToken,
+) -> Option<SseMemberAuthorizationProjection> {
+    let candidates = lookup_member_alias_candidates_with_session(handle, requested_identity).await;
+    let alias = candidates.into_iter().find(|candidate| {
+        candidate
+            .member
+            .binding_atoms()
+            .is_some_and(|(runtime_id, fence_token)| {
+                runtime_id == *expected_runtime_id && fence_token == expected_fence_token
+            })
+    })?;
+
+    let mut labels = alias.member.labels.clone();
+    // Roster labels are untrusted for lineage. Only the spawn registry may
+    // restore `spawned_by` and related inheritance metadata.
+    crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
+    if let Some(runtime) = runtime {
+        let registered = runtime.console_identity_labels().await;
+        if let Some(spawn_labels) = registered.get(&alias.identity) {
+            crate::console_spawn::merge_registered_labels(&mut labels, spawn_labels);
+        }
+    }
+    let visible = runtime_alias_visible_to_console(handle, visibility_policy, &alias);
+    Some(SseMemberAuthorizationProjection {
+        identity: alias.identity.clone(),
+        attributes: AgentResourceAttributes {
+            identity: alias.identity,
+            agent_id: Some(alias.runtime_member_id),
+            role: Some(alias.member.role.to_string()),
+            labels,
+        },
+        visible,
+    })
 }
 
 async fn reject_ambiguous_projected_live_identity(
@@ -7675,46 +7730,54 @@ async fn handle_console_runtime_rpc_with_visibility(
             // URL still covers the empty-snapshot case without losing
             // events between the JSON-RPC response and the SSE connect.
             let latest_at_handshake = events_view.latest_cursor().await.unwrap_or(0);
-            let result = crate::unified_runtime::mob_events::query_ledger_with_filter(
+            let handle = runtime.handle();
+            let result = crate::unified_runtime::mob_events::query_ledger_with_filter_selected(
                 &events_view,
                 store,
                 &query,
+                {
+                    let handle = handle.clone();
+                    move |event| {
+                        let handle = handle.clone();
+                        async move {
+                            crate::http_sse::project_structural_envelope_for_console(
+                                &handle,
+                                Some(runtime),
+                                visibility_policy,
+                                access_view,
+                                event,
+                                true,
+                            )
+                            .await
+                        }
+                    }
+                },
             )
             .await;
             match result {
-                Ok(mut events) => {
+                Ok(page) => {
                     // `mob.observe` gates the surface; agent-attributed
                     // ledger entries still require known `agent.view`
                     // attributes and the same visibility/redaction projection
                     // as the SSE continuation. This prevents the initial JSON
                     // snapshot from becoming a side door for retired members.
-                    let handle = runtime.handle();
-                    let mut projected = Vec::with_capacity(events.len());
-                    for event in events {
-                        if let Some(event) =
-                            crate::http_sse::project_structural_envelope_for_console(
-                                &handle,
-                                visibility_policy,
-                                access_view,
-                                event,
-                            )
-                            .await
-                        {
-                            projected.push(event);
-                        }
-                    }
-                    events = projected;
-                    let last_cursor = events.last().map(|event| event.cursor);
+                    // Authorization happens inside the ledger scan so hidden
+                    // rows cannot consume `limit` and starve later visible
+                    // rows. The raw scan frontier also advances across hidden
+                    // rows, making query pagination and subscribe handoff
+                    // lossless without replaying them.
+                    let events = page.items;
+                    let resume_after_seq = Some(page.resume_after_seq);
                     let body = if request.method == "mobkit/mob_events/subscribe" {
                         let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
                             &query,
-                            last_cursor,
+                            resume_after_seq,
                             latest_at_handshake,
                         );
                         serde_json::json!({
                             "stream": "mob_events",
                             "events": events,
-                            "next_after_seq": last_cursor,
+                            "next_after_seq": resume_after_seq,
                             "subscribe_url": subscribe_url,
                             "keep_alive": {
                                 "interval_ms": 15_000_u64,
@@ -7724,7 +7787,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     } else {
                         serde_json::json!({
                             "events": events,
-                            "next_after_seq": last_cursor,
+                            "next_after_seq": resume_after_seq,
                         })
                     };
                     response_value(response_id, Some(body), None)
