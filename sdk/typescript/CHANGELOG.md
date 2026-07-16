@@ -17,7 +17,9 @@
   the gateway's 130-second hard wire deadline before the bounded `SIGTERM` /
   `SIGKILL` fallback. Cleanup acknowledgement is strictly boolean and fails
   closed when missing or malformed; older/custom gateways retain the EOF
-  protocol.
+  protocol. Authority-mutating providers receive an optional cancellation and
+  deadline context; the host aborts at 125 seconds and suppresses late callback
+  responses so a timed-out renewal cannot publish unnoticed authority.
 
 ### Identity-first agent memory
 

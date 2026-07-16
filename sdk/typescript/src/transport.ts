@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
+import type { ProviderCallbackContext } from "./types.js";
 
 // -- Types ----------------------------------------------------------------
 
@@ -48,6 +49,7 @@ export type JsonRpcSyncTransport = (request: JsonRpcRequest) => unknown;
 export type CallbackHandler = (
   method: string,
   params: Record<string, unknown>,
+  context: ProviderCallbackContext,
 ) => Promise<unknown>;
 
 export type FetchLikeResponse = {
@@ -80,6 +82,7 @@ export type FetchLike = (
  * for handshake-capable gateways without the newer explicit capability.
  */
 export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 335_000;
+export const PROVIDER_CALLBACK_COMPLETION_MS = 125_000;
 
 const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
 const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
@@ -233,6 +236,8 @@ export class PersistentTransport {
   private readonly _env: Record<string, string>;
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
+  // Mutable only so deterministic tests can scale the 125-second contract.
+  private _providerCallbackCompletionMs = PROVIDER_CALLBACK_COMPLETION_MS;
   private _supportsShutdownHandshake = false;
   private _shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
   private readonly _pending = new Map<
@@ -317,7 +322,8 @@ export class PersistentTransport {
   }
 
   private _handleCallback(msg: Record<string, unknown>): void {
-    if (!this._callbackHandler) return;
+    const handler = this._callbackHandler;
+    if (!handler) return;
 
     const method = String(msg.method ?? "");
     const params = (
@@ -326,9 +332,35 @@ export class PersistentTransport {
         : {}
     ) as Record<string, unknown>;
     const callbackId = msg.id !== undefined ? String(msg.id) : null;
+    const controller = new AbortController();
+    const deadlineMs = Date.now() + this._providerCallbackCompletionMs;
+    let completed = false;
+    const timer = setTimeout(() => {
+      if (completed) return;
+      completed = true;
+      const error = new Error(
+        "provider callback exceeded its 125s host completion deadline",
+      );
+      controller.abort(error);
+      if (callbackId !== null) {
+        this._writeLine({
+          jsonrpc: "2.0",
+          id: callbackId,
+          error: { code: -32000, message: error.message },
+        });
+      }
+    }, this._providerCallbackCompletionMs);
+    timer.unref?.();
 
-    this._callbackHandler(method, params)
+    Promise.resolve()
+      .then(() => handler(method, params, {
+        signal: controller.signal,
+        deadlineMs,
+      }))
       .then((result) => {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timer);
         if (callbackId === null) return; // Notification — no response
         this._writeLine({
           jsonrpc: "2.0",
@@ -337,6 +369,9 @@ export class PersistentTransport {
         });
       })
       .catch((err: unknown) => {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timer);
         if (callbackId === null) return;
         this._writeLine({
           jsonrpc: "2.0",

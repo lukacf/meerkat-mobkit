@@ -30,6 +30,7 @@ import {
   type AgentCustomizer,
   type TopologyProvider,
   type LeaseGrant,
+  type ProviderCallbackContext,
 } from "./types.js";
 
 // -- Protocol -------------------------------------------------------------
@@ -122,6 +123,7 @@ export class CallbackDispatcher {
   async handleCallback(
     method: string,
     params: Record<string, unknown>,
+    callbackContext?: ProviderCallbackContext,
   ): Promise<unknown> {
     if (method === "mobkit/on_error") {
       if (this._errorCallback !== null) {
@@ -265,7 +267,12 @@ export class CallbackDispatcher {
       const expectedCurrentRevision = String(params.expected_current_revision ?? "");
       const handler = this._continuityStore.deleteSessionSnapshotIfCurrentRevision;
       if (!handler) return false;
-      return handler.call(this._continuityStore, sessionId, expectedCurrentRevision);
+      return handler.call(
+        this._continuityStore,
+        sessionId,
+        expectedCurrentRevision,
+        callbackContext,
+      );
     }
 
     if (method === "callback/continuity_store/save_session_snapshot") {
@@ -281,7 +288,13 @@ export class CallbackDispatcher {
         ? parseSessionSnapshot({ data: params.snapshot })
         : parseSessionSnapshot(params.snapshot);
       await this._continuityStore.saveSessionSnapshot(
-        identity, sessionId, generation, version, fencingToken, snapshot,
+        identity,
+        sessionId,
+        generation,
+        version,
+        fencingToken,
+        snapshot,
+        callbackContext,
       );
       return null;
     }
@@ -292,7 +305,11 @@ export class CallbackDispatcher {
       }
       const record = parseContinuityRecord(params.record);
       const fencingToken = Number(params.fencing_token ?? 0);
-      await this._continuityStore.upsertContinuityRecord(record, fencingToken);
+      await this._continuityStore.upsertContinuityRecord(
+        record,
+        fencingToken,
+        callbackContext,
+      );
       return null;
     }
 
@@ -302,7 +319,11 @@ export class CallbackDispatcher {
       }
       const identity = String(params.identity ?? "");
       const fencingToken = Number(params.fencing_token ?? 0);
-      await this._continuityStore.deleteContinuityRecord(identity, fencingToken);
+      await this._continuityStore.deleteContinuityRecord(
+        identity,
+        fencingToken,
+        callbackContext,
+      );
       return null;
     }
 
@@ -316,7 +337,11 @@ export class CallbackDispatcher {
         ? params.identities.map(String)
         : [];
       const runtimeInstance = String(params.runtime_instance ?? "");
-      const result = await this._leaseProvider.acquireLeases(identities, runtimeInstance);
+      const result = await this._leaseProvider.acquireLeases(
+        identities,
+        runtimeInstance,
+        callbackContext,
+      );
       return Object.fromEntries(
         Object.entries(result).map(([identity, value]) => [
           identity,
@@ -331,7 +356,10 @@ export class CallbackDispatcher {
       }
       const rawGrants = Array.isArray(params.grants) ? params.grants : [];
       const grants: LeaseGrant[] = rawGrants.map(parseLeaseGrant);
-      const result = await this._leaseProvider.renewLeases(grants);
+      const result = await this._leaseProvider.renewLeases(
+        grants,
+        callbackContext,
+      );
       return Object.fromEntries(
         Object.entries(result).map(([identity, value]) => [
           identity,
@@ -346,7 +374,7 @@ export class CallbackDispatcher {
       }
       const rawGrants = Array.isArray(params.grants) ? params.grants : [];
       const grants: LeaseGrant[] = rawGrants.map(parseLeaseGrant);
-      await this._leaseProvider.releaseLeases(grants);
+      await this._leaseProvider.releaseLeases(grants, callbackContext);
       return null;
     }
 

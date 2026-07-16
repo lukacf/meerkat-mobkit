@@ -180,7 +180,9 @@ provider callback, runtime event and mob drains, the final lease-release
 callback, and bounded response-delivery/reaping margin. Provider operations
 must resolve or reject within their public 120-second contract. The Python host
 allows 125 seconds for event-loop completion before cancelling that callback;
-the gateway enforces a final 130-second hard wire deadline. Provider rejection,
+the TypeScript host exposes the same cancellation as an optional
+`ProviderCallbackContext` and suppresses late callback responses; the gateway
+enforces a final 130-second hard wire deadline. Provider rejection,
 timeout, or cancellation is pre-commit: an implementation must not commit a
 replacement grant or other external authority after cancellation is observed.
 Older and custom gateways that do not advertise the handshake retain the EOF

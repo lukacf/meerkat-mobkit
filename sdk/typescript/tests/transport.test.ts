@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import {
   PersistentTransport,
   PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS,
+  PROVIDER_CALLBACK_COMPLETION_MS,
   stopChildProcess,
 } from "../dist/transport.js";
 
@@ -51,6 +52,50 @@ function fakeChild(): FakeChild {
 }
 
 describe("persistent transport shutdown", () => {
+  it("aborts a stalled provider callback and suppresses its late response", async () => {
+    const transport = new PersistentTransport("unused-test-gateway");
+    const writes: Array<Record<string, unknown>> = [];
+    let observedSignal: AbortSignal | null = null;
+    let committed = false;
+    let releaseProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+
+    assert.equal(PROVIDER_CALLBACK_COMPLETION_MS, 125_000);
+    (transport as any)._providerCallbackCompletionMs = 10;
+    (transport as any)._writeLine = (value: Record<string, unknown>) => {
+      writes.push(value);
+    };
+    transport.setCallbackHandler(async (_method, _params, context) => {
+      observedSignal = context.signal;
+      await providerGate;
+      context.signal.throwIfAborted();
+      committed = true;
+      return { renewed: true };
+    });
+
+    (transport as any)._handleCallback({
+      jsonrpc: "2.0",
+      id: "cb-timeout",
+      method: "callback/lease_provider/renew_leases",
+      params: {},
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+    assert.equal(observedSignal?.aborted, true);
+    assert.equal(writes.length, 1);
+    assert.match(
+      String((writes[0].error as Record<string, unknown>).message),
+      /125s host completion deadline/,
+    );
+
+    releaseProvider();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(committed, false, "an aborted provider must not commit authority");
+    assert.equal(writes.length, 1, "late provider completion must not write a response");
+  });
+
   it("negotiates and validates the advertised shutdown horizon", async () => {
     const transport = new PersistentTransport("unused-test-gateway");
     (transport as any)._sendAsyncWithTimeout = async () => ({

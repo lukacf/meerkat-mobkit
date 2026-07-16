@@ -36,8 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   335-second bounded horizon and positively attests every cleanup boundary,
   including mob quiescence, exact authority release, event draining, and child
   process termination. Provider operations retain their public 120-second
-  contract, with a 125-second Python completion deadline and a 130-second
-  gateway wire deadline; older/custom gateways retain EOF compatibility.
+  contract, with a 125-second SDK completion deadline and a 130-second gateway
+  wire deadline; Python cancels the event-loop future and TypeScript exposes an
+  abort signal while suppressing late responses. Older/custom gateways retain
+  EOF compatibility.
 - Destructive identity reset now retains exact old-generation cleanup debt
   after the replacement continuity head commits. MobKit captures memory first,
   quiesces the superseded member, CAS-deletes only its stale session snapshot,
