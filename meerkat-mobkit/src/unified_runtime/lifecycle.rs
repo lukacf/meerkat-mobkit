@@ -18,8 +18,8 @@ use crate::runtime::{
 use crate::types::{EventEnvelope, ModuleEvent, UnifiedEvent};
 
 use super::types::{
-    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError, UnifiedRuntimeRunReport,
-    UnifiedRuntimeShutdownReport,
+    IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError,
+    UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
@@ -198,6 +198,24 @@ impl UnifiedRuntime {
             let _ = task.await;
         }
 
+        // Reset commits the replacement continuity generation before the old
+        // physical member can finish its archive protocol. Those exact
+        // post-commit obligations live in a dedicated runtime-owned task set
+        // and debt ledger: join them after foreground lifecycle admission is
+        // closed, then synchronously retry every remaining pair before Mob
+        // stop can observe a stale Retiring anchor.
+        let mut reset_bridge_cleanup_error = None;
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            identity_runtime.join_reset_bridge_cleanup_tasks().await;
+            if let Err(error) = identity_runtime.drain_pending_reset_bridge_cleanups().await {
+                tracing::warn!(
+                    %error,
+                    "reset-superseded bridge cleanup remains before mob shutdown"
+                );
+                reset_bridge_cleanup_error = Some(error.to_string());
+            }
+        }
+
         // Phase 1: Drain in-flight events
         let drain_start = std::time::Instant::now();
         let mut drained_count = 0_usize;
@@ -228,7 +246,31 @@ impl UnifiedRuntime {
         // Phase 2: Stop the mob actor while its router/module dependencies
         // are still alive. Closing them first can race Stop against an
         // already-dropped actor reply channel under teardown pressure.
-        let mob_stop = self.stop_mob_quiescing().await;
+        let mut mob_stop = self.stop_mob_quiescing().await;
+
+        // A first cleanup attempt can fail while the Mob stop itself finishes
+        // quiescing the old runtime. Retry the retained exact debt once more;
+        // if it converges after a failed stop, retry Stop so cleanup attestation
+        // reflects the final structural state rather than the first refusal.
+        if reset_bridge_cleanup_error.is_some()
+            && let Some(identity_runtime) = identity_runtime.as_ref()
+        {
+            match identity_runtime.drain_pending_reset_bridge_cleanups().await {
+                Ok(_) => {
+                    reset_bridge_cleanup_error = None;
+                    if mob_stop.is_err() {
+                        mob_stop = self.stop_mob_quiescing().await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "reset-superseded bridge cleanup remains after mob shutdown retry"
+                    );
+                    reset_bridge_cleanup_error = Some(error.to_string());
+                }
+            }
+        }
 
         // Fencing authority must outlive the physical members it protects.
         // Keep renewal running through mob quiescence, then stop it before the
@@ -236,20 +278,39 @@ impl UnifiedRuntime {
         if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
             task.cancel_and_join().await;
         }
-        if let Some(identity_runtime) = identity_runtime.as_ref() {
-            if mob_stop.is_ok() {
-                if let Err(error) = identity_runtime.release_all_leases_for_shutdown().await {
-                    tracing::warn!(
-                        %error,
-                        "failed to release identity authority after mob shutdown"
-                    );
+        let identity_authority_release = match identity_runtime.as_ref() {
+            None => IdentityAuthorityReleaseOutcome::NotConfigured,
+            Some(identity_runtime) if mob_stop.is_ok() && reset_bridge_cleanup_error.is_none() => {
+                match identity_runtime.release_all_leases_for_shutdown().await {
+                    Ok(grant_count) => IdentityAuthorityReleaseOutcome::Released { grant_count },
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "failed to release identity authority after mob shutdown"
+                        );
+                        IdentityAuthorityReleaseOutcome::Failed {
+                            error: error.to_string(),
+                        }
+                    }
                 }
-            } else {
+            }
+            Some(_) if mob_stop.is_ok() => {
+                let error = reset_bridge_cleanup_error.unwrap_or_else(|| {
+                    "reset bridge cleanup remained without an error detail".to_string()
+                });
+                tracing::warn!(
+                    %error,
+                    "retaining identity grants because reset bridge cleanup did not converge"
+                );
+                IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed { error }
+            }
+            Some(_) => {
                 tracing::warn!(
                     "mob shutdown did not quiesce physical members; retaining identity grants"
                 );
+                IdentityAuthorityReleaseOutcome::SkippedMobStopFailed
             }
-        }
+        };
         if mob_stop.is_ok() {
             // Break the MobRuntime <-> IdentityRuntime authority cycle only
             // after physical members are gone. This is required for failed
@@ -272,6 +333,7 @@ impl UnifiedRuntime {
             drain,
             module_shutdown,
             mob_stop,
+            identity_authority_release,
         }
     }
 

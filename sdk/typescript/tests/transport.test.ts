@@ -5,6 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 
 import {
   PersistentTransport,
@@ -23,7 +24,7 @@ function fakeChild(): FakeChild {
   const state = {
     stdinEnded: 0,
   };
-  const child = {
+  const child = Object.assign(new EventEmitter(), {
     stdin: {
       end: () => {
         state.stdinEnded += 1;
@@ -35,7 +36,7 @@ function fakeChild(): FakeChild {
       signals.push(signal);
       return true;
     },
-  } as unknown as ChildProcess;
+  }) as unknown as ChildProcess;
 
   return {
     child,
@@ -71,7 +72,7 @@ describe("persistent transport shutdown", () => {
     assert.equal((transport as any)._supportsShutdownHandshake, true);
     assert.equal((transport as any)._shutdownHorizonMs, 321_000);
 
-    for (const invalid of [undefined, true, 0, -1, 1.5, "310000"]) {
+    for (const invalid of [undefined, true, 0, -1, 1.5, "335000"]) {
       (transport as any)._sendAsyncWithTimeout = async () => ({
         jsonrpc: "2.0",
         id: "init-invalid-horizon",
@@ -142,7 +143,14 @@ describe("persistent transport shutdown", () => {
       markHandshakeEntered();
       await handshakeGate;
       (fake.child as any).exitCode = 0;
-      return { jsonrpc: "2.0", id: request.id, result: { shutdown: true } };
+      return {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          shutdown: true,
+          runtime_cleanup_completed: true,
+        },
+      };
     };
 
     const stopping = transport.stop();
@@ -173,31 +181,49 @@ describe("persistent transport shutdown", () => {
     assert.equal(fake.stdinEnded, 1);
   });
 
-  it("propagates incomplete runtime cleanup only after reaping the gateway", async () => {
-    const fake = fakeChild();
-    const transport = new PersistentTransport("unused-test-gateway");
-    (transport as any)._process = fake.child;
-    (transport as any)._supportsShutdownHandshake = true;
-    (transport as any)._shutdownHorizonMs = 321_000;
-    (transport as any)._sendAsyncWithTimeout = async () => {
-      (fake.child as any).exitCode = 0;
-      return {
-        jsonrpc: "2.0",
-        id: "shutdown-failed",
-        result: {
-          shutdown: false,
-          runtime_cleanup_completed: false,
-        },
+  it("rejects every non-true cleanup attestation only after reaping", async () => {
+    const invalidResults: Array<Record<string, unknown>> = [
+      { shutdown: true },
+      { shutdown: true, runtime_cleanup_completed: null },
+      { shutdown: true, runtime_cleanup_completed: "true" },
+      { shutdown: true, runtime_cleanup_completed: false },
+      { shutdown: true, runtime_cleanup_completed: 1 },
+      { shutdown: false, runtime_cleanup_completed: true },
+    ];
+
+    for (const result of invalidResults) {
+      const fake = fakeChild();
+      const transport = new PersistentTransport("unused-test-gateway");
+      (transport as any)._process = fake.child;
+      (transport as any)._supportsShutdownHandshake = true;
+      (transport as any)._shutdownHorizonMs = 321_000;
+      (transport as any)._sendAsyncWithTimeout = async () => {
+        return {
+          jsonrpc: "2.0",
+          id: "shutdown-failed",
+          result,
+        };
       };
-    };
 
-    await assert.rejects(
-      transport.stop(),
-      /gateway shutdown failed after bounded cleanup/,
-    );
+      let rejected = false;
+      const stopping = transport.stop();
+      void stopping.catch(() => {
+        rejected = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(fake.stdinEnded, 1);
-    assert.equal((transport as any)._process, null);
+      assert.equal(fake.stdinEnded, 1);
+      assert.equal(rejected, false);
+      (fake.child as any).exitCode = 0;
+      (fake.child as any).emit("exit", 0, null);
+      await assert.rejects(
+        stopping,
+        /gateway shutdown failed after bounded cleanup/,
+      );
+
+      assert.equal(rejected, true);
+      assert.equal((transport as any)._process, null);
+    }
   });
 
   it("allows the gateway its full negotiated-safe drain without signaling it", async () => {
@@ -209,9 +235,9 @@ describe("persistent transport shutdown", () => {
       return true;
     });
 
-    assert.equal(PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS, 310_000);
+    assert.equal(PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS, 335_000);
     assert.equal(fake.stdinEnded, 1);
-    assert.deepEqual(waits, [310_000]);
+    assert.deepEqual(waits, [335_000]);
     assert.deepEqual(fake.signals, []);
   });
 
@@ -226,7 +252,24 @@ describe("persistent transport shutdown", () => {
     });
 
     assert.equal(fake.stdinEnded, 1);
-    assert.deepEqual(waits, [310_000, 5_000, 5_000]);
+    assert.deepEqual(waits, [335_000, 5_000, 5_000]);
+    assert.deepEqual(fake.signals, ["SIGTERM", "SIGKILL"]);
+  });
+
+  it("rejects when the gateway remains live after bounded SIGKILL cleanup", async () => {
+    const fake = fakeChild();
+    const waits: number[] = [];
+
+    await assert.rejects(
+      stopChildProcess(fake.child, async (_child, timeoutMs) => {
+        waits.push(timeoutMs);
+        return false;
+      }),
+      /gateway process did not terminate after bounded cleanup/,
+    );
+
+    assert.equal(fake.stdinEnded, 1);
+    assert.deepEqual(waits, [335_000, 5_000, 5_000]);
     assert.deepEqual(fake.signals, ["SIGTERM", "SIGKILL"]);
   });
 
@@ -240,7 +283,7 @@ describe("persistent transport shutdown", () => {
       return outcomes.shift() ?? true;
     });
 
-    assert.deepEqual(waits, [310_000, 5_000]);
+    assert.deepEqual(waits, [335_000, 5_000]);
     assert.deepEqual(fake.signals, ["SIGTERM"]);
   });
 });

@@ -33,9 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and the Python/TypeScript host transports preserve that cleanup ordering
   before escalating to bounded process termination.
 - Persistent SDK shutdown now negotiates the stock gateway's explicit
-  310-second bounded horizon. The gateway keeps provider callbacks routable
-  through runtime cleanup, while Python and TypeScript retain EOF compatibility
-  for older/custom gateways and no longer preempt a valid 120-second callback.
+  335-second bounded horizon and positively attests every cleanup boundary,
+  including mob quiescence, exact authority release, event draining, and child
+  process termination. Provider operations retain their public 120-second
+  contract, with a 125-second Python completion deadline and a 130-second
+  gateway wire deadline; older/custom gateways retain EOF compatibility.
+- Destructive identity reset now retains exact old-generation cleanup debt
+  after the replacement continuity head commits. MobKit captures memory first,
+  quiesces the superseded member, CAS-deletes only its stale session snapshot,
+  verifies structural roster absence, and retries the debt during shutdown
+  before attesting cleanup or releasing identity authority.
+- Machine-authorized boundary cancellation now treats typed missing-session and
+  no-running-turn observations as already quiesced, while preserving every
+  other cancellation error as a strict shutdown failure.
 - Hosts embedding an `Arc<UnifiedRuntime>` can use
   `handle_unified_rpc_json_arc`; the gateway uses its live-handler counterpart
   so identity-owned cross-mob mutations remain supervised if the requesting

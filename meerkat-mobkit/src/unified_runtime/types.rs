@@ -177,11 +177,43 @@ impl From<ScheduleValidationError> for UnifiedRuntimeError {
     }
 }
 
+/// Exact disposition of identity-first lease authority during shutdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityAuthorityReleaseOutcome {
+    /// The runtime did not have identity-first authority to release.
+    NotConfigured,
+    /// Every retained grant was released from the configured provider.
+    Released { grant_count: usize },
+    /// The provider rejected or failed the exact release operation.
+    Failed { error: String },
+    /// A reset-superseded session/member cleanup obligation remained after
+    /// physical shutdown retries, so provider grants were retained.
+    SkippedResetCleanupFailed { error: String },
+    /// Physical members did not quiesce, so their grants were deliberately retained.
+    SkippedMobStopFailed,
+}
+
 #[derive(Debug)]
 pub struct UnifiedRuntimeShutdownReport {
     pub drain: ShutdownDrainReport,
     pub module_shutdown: RuntimeShutdownReport,
     pub mob_stop: Result<(), MobRuntimeError>,
+    pub identity_authority_release: IdentityAuthorityReleaseOutcome,
+}
+
+impl UnifiedRuntimeShutdownReport {
+    /// True only when every shutdown phase that owns external authority or
+    /// child-process state completed successfully.
+    pub fn cleanup_completed(&self) -> bool {
+        !self.drain.timed_out
+            && self.mob_stop.is_ok()
+            && matches!(
+                &self.identity_authority_release,
+                IdentityAuthorityReleaseOutcome::NotConfigured
+                    | IdentityAuthorityReleaseOutcome::Released { .. }
+            )
+            && self.module_shutdown.orphan_processes == 0
+    }
 }
 
 #[derive(Debug)]
@@ -425,5 +457,67 @@ impl Display for ErrorEvent {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn completed_shutdown_report() -> UnifiedRuntimeShutdownReport {
+        UnifiedRuntimeShutdownReport {
+            drain: ShutdownDrainReport {
+                drained_count: 1,
+                timed_out: false,
+                drain_duration_ms: 2,
+            },
+            module_shutdown: RuntimeShutdownReport {
+                terminated_modules: vec!["router".to_string()],
+                orphan_processes: 0,
+            },
+            mob_stop: Ok(()),
+            identity_authority_release: IdentityAuthorityReleaseOutcome::NotConfigured,
+        }
+    }
+
+    #[test]
+    fn shutdown_cleanup_attestation_requires_every_authority_boundary() {
+        let mut report = completed_shutdown_report();
+        assert!(report.cleanup_completed());
+
+        report.identity_authority_release =
+            IdentityAuthorityReleaseOutcome::Released { grant_count: 1 };
+        assert!(report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.drain.timed_out = true;
+        assert!(!report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.mob_stop = Err(MobRuntimeError::InvalidConfig(
+            "mob stop failed".to_string(),
+        ));
+        assert!(!report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::Failed {
+            error: "provider release failed".to_string(),
+        };
+        assert!(!report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::SkippedMobStopFailed;
+        assert!(!report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.identity_authority_release =
+            IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed {
+                error: "superseded member retained".to_string(),
+            };
+        assert!(!report.cleanup_completed());
+
+        let mut report = completed_shutdown_report();
+        report.module_shutdown.orphan_processes = 1;
+        assert!(!report.cleanup_completed());
     }
 }

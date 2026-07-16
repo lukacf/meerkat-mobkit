@@ -1604,6 +1604,26 @@ fn normalize_runtime_turn_request(
     req
 }
 
+/// Apply a machine-authorized cooperative cancel as an idempotent quiescence
+/// operation. Once the generated runtime machine has admitted the cancel,
+/// absence of a live session (or absence of a running turn) proves that there
+/// is no lower-plane work left to interrupt. Propagating either observation
+/// back as a failed effect wedges the machine in its pre-cancel phase and can
+/// make whole-mob shutdown retain otherwise releasable identity authority.
+async fn cancel_after_boundary_with_machine_authority_if_live(
+    service: &dyn MobSessionService,
+    session_id: &meerkat_core::types::SessionId,
+    authority: meerkat_runtime::MachineSessionControlAuthority,
+) -> Result<(), SessionError> {
+    service
+        .cancel_after_boundary_with_machine_authority(session_id, authority)
+        .await
+        .or_else(|error| match error {
+            SessionError::NotFound { .. } | SessionError::NotRunning { .. } => Ok(()),
+            error => Err(error),
+        })
+}
+
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
 /// overriding only `create_session` to apply the pre-build hook.
 macro_rules! delegate_mob_session_service {
@@ -1832,9 +1852,12 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
                 authority: meerkat_runtime::MachineSessionControlAuthority,
             ) -> Result<(), SessionError> {
-                self.inner
-                    .cancel_after_boundary_with_machine_authority(session_id, authority)
-                    .await
+                cancel_after_boundary_with_machine_authority_if_live(
+                    self.inner.as_ref(),
+                    session_id,
+                    authority,
+                )
+                .await
             }
             async fn session_belongs_to_mob(
                 &self,
@@ -2343,9 +2366,12 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
         authority: meerkat_runtime::MachineSessionControlAuthority,
     ) -> Result<(), SessionError> {
-        self.inner
-            .cancel_after_boundary_with_machine_authority(session_id, authority)
-            .await
+        cancel_after_boundary_with_machine_authority_if_live(
+            self.inner.as_ref(),
+            session_id,
+            authority,
+        )
+        .await
     }
     async fn session_belongs_to_mob(
         &self,
@@ -5336,6 +5362,7 @@ realm_profile = "worker-v2"
     #[derive(Default)]
     struct ForwardingProbe {
         calls: Mutex<Vec<&'static str>>,
+        cancel_outcome: std::sync::atomic::AtomicU8,
     }
 
     impl ForwardingProbe {
@@ -5351,6 +5378,11 @@ realm_profile = "worker-v2"
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
+        }
+
+        fn set_cancel_outcome(&self, outcome: u8) {
+            self.cancel_outcome
+                .store(outcome, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -5451,6 +5483,29 @@ realm_profile = "worker-v2"
             Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))
         }
 
+        async fn cancel_after_boundary_with_machine_authority(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+            _authority: meerkat_runtime::MachineSessionControlAuthority,
+        ) -> Result<(), SessionError> {
+            self.record("cancel_after_boundary_with_machine_authority");
+            match self
+                .cancel_outcome
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                0 => Err(SessionError::NotFound {
+                    id: session_id.clone(),
+                }),
+                1 => Err(SessionError::NotRunning {
+                    id: session_id.clone(),
+                }),
+                2 => Err(SessionError::Unsupported(
+                    "synthetic cancel rejection".to_string(),
+                )),
+                _ => Ok(()),
+            }
+        }
+
         async fn archive_with_mob_lifecycle_authority(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -5508,6 +5563,17 @@ realm_profile = "worker-v2"
         };
         let session_id = meerkat_core::types::SessionId::new();
 
+        MobSessionService::cancel_after_boundary_with_machine_authority(
+            &wrapped,
+            &session_id,
+            wrapped
+                .runtime_adapter()
+                .expect("wrapper should expose runtime adapter")
+                .session_control_authority(),
+        )
+        .await
+        .expect("machine-authorized cancel should treat a missing live session as quiesced");
+
         MobSessionService::archive_with_mob_lifecycle_authority(&wrapped, &session_id)
             .await
             .expect("archive_with_mob_lifecycle_authority should forward to inner service");
@@ -5564,6 +5630,7 @@ realm_profile = "worker-v2"
         assert_eq!(
             probe.calls(),
             vec![
+                "cancel_after_boundary_with_machine_authority",
                 "archive_with_mob_lifecycle_authority",
                 "stage_tool_results",
                 "active_turn_system_context_boundary_available",
@@ -5571,6 +5638,48 @@ realm_profile = "worker-v2"
                 "discard_runtime_system_context_for_active_turn",
                 "session_known_to_archive_authority",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn machine_authorized_boundary_cancel_only_normalizes_quiesced_liveness() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        for quiesced_outcome in [0, 1] {
+            probe.set_cancel_outcome(quiesced_outcome);
+            MobSessionService::cancel_after_boundary_with_machine_authority(
+                &wrapped,
+                &session_id,
+                wrapped
+                    .runtime_adapter()
+                    .expect("wrapper should expose runtime adapter")
+                    .session_control_authority(),
+            )
+            .await
+            .expect("NotFound and NotRunning both prove lower-plane quiescence");
+        }
+
+        probe.set_cancel_outcome(2);
+        let error = MobSessionService::cancel_after_boundary_with_machine_authority(
+            &wrapped,
+            &session_id,
+            wrapped
+                .runtime_adapter()
+                .expect("wrapper should expose runtime adapter")
+                .session_control_authority(),
+        )
+        .await
+        .expect_err("non-liveness cancellation failures must remain fatal");
+        assert!(
+            matches!(error, SessionError::Unsupported(ref detail) if detail == "synthetic cancel rejection"),
+            "unexpected fail-closed cancellation error: {error}"
         );
     }
 

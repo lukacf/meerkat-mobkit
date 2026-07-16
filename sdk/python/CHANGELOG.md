@@ -6,9 +6,12 @@ All notable changes to the Python SDK are documented here.
 
 - Persistent gateway shutdown now negotiates an explicit bounded horizon and
   keeps stdin/provider callbacks open until the gateway acknowledges runtime
-  cleanup. The stock 310-second horizon covers valid 120-second provider
-  callbacks; older/custom gateways retain the EOF protocol, and blocking
-  child-process waits remain off the asyncio event loop.
+  cleanup. The stock 335-second horizon covers provider operations that meet
+  their public 120-second contract, a dedicated 125-second Python host
+  completion deadline, and the gateway's 130-second hard wire deadline.
+  Provider callback timeout cancels the event-loop future, malformed cleanup
+  acknowledgements fail closed, older/custom gateways retain the EOF protocol,
+  and blocking child-process waits remain off the asyncio event loop.
 - Failed gateway bootstrap now detaches and reaps its child process before a
   reconnect can start a replacement, including provider callback failures and
   cancellation while cleanup is in progress.

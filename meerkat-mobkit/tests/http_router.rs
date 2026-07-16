@@ -261,7 +261,7 @@ fn sc_001_reference_app_router_proves_unified_owned_console_path() {
 fn sc_002_unified_shutdown_stops_mob_before_router_and_module_teardown() {
     let lifecycle_source = include_str!("../src/unified_runtime/lifecycle.rs");
     let mob_stop = lifecycle_source
-        .find("let mob_stop = self")
+        .find("mob_stop = self.stop_mob_quiescing().await")
         .expect("shutdown must stop mob");
     let close_event_router = lifecycle_source
         .find("self.close_event_router().await;")

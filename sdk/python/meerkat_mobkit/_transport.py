@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import logging
 import math
@@ -14,14 +15,18 @@ from uuid import uuid4
 
 _log = logging.getLogger("meerkat_mobkit")
 
-# Stock gateways bound their complete shutdown path to 300 seconds: two
-# five-second admission drains, a 285-second runtime cleanup window (long
-# enough for an admitted 120-second provider callback and the final
-# 120-second lease-release callback), and a five-second stdout drain. The
-# advertised 310-second horizon adds response-delivery/process-reap margin.
+# Provider operations are publicly required to finish within 120 seconds.
+# Python gives their event-loop coroutine another five seconds of host
+# completion margin before cancellation; the stock Rust gateway owns the
+# final 130-second wire deadline.
+_PROVIDER_CALLBACK_COMPLETION_SECONDS = 125.0
+
+# The fallback matches the stock gateway's advertised shutdown horizon. It
+# covers two 130-second callback windows, runtime event/mob drains, bounded
+# RPC/HTTP/stdout phases, and response-delivery/process-reap margin.
 # It is also the safe fallback for handshake-capable custom gateways which do
 # not yet advertise an explicit horizon.
-_GATEWAY_SHUTDOWN_GRACE_SECONDS = 310.0
+_GATEWAY_SHUTDOWN_GRACE_SECONDS = 335.0
 _MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647
 _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
@@ -187,7 +192,26 @@ class PersistentTransport:
                 future = asyncio.run_coroutine_threadsafe(
                     self._callback_handler(method, params), self._loop
                 )
-                result = future.result(timeout=self._timeout)
+                try:
+                    result = future.result(
+                        timeout=_PROVIDER_CALLBACK_COMPLETION_SECONDS
+                    )
+                except FutureTimeoutError as exc:
+                    # `Future.result()` also propagates a TimeoutError raised
+                    # by the provider itself. A completed future therefore
+                    # represents the provider's own failure, not exhaustion
+                    # of the host wait, and must retain its original error.
+                    if future.done():
+                        raise
+                    # The ordinary request timeout is intentionally unrelated
+                    # to provider execution. If the dedicated host deadline is
+                    # exhausted, cancel the event-loop coroutine before Rust's
+                    # 130-second wire deadline so a timed-out provider cannot
+                    # continue toward a late authority commit unnoticed.
+                    future.cancel()
+                    raise TimeoutError(
+                        "provider callback exceeded its 125s host completion deadline"
+                    ) from exc
             else:
                 raise RuntimeError(
                     "PersistentTransport: no running event loop for callback dispatch"
@@ -333,7 +357,7 @@ class PersistentTransport:
         if (
             not isinstance(result, dict)
             or result.get("shutdown") is not True
-            or result.get("runtime_cleanup_completed") is False
+            or result.get("runtime_cleanup_completed") is not True
         ):
             raise RuntimeError(
                 "gateway shutdown did not complete runtime-owned cleanup"
@@ -357,6 +381,8 @@ class PersistentTransport:
             _GATEWAY_SHUTDOWN_GRACE_SECONDS,
         )
         shutdown_error: Exception | None = None
+        process_reaped = False
+        reap_error: Exception | None = None
         shutdown_started = time.monotonic()
         try:
             # The gateway may need to round-trip lease/continuity provider
@@ -384,34 +410,55 @@ class PersistentTransport:
                     pass
             try:
                 process.wait(timeout=remaining_grace)
-            except subprocess.TimeoutExpired:
+                process_reaped = True
+            except (OSError, subprocess.TimeoutExpired):
                 try:
-                    process.terminate()
+                    process_reaped = process.poll() is not None
                 except OSError:
-                    # The child can exit between the timed wait and signal.
-                    pass
-                try:
-                    process.wait(timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
+                    process_reaped = False
+                if not process_reaped:
                     try:
-                        process.kill()
+                        process.terminate()
                     except OSError:
+                        # The child can exit between the timed wait and signal.
                         pass
                     try:
-                        process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+                        process.wait(timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
+                        process_reaped = True
                     except (OSError, subprocess.TimeoutExpired):
-                        # Signals are best effort; never make SDK teardown
-                        # unbounded if the OS cannot reap the child promptly.
-                        pass
-            except OSError:
-                # Already-reaped children need no further cleanup.
-                pass
+                        try:
+                            process_reaped = process.poll() is not None
+                        except OSError:
+                            process_reaped = False
+                        if not process_reaped:
+                            try:
+                                process.kill()
+                            except OSError:
+                                pass
+                            try:
+                                process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+                                process_reaped = True
+                            except (OSError, subprocess.TimeoutExpired) as exc:
+                                try:
+                                    process_reaped = process.poll() is not None
+                                except OSError:
+                                    process_reaped = False
+                                if not process_reaped:
+                                    # Keep teardown bounded, but never attest
+                                    # success or discard ownership while the
+                                    # child remains live.
+                                    reap_error = exc
         finally:
-            self._process = None
-            stderr_file = getattr(self, "_stderr_file", None)
-            if stderr_file is not None:
-                stderr_file.close()
-                self._stderr_file = None
+            if process_reaped:
+                self._process = None
+                stderr_file = getattr(self, "_stderr_file", None)
+                if stderr_file is not None:
+                    stderr_file.close()
+                    self._stderr_file = None
+        if reap_error is not None:
+            raise RuntimeError(
+                "persistent transport: gateway process did not terminate after bounded cleanup"
+            ) from reap_error
         if shutdown_error is not None:
             raise RuntimeError(
                 "persistent transport: gateway shutdown failed after bounded cleanup"

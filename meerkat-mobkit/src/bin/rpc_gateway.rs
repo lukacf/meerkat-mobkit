@@ -35,7 +35,8 @@ use meerkat_mobkit::{
     ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
     RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
     ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, handle_mobkit_rpc_json, load_console_ui_config_from_path_for_realm,
+    UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
         mob_definition_may_use_shell,
@@ -376,6 +377,9 @@ fn parse_gateway_modules(params: &Value) -> (Vec<ModuleConfig>, Vec<PreSpawnData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
+    use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
+    use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
 
     #[test]
     fn gateway_module_boundary_becomes_pre_spawn_data() {
@@ -1932,31 +1936,91 @@ actions = ["agent.view"]
 
     #[test]
     fn advertised_shutdown_horizon_covers_every_bounded_gateway_phase() {
+        fn completed_report() -> UnifiedRuntimeShutdownReport {
+            UnifiedRuntimeShutdownReport {
+                drain: ShutdownDrainReport {
+                    drained_count: 1,
+                    timed_out: false,
+                    drain_duration_ms: 2,
+                },
+                module_shutdown: RuntimeShutdownReport {
+                    terminated_modules: vec!["router".to_string()],
+                    orphan_processes: 0,
+                },
+                mob_stop: Ok(()),
+                identity_authority_release: IdentityAuthorityReleaseOutcome::Released {
+                    grant_count: 1,
+                },
+            }
+        }
+
+        fn assert_not_attested(report: Option<&UnifiedRuntimeShutdownReport>) {
+            let response = gateway_shutdown_response(json!("shutdown"), report);
+            assert_eq!(response["result"]["shutdown"], false);
+            assert_eq!(response["result"]["runtime_cleanup_completed"], false);
+        }
+
+        assert_eq!(PROVIDER_CALLBACK_TIMEOUT, Duration::from_secs(130));
+        let mob_quiesce_window = Duration::from_secs(10);
+        let scheduler_overhead = Duration::from_secs(10);
+        assert_eq!(
+            GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT,
+            PROVIDER_CALLBACK_TIMEOUT
+                + PROVIDER_CALLBACK_TIMEOUT
+                + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
+                + mob_quiesce_window
+                + scheduler_overhead,
+            "runtime budget must exactly cover both provider callbacks, event drain, mob quiesce, and scheduler overhead"
+        );
         let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
             + GATEWAY_HTTP_DRAIN_TIMEOUT
             + GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
             + GATEWAY_STDOUT_DRAIN_TIMEOUT;
-        assert_eq!(gateway_phase_budget, Duration::from_mins(5));
+        assert_eq!(gateway_phase_budget, Duration::from_secs(325));
+        assert_eq!(
+            Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS),
+            Duration::from_secs(335)
+        );
         assert_eq!(
             Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
             Duration::from_secs(10),
             "advertised horizon must leave response/reaping margin"
         );
-        assert!(
-            GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
-                >= PROVIDER_CALLBACK_TIMEOUT
-                    + PROVIDER_CALLBACK_TIMEOUT
-                    + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
-                    + Duration::from_secs(15),
-            "runtime budget must cover admitted + release callbacks and runtime drains"
-        );
 
-        let timed_out = gateway_shutdown_response(json!("shutdown"), true);
-        assert_eq!(timed_out["result"]["shutdown"], false);
-        assert_eq!(timed_out["result"]["runtime_cleanup_completed"], false);
-        let completed = gateway_shutdown_response(json!("shutdown"), false);
+        assert_not_attested(None);
+
+        let successful_report = completed_report();
+        let completed = gateway_shutdown_response(json!("shutdown"), Some(&successful_report));
         assert_eq!(completed["result"]["shutdown"], true);
         assert_eq!(completed["result"]["runtime_cleanup_completed"], true);
+
+        let mut report = completed_report();
+        report.drain.timed_out = true;
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.mob_stop = Err(MobRuntimeError::InvalidConfig(
+            "mob stop failed".to_string(),
+        ));
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::SkippedMobStopFailed;
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.identity_authority_release =
+            IdentityAuthorityReleaseOutcome::SkippedResetCleanupFailed {
+                error: "superseded generation cleanup remains pending".to_string(),
+            };
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.identity_authority_release = IdentityAuthorityReleaseOutcome::Failed {
+            error: "provider release failed".to_string(),
+        };
+        assert_not_attested(Some(&report));
+
+        let mut report = completed_report();
+        report.module_shutdown.orphan_processes = 1;
+        assert_not_attested(Some(&report));
     }
 
     #[test]
@@ -3333,19 +3397,20 @@ const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 // open while identity-owned cleanup runs. The runtime budget deliberately
 // covers two complete callback windows: one for an already-admitted identity
 // operation which shutdown must join, and one for the final batched lease
-// release. The remaining 45 seconds cover the runtime's 30-second event
-// drain, 10-second mob quiesce window, and scheduler overhead.
-const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_mins(2);
+// release. The 310-second runtime budget is exactly two 130-second provider
+// callback windows, the runtime's 30-second event drain, its 10-second mob
+// quiesce window, and 10 seconds of scheduler overhead.
+const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_secs(130);
 const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
-const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(285);
+const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(310);
 const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-// The bounded gateway phases total at most 300 seconds (5 + 5 + 285 + 5).
+// The bounded gateway phases total at most 325 seconds (5 + 5 + 310 + 5).
 // Advertise another 10 seconds for response delivery and process reaping so
 // an SDK never races the gateway's own deadline and preempts a valid callback.
-const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 310_000;
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 335_000;
 
 #[derive(Debug)]
 struct GatewayShutdownRequest {
@@ -3364,16 +3429,21 @@ fn gateway_shutdown_request(message: &Value) -> Option<GatewayShutdownRequest> {
     })
 }
 
-fn gateway_shutdown_response(response_id: Value, runtime_shutdown_timed_out: bool) -> Value {
+fn gateway_shutdown_response(
+    response_id: Value,
+    runtime_shutdown: Option<&UnifiedRuntimeShutdownReport>,
+) -> Value {
+    let runtime_cleanup_completed =
+        runtime_shutdown.is_some_and(UnifiedRuntimeShutdownReport::cleanup_completed);
     json!({
         "jsonrpc": "2.0",
         "id": response_id,
         "result": {
-            // A runtime deadline is process-bounded, not successful authority
-            // cleanup. SDKs validate this field and surface the failure only
-            // after reaping the gateway.
-            "shutdown": !runtime_shutdown_timed_out,
-            "runtime_cleanup_completed": !runtime_shutdown_timed_out
+            // Future completion alone is not successful authority cleanup.
+            // SDKs validate these fields and surface failure only after
+            // reaping the gateway.
+            "shutdown": runtime_cleanup_completed,
+            "runtime_cleanup_completed": runtime_cleanup_completed
         }
     })
 }
@@ -3467,7 +3537,10 @@ impl StdioCallbackBridge {
             Ok(Err(_)) => Err("callback response channel dropped".to_string()),
             Err(_) => {
                 self.state.lock().await.pending.remove(&id_str);
-                Err("callback timed out after 120s".to_string())
+                Err(format!(
+                    "callback timed out after {}s",
+                    PROVIDER_CALLBACK_TIMEOUT.as_secs()
+                ))
             }
         }
     }
@@ -5744,19 +5817,30 @@ external_addressable = true
         let _ = serve_task.await;
     }
     event_drain_task.abort();
-    let runtime_shutdown_timed_out =
-        tokio::time::timeout(GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown())
-            .await
-            .is_err();
-    if runtime_shutdown_timed_out {
-        tracing::warn!(
-            timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
-            "gateway runtime shutdown exceeded its bounded horizon"
-        );
+    let runtime_shutdown =
+        tokio::time::timeout(GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await;
+    match runtime_shutdown.as_ref() {
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
+                "gateway runtime shutdown exceeded its bounded horizon"
+            );
+        }
+        Ok(report) if !report.cleanup_completed() => {
+            tracing::warn!(
+                drain_timed_out = report.drain.timed_out,
+                mob_stop = ?report.mob_stop,
+                identity_authority_release = ?report.identity_authority_release,
+                orphan_processes = report.module_shutdown.orphan_processes,
+                "gateway runtime shutdown completed without cleanup attestation"
+            );
+        }
+        Ok(_) => {}
     }
     bridge.close().await;
     if let Some(request) = gateway_shutdown {
-        let response = gateway_shutdown_response(request.response_id, runtime_shutdown_timed_out);
+        let response =
+            gateway_shutdown_response(request.response_id, runtime_shutdown.as_ref().ok());
         if let Ok(line) = serde_json::to_string(&response) {
             let _ = stdout_tx.send(line).await;
         }

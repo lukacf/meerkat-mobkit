@@ -13,6 +13,7 @@ Each test pins one specific behavior identified by the bug-hunt sweep:
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import subprocess
 import threading
@@ -26,6 +27,7 @@ from meerkat_mobkit._transport import (
     _GATEWAY_SHUTDOWN_GRACE_SECONDS,
     _PROCESS_KILL_GRACE_SECONDS,
     _PROCESS_TERMINATE_GRACE_SECONDS,
+    _PROVIDER_CALLBACK_COMPLETION_SECONDS,
     PersistentTransport,
 )
 from meerkat_mobkit.errors import RpcError
@@ -134,6 +136,121 @@ async def test_send_async_forwards_per_request_timeout():
     transport.send_sync.assert_called_once_with(request, timeout=125.0)
 
 
+@pytest.mark.parametrize("request_timeout", [None, 0.01, 600.0])
+def test_provider_callback_uses_dedicated_completion_deadline(request_timeout):
+    assert _PROVIDER_CALLBACK_COMPLETION_SECONDS == 125.0
+    options = {} if request_timeout is None else {"timeout": request_timeout}
+    transport = PersistentTransport("unused", **options)
+    transport._loop = MagicMock()
+    transport._loop.is_running.return_value = True
+    transport._callback_handler = AsyncMock(return_value={"released": True})
+    transport._write_line = MagicMock()
+    future = MagicMock()
+    future.result.return_value = {"released": True}
+
+    def schedule(coroutine, loop):
+        assert loop is transport._loop
+        coroutine.close()
+        return future
+
+    with patch(
+        "meerkat_mobkit._transport.asyncio.run_coroutine_threadsafe",
+        side_effect=schedule,
+    ):
+        transport._dispatch_callback(
+            {
+                "jsonrpc": "2.0",
+                "id": "cb-dedicated-deadline",
+                "method": "callback/lease/release",
+                "params": {},
+            }
+        )
+
+    future.result.assert_called_once_with(
+        timeout=_PROVIDER_CALLBACK_COMPLETION_SECONDS
+    )
+    future.cancel.assert_not_called()
+    transport._write_line.assert_called_once_with(
+        {
+            "jsonrpc": "2.0",
+            "id": "cb-dedicated-deadline",
+            "result": {"released": True},
+        }
+    )
+
+
+def test_provider_callback_timeout_cancels_event_loop_future():
+    transport = PersistentTransport("unused", timeout=0.01)
+    transport._loop = MagicMock()
+    transport._loop.is_running.return_value = True
+    transport._callback_handler = AsyncMock(return_value=None)
+    transport._write_line = MagicMock()
+    future = MagicMock()
+    future.result.side_effect = FutureTimeoutError()
+    future.done.return_value = False
+
+    def schedule(coroutine, loop):
+        assert loop is transport._loop
+        coroutine.close()
+        return future
+
+    with patch(
+        "meerkat_mobkit._transport.asyncio.run_coroutine_threadsafe",
+        side_effect=schedule,
+    ):
+        transport._dispatch_callback(
+            {
+                "jsonrpc": "2.0",
+                "id": "cb-timeout",
+                "method": "callback/lease/release",
+                "params": {},
+            }
+        )
+
+    future.result.assert_called_once_with(
+        timeout=_PROVIDER_CALLBACK_COMPLETION_SECONDS
+    )
+    future.cancel.assert_called_once_with()
+    response = transport._write_line.call_args.args[0]
+    assert response["id"] == "cb-timeout"
+    assert response["error"]["code"] == -32000
+    assert "125s host completion deadline" in response["error"]["message"]
+
+
+def test_provider_raised_timeout_error_is_not_rewritten_as_host_deadline():
+    transport = PersistentTransport("unused")
+    transport._loop = MagicMock()
+    transport._loop.is_running.return_value = True
+    transport._callback_handler = AsyncMock(return_value=None)
+    transport._write_line = MagicMock()
+    future = MagicMock()
+    future.result.side_effect = FutureTimeoutError("provider-owned timeout")
+    future.done.return_value = True
+
+    def schedule(coroutine, loop):
+        assert loop is transport._loop
+        coroutine.close()
+        return future
+
+    with patch(
+        "meerkat_mobkit._transport.asyncio.run_coroutine_threadsafe",
+        side_effect=schedule,
+    ):
+        transport._dispatch_callback(
+            {
+                "jsonrpc": "2.0",
+                "id": "cb-provider-timeout",
+                "method": "callback/lease/release",
+                "params": {},
+            }
+        )
+
+    future.cancel.assert_not_called()
+    response = transport._write_line.call_args.args[0]
+    assert response["id"] == "cb-provider-timeout"
+    assert response["error"]["message"] == "provider-owned timeout"
+
+
 def test_reader_drops_response_after_request_is_no_longer_pending():
     transport = PersistentTransport("unused")
     process = MagicMock()
@@ -174,8 +291,9 @@ def test_init_negotiates_explicit_gateway_shutdown_horizon():
     assert transport._shutdown_horizon_seconds == 321.0
 
 
-@pytest.mark.parametrize("invalid_horizon", [None, True, 0, -1, 1.5, "310000"])
+@pytest.mark.parametrize("invalid_horizon", [None, True, 0, -1, 1.5, "335000"])
 def test_init_uses_safe_shutdown_horizon_for_invalid_capability(invalid_horizon):
+    assert _GATEWAY_SHUTDOWN_GRACE_SECONDS == 335.0
     transport = PersistentTransport("unused")
     transport._ensure_running = lambda: None
     transport._send_sync_running = MagicMock(
@@ -224,6 +342,7 @@ def test_start_resets_shutdown_capabilities_for_replacement_process():
 def test_stop_gives_gateway_full_cleanup_budget_before_termination():
     transport = PersistentTransport("unused")
     process = MagicMock()
+    process.poll.return_value = None
     process.wait.side_effect = [
         subprocess.TimeoutExpired("rpc_gateway", _GATEWAY_SHUTDOWN_GRACE_SECONDS),
         subprocess.TimeoutExpired("rpc_gateway", _PROCESS_TERMINATE_GRACE_SECONDS),
@@ -252,6 +371,28 @@ def test_stop_gives_gateway_full_cleanup_budget_before_termination():
     assert transport._process is None
 
 
+def test_stop_rejects_and_retains_unreaped_gateway_after_sigkill():
+    transport = PersistentTransport("unused")
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [
+        subprocess.TimeoutExpired("rpc_gateway", _GATEWAY_SHUTDOWN_GRACE_SECONDS),
+        subprocess.TimeoutExpired("rpc_gateway", _PROCESS_TERMINATE_GRACE_SECONDS),
+        subprocess.TimeoutExpired("rpc_gateway", _PROCESS_KILL_GRACE_SECONDS),
+    ]
+    transport._process = process
+
+    with patch(
+        "meerkat_mobkit._transport.time.monotonic",
+        side_effect=[100.0, 100.0],
+    ), pytest.raises(RuntimeError, match="did not terminate after bounded cleanup"):
+        transport.stop()
+
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert transport._process is process
+
+
 def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
     transport = PersistentTransport("unused")
     process = MagicMock()
@@ -269,7 +410,14 @@ def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
         assert timeout == 321.0
         gate.wait(timeout=2)
         gate.wait(timeout=2)
-        return {"jsonrpc": "2.0", "id": request["id"], "result": {"shutdown": True}}
+        return {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {
+                "shutdown": True,
+                "runtime_cleanup_completed": True,
+            },
+        }
 
     transport._send_sync_running = MagicMock(side_effect=answer_shutdown)
     errors: list[BaseException] = []
@@ -299,7 +447,16 @@ def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
     assert transport._process is None
 
 
-def test_stop_propagates_incomplete_runtime_cleanup_after_reaping_gateway():
+_MISSING_CLEANUP_ATTESTATION = object()
+
+
+@pytest.mark.parametrize(
+    "cleanup_attestation",
+    [_MISSING_CLEANUP_ATTESTATION, None, "true", False, 1],
+)
+def test_stop_rejects_non_true_cleanup_attestation_after_reaping_gateway(
+    cleanup_attestation,
+):
     transport = PersistentTransport("unused")
     process = MagicMock()
     process.poll.return_value = None
@@ -307,14 +464,14 @@ def test_stop_propagates_incomplete_runtime_cleanup_after_reaping_gateway():
     transport._process = process
     transport._supports_shutdown_handshake = True
     transport._shutdown_horizon_seconds = 321.0
+    result = {"shutdown": True}
+    if cleanup_attestation is not _MISSING_CLEANUP_ATTESTATION:
+        result["runtime_cleanup_completed"] = cleanup_attestation
     transport._send_sync_running = MagicMock(
         return_value={
             "jsonrpc": "2.0",
             "id": "shutdown-failed",
-            "result": {
-                "shutdown": False,
-                "runtime_cleanup_completed": False,
-            },
+            "result": result,
         }
     )
 

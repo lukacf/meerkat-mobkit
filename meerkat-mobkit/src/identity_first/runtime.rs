@@ -21,7 +21,7 @@ use super::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
-use super::bridge::SessionBridge;
+use super::bridge::{BridgeError, SessionBridge};
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
@@ -878,6 +878,12 @@ pub struct IdentityRuntime {
     foreground_operations: Mutex<JoinSet<()>>,
     foreground_cancel: watch::Sender<bool>,
     foreground_shutdown: AtomicBool,
+    /// Post-commit cleanup for reset-superseded bridge generations. The debt
+    /// is recorded before task spawn, survives task failure/timeout, and is
+    /// retried synchronously before shutdown can attest cleanup or release
+    /// identity fencing authority.
+    pending_reset_bridge_cleanups: Arc<RwLock<BTreeMap<String, PendingResetBridgeCleanup>>>,
+    reset_bridge_cleanup_tasks: Mutex<JoinSet<()>>,
 }
 
 /// One generated member alias plus the lifecycle lock owned by its durable
@@ -909,6 +915,64 @@ struct ResetRosterSource {
 struct MaterializationFailureBackoff {
     suppress_until: Instant,
     error: String,
+}
+
+#[derive(Clone)]
+struct PendingResetMemoryCapture {
+    injector: AgentMemoryRuntimeInjector,
+    identity: AgentIdentity,
+    session_key: String,
+    generation: u64,
+}
+
+impl PendingResetMemoryCapture {
+    async fn run(&self) {
+        // Repeat the synchronous marks in the owned task so a raw reset
+        // future dropped after debt publication cannot let the distiller read
+        // evidence before the reset quarantine boundary exists.
+        self.injector.note_reset_boundary(&self.session_key);
+        self.injector
+            .note_session_generation(&self.identity, &self.session_key, self.generation);
+        self.injector
+            .distill_before_rotation(
+                &self.identity,
+                &self.session_key,
+                crate::memory::distiller::DistillCause::Reset,
+            )
+            .await;
+    }
+}
+
+#[derive(Clone)]
+struct PendingResetBridgeCleanup {
+    runtime_id: Option<AgentRuntimeId>,
+    session_id: Option<SessionId>,
+    memory_capture: Option<PendingResetMemoryCapture>,
+}
+
+impl PartialEq for PendingResetBridgeCleanup {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id && self.session_id == other.session_id
+    }
+}
+
+impl Eq for PendingResetBridgeCleanup {}
+
+impl PendingResetBridgeCleanup {
+    fn key(&self) -> String {
+        format!(
+            "{}|{}",
+            self.runtime_id
+                .as_ref()
+                .map(AgentRuntimeId::as_str)
+                .unwrap_or("-"),
+            self.session_id
+                .as_ref()
+                .map(std::string::ToString::to_string)
+                .as_deref()
+                .unwrap_or("-")
+        )
+    }
 }
 
 impl IdentityRuntime {
@@ -954,6 +1018,8 @@ impl IdentityRuntime {
             foreground_operations: Mutex::new(JoinSet::new()),
             foreground_cancel,
             foreground_shutdown: AtomicBool::new(false),
+            pending_reset_bridge_cleanups: Arc::new(RwLock::new(BTreeMap::new())),
+            reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
         }
     }
 
@@ -4510,24 +4576,54 @@ impl IdentityRuntime {
         Ok(())
     }
 
-    /// Retry a release that failed after a lower-plane transition had already
-    /// committed. The caller owns this identity's lifecycle lock. A failed
-    /// retry leaves the exact grant parked on the Broken entry and aborts the
-    /// reconcile before restore can reacquire or materialize.
-    async fn release_pending_broken_lease_locked(
+    /// Release every exact provider grant retained by a Broken entry. The
+    /// caller owns this identity's lifecycle lock.
+    ///
+    /// Most failed lower-plane transitions already park authority in
+    /// `pending_lease_release`, but rollback of an originally Active entry can
+    /// deliberately retain its current grant in `lease` while projecting
+    /// Broken. Move that live grant into pending state before the provider await
+    /// so cancellation, a provider failure, and shutdown all retain the exact
+    /// fencing token. A failed release aborts reconcile before lazy registration
+    /// can overwrite the entry or restore can reacquire authority.
+    async fn release_broken_lease_locked(
         &self,
         identity: &AgentIdentity,
     ) -> Result<bool, IdentityRuntimeError> {
         let pending = {
-            let entries = self.entries.read().await;
+            let mut entries = self.entries.write().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-            if entry.state == IdentityLifecycleState::Broken {
-                entry.pending_lease_release.clone()
-            } else {
-                None
+            if entry.state != IdentityLifecycleState::Broken {
+                return Ok(false);
             }
+
+            let existing_pending = entry.pending_lease_release.clone();
+            let retained_lease = entry.lease.as_ref().map(|lease| LeaseGrant {
+                identity: identity.clone(),
+                fencing_token: lease.fencing_token,
+                ttl: lease.ttl,
+            });
+            if let (Some(pending), Some(retained)) =
+                (existing_pending.as_ref(), retained_lease.as_ref())
+                && pending.fencing_token != retained.fencing_token
+            {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "Broken identity {identity} retained conflicting fencing tokens {} and {}",
+                    pending.fencing_token, retained.fencing_token
+                )));
+            }
+
+            let grant = existing_pending.or(retained_lease);
+            if let Some(grant) = grant.as_ref() {
+                let entry = entries
+                    .get_mut(identity)
+                    .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+                entry.lease = None;
+                entry.pending_lease_release = Some(grant.clone());
+            }
+            grant
         };
         let Some(grant) = pending else {
             return Ok(false);
@@ -4572,10 +4668,11 @@ impl IdentityRuntime {
     /// Dispose the concrete member and its session-store authority retained by
     /// a continuity-backed Broken entry. Lease loss is fail-closed at the
     /// identity plane, but it cannot synchronously remove the lower member;
-    /// roster removal and profile replacement must do so before abandoning or
-    /// reusing the runtime alias. The real bridge treats an already-retired
-    /// member as success, and session unregister is idempotent, making retries
-    /// safe when a later exact-grant cleanup step fails.
+    /// every roster reconcile that will reproject the Broken entry must do so
+    /// before abandoning or reusing the runtime alias. The real bridge treats
+    /// an already-retired member as success, and session unregister is
+    /// idempotent, making retries safe when a later exact-grant cleanup step
+    /// fails.
     ///
     /// This deliberately does not mutate `lease` or `pending_lease_release`:
     /// provider authority is an independent exact-token cleanup obligation.
@@ -4677,7 +4774,7 @@ impl IdentityRuntime {
             let _lifecycle_guard = lifecycle_lock.lock().await;
             after_lifecycle_lock(identity).await;
             self.cleanup_broken_lower_plane_locked(identity).await?;
-            self.release_pending_broken_lease_locked(identity).await?;
+            self.release_broken_lease_locked(identity).await?;
             let state = self
                 .entries
                 .read()
@@ -4734,20 +4831,19 @@ impl IdentityRuntime {
             if !self.entries.read().await.contains_key(&identity) {
                 continue;
             }
-            let replacing_broken_profile = {
+            let reconciling_broken_entry = {
                 let entries = self.entries.read().await;
-                entries.get(&identity).is_some_and(|entry| {
-                    entry.state == IdentityLifecycleState::Broken
-                        && entry.spec.profile != desired_spec.profile
-                })
+                entries
+                    .get(&identity)
+                    .is_some_and(|entry| entry.state == IdentityLifecycleState::Broken)
             };
-            if replacing_broken_profile {
+            if reconciling_broken_entry {
                 self.cleanup_broken_lower_plane_locked(&identity).await?;
             }
             // This runs before the same-spec fast path. A failed retire may
             // leave the desired metadata unchanged while the physical member
             // is already gone and its exact provider grant is still held.
-            self.release_pending_broken_lease_locked(&identity).await?;
+            self.release_broken_lease_locked(&identity).await?;
             let current = self
                 .entries
                 .read()
@@ -7386,26 +7482,36 @@ impl IdentityRuntime {
                 .as_ref()
                 .filter(|old_session_id| *old_session_id != &new_record.session_id)
                 .cloned();
-            self.spawn_old_bridge_cleanup_after_reset(
-                bridge.clone(),
-                cleanup_old_runtime_id,
-                cleanup_old_session_id,
-            );
-            tracing::debug!(
-                identity = %identity,
-                runtime_id = %new_record.agent_runtime_id,
-                session_id = %new_record.session_id,
-                "reset old bridge cleanup scheduled after continuity commit",
-            );
-
+            let reset_memory_injector = self.agent_memory.read().await.clone();
+            let reset_memory_capture = reset_memory_injector.as_ref().and_then(|injector| {
+                registered_entry.continuity.as_ref().map(|old_continuity| {
+                    PendingResetMemoryCapture {
+                        injector: injector.clone(),
+                        identity: identity.clone(),
+                        session_key: old_continuity.session_id.to_string(),
+                        generation: old_continuity.generation.get(),
+                    }
+                })
+            });
+            // Record exact cleanup debt immediately after the durable and
+            // in-memory replacement commit. The owned debt carries its memory
+            // capture prerequisite, so reset remains latency-neutral while
+            // graceful shutdown still joins/retries the complete sequence.
+            let reset_bridge_cleanup = self
+                .record_old_bridge_cleanup_after_reset(
+                    cleanup_old_runtime_id,
+                    cleanup_old_session_id,
+                    reset_memory_capture.clone(),
+                )
+                .await;
             // §10.1: reset is the deliberate clean-slate boundary — clear
             // session taint explicitly (rotation clears implicitly; this
-            // also drops pending pre-attribution taint). §8.4: distill the
-            // outgoing session DETACHED (never on the reset critical path;
-            // the session store outlives the member, so the read stays
-            // valid after teardown) with the reset boundary marked first so
-            // every distillate lands Quarantined pending steward review.
-            if let Some(injector) = self.agent_memory.read().await.as_ref() {
+            // also drops pending pre-attribution taint). Mark the outgoing
+            // boundary synchronously; the runtime-owned cleanup task performs
+            // bounded distillation before it may CAS-delete the superseded
+            // session projection. This preserves detached reset latency
+            // without racing the evidence source.
+            if let Some(injector) = reset_memory_injector.as_ref() {
                 injector.clear_taint_for_identity(identity);
                 injector.note_session_generation(
                     identity,
@@ -7420,13 +7526,19 @@ impl IdentityRuntime {
                         &old_session_key,
                         old_continuity.generation.get(),
                     );
-                    injector.spawn_rotation_distillation(
-                        identity,
-                        &old_session_key,
-                        crate::memory::distiller::DistillCause::Reset,
-                    );
                 }
             }
+
+            if let Some(cleanup) = reset_bridge_cleanup {
+                self.spawn_old_bridge_cleanup_after_reset(bridge.clone(), cleanup)
+                    .await;
+            }
+            tracing::debug!(
+                identity = %identity,
+                runtime_id = %new_record.agent_runtime_id,
+                session_id = %new_record.session_id,
+                "reset old bridge cleanup debt recorded after continuity commit",
+            );
             self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
             return Ok(new_record);
         }
@@ -7570,6 +7682,22 @@ impl IdentityRuntime {
             self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
                 .await;
             return Err(err);
+        }
+        // The durable fence now belongs to the delete transaction. Refresh
+        // the bridge adapter before retirement so Meerkat's terminal archive
+        // projection carries that same token. Leaving the live session on the
+        // prior token makes ArchiveSession fail closed, retains a Retiring Mob
+        // anchor, and later prevents strict shutdown attestation.
+        if let Some(record) = registered_entry.continuity.as_ref()
+            && let Err(error) = self
+                .refresh_existing_session_runtime_state(identity, record, &grant)
+                .await
+        {
+            self.restore_broken_entry_with_fenced_store(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge refresh session authority before delete: {error}"
+            )));
         }
 
         // §8.4 trigger (b): delete is the identity's LAST boundary — harvest
@@ -8067,53 +8195,173 @@ impl IdentityRuntime {
         self.default_timeout
     }
 
-    fn spawn_old_bridge_cleanup_after_reset(
+    async fn execute_reset_bridge_cleanup(
+        bridge: &Arc<dyn SessionBridge>,
+        cleanup: &PendingResetBridgeCleanup,
+    ) -> Result<(), BridgeError> {
+        match (&cleanup.runtime_id, &cleanup.session_id) {
+            (Some(runtime_id), Some(session_id)) => {
+                bridge
+                    .retire_reset_superseded_member(runtime_id, session_id)
+                    .await
+            }
+            (Some(runtime_id), None) => bridge.retire_member(runtime_id).await,
+            (None, Some(session_id)) => bridge.unregister_session_runtime_state(session_id).await,
+            (None, None) => Ok(()),
+        }
+    }
+
+    async fn clear_reset_bridge_cleanup_if_current(
+        pending: &RwLock<BTreeMap<String, PendingResetBridgeCleanup>>,
+        key: &str,
+        cleanup: &PendingResetBridgeCleanup,
+    ) {
+        let mut pending = pending.write().await;
+        if pending.get(key) == Some(cleanup) {
+            pending.remove(key);
+        }
+    }
+
+    async fn run_reset_memory_capture_if_pending(
+        pending: &RwLock<BTreeMap<String, PendingResetBridgeCleanup>>,
+        key: &str,
+        cleanup: &mut PendingResetBridgeCleanup,
+    ) {
+        let Some(capture) = cleanup.memory_capture.take() else {
+            return;
+        };
+        capture.run().await;
+
+        // Publish the state-machine advance only after the bounded capture
+        // returns. Cancellation before this write leaves the capture on the
+        // authoritative debt and a shutdown retry runs it again.
+        let mut pending = pending.write().await;
+        if let Some(current) = pending.get_mut(key)
+            && current == cleanup
+        {
+            current.memory_capture = None;
+        }
+    }
+
+    async fn record_old_bridge_cleanup_after_reset(
         &self,
-        bridge: Arc<dyn SessionBridge>,
         old_runtime_id: Option<AgentRuntimeId>,
         old_session_id: Option<SessionId>,
-    ) {
+        memory_capture: Option<PendingResetMemoryCapture>,
+    ) -> Option<PendingResetBridgeCleanup> {
         if old_runtime_id.is_none() && old_session_id.is_none() {
-            return;
+            return None;
         }
+        let cleanup = PendingResetBridgeCleanup {
+            runtime_id: old_runtime_id,
+            session_id: old_session_id,
+            memory_capture,
+        };
+        let key = cleanup.key();
+        self.pending_reset_bridge_cleanups
+            .write()
+            .await
+            .insert(key, cleanup.clone());
+        Some(cleanup)
+    }
+
+    async fn spawn_old_bridge_cleanup_after_reset(
+        &self,
+        bridge: Arc<dyn SessionBridge>,
+        mut cleanup: PendingResetBridgeCleanup,
+    ) {
+        let key = cleanup.key();
         let runtime_instance_id = self.runtime_instance_id.clone();
-        let timeout = self.default_timeout;
-        tokio::spawn(async move {
-            if let Some(old_runtime_id) = old_runtime_id {
-                tracing::debug!(
-                    runtime_instance_id = %runtime_instance_id,
-                    runtime_id = %old_runtime_id,
-                    "skipping old bridge member retire after reset; reset commits the new generation and only clears stale session projection",
+        let pending = self.pending_reset_bridge_cleanups.clone();
+        let mut tasks = self.reset_bridge_cleanup_tasks.lock().await;
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::error!(
+                    runtime_instance_id = %self.runtime_instance_id,
+                    %error,
+                    "reset bridge cleanup task panicked"
                 );
             }
-
-            if let Some(old_session_id) = old_session_id {
-                match tokio::time::timeout(
-                    timeout,
-                    bridge.unregister_session_runtime_state(&old_session_id),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        tracing::warn!(
-                            runtime_instance_id = %runtime_instance_id,
-                            session_id = %old_session_id,
-                            error = %err,
-                            "failed to unregister old bridge session after reset; continuing with new generation",
-                        );
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            runtime_instance_id = %runtime_instance_id,
-                            session_id = %old_session_id,
-                            timeout_ms = timeout.as_millis(),
-                            "timed out unregistering old bridge session after reset; continuing with new generation",
-                        );
-                    }
+        }
+        tasks.spawn(async move {
+            Self::run_reset_memory_capture_if_pending(&pending, &key, &mut cleanup).await;
+            match Self::execute_reset_bridge_cleanup(&bridge, &cleanup).await {
+                Ok(()) => {
+                    Self::clear_reset_bridge_cleanup_if_current(&pending, &key, &cleanup).await;
                 }
+                Err(error) => tracing::warn!(
+                    runtime_instance_id = %runtime_instance_id,
+                    cleanup_key = %key,
+                    %error,
+                    "reset-superseded bridge cleanup failed; retaining exact shutdown debt",
+                ),
             }
         });
+    }
+
+    /// Join every post-commit reset cleanup task after foreground lifecycle
+    /// admission is closed. The exact debt remains in the ledger on failure
+    /// and is retried synchronously before physical mob shutdown.
+    pub(crate) async fn join_reset_bridge_cleanup_tasks(&self) {
+        let mut tasks = self.reset_bridge_cleanup_tasks.lock().await;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(
+                    runtime_instance_id = %self.runtime_instance_id,
+                    %error,
+                    "reset bridge cleanup task panicked"
+                );
+            }
+        }
+    }
+
+    /// Retry all exact reset cleanup debt. Success is the only path that
+    /// removes an obligation; callers must retain identity grants when this
+    /// returns an error.
+    pub(crate) async fn drain_pending_reset_bridge_cleanups(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(0);
+        };
+        let pending = self
+            .pending_reset_bridge_cleanups
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut completed = 0_usize;
+        let mut errors = Vec::new();
+        for mut cleanup in pending {
+            let key = cleanup.key();
+            Self::run_reset_memory_capture_if_pending(
+                &self.pending_reset_bridge_cleanups,
+                &key,
+                &mut cleanup,
+            )
+            .await;
+            match Self::execute_reset_bridge_cleanup(bridge, &cleanup).await {
+                Ok(()) => {
+                    Self::clear_reset_bridge_cleanup_if_current(
+                        &self.pending_reset_bridge_cleanups,
+                        &key,
+                        &cleanup,
+                    )
+                    .await;
+                    completed += 1;
+                }
+                Err(error) => errors.push(format!("{key}: {error}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(completed)
+        } else {
+            Err(IdentityRuntimeError::Internal(format!(
+                "reset bridge cleanup debt remains: {}",
+                errors.join("; ")
+            )))
+        }
     }
 
     /// Poll until the identity produces an output_preview, or timeout.
@@ -8250,6 +8498,62 @@ mod reset_reprofile_tests {
         }
 
         async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+            self.inner.release_leases(grants).await
+        }
+    }
+
+    struct RecordingReleaseLeaseProvider {
+        inner: LocalLeaseProvider,
+        fail_next_release: AtomicBool,
+        release_attempts: AsyncMutex<Vec<LeaseGrant>>,
+    }
+
+    impl Default for RecordingReleaseLeaseProvider {
+        fn default() -> Self {
+            Self {
+                inner: LocalLeaseProvider::new(),
+                fail_next_release: AtomicBool::new(false),
+                release_attempts: AsyncMutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RecordingReleaseLeaseProvider {
+        fn fail_next_release(&self) {
+            self.fail_next_release.store(true, Ordering::SeqCst);
+        }
+
+        async fn release_attempts(&self) -> Vec<LeaseGrant> {
+            self.release_attempts.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LeaseProvider for RecordingReleaseLeaseProvider {
+        async fn acquire_leases(
+            &self,
+            identities: &[AgentIdentity],
+            runtime_instance: &str,
+        ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+            self.inner
+                .acquire_leases(identities, runtime_instance)
+                .await
+        }
+
+        async fn renew_leases(
+            &self,
+            grants: &[LeaseGrant],
+        ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+            self.inner.renew_leases(grants).await
+        }
+
+        async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+            self.release_attempts.lock().await.extend_from_slice(grants);
+            if self.fail_next_release.swap(false, Ordering::SeqCst) {
+                return Err(LeaseError::ProviderUnavailable(
+                    "synthetic retained Broken lease release failure".to_string(),
+                ));
+            }
             self.inner.release_leases(grants).await
         }
     }
@@ -8455,6 +8759,13 @@ mod reset_reprofile_tests {
                 .lock()
                 .await
                 .insert(session_id.to_string());
+        }
+
+        async fn allow_unregister_for(&self, session_id: &SessionId) {
+            self.failing_unregister_session_ids
+                .lock()
+                .await
+                .remove(&session_id.to_string());
         }
 
         async fn fail_register_for(&self, session_id: &SessionId) {
@@ -8853,6 +9164,77 @@ mod reset_reprofile_tests {
             backend: None,
             binding: None,
         }
+    }
+
+    async fn lazy_context_with_broken_retained_lease(
+        identity: AgentIdentity,
+        spec: DurableAgentSpec,
+        roster: Arc<MutableRoster>,
+        lease_provider: Arc<RecordingReleaseLeaseProvider>,
+        runtime_instance_id: &str,
+    ) -> Result<
+        (
+            Arc<IdentityRuntime>,
+            IdentityFirstRuntimeContext,
+            LeaseGrant,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
+        let acquired = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), runtime_instance_id)
+            .await?;
+        let grant = match acquired.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            other => return Err(format!("expected retained lease grant, got {other:?}").into()),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0"))?,
+            session_id: SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        continuity_store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider,
+            runtime_instance_id: runtime_instance_id.to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                spec,
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(grant.clone()),
+            )
+            .await;
+        // Model the public rollback state exercised by
+        // `identity_first_runtime_reset_register_failure_cleans_new_member_and_preserves_old_continuity`:
+        // the identity is fail-closed Broken while its exact current grant is
+        // retained in `entry.lease` for repair.
+        runtime
+            .entries
+            .write()
+            .await
+            .get_mut(&identity)
+            .ok_or("seeded identity disappeared")?
+            .state = IdentityLifecycleState::Broken;
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster,
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::LazyMaterialize,
+        );
+        Ok((runtime, context, grant))
     }
 
     async fn active_alias_runtime(
@@ -9912,6 +10294,155 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
+    async fn lazy_unchanged_reconcile_retained_broken_lease_failure_stays_shutdown_visible()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:broken-retained-unchanged")?;
+        let spec = durable_spec(identity.clone(), "personal");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let lease_provider = Arc::new(RecordingReleaseLeaseProvider::default());
+        let (runtime, context, retained_grant) = lazy_context_with_broken_retained_lease(
+            identity.clone(),
+            spec,
+            roster,
+            lease_provider.clone(),
+            "broken-retained-unchanged",
+        )
+        .await?;
+
+        lease_provider.fail_next_release();
+        let error = match context.refresh_desired_topology().await {
+            Err(error) => error,
+            Ok(_) => return Err("failed exact release allowed lazy registration".into()),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic retained Broken lease release failure")
+        );
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert!(
+            status.lease.is_none(),
+            "failed release authority must be pending, never advertised as active"
+        );
+        assert_eq!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .and_then(|entry| entry.pending_lease_release.as_ref())
+                .map(|grant| grant.fencing_token),
+            Some(retained_grant.fencing_token),
+            "the exact retained token must survive provider failure"
+        );
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token]
+        );
+
+        assert_eq!(
+            runtime.release_all_leases_for_shutdown().await?,
+            1,
+            "shutdown must retain visibility of the staged exact grant"
+        );
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token, retained_grant.fencing_token],
+            "shutdown must retry the same exact fencing token"
+        );
+        assert!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .is_some_and(|entry| {
+                    entry.lease.is_none() && entry.pending_lease_release.is_none()
+                })
+        );
+
+        context.refresh_desired_topology().await?;
+        let recovered = runtime.status(&identity).await?;
+        assert_eq!(recovered.state, IdentityLifecycleState::Dormant);
+        assert!(recovered.lease.is_none());
+        let failover = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "other-runtime")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lazy_profile_replace_releases_retained_broken_lease_before_overwrite()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:broken-retained-replace")?;
+        let original = durable_spec(identity.clone(), "personal-v1");
+        let roster = Arc::new(MutableRoster::new(vec![original.clone()]));
+        let lease_provider = Arc::new(RecordingReleaseLeaseProvider::default());
+        let (runtime, context, retained_grant) = lazy_context_with_broken_retained_lease(
+            identity.clone(),
+            original,
+            roster.clone(),
+            lease_provider.clone(),
+            "broken-retained-replace",
+        )
+        .await?;
+
+        roster
+            .set(vec![durable_spec(identity.clone(), "personal-v2")])
+            .await;
+        context.refresh_desired_topology().await?;
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Dormant);
+        assert_eq!(
+            status.profile.as_ref().map(ToString::to_string).as_deref(),
+            Some("personal-v2")
+        );
+        assert!(status.lease.is_none());
+        assert_eq!(
+            lease_provider
+                .release_attempts()
+                .await
+                .iter()
+                .map(|grant| grant.fencing_token)
+                .collect::<Vec<_>>(),
+            vec![retained_grant.fencing_token],
+            "profile replacement must release the retained exact token before lazy registration"
+        );
+        assert!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .is_some_and(|entry| entry.pending_lease_release.is_none())
+        );
+        let failover = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "replacement-failover")
+            .await?;
+        assert!(matches!(
+            failover.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn lease_lost_then_roster_remove_cleans_lower_plane_before_dropping_entry()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("identity:lost-remove")?;
@@ -10438,7 +10969,7 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn reset_does_not_retire_old_generation_during_cleanup()
+    async fn reset_records_exact_cleanup_debt_without_waiting_for_hung_old_retire()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
         let roster = Arc::new(MutableRoster::new(vec![durable_spec(
@@ -10487,12 +11018,28 @@ mod reset_reprofile_tests {
             bridge.create_profiles().await,
             vec!["domain".to_string(), "security".to_string()]
         );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if bridge
+                    .retired_runtime_ids()
+                    .await
+                    .contains(&old_runtime_id.to_string())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "reset cleanup task never attempted the old generation")?;
         assert!(
-            !bridge
-                .retired_runtime_ids()
+            runtime
+                .pending_reset_bridge_cleanups
+                .read()
                 .await
-                .contains(&old_runtime_id.to_string()),
-            "reset cleanup must not call the cancellation-unsafe mob-member retire path"
+                .values()
+                .any(|cleanup| cleanup.runtime_id.as_ref() == Some(&old_runtime_id)),
+            "hung cleanup must retain the exact old runtime/session debt for shutdown"
         );
         let status = runtime.status(&identity).await?;
         assert_eq!(
@@ -10503,7 +11050,7 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn reset_returns_when_old_session_unregister_fails_after_new_generation()
+    async fn reset_cleanup_failure_stays_retryable_after_new_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:security")?;
         let roster = Arc::new(MutableRoster::new(vec![durable_spec(
@@ -10554,6 +11101,21 @@ mod reset_reprofile_tests {
         assert_eq!(
             bridge.create_profiles().await,
             vec!["domain".to_string(), "security".to_string()]
+        );
+        runtime.join_reset_bridge_cleanup_tasks().await;
+        assert_eq!(
+            runtime.pending_reset_bridge_cleanups.read().await.len(),
+            1,
+            "failed unregister must retain exact cleanup debt"
+        );
+        bridge.allow_unregister_for(&old_session_id).await;
+        assert_eq!(runtime.drain_pending_reset_bridge_cleanups().await?, 1);
+        assert!(
+            runtime
+                .pending_reset_bridge_cleanups
+                .read()
+                .await
+                .is_empty()
         );
         let status = runtime.status(&identity).await?;
         assert_eq!(

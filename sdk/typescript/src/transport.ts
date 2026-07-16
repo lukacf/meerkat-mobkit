@@ -72,15 +72,14 @@ export type FetchLike = (
 /**
  * Grace period for the persistent gateway to finish its own shutdown.
  *
- * Stock gateways bound their complete shutdown path to 300 seconds: two
- * five-second admission drains, a 285-second runtime cleanup window (long
- * enough for an admitted 120-second provider callback and the final
- * 120-second lease-release callback), and a five-second stdout drain. The
- * advertised 310-second horizon adds response-delivery/process-reap margin
- * and is the safe fallback for handshake-capable gateways without the newer
- * explicit capability.
+ * Provider operations are publicly required to finish within 120 seconds;
+ * the stock Rust gateway gives each callback a hard 130-second wire deadline.
+ * Its advertised 335-second horizon covers two such callback windows,
+ * runtime event/mob drains, bounded RPC/HTTP/stdout phases, and
+ * response-delivery/process-reap margin. The same value is the safe fallback
+ * for handshake-capable gateways without the newer explicit capability.
  */
-export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 310_000;
+export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 335_000;
 
 const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
 const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
@@ -136,7 +135,7 @@ function validateGatewayShutdownResponse(response: unknown): void {
     typeof result !== "object" ||
     result === null ||
     (result as Record<string, unknown>).shutdown !== true ||
-    (result as Record<string, unknown>).runtime_cleanup_completed === false
+    (result as Record<string, unknown>).runtime_cleanup_completed !== true
   ) {
     throw new Error("gateway shutdown did not complete runtime-owned cleanup");
   }
@@ -212,7 +211,11 @@ export async function stopChildProcess(
     // Best effort: never make SDK shutdown unbounded on a failed kill call.
   }
 
-  await waitForExit(child, PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS);
+  if (!(await waitForExit(child, PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS))) {
+    throw new Error(
+      "persistent transport: gateway process did not terminate after bounded cleanup",
+    );
+  }
 }
 
 // -- PersistentTransport --------------------------------------------------
@@ -422,6 +425,7 @@ export class PersistentTransport {
     if (child === null) return;
 
     const shutdownStarted = performance.now();
+    let childTerminated = false;
     let stopping: Promise<void>;
     stopping = (async () => {
       let shutdownError: Error | null = null;
@@ -452,13 +456,19 @@ export class PersistentTransport {
         this._shutdownHorizonMs - elapsedMs,
       );
       await stopChildProcess(child, waitForChildExit, remainingGraceMs);
+      childTerminated = true;
       if (shutdownError !== null) {
         throw new Error(
           `persistent transport: gateway shutdown failed after bounded cleanup: ${shutdownError.message}`,
         );
       }
     })().finally(() => {
-      if (this._process === child) this._process = null;
+      if (
+        this._process === child &&
+        (childTerminated || childHasExited(child))
+      ) {
+        this._process = null;
+      }
       if (this._stopping === stopping) this._stopping = null;
     });
     this._stopping = stopping;

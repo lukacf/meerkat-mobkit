@@ -237,6 +237,13 @@ pub struct ContinuitySessionStoreAdapter {
     /// unregistration, suspension preserves the registry/version state so a
     /// successful publication can resume the same session at the new token.
     suspended_sessions: Mutex<HashSet<String>>,
+    /// Sessions deliberately superseded by a committed destructive reset.
+    /// Their old physical member is already quiescing, so archive projection
+    /// writes are acknowledged without crossing into the replacement
+    /// identity generation. The exact snapshot is CAS-deleted before this
+    /// marker is published and ordinary unregistration clears it after the
+    /// retained Mob cleanup anchor reaches structural absence.
+    superseded_sessions: Mutex<HashSet<String>>,
     /// Per-session serialization for registry, pending, version, and durable
     /// load/guard/write transitions. Weak values let inactive locks be reclaimed
     /// without ever creating a second lock while an operation or waiter exists.
@@ -252,6 +259,7 @@ impl ContinuitySessionStoreAdapter {
             pending_unregistered: Mutex::new(HashMap::new()),
             unregistered_sessions: Mutex::new(HashSet::new()),
             suspended_sessions: Mutex::new(HashSet::new()),
+            superseded_sessions: Mutex::new(HashSet::new()),
             session_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -305,6 +313,11 @@ impl ContinuitySessionStoreAdapter {
             .remove(&session_key);
         let was_suspended = self
             .suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_key);
+        let was_superseded = self
+            .superseded_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_key);
@@ -364,6 +377,12 @@ impl ContinuitySessionStoreAdapter {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .insert(session_key.clone());
                     }
+                    if was_superseded {
+                        self.superseded_sessions
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(session_key.clone());
+                    }
                     return Err(err);
                 }
             }
@@ -412,11 +431,76 @@ impl ContinuitySessionStoreAdapter {
     ) -> Result<(), ContinuityStoreError> {
         let _guard = self.lock_session(session_id).await;
         self.forget_session(session_id);
+        self.superseded_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id.to_string());
         self.unregistered_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session_id.to_string());
         Ok(())
+    }
+
+    /// Permanently abandon a reset-superseded session after the replacement
+    /// continuity generation has committed.
+    ///
+    /// Reset changes the identity-keyed continuity head before the old Mob
+    /// member can be retired. Leaving the old snapshot behind makes Meerkat's
+    /// archive path try to save that stale generation through the new fence,
+    /// which correctly fails and retains a `Retiring` cleanup anchor. Delete
+    /// the exact old snapshot under its document CAS first, then publish a
+    /// superseded tombstone. The exact Mob retirement retry may acknowledge
+    /// its generated terminal archive write without crossing the replacement
+    /// fence; ordinary unregistration clears the tombstone only after the
+    /// physical roster anchor is structurally absent.
+    pub(crate) async fn abandon_superseded_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let _guard = self.lock_session(session_id).await;
+        let session_key = session_id.to_string();
+
+        // Quiesce every later projection write before observing and deleting
+        // the old document. Keep suspension in place on failure so a retry
+        // cannot race a stale runtime save.
+        self.suspended_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_key.clone());
+
+        if let Some(session) = self.load_persisted_session(session_id).await? {
+            let current_revision =
+                meerkat_core::session_store::session_projection_cas_token(&session)?;
+            let deleted = self
+                .store
+                .delete_session_snapshot_if_current_revision(session_id, &current_revision)
+                .await
+                .map_err(|error| {
+                    meerkat_store::SessionStoreError::Internal(format!(
+                        "continuity abandon superseded session: {error}"
+                    ))
+                })?;
+            if !deleted {
+                return Err(meerkat_store::SessionStoreError::Internal(format!(
+                    "continuity abandon did not delete superseded session snapshot {session_id}"
+                )));
+            }
+        }
+
+        self.forget_session(session_id);
+        self.superseded_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_key);
+        Ok(())
+    }
+
+    fn session_was_superseded(&self, session_id: &meerkat_core::types::SessionId) -> bool {
+        self.superseded_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&session_id.to_string())
     }
 
     fn session_was_unregistered(&self, session_id: &meerkat_core::types::SessionId) -> bool {
@@ -649,6 +733,15 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        if self.session_was_superseded(session.id()) {
+            // The old runtime has already been quiesced by the first retire
+            // attempt. Meerkat's retry still realizes its generated Archived
+            // document action before removing the retained roster anchor, but
+            // reset deliberately discarded this document when it committed
+            // the replacement generation. Acknowledge that terminal write
+            // without crossing the new identity fence.
+            return Ok(());
+        }
         self.ensure_session_mutation_allowed(session.id())?;
 
         // Serialize once up front. Stores that can prove the exact bytes and
@@ -751,6 +844,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         commit: &meerkat_core::TranscriptRewriteCommit,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        if self.session_was_superseded(session.id()) {
+            return Ok(());
+        }
         self.ensure_session_mutation_allowed(session.id())?;
         let previous = self.load_previous_session_for_save(session.id()).await?;
         meerkat_core::session_store::transcript_rewrite_save_guard(
@@ -783,6 +879,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        if self.session_was_superseded(session.id()) {
+            return Ok(());
+        }
         self.ensure_session_mutation_allowed(session.id())?;
         let data = serde_json::to_vec(session)
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
@@ -809,6 +908,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         expected_current_revision: Option<String>,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(session.id()).await;
+        if self.session_was_superseded(session.id()) {
+            return Ok(());
+        }
         self.ensure_session_mutation_allowed(session.id())?;
         let previous = self.load_persisted_session(session.id()).await?;
         meerkat_core::session_store::authoritative_projection_current_revision_guard(
@@ -840,6 +942,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         &self,
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
+        if self.session_was_superseded(id) {
+            return Ok(None);
+        }
         match self.load_persisted_session(id).await? {
             Some(session) => Ok(Some(session)),
             None if self.lookup_session(&id.to_string()).is_some() => {
@@ -863,6 +968,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<(), meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(id).await;
+        if self.session_was_superseded(id) {
+            return Ok(());
+        }
         self.ensure_session_mutation_allowed(id)?;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
@@ -891,6 +999,9 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         expected_current_revision: &str,
     ) -> Result<bool, meerkat_store::SessionStoreError> {
         let _guard = self.lock_session(id).await;
+        if self.session_was_superseded(id) {
+            return Ok(false);
+        }
         self.ensure_session_mutation_allowed(id)?;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
@@ -1073,6 +1184,7 @@ mod tests {
     struct FailSaveContinuityStore {
         inner: Arc<LocalContinuityStore>,
         fail_save: AtomicBool,
+        fail_delete_once: AtomicBool,
         block_next_save: AtomicBool,
         save_entered: tokio::sync::Semaphore,
         release_save: tokio::sync::Semaphore,
@@ -1083,6 +1195,7 @@ mod tests {
             Self {
                 inner,
                 fail_save: AtomicBool::new(false),
+                fail_delete_once: AtomicBool::new(false),
                 block_next_save: AtomicBool::new(false),
                 save_entered: tokio::sync::Semaphore::new(0),
                 release_save: tokio::sync::Semaphore::new(0),
@@ -1091,6 +1204,10 @@ mod tests {
 
         fn fail_saves(&self, fail: bool) {
             self.fail_save.store(fail, AtomicOrdering::SeqCst);
+        }
+
+        fn fail_next_delete(&self) {
+            self.fail_delete_once.store(true, AtomicOrdering::SeqCst);
         }
 
         fn block_one_save(&self) {
@@ -1150,6 +1267,11 @@ mod tests {
             session_id: &meerkat_core::types::SessionId,
             expected_current_revision: &str,
         ) -> Result<bool, ContinuityStoreError> {
+            if self.fail_delete_once.swap(false, AtomicOrdering::SeqCst) {
+                return Err(ContinuityStoreError::Io(
+                    "synthetic superseded snapshot delete failure".to_string(),
+                ));
+            }
             self.inner
                 .delete_session_snapshot_if_current_revision(session_id, expected_current_revision)
                 .await
@@ -1340,6 +1462,185 @@ mod tests {
             record.checkpoint_version,
             CheckpointVersion::new(1),
             "an exact durable resave must not manufacture a new checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_abandons_only_superseded_snapshot() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let identity = AgentIdentity::parse("agent:reset-abandon").expect("identity");
+        let old_session = meerkat_core::Session::new();
+        let old_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:reset-abandon:0")
+                .expect("old runtime id"),
+            session_id: old_session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let old_fence = FencingToken::new(3);
+        store
+            .upsert_continuity_record(&old_record, old_fence)
+            .await
+            .expect("seed old record");
+        adapter
+            .register_session(
+                old_session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: old_record.generation,
+                    fencing_token: old_fence,
+                    checkpoint_version: old_record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register old session");
+        meerkat::SessionStore::save(&adapter, &old_session)
+            .await
+            .expect("persist old session");
+
+        let replacement_session = meerkat_core::types::SessionId::new();
+        let replacement_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:reset-abandon:1")
+                .expect("replacement runtime id"),
+            session_id: replacement_session.clone(),
+            generation: ContinuityGeneration::new(1),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let replacement_fence = FencingToken::new(4);
+        store
+            .upsert_continuity_record(&replacement_record, replacement_fence)
+            .await
+            .expect("commit replacement record");
+
+        adapter
+            .abandon_superseded_session(old_session.id())
+            .await
+            .expect("abandon old projection");
+        assert!(
+            store
+                .load_session_snapshot(old_session.id())
+                .await
+                .expect("load old snapshot")
+                .is_none(),
+            "the exact superseded snapshot must be CAS-deleted"
+        );
+        assert_eq!(
+            store
+                .resolve_many(std::slice::from_ref(&identity))
+                .await
+                .expect("resolve replacement")
+                .get(&identity),
+            Some(&ContinuityResolveState::Ready {
+                record: replacement_record
+            }),
+            "abandonment must not disturb the replacement continuity head"
+        );
+
+        // Meerkat's exact retained retire retry realizes an Archived document
+        // write before removing its roster anchor. The superseded tombstone
+        // acknowledges that write without recreating the old snapshot.
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &old_session)
+            .await
+            .expect("terminal superseded projection is acknowledged");
+        assert!(
+            store
+                .load_session_snapshot(old_session.id())
+                .await
+                .expect("reload old snapshot")
+                .is_none()
+        );
+
+        adapter
+            .unregister_session(old_session.id())
+            .await
+            .expect("finalize old session authority");
+        assert!(
+            meerkat::SessionStore::save(&adapter, &old_session)
+                .await
+                .is_err(),
+            "late writes must fail closed after structural member absence"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_retries_failed_superseded_snapshot_cas() {
+        let inner = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let store = Arc::new(FailSaveContinuityStore::new(inner.clone()));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let identity = AgentIdentity::parse("agent:reset-abandon-retry").expect("identity");
+        let session = meerkat_core::Session::new();
+        let old_record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:reset-abandon-retry:0")
+                .expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let old_fence = FencingToken::new(7);
+        store
+            .upsert_continuity_record(&old_record, old_fence)
+            .await
+            .expect("seed old record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: old_record.generation,
+                    fencing_token: old_fence,
+                    checkpoint_version: old_record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register old session");
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("persist old session");
+        let replacement = ContinuityRecord {
+            identity,
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:reset-abandon-retry:1")
+                .expect("replacement runtime id"),
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(1),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&replacement, FencingToken::new(8))
+            .await
+            .expect("commit replacement");
+
+        store.fail_next_delete();
+        assert!(
+            adapter
+                .abandon_superseded_session(session.id())
+                .await
+                .is_err(),
+            "the injected CAS failure must remain visible"
+        );
+        assert!(adapter.session_was_suspended(session.id()));
+        assert!(
+            inner
+                .load_session_snapshot(session.id())
+                .await
+                .expect("snapshot after failed abandon")
+                .is_some()
+        );
+
+        adapter
+            .abandon_superseded_session(session.id())
+            .await
+            .expect("retry exact CAS abandon");
+        assert!(adapter.session_was_superseded(session.id()));
+        assert!(
+            inner
+                .load_session_snapshot(session.id())
+                .await
+                .expect("snapshot after retry")
+                .is_none()
         );
     }
 

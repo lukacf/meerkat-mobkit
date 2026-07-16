@@ -52,9 +52,9 @@ pub use edge_types::{
 pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use types::{
-    ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport,
+    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
+    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
     UnifiedRuntimeShutdownReport,
 };

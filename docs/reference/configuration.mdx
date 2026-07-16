@@ -175,10 +175,16 @@ failures that apply to the whole pass are reported in the snapshot's optional
 The stock persistent gateway also advertises a private shutdown handshake and
 its bounded `stdio_shutdown_horizon_ms` in the `mobkit/init` result. SDK hosts
 keep stdin and provider callbacks open until that handshake completes, then
-close the process. The current 310-second horizon covers an already-admitted
+close the process. The current 335-second horizon covers an already-admitted
 provider callback, runtime event and mob drains, the final lease-release
-callback, and bounded response-delivery/reaping margin. Older and custom
-gateways that do not advertise the handshake retain the EOF shutdown protocol.
+callback, and bounded response-delivery/reaping margin. Provider operations
+must resolve or reject within their public 120-second contract. The Python host
+allows 125 seconds for event-loop completion before cancelling that callback;
+the gateway enforces a final 130-second hard wire deadline. Provider rejection,
+timeout, or cancellation is pre-commit: an implementation must not commit a
+replacement grant or other external authority after cancellation is observed.
+Older and custom gateways that do not advertise the handshake retain the EOF
+shutdown protocol.
 If the gateway exhausts its runtime deadline, it reports incomplete cleanup;
 the SDK still reaps the bounded child process and then surfaces the failure.
 

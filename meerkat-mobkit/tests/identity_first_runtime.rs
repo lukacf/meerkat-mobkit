@@ -2893,7 +2893,7 @@ async fn identity_first_runtime_reset_advances_generation_creates_fresh() {
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_preserves_superseded_bridge_session_runtime_state() {
+async fn identity_first_runtime_reset_cleans_superseded_bridge_session_after_commit() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -2925,15 +2925,22 @@ async fn identity_first_runtime_reset_preserves_superseded_bridge_session_runtim
     let new_record = runtime.reset(&id).await.unwrap();
 
     assert_ne!(new_record.session_id, record.session_id);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while bridge.unregister_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reset cleanup did not unregister the superseded bridge session");
     let unregistered = bridge.unregistered_session_ids.lock().await.clone();
     assert!(
-        !unregistered.contains(&record.session_id.to_string()),
-        "successful reset must leave superseded bridge session state registered; unregistered={unregistered:?}"
+        unregistered.contains(&record.session_id.to_string()),
+        "successful reset cleanup must unregister the exact superseded bridge session; unregistered={unregistered:?}"
     );
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
-        0,
-        "successful reset should not unregister the old bridge session on the critical path"
+        1,
+        "successful reset should unregister the old bridge session exactly once"
     );
 }
 
@@ -3511,7 +3518,7 @@ async fn identity_first_runtime_reset_falls_back_to_stored_spec_when_roster_unav
 }
 
 #[tokio::test]
-async fn identity_first_runtime_reset_skips_old_member_retire_failure_path() {
+async fn identity_first_runtime_reset_retire_failure_does_not_roll_back_committed_generation() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
@@ -3558,12 +3565,19 @@ async fn identity_first_runtime_reset_skips_old_member_retire_failure_path() {
     assert_eq!(status.state, IdentityLifecycleState::Active);
     assert!(
         status.lease.is_some(),
-        "successful reset should keep a refreshed lease when old-generation cleanup is skipped"
+        "committed reset must keep its refreshed lease while old-generation cleanup debt remains"
     );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while bridge.retire_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reset cleanup never attempted the old member retire");
     assert_eq!(
         bridge.retire_calls.load(Ordering::SeqCst),
-        0,
-        "reset must not retire the old generation as part of the success path"
+        1,
+        "reset cleanup should attempt the old generation exactly once before shutdown retry"
     );
     assert_old_token_snapshot_write_rejected(store.as_ref(), &id, &reset_record, old_token).await;
 }
@@ -3924,6 +3938,11 @@ async fn identity_first_runtime_delete_identity_unregisters_bridge_session() {
 
     runtime.delete_identity(&id).await.unwrap();
 
+    assert_eq!(
+        bridge.register_calls.load(Ordering::SeqCst),
+        1,
+        "delete must refresh the live session onto its newly acquired fence before archive"
+    );
     assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         bridge.unregister_calls.load(Ordering::SeqCst),
