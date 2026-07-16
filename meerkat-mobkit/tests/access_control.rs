@@ -18,9 +18,9 @@ use meerkat_mobkit::runtime::ConsoleMember;
 use meerkat_mobkit::{
     AccessControlConfig, AccessController, AccessGroup, AccessRule, AuthPolicy, BigQueryNaming,
     ConsoleAccessRequest, ConsoleLiveSnapshot, ConsoleModelCapabilities, ConsolePolicy,
-    ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, TopologyControlMode, TopologyControlPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    ConsoleRestJsonRequest, ConsoleVisibilityPolicy, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy, TopologyControlMode,
+    TopologyControlPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
     handle_console_rest_json_route_with_snapshot_and_access,
 };
 use serde_json::{Value, json};
@@ -703,6 +703,105 @@ async fn http_router_enforces_access_end_to_end() {
     assert_eq!(
         get_status(&app, "/agents/delivery/events").await,
         StatusCode::OK
+    );
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
+#[tokio::test]
+async fn public_member_ingress_rejects_encoded_roster_ids_before_abac_and_resolution() {
+    let (_temp_dir, mut runtime) = build_access_runtime_fixture().await;
+    let controller = AccessController::new(AccessControlConfig {
+        enabled: true,
+        admins: vec!["root@example.test".to_string()],
+        rules: vec![
+            AccessRule {
+                id: "everyone-views".to_string(),
+                actions: vec!["agent.view".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "deny-delivery-view".to_string(),
+                effect: meerkat_mobkit::AccessEffect::Deny,
+                actions: vec!["agent.view".to_string()],
+                agents: vec!["delivery".to_string()],
+                ..AccessRule::default()
+            },
+            AccessRule {
+                id: "everyone-spawns".to_string(),
+                actions: vec!["agent.spawn".to_string()],
+                ..AccessRule::default()
+            },
+        ],
+        ..AccessControlConfig::default()
+    })
+    .expect("controller");
+    runtime.set_access_controller(controller);
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Pre-fix, ABAC evaluated this raw spelling (matching the broad allow but
+    // not the targeted deny), then member resolution decoded it to
+    // `delivery`. Public ingress must reject before either step.
+    let encoded_rpc = rpc(
+        &app,
+        "mobkit/get_member",
+        json!({ "member_id": "mk--delivery" }),
+    )
+    .await;
+    assert_eq!(encoded_rpc["error"]["code"], json!(-32602));
+    assert!(
+        encoded_rpc["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("encoded roster-id")),
+        "{encoded_rpc:#?}"
+    );
+
+    assert_eq!(
+        get_status(&app, "/agents/mk--delivery/events").await,
+        StatusCode::BAD_REQUEST,
+        "per-agent SSE must reject encoded roster ids before its agent.view decision"
+    );
+    assert_eq!(
+        get_status(&app, "/agents/%20delivery%20/events").await,
+        StatusCode::FORBIDDEN,
+        "per-agent SSE must trim the public alias before its targeted agent.view decision"
+    );
+
+    let forged_label = rpc(
+        &app,
+        "mobkit/ensure_member",
+        json!({
+            "role": "lead",
+            "agent_identity": "raw-imposter",
+            "labels": { "agent_identity": "delivery" },
+        }),
+    )
+    .await;
+    assert_eq!(forged_label["error"]["code"], json!(-32602));
+    assert!(
+        forged_label["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("runtime-authoritative")),
+        "{forged_label:#?}"
+    );
+
+    #[derive(Debug)]
+    struct HideDelivery;
+
+    impl ConsoleVisibilityPolicy for HideDelivery {
+        fn member_visible(&self, member: &ConsoleMember) -> bool {
+            member.agent_identity != "delivery"
+        }
+    }
+
+    let hidden_app = runtime.build_reference_app_router_with_console_visibility_policy(
+        decision_state(false),
+        Arc::new(HideDelivery),
+    );
+    assert_eq!(
+        get_status(&hidden_app, "/agents/delivery/events").await,
+        StatusCode::NOT_FOUND,
+        "a visibility-hidden agent must be rejected before SSE subscription"
     );
 
     let _ = runtime.mob_handle().stop().await;

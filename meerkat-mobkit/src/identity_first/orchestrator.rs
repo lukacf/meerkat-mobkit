@@ -283,6 +283,66 @@ fn append_cleanup_error(message: String, cleanup_error: Option<String>) -> Strin
     }
 }
 
+type RosterAuthorityGuards = (
+    tokio::sync::OwnedMutexGuard<()>,
+    tokio::sync::OwnedMutexGuard<()>,
+);
+
+/// Reserve every identity and its public alias in one stable order before a
+/// roster-wide continuity/lease decision. Keeping the guards owned lets the
+/// restore work remain concurrent after the all-or-nothing authority gate,
+/// while reset, delete, materialize, and raw-member creation cannot invalidate
+/// any member's freshly resolved generation.
+async fn acquire_roster_authority_guards(
+    runtime: &IdentityRuntime,
+    identities: &[AgentIdentity],
+) -> Result<BTreeMap<AgentIdentity, RosterAuthorityGuards>, IdentityRuntimeError> {
+    let ordered = identities.iter().cloned().collect::<BTreeSet<_>>();
+    let mut lifecycle_guards = BTreeMap::new();
+    for identity in &ordered {
+        lifecycle_guards.insert(
+            identity.clone(),
+            runtime
+                .lifecycle_lock_for(identity)
+                .await
+                .lock_owned()
+                .await,
+        );
+    }
+
+    let mut alias_guards = BTreeMap::new();
+    for identity in &ordered {
+        alias_guards.insert(
+            identity.clone(),
+            runtime
+                .raw_member_alias_lock(identity.as_str())
+                .await
+                .lock_owned()
+                .await,
+        );
+    }
+    for identity in &ordered {
+        runtime.ensure_raw_member_alias_available(identity).await?;
+    }
+
+    ordered
+        .into_iter()
+        .map(|identity| {
+            let lifecycle = lifecycle_guards.remove(&identity).ok_or_else(|| {
+                IdentityRuntimeError::Internal(format!(
+                    "authority gate lost lifecycle reservation for {identity}"
+                ))
+            })?;
+            let alias = alias_guards.remove(&identity).ok_or_else(|| {
+                IdentityRuntimeError::Internal(format!(
+                    "authority gate lost alias reservation for {identity}"
+                ))
+            })?;
+            Ok((identity, (lifecycle, alias)))
+        })
+        .collect::<Result<_, IdentityRuntimeError>>()
+}
+
 // ---------------------------------------------------------------------------
 // Restore flow orchestration — REQ-12
 // ---------------------------------------------------------------------------
@@ -379,84 +439,98 @@ async fn restore_flow_with_snapshot_policy(
 
     let identities: Vec<AgentIdentity> = roster.iter().map(|s| s.identity.clone()).collect();
 
-    // Step 2: resolve continuity
+    // Topology is declaration-only and does not require an embodiment lease.
+    let topology_context = TopologyContext {
+        roster: roster.to_vec(),
+    };
+    let managed_edges = if let Some(tp) = topology_provider {
+        tp.compute_edges(&identities, &topology_context)
+            .await
+            .map_err(|error| IdentityRuntimeError::Internal(format!("topology: {error}")))?
+    } else {
+        Vec::new()
+    };
+
+    // Hold every lifecycle reservation before the fleet-wide read and lease
+    // gate. This preserves the historical all-or-nothing ownership contract
+    // without reopening the stale-generation race: each guard moves into the
+    // corresponding concurrent restore future and remains held through that
+    // member's explicit commit/rollback boundary.
+    let mut authority_guards = acquire_roster_authority_guards(runtime, &identities).await?;
     let resolved = runtime
         .continuity_store()
         .resolve_many(&identities)
         .await
         .map_err(IdentityRuntimeError::Store)?;
-
-    // Step 3: acquire leases for all identities
+    for identity in &identities {
+        if !resolved.contains_key(identity) {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "resolve_many did not return state for {identity}"
+            )));
+        }
+    }
     let lease_results = runtime
         .lease_provider()
         .acquire_leases(&identities, runtime.runtime_instance_id())
         .await
         .map_err(IdentityRuntimeError::Lease)?;
-
-    // Step 3 is an ownership gate. Do not create or resume live members for
-    // identities whose durable lease is held by another runtime.
-    let mut grants: BTreeMap<AgentIdentity, LeaseGrant> = BTreeMap::new();
+    let mut restore_grants = BTreeMap::new();
+    let mut ownership_error = None;
     for identity in &identities {
         match lease_results.get(identity) {
             Some(LeaseAcquireResult::Acquired(grant)) => {
-                grants.insert(identity.clone(), grant.clone());
+                restore_grants.insert(identity.clone(), grant.clone());
             }
             Some(LeaseAcquireResult::AlreadyHeld { holder, .. }) => {
-                // Fail-closed single-embodiment guard: name the holder loudly
-                // instead of collapsing into a generic missing-lease error.
                 tracing::error!(
                     %identity,
                     holder = %holder,
                     "single-embodiment guard: restore refused — identity is already \
                      embodied by another live runtime instance"
                 );
-                let holder = holder.clone();
-                let acquired = grants.values().cloned().collect::<Vec<_>>();
-                if !acquired.is_empty() {
-                    runtime
-                        .lease_provider()
-                        .release_leases(&acquired)
-                        .await
-                        .map_err(IdentityRuntimeError::Lease)?;
-                }
-                return Err(IdentityRuntimeError::AlreadyEmbodied {
+                ownership_error.get_or_insert_with(|| IdentityRuntimeError::AlreadyEmbodied {
                     identity: identity.clone(),
-                    holder,
+                    holder: holder.clone(),
                 });
             }
             None => {
-                let acquired = grants.values().cloned().collect::<Vec<_>>();
-                if !acquired.is_empty() {
-                    runtime
-                        .lease_provider()
-                        .release_leases(&acquired)
-                        .await
-                        .map_err(IdentityRuntimeError::Lease)?;
-                }
-                return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
+                ownership_error
+                    .get_or_insert_with(|| IdentityRuntimeError::NoActiveLease(identity.clone()));
             }
         }
     }
+    if let Some(error) = ownership_error {
+        let cleanup_error =
+            release_unactivated_restore_grants(runtime, &restore_grants, &BTreeSet::new()).await;
+        return match cleanup_error {
+            Some(cleanup_error) => Err(IdentityRuntimeError::Internal(append_cleanup_error(
+                error.to_string(),
+                Some(cleanup_error),
+            ))),
+            None => Err(error),
+        };
+    }
 
-    // Step 4: topology reconciliation
-    let topology_context = TopologyContext {
-        roster: roster.to_vec(),
-    };
-    let managed_edges = if let Some(tp) = topology_provider {
-        match tp.compute_edges(&identities, &topology_context).await {
-            Ok(edges) => edges,
-            Err(e) => {
-                let cleanup_error =
-                    release_unactivated_restore_grants(runtime, &grants, &BTreeSet::new()).await;
-                return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                    format!("topology: {e}"),
-                    cleanup_error,
-                )));
-            }
-        }
-    } else {
-        Vec::new()
-    };
+    let mut restore_work = Vec::with_capacity(roster.len());
+    for (index, spec) in roster.iter().cloned().enumerate() {
+        let identity = &spec.identity;
+        let persisted_resolve_state = resolved.get(identity).cloned().ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "validated resolve state disappeared for {identity}"
+            ))
+        })?;
+        let grant = restore_grants.remove(identity).ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "validated restore grant disappeared for {identity}"
+            ))
+        })?;
+        let guards = authority_guards.remove(identity).ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "validated authority reservation disappeared for {identity}"
+            ))
+        })?;
+        restore_work.push((index, spec, persisted_resolve_state, grant, guards));
+    }
 
     // Steps 5-11: per-identity processing. Session restoration is dominated by
     // independent history loading and agent construction, so keep a small
@@ -469,22 +543,18 @@ async fn restore_flow_with_snapshot_policy(
         "starting identity restore"
     );
     let restore_started_at = Instant::now();
-    let restore_results = stream::iter(roster.iter().cloned().enumerate())
-        .map(|(index, spec)| {
-            let resolve_state = resolved.get(&spec.identity).cloned();
-            let grant = grants.get(&spec.identity).cloned();
+    let restore_results = stream::iter(restore_work)
+        .map(|(index, spec, persisted_resolve_state, grant, authority_guards)| {
             let identities = identities.clone();
             let managed_edges = managed_edges.clone();
             async move {
+                let _authority_guards = authority_guards;
                 let member_started_at = Instant::now();
-                let mut grants = BTreeMap::new();
-                if let Some(grant) = grant {
-                    grants.insert(spec.identity.clone(), grant);
-                }
                 let mut activated_identities = BTreeSet::new();
                 let mut outcomes = BTreeMap::new();
                 let spec = &spec;
                 let identity = &spec.identity;
+        let grants = BTreeMap::from([(identity.clone(), grant)]);
 
         // If this identity is already registered and in Active state
         // (from a previous restore_flow call), skip bridge operations — the
@@ -513,23 +583,10 @@ async fn restore_flow_with_snapshot_policy(
             activated_identities.insert(identity.clone());
         }
 
-        let Some(persisted_resolve_state) = resolve_state.as_ref() else {
-            // Internal-invariant path (resolve_many answered every roster
-            // identity two steps ago), but keep it symmetric with every
-            // sibling error path in this task: release THIS member's grant
-            // before failing — under the parallel restore there is no final
-            // whole-roster cleanup to catch a skipped release (#265 fixup).
-            let cleanup_error =
-                release_unactivated_restore_grants(runtime, &grants, &activated_identities).await;
-            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                format!("resolve_many did not return state for {identity}"),
-                cleanup_error,
-            )));
-        };
         let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {
             ContinuityResolveState::Uninitialized
         } else {
-            persisted_resolve_state.clone()
+            persisted_resolve_state
         };
 
         // Step 5: build context
@@ -1096,15 +1153,62 @@ async fn restore_flow_with_snapshot_policy(
                     {
                         Ok(resolved) => resolved,
                         Err(err) => {
-                            let cleanup_error = release_unactivated_restore_grants(
+                            let (unregister_error, member_cleanup_error) =
+                                if let Some(bridge) = runtime.bridge() {
+                                    let mut sessions = Vec::new();
+                                    if let Some(session_id) =
+                                        abandoned_session_registration.as_ref()
+                                    {
+                                        sessions.push(session_id.clone());
+                                    }
+                                    if !sessions
+                                        .iter()
+                                        .any(|session_id| session_id == &record.session_id)
+                                    {
+                                        sessions.push(record.session_id.clone());
+                                    }
+                                    let mut unregister_errors = Vec::new();
+                                    for session_id in sessions {
+                                        if let Err(error) = bridge
+                                            .unregister_session_runtime_state(&session_id)
+                                            .await
+                                        {
+                                            unregister_errors.push(format!(
+                                                "{session_id}: {error}"
+                                            ));
+                                        }
+                                    }
+                                    (
+                                        (!unregister_errors.is_empty())
+                                            .then(|| unregister_errors.join("; ")),
+                                        bridge.retire_member(&record.agent_runtime_id).await.err(),
+                                    )
+                                } else {
+                                    (None, None)
+                                };
+                            let lease_cleanup_error = release_unactivated_restore_grants(
                                 runtime,
                                 &grants,
                                 &activated_identities,
                             )
                             .await;
                             return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                                format!("resolve continuity before restore resume upsert: {err}"),
-                                cleanup_error,
+                                format!(
+                                    "resolve continuity before restore resume upsert: {err}{}{}",
+                                    unregister_error
+                                        .as_ref()
+                                        .map(|error| format!(
+                                            "; unregister session failed: {error}"
+                                        ))
+                                        .unwrap_or_default(),
+                                    member_cleanup_error
+                                        .as_ref()
+                                        .map(|error| format!(
+                                            "; cleanup retire failed: {error}"
+                                        ))
+                                        .unwrap_or_default(),
+                                ),
+                                lease_cleanup_error,
                             )));
                         }
                     };
@@ -1398,11 +1502,6 @@ pub async fn lazy_register_flow(
     IdentityRuntime::validate_roster_uniqueness(roster)?;
 
     let identities: Vec<AgentIdentity> = roster.iter().map(|s| s.identity.clone()).collect();
-    let resolved = runtime
-        .continuity_store()
-        .resolve_many(&identities)
-        .await
-        .map_err(IdentityRuntimeError::Store)?;
 
     let topology_context = TopologyContext {
         roster: roster.to_vec(),
@@ -1416,9 +1515,37 @@ pub async fn lazy_register_flow(
     };
     runtime.set_desired_peer_edges(managed_edges.clone()).await;
 
+    // Reserve the full roster before the one fleet-wide metadata read. Each
+    // identity's guard remains held until its dormant/active projection is
+    // published, so a queued reset/delete cannot invalidate the batch result
+    // while preserving O(1) store round trips for large lazy rosters.
+    let mut authority_guards = acquire_roster_authority_guards(runtime, &identities).await?;
+    let resolved = runtime
+        .continuity_store()
+        .resolve_many(&identities)
+        .await
+        .map_err(IdentityRuntimeError::Store)?;
+    for identity in &identities {
+        if !resolved.contains_key(identity) {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "resolve_many did not return state for {identity}"
+            )));
+        }
+    }
+
     let mut outcomes = BTreeMap::new();
     for spec in roster {
         let identity = &spec.identity;
+        let _authority_guards = authority_guards.remove(identity).ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "validated lazy authority reservation disappeared for {identity}"
+            ))
+        })?;
+        let resolve_state = resolved.get(identity).cloned().ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "validated lazy resolve state disappeared for {identity}"
+            ))
+        })?;
         let currently_active = runtime
             .status(identity)
             .await
@@ -1432,11 +1559,7 @@ pub async fn lazy_register_flow(
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
         };
-        match resolved.get(identity).ok_or_else(|| {
-            IdentityRuntimeError::Internal(format!(
-                "resolve_many did not return state for {identity}"
-            ))
-        })? {
+        match resolve_state {
             ContinuityResolveState::Uninitialized => {
                 if currently_active {
                     runtime.update_spec(spec.clone()).await?;
@@ -1469,7 +1592,7 @@ pub async fn lazy_register_flow(
                 outcomes.insert(
                     identity.clone(),
                     RestoreOutcome::Dormant {
-                        record: Some(record.clone()),
+                        record: Some(record),
                         draft,
                     },
                 );
@@ -1506,7 +1629,7 @@ pub async fn lazy_register_flow(
                             None,
                         )
                         .await;
-                    outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
+                    outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure));
                 }
             }
         }

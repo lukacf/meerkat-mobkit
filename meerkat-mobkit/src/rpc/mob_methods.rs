@@ -730,21 +730,26 @@ pub(super) async fn handle_ensure_member(
 
     match (role, agent_identity) {
         (Some(role), Some(agent_identity)) if !role.is_empty() && !agent_identity.is_empty() => {
-            if let Err(message) =
-                crate::member_comms_id::validate_raw_member_target(identity_runtime, agent_identity)
-                    .await
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                agent_identity,
+            )
+            .await
             {
-                return JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {message}"),
-                        data: None,
-                    }),
-                };
-            }
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let labels = match params.get("labels") {
                 None | Some(Value::Null) => None,
                 Some(v) => {
@@ -908,7 +913,7 @@ pub(super) async fn handle_ensure_member(
 
             let mut spec = SpawnMemberSpec::new(
                 ProfileName::from(role),
-                crate::member_comms_id::mob_member_id(agent_identity),
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
             );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
@@ -933,7 +938,9 @@ pub(super) async fn handle_ensure_member(
             }
             let handle = runtime.mob_handle();
             let mid = spec.identity.clone();
-            match handle.ensure_member(spec).await {
+            let ensure_result = handle.ensure_member(spec).await;
+            drop(raw_reservation);
+            match ensure_result {
                 Ok(_outcome) => {
                     // Declared definition wiring (auto_wire_orchestrator /
                     // role_wiring) is bring-up-order dependent at spawn time
@@ -2147,20 +2154,6 @@ pub(super) async fn handle_spawn_helper(
 
     match (agent_identity, task) {
         (Some(mid), Some(task_str)) if !mid.is_empty() && !task_str.is_empty() => {
-            if let Err(message) =
-                crate::member_comms_id::validate_raw_member_target(identity_runtime, mid).await
-            {
-                return JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {message}"),
-                        data: None,
-                    }),
-                };
-            }
             let options = match parse_helper_options(params.get("options")) {
                 Ok(opts) => opts,
                 Err(msg) => {
@@ -2176,14 +2169,35 @@ pub(super) async fn handle_spawn_helper(
                     };
                 }
             };
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                mid,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
             let handle = runtime.mob_handle();
-            match Box::pin(handle.spawn_helper(
-                crate::member_comms_id::mob_member_id(mid),
+            let spawn_result = Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task_str,
                 options,
             ))
-            .await
-            {
+            .await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(result) => {
                     // Note: meerkat 0.6's `spawn_helper` retires the helper
                     // before returning, so `resolve_bridge_session_id` would
@@ -2292,8 +2306,9 @@ pub(super) async fn handle_fork_helper(
             };
             let handle = runtime.mob_handle();
             let source_member_id = crate::member_comms_id::mob_member_id(&source);
-            let helper_member_id = crate::member_comms_id::mob_member_id(mid);
+            let helper_alias = mid.to_string();
             let task = task_str.to_string();
+            let identity_runtime_owned = identity_runtime.cloned();
             let authority_target = if let Some(identity_runtime) = identity_runtime {
                 identity_runtime
                     .member_alias_lifecycle_target(&source)
@@ -2307,7 +2322,20 @@ pub(super) async fn handle_fork_helper(
                     crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                         vec![target],
                         move || async move {
-                        handle
+                            // The lifecycle target is acquired by the tracked
+                            // wrapper before this closure runs. Reserve the raw
+                            // namespace second, matching durable materialization's
+                            // lock order and preventing an inversion deadlock.
+                            let raw_reservation =
+                                crate::member_comms_id::reserve_raw_member_target(
+                                    identity_runtime_owned.as_ref(),
+                                    helper_alias.as_str(),
+                                )
+                                .await?;
+                            let helper_member_id = crate::member_comms_id::mob_member_id(
+                                raw_reservation.alias(),
+                            );
+                            let result = handle
                             .fork_helper(
                                 &source_member_id,
                                 helper_member_id,
@@ -2316,27 +2344,43 @@ pub(super) async fn handle_fork_helper(
                                 options,
                             )
                             .await
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
                         },
                     )
                     .await
                     .map_err(|error| error.to_string())
                 }
-                Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&source) => {
-                    Err(format!(
-                        "generated source alias requires current identity authority: {source}"
-                    ))
-                }
-                Ok(None) => handle
-                    .fork_helper(
-                        &source_member_id,
-                        helper_member_id,
-                        task.as_str(),
-                        fork_context,
-                        options,
+                Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&source) => Err(
+                    format!("generated source alias requires current identity authority: {source}"),
+                ),
+                Ok(None) => {
+                    match crate::member_comms_id::reserve_raw_member_target(
+                        identity_runtime_owned.as_ref(),
+                        helper_alias.as_str(),
                     )
                     .await
-                    .map_err(|error| error.to_string()),
+                    {
+                        Err(error) => Err(error),
+                        Ok(raw_reservation) => {
+                            let helper_member_id =
+                                crate::member_comms_id::mob_member_id(raw_reservation.alias());
+                            let result = handle
+                                .fork_helper(
+                                    &source_member_id,
+                                    helper_member_id,
+                                    task.as_str(),
+                                    fork_context,
+                                    options,
+                                )
+                                .await
+                                .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
+                        }
+                    }
+                }
             };
             match fork_result {
                 Ok(result) => {
@@ -2394,20 +2438,6 @@ pub(super) async fn handle_attach_existing_session(
         (Some(role), Some(mid), Some(sid))
             if !role.is_empty() && !mid.is_empty() && !sid.is_empty() =>
         {
-            if let Err(message) =
-                crate::member_comms_id::validate_raw_member_target(identity_runtime, mid).await
-            {
-                return JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {message}"),
-                        data: None,
-                    }),
-                };
-            }
             let bridge_session_id = match meerkat_core::types::SessionId::parse(sid) {
                 Ok(s) => s,
                 Err(_) => {
@@ -2424,11 +2454,33 @@ pub(super) async fn handle_attach_existing_session(
                     };
                 }
             };
-            let identity = crate::member_comms_id::mob_member_id(mid);
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime,
+                mid,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {message}"),
+                            data: None,
+                        }),
+                    };
+                }
+            };
+            let identity = crate::member_comms_id::mob_member_id(raw_reservation.alias());
             let spec = SpawnMemberSpec::new(ProfileName::from(role), identity.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.mob_handle();
-            match Box::pin(handle.spawn_spec(spec)).await {
+            let spawn_result = Box::pin(handle.spawn_spec(spec)).await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(_) => match handle.member_status(&identity).await {
                     Ok(snapshot) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),

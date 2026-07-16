@@ -254,7 +254,7 @@ class MobKitRuntime:
     @classmethod
     async def _create(cls, config: Any) -> MobKitRuntime:
         runtime = cls(config)
-        await runtime._bootstrap()
+        await runtime.connect()
         return runtime
 
     async def connect(self) -> None:
@@ -262,10 +262,63 @@ class MobKitRuntime:
         async with self._lifecycle_lock:
             shutdown_task = self._shutdown_task
             if shutdown_task is not None:
-                await asyncio.shield(shutdown_task)
+                try:
+                    await asyncio.shield(shutdown_task)
+                finally:
+                    if shutdown_task.done() and self._shutdown_task is shutdown_task:
+                        self._shutdown_task = None
             if self._running:
                 return
             await self._bootstrap()
+
+    def _schedule_transport_stop(
+        self, transport: PersistentTransport
+    ) -> asyncio.Task[None]:
+        stop_task = asyncio.create_task(asyncio.to_thread(transport.stop))
+        self._shutdown_task = stop_task
+
+        def clear_shutdown_task(done: asyncio.Task[None]) -> None:
+            if self._shutdown_task is done:
+                self._shutdown_task = None
+
+        stop_task.add_done_callback(clear_shutdown_task)
+        return stop_task
+
+    async def _cleanup_failed_bootstrap(
+        self, transport: PersistentTransport
+    ) -> None:
+        """Detach and reap a transport that failed before becoming usable.
+
+        The stop task remains runtime-owned if the caller is cancelled. A
+        later ``connect()`` therefore waits for the failed child to be fully
+        reaped before it starts a replacement gateway.
+        """
+        self._running = False
+        self._rust_http_base = None
+        if self._transport is transport:
+            self._transport = None
+
+        prior_stop = self._shutdown_task
+        if prior_stop is not None:
+            try:
+                await asyncio.shield(prior_stop)
+            except Exception:
+                _log.exception("prior gateway cleanup failed during bootstrap")
+            finally:
+                if prior_stop.done() and self._shutdown_task is prior_stop:
+                    self._shutdown_task = None
+
+        stop_task = self._schedule_transport_stop(transport)
+        try:
+            await asyncio.shield(stop_task)
+        except Exception:
+            # Preserve the bootstrap exception as the public failure. The
+            # transport has still been detached, and stop() is best-effort
+            # bounded cleanup even when an OS-level reap operation errors.
+            _log.exception("failed to clean up gateway after bootstrap failure")
+        finally:
+            if stop_task.done() and self._shutdown_task is stop_task:
+                self._shutdown_task = None
 
     def on_schedule_fire(self, name: str, handler: Any) -> None:
         """Register the handler for a named host runnable.
@@ -282,51 +335,65 @@ class MobKitRuntime:
 
     async def _bootstrap(self) -> None:
         if self._config.gateway_bin:
-            self._transport = PersistentTransport(self._config.gateway_bin)
-            # Register builder FIRST — init may trigger callback/build_agent
-            if self._config.session_builder and isinstance(
-                self._config.session_builder, SessionAgentBuilder
-            ):
-                self._dispatcher.register_builder(self._config.session_builder)
-            if self._config.error_callback is not None:
-                self._dispatcher.register_error_callback(self._config.error_callback)
-            # Register identity-first providers before transport start —
-            # restore_flow during init may trigger provider callbacks.
-            if self._config.continuity_store is not None:
-                self._dispatcher.register_continuity_store(self._config.continuity_store)
-            if self._config.lease_provider is not None:
-                self._dispatcher.register_lease_provider(self._config.lease_provider)
-            if self._config.roster_provider is not None:
-                self._dispatcher.register_roster_provider(self._config.roster_provider)
-            if self._config.topology_provider is not None:
-                self._dispatcher.register_topology_provider(self._config.topology_provider)
-            if self._config.agent_customizer is not None:
-                self._dispatcher.register_agent_customizer(self._config.agent_customizer)
-            self._transport.set_callback_handler(self._dispatcher.handle_callback)
-            self._transport.start()
-            if not self._transport.is_running():
-                raise TransportError(
-                    f"gateway binary failed to start: {self._config.gateway_bin}"
-                )
+            transport = PersistentTransport(self._config.gateway_bin)
+            self._transport = transport
+            self._rust_http_base = None
             try:
-                init_result = await self._rpc("mobkit/init", self._build_init_params())
-                if isinstance(init_result, dict):
-                    self._rust_http_base = init_result.get("http_base_url")
-                    if not self._rust_http_base:
-                        _log.warning(
-                            "mobkit/init did not return http_base_url — "
-                            "SSE event streaming unavailable"
-                        )
-            except Exception as init_err:
-                if self._transport is not None and not self._transport.is_running():
-                    raise TransportError(
-                        f"gateway process died during bootstrap: {init_err}"
+                # Register builder FIRST — init may trigger callback/build_agent
+                if self._config.session_builder and isinstance(
+                    self._config.session_builder, SessionAgentBuilder
+                ):
+                    self._dispatcher.register_builder(self._config.session_builder)
+                if self._config.error_callback is not None:
+                    self._dispatcher.register_error_callback(self._config.error_callback)
+                # Register identity-first providers before transport start —
+                # restore_flow during init may trigger provider callbacks.
+                if self._config.continuity_store is not None:
+                    self._dispatcher.register_continuity_store(
+                        self._config.continuity_store
                     )
-                if isinstance(init_err, RpcError):
-                    raise
-                raise TransportError(
-                    f"mobkit/init failed: {init_err}"
-                )
+                if self._config.lease_provider is not None:
+                    self._dispatcher.register_lease_provider(self._config.lease_provider)
+                if self._config.roster_provider is not None:
+                    self._dispatcher.register_roster_provider(self._config.roster_provider)
+                if self._config.topology_provider is not None:
+                    self._dispatcher.register_topology_provider(
+                        self._config.topology_provider
+                    )
+                if self._config.agent_customizer is not None:
+                    self._dispatcher.register_agent_customizer(
+                        self._config.agent_customizer
+                    )
+                transport.set_callback_handler(self._dispatcher.handle_callback)
+                transport.start()
+                if not transport.is_running():
+                    raise TransportError(
+                        f"gateway binary failed to start: {self._config.gateway_bin}"
+                    )
+                try:
+                    init_result = await self._rpc(
+                        "mobkit/init", self._build_init_params()
+                    )
+                    if isinstance(init_result, dict):
+                        self._rust_http_base = init_result.get("http_base_url")
+                        if not self._rust_http_base:
+                            _log.warning(
+                                "mobkit/init did not return http_base_url — "
+                                "SSE event streaming unavailable"
+                            )
+                except Exception as init_err:
+                    if not transport.is_running():
+                        raise TransportError(
+                            f"gateway process died during bootstrap: {init_err}"
+                        ) from init_err
+                    if isinstance(init_err, RpcError):
+                        raise
+                    raise TransportError(
+                        f"mobkit/init failed: {init_err}"
+                    ) from init_err
+            except BaseException:
+                await self._cleanup_failed_bootstrap(transport)
+                raise
         elif self._config.session_builder and isinstance(
             self._config.session_builder, SessionAgentBuilder
         ):
@@ -663,16 +730,7 @@ class MobKitRuntime:
                 # gateway.
                 self._transport = None
                 if transport is not None:
-                    shutdown_task = asyncio.create_task(
-                        asyncio.to_thread(transport.stop)
-                    )
-                    self._shutdown_task = shutdown_task
-
-                    def clear_shutdown_task(done: asyncio.Task[None]) -> None:
-                        if self._shutdown_task is done:
-                            self._shutdown_task = None
-
-                    shutdown_task.add_done_callback(clear_shutdown_task)
+                    shutdown_task = self._schedule_transport_stop(transport)
         if shutdown_task is not None:
             # A cancelled caller must not cancel the runtime-owned cleanup.
             await asyncio.shield(shutdown_task)

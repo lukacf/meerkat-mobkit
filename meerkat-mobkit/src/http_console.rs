@@ -774,6 +774,11 @@ async fn console_send_handler(
     if state.decisions.console.read_only {
         return console_json_error(StatusCode::FORBIDDEN, "read_only", "console is read-only");
     }
+    if let Err(message) =
+        crate::member_comms_id::validate_public_member_alias("identity", request.identity.as_str())
+    {
+        return console_json_error(StatusCode::BAD_REQUEST, "invalid_request", &message);
+    }
     // Prime the attribute cache from the live roster BEFORE the `agent.send`
     // decision: role/label-scoped rules resolve through the cache, and on a
     // cold cache the decision degrades to a bare-identity resource — a deny
@@ -3000,6 +3005,14 @@ pub async fn console_rpc_multipart_handler(
         }
     };
     let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
+    if let Err(message) =
+        crate::member_comms_id::validate_public_rpc_member_aliases(&parsed_request.params)
+    {
+        return (
+            StatusCode::OK,
+            Json::<Value>(invalid_params(response_id, message)),
+        );
+    }
     if state.decisions.console.read_only && is_console_mutating_rpc_method(&parsed_request.method) {
         return (
             StatusCode::OK,
@@ -3925,6 +3938,26 @@ async fn lookup_member_alias_candidates_with_session(
         });
     }
     aliases
+}
+
+/// Resolve a public member alias to the console identity and evaluate the
+/// configured visibility policy against the live roster projection.
+///
+/// SSE routes use this before opening a per-agent subscription and for every
+/// attributed mob/structural envelope. `None` means the member is no longer
+/// present in the live roster; callers retain their existing unknown-member
+/// behavior in that case.
+pub(crate) async fn sse_member_identity_visibility(
+    handle: &MobHandle,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+    requested_identity: &str,
+) -> Option<(String, bool)> {
+    let candidates = lookup_member_alias_candidates_with_session(handle, requested_identity).await;
+    let identity = candidates.first()?.identity.clone();
+    let visible = candidates
+        .iter()
+        .any(|alias| runtime_alias_visible_to_console(handle, visibility_policy, alias));
+    Some((identity, visible))
 }
 
 async fn reject_ambiguous_projected_live_identity(
@@ -4854,6 +4887,11 @@ async fn handle_console_aggregator_rpc(
     access_view: Option<&AccessView>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
+    if let Err(message) =
+        crate::member_comms_id::validate_public_rpc_member_aliases(&request.params)
+    {
+        return invalid_params(response_id, message);
+    }
     let can_mutate = is_authenticated && !read_only;
     if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
         return console_read_only_rpc_error(response_id);
@@ -5151,6 +5189,11 @@ async fn handle_console_runtime_rpc_with_visibility(
     topology: Option<&crate::topology_control::TopologyRuntimeHandle>,
 ) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
+    if let Err(message) =
+        crate::member_comms_id::validate_public_rpc_member_aliases(&request.params)
+    {
+        return invalid_params(response_id, message);
+    }
     let can_mutate = is_authenticated && !read_only;
     if is_console_mutating_rpc_method(request.method.as_str()) && !can_mutate {
         return console_read_only_rpc_error(response_id);
@@ -7320,17 +7363,18 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
-            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
                 identity_runtime.as_ref(),
                 agent_identity,
             )
             .await
             {
-                return invalid_params(response_id, message);
-            }
+                Ok(reservation) => reservation,
+                Err(message) => return invalid_params(response_id, message),
+            };
             let mut spec = SpawnMemberSpec::new(
                 ProfileName::from(role),
-                crate::member_comms_id::mob_member_id(agent_identity),
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
             );
             if let Some(runtime_mode) = runtime_mode {
                 spec = spec.with_runtime_mode(runtime_mode);
@@ -7355,7 +7399,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             let handle = runtime.handle();
             let mid = spec.identity.clone();
-            match handle.ensure_member(spec).await {
+            let ensure_result = handle.ensure_member(spec).await;
+            drop(raw_reservation);
+            match ensure_result {
                 Ok(_outcome) => {
                     let _ = reconcile_console_topology(runtime, topology).await;
                     let body = match lookup_member_with_session(&handle, &mid).await {
@@ -7995,14 +8041,6 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
-            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
-                identity_runtime.as_ref(),
-                agent_identity,
-            )
-            .await
-            {
-                return invalid_params(response_id, message);
-            }
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
             };
@@ -8010,14 +8048,24 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => return invalid_params(response_id, message),
+            };
             let handle = runtime.handle();
-            match Box::pin(handle.spawn_helper(
-                crate::member_comms_id::mob_member_id(agent_identity),
+            let spawn_result = Box::pin(handle.spawn_helper(
+                crate::member_comms_id::mob_member_id(raw_reservation.alias()),
                 task,
                 options,
             ))
-            .await
-            {
+            .await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(result) => {
                     // Meerkat 0.6 retires the helper before `spawn_helper`
                     // returns, so a post-hoc `resolve_bridge_session_id`
@@ -8079,8 +8127,9 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             let source_member_id = crate::member_comms_id::mob_member_id(&source);
-            let helper_member_id = crate::member_comms_id::mob_member_id(agent_identity);
+            let helper_alias = agent_identity.to_string();
             let task = task.to_string();
+            let identity_runtime_owned = identity_runtime.clone();
             let authority_target = if let Some(identity_runtime_ref) = identity_runtime.as_ref() {
                 identity_runtime_ref
                     .member_alias_lifecycle_target(&source)
@@ -8094,7 +8143,16 @@ async fn handle_console_runtime_rpc_with_visibility(
                     crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                         vec![target],
                         move || async move {
-                        handle
+                            let raw_reservation =
+                                crate::member_comms_id::reserve_raw_member_target(
+                                    identity_runtime_owned.as_ref(),
+                                    helper_alias.as_str(),
+                                )
+                                .await?;
+                            let helper_member_id = crate::member_comms_id::mob_member_id(
+                                raw_reservation.alias(),
+                            );
+                            let result = handle
                             .fork_helper(
                                 &source_member_id,
                                 helper_member_id,
@@ -8103,7 +8161,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                                 options,
                             )
                             .await
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
                         },
                     )
                     .await
@@ -8114,16 +8174,33 @@ async fn handle_console_runtime_rpc_with_visibility(
                         "generated source alias requires current identity authority: {source}"
                     ))
                 }
-                Ok(None) => handle
-                    .fork_helper(
-                        &source_member_id,
-                        helper_member_id,
-                        task.as_str(),
-                        fork_context,
-                        options,
+                Ok(None) => {
+                    match crate::member_comms_id::reserve_raw_member_target(
+                        identity_runtime_owned.as_ref(),
+                        helper_alias.as_str(),
                     )
                     .await
-                    .map_err(|error| error.to_string()),
+                    {
+                        Err(error) => Err(error),
+                        Ok(raw_reservation) => {
+                            let helper_member_id = crate::member_comms_id::mob_member_id(
+                                raw_reservation.alias(),
+                            );
+                            let result = handle
+                                .fork_helper(
+                                    &source_member_id,
+                                    helper_member_id,
+                                    task.as_str(),
+                                    fork_context,
+                                    options,
+                                )
+                                .await
+                                .map_err(|error| error.to_string());
+                            drop(raw_reservation);
+                            result
+                        }
+                    }
+                }
             };
             match fork_result {
                 Ok(result) => {
@@ -8150,14 +8227,6 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
-            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
-                identity_runtime.as_ref(),
-                agent_identity,
-            )
-            .await
-            {
-                return invalid_params(response_id, message);
-            }
             let Some(session_id_str) = request.params.get("session_id").and_then(Value::as_str)
             else {
                 return invalid_params(response_id, "session_id required");
@@ -8166,11 +8235,22 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Ok(s) => s,
                 Err(_) => return invalid_params(response_id, "invalid session_id format"),
             };
-            let mid = crate::member_comms_id::mob_member_id(agent_identity);
+            let raw_reservation = match crate::member_comms_id::reserve_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                Ok(reservation) => reservation,
+                Err(message) => return invalid_params(response_id, message),
+            };
+            let mid = crate::member_comms_id::mob_member_id(raw_reservation.alias());
             let spec = SpawnMemberSpec::new(ProfileName::from(role), mid.clone())
                 .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
             let handle = runtime.handle();
-            match Box::pin(handle.spawn_spec(spec)).await {
+            let spawn_result = Box::pin(handle.spawn_spec(spec)).await;
+            drop(raw_reservation);
+            match spawn_result {
                 Ok(_) => match handle.member_status(&mid).await {
                     Ok(snapshot) => response_value(
                         response_id,
@@ -8239,10 +8319,17 @@ async fn handle_console_runtime_rpc_with_visibility(
                     let result = match authority_target {
                         Err(error) => Err(error.to_string()),
                         Ok(Some(target)) => {
+                            let identity_runtime = identity_runtime.clone();
                             crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                                 vec![target],
                                 move || async move {
-                                    console_member_peer_info(handle, mid).await
+                                    console_member_peer_info(
+                                        handle,
+                                        identity_runtime.as_ref(),
+                                        true,
+                                        mid,
+                                    )
+                                    .await
                                 },
                             )
                             .await
@@ -8253,7 +8340,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                                 "generated member alias requires current identity authority: {mid}"
                             ))
                         }
-                        Ok(None) => console_member_peer_info(handle, mid).await,
+                        Ok(None) => console_member_peer_info(handle, None, false, mid).await,
                     };
                     match result {
                         Ok(value) => response_value(response_id, Some(value), None),
@@ -8410,30 +8497,64 @@ async fn dispatch_label_method(
 
 async fn console_member_peer_info(
     handle: meerkat_mob::MobHandle,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authoritative: bool,
     member_alias: String,
 ) -> Result<Value, String> {
-    let direct = crate::member_comms_id::mob_member_id(&member_alias);
-    let member_id = if handle
-        .get_member(&direct)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
-        direct
-    } else if let Some(identity) = handle
-        .list_members_including_retiring()
-        .await
-        .into_iter()
-        .find(|entry| {
-            crate::member_comms_id::durable_identity_label(&entry.labels)
-                .is_some_and(|identity| identity == member_alias)
-        })
-        .map(|entry| entry.agent_identity)
-    {
-        identity
+    let current_alias = if identity_authoritative {
+        let identity_runtime = identity_runtime
+            .ok_or_else(|| "durable peer target lost its IdentityRuntime authority".to_string())?;
+        let identity = crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(
+            &member_alias,
+        )
+        .or_else(|| crate::identity_first::AgentIdentity::parse(&member_alias).ok())
+        .ok_or_else(|| format!("invalid durable member alias {member_alias:?}"))?;
+        identity_runtime
+            .status(&identity)
+            .await
+            .map_err(|error| error.to_string())?
+            .agent_runtime_id
+            .map(|runtime_id| runtime_id.to_string())
+            .ok_or_else(|| format!("identity {identity} has no current runtime member"))?
     } else {
-        direct
+        let direct = crate::member_comms_id::mob_member_id(&member_alias);
+        if handle
+            .get_member(&direct)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            member_alias.clone()
+        } else {
+            let candidates = handle
+                .list_members_including_retiring()
+                .await
+                .into_iter()
+                .filter(|entry| {
+                    crate::member_comms_id::durable_identity_label(&entry.labels)
+                        .is_some_and(|identity| identity == member_alias)
+                })
+                .map(|entry| {
+                    crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str())
+                        .into_owned()
+                })
+                .collect::<BTreeSet<_>>();
+            match candidates.len() {
+                0 => member_alias.clone(),
+                1 => candidates
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "peer-info member alias candidate disappeared".to_string())?,
+                _ => {
+                    return Err(format!(
+                        "ambiguous durable member alias {member_alias}: candidates [{}]",
+                        candidates.into_iter().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
     };
+    let member_id = crate::member_comms_id::mob_member_id(&current_alias);
     let entry = handle
         .get_member(&member_id)
         .await
@@ -12838,6 +12959,124 @@ comms = true
             );
         }
         let _ = runtime_without_stale.handle().stop().await;
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_peer_info_uses_current_identity_generation_when_stale_row_remains()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-current-generation-peer-info").await?;
+        let durable_identity = "review:peer-info-current";
+        let stale_alias = "rt:review:peer-info-current:0";
+        let current_alias = "rt:review:peer-info-current:1";
+        for runtime_alias in [stale_alias, current_alias] {
+            runtime
+                .handle()
+                .spawn_spec(
+                    SpawnMemberSpec::from_wire(
+                        "worker".to_string(),
+                        crate::member_comms_id::mob_member_id_str(runtime_alias).into_owned(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .with_labels(BTreeMap::from([(
+                        "agent_identity".to_string(),
+                        durable_identity.to_string(),
+                    )])),
+                )
+                .await?;
+        }
+
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-current-generation-peer-info".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse(durable_identity)?;
+        identity_runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("worker"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity,
+                    agent_runtime_id: AgentRuntimeId::parse(current_alias)?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(1),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                None,
+            )
+            .await;
+
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(identity_runtime),
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/cross_mob/peer_info",
+                json!({"member_id": durable_identity}),
+            ),
+            true,
+        ))
+        .await;
+        assert_eq!(response["error"], Value::Null, "{response:#?}");
+        let comms_name = response["result"]["comms_name"]
+            .as_str()
+            .ok_or("peer info must return comms_name")?;
+        assert!(
+            comms_name.ends_with(crate::member_comms_id::mob_member_id_str(current_alias).as_ref()),
+            "console peer info selected the stale generation: {response:#?}"
+        );
+
+        let ambiguous = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            rpc_request_with_params(
+                "mobkit/cross_mob/peer_info",
+                json!({"member_id": durable_identity}),
+            ),
+            true,
+        ))
+        .await;
+        assert!(
+            ambiguous["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("ambiguous durable member alias")),
+            "classic fallback must fail closed when both reset generations remain: {ambiguous:#?}"
+        );
 
         let _ = runtime.handle().stop().await;
         Ok(())

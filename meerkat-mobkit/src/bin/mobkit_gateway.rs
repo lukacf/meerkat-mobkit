@@ -944,6 +944,7 @@ async fn run() -> anyhow::Result<()> {
             .with_context(|| format!("failed to create {}", store_dir.display()))?;
         let continuity_db = store_dir.join("continuity.db");
         let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
+            .await
             .map_err(|e| anyhow!("{e}"))?;
 
         let mob_handle = runtime.mob_handle();

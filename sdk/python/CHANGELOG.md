@@ -9,6 +9,9 @@ All notable changes to the Python SDK are documented here.
   termination, preventing host teardown from interrupting lease release or
   continuity persistence. The blocking child-process wait runs off the asyncio
   event loop.
+- Failed gateway bootstrap now detaches and reaps its child process before a
+  reconnect can start a replacement, including provider callback failures and
+  cancellation while cleanup is in progress.
 
 ### Identity bootstrap
 

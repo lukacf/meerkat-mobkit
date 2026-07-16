@@ -497,6 +497,26 @@ pub fn handle_mobkit_rpc_json(
         };
     }
 
+    if let Err(message) =
+        crate::member_comms_id::validate_public_rpc_member_aliases(&request.params)
+    {
+        let response = JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {message}"),
+                data: None,
+            }),
+        };
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+
     let response = match request.method.as_str() {
         "mobkit/status" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1545,6 +1565,26 @@ async fn handle_unified_rpc_json_inner(
         };
     }
 
+    if let Err(message) =
+        crate::member_comms_id::validate_public_rpc_member_aliases(&request.params)
+    {
+        let response = JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {message}"),
+                data: None,
+            }),
+        };
+        return if is_notification {
+            String::new()
+        } else {
+            serialize_response(&response)
+        };
+    }
+
     let response = match request.method.as_str() {
         "mobkit/status" => {
             let mob_state = Some(runtime.mob_handle().status_observation_snapshot());
@@ -1866,10 +1906,11 @@ async fn handle_unified_rpc_json_inner(
                 // events (memory.* sinks, bootstrap): the aggregator exempts
                 // it from the roster-visibility gate and namespacing, so a
                 // member bearing the name would bypass both. Reject loudly.
+                let target_identity_runtime = identity_ctx
+                    .map(|ctx| &ctx.runtime)
+                    .or_else(|| runtime.identity_runtime());
                 let raw_target_validation = crate::member_comms_id::validate_raw_member_target(
-                    identity_ctx
-                        .map(|ctx| &ctx.runtime)
-                        .or_else(|| runtime.identity_runtime()),
+                    target_identity_runtime,
                     meerkat_id,
                 )
                 .await;
@@ -1884,7 +1925,7 @@ async fn handle_unified_rpc_json_inner(
                             data: None,
                         }),
                     }
-                } else if let Err(message) = raw_target_validation {
+                } else if let Err(message) = raw_target_validation.as_ref() {
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -1896,38 +1937,74 @@ async fn handle_unified_rpc_json_inner(
                         }),
                     }
                 } else {
-                    // Mob agent spawn: {"profile": "default", "meerkat_id": "agent-1"}
-                    let spec = meerkat_mob::SpawnMemberSpec::from_wire(
-                        profile.to_string(),
-                        meerkat_id.to_string(),
-                        request
-                            .params
-                            .get("initial_message")
-                            .and_then(Value::as_str)
-                            .map(|s| meerkat_core::ContentInput::from(s.to_string())),
-                        None,
-                        None,
-                    );
-                    match Box::pin(runtime.spawn(spec)).await {
-                        Ok(_member_ref) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id,
-                            result: Some(serde_json::json!({
-                                "accepted": true,
-                                "meerkat_id": meerkat_id
-                            })),
-                            error: None,
-                        },
-                        Err(err) => JsonRpcResponse {
+                    // `runtime.spawn` takes the attached identity runtime's
+                    // alias lock. Compatibility callers may instead supply an
+                    // explicit identity context to a runtime without one; keep
+                    // that authority's reservation through the lower-plane
+                    // spawn without double-locking attached runtimes.
+                    let compatibility_reservation = if runtime.identity_runtime().is_none() {
+                        crate::member_comms_id::reserve_raw_member_target(
+                            target_identity_runtime,
+                            meerkat_id,
+                        )
+                        .await
+                        .map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    match compatibility_reservation {
+                        Err(message) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
                             id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32602,
-                                message: format!("Invalid params: {err}"),
+                                message: format!("Invalid params: {message}"),
                                 data: None,
                             }),
                         },
+                        Ok(compatibility_reservation) => {
+                            let member_id = compatibility_reservation
+                                .as_ref()
+                                .map(|reservation| reservation.alias().to_string())
+                                .or_else(|| raw_target_validation.as_ref().ok().cloned())
+                                .unwrap_or_else(|| meerkat_id.trim().to_string());
+                            // Mob agent spawn: {"profile": "default", "meerkat_id": "agent-1"}
+                            let spec = meerkat_mob::SpawnMemberSpec::from_wire(
+                                profile.to_string(),
+                                member_id.clone(),
+                                request
+                                    .params
+                                    .get("initial_message")
+                                    .and_then(Value::as_str)
+                                    .map(|s| meerkat_core::ContentInput::from(s.to_string())),
+                                None,
+                                None,
+                            );
+                            let spawn_result = Box::pin(runtime.spawn(spec)).await;
+                            drop(compatibility_reservation);
+                            match spawn_result {
+                                Ok(_member_ref) => JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: Some(serde_json::json!({
+                                        "accepted": true,
+                                        "meerkat_id": member_id
+                                    })),
+                                    error: None,
+                                },
+                                Err(err) => JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32602,
+                                        message: format!("Invalid params: {err}"),
+                                        data: None,
+                                    }),
+                                },
+                            }
+                        }
                     }
                 }
             } else {
@@ -4287,13 +4364,13 @@ async fn handle_unified_rpc_json_inner(
                             );
                         }
                     };
-                    crate::identity_first::restore_flow(
-                        &ctx.runtime,
-                        &roster_specs,
-                        ctx.topology_provider.as_deref(),
-                        ctx.customizer.as_deref(),
-                    )
-                    .await
+                    ctx.runtime
+                        .restore_flow_tracked(
+                            roster_specs,
+                            ctx.topology_provider.clone(),
+                            ctx.customizer.clone(),
+                        )
+                        .await
                 }
                 Err(error) => Err(error),
             };
@@ -4448,13 +4525,20 @@ async fn handle_unified_rpc_json_inner(
                     }
                     Ok(Some(target)) => {
                         let handle = runtime.mob_handle();
+                        let identity_runtime = identity_runtime.cloned();
                         let live = Arc::clone(live);
                         let method = method.to_string();
                         let operation_response_id = response_id.clone();
                         match crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
                             vec![target],
                             move || async move {
-                                let session = resolve_live_target(&handle, &params).await;
+                                let session = resolve_live_target(
+                                    &handle,
+                                    identity_runtime.as_ref(),
+                                    true,
+                                    &params,
+                                )
+                                .await?;
                                 Ok(live(session, method, params, operation_response_id).await)
                             },
                         )
@@ -4465,8 +4549,22 @@ async fn handle_unified_rpc_json_inner(
                         }
                     }
                     Ok(None) => {
-                        let session = resolve_live_target(&runtime.mob_handle(), &params).await;
-                        live(session, method.to_string(), params, response_id).await
+                        match resolve_live_target(&runtime.mob_handle(), None, false, &params).await
+                        {
+                            Ok(session) => {
+                                live(session, method.to_string(), params, response_id).await
+                            }
+                            Err(error) => JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32000,
+                                    message: format!("live target resolution failed: {error}"),
+                                    data: None,
+                                }),
+                            },
+                        }
                     }
                 }
             }
@@ -5414,30 +5512,70 @@ fn live_member_alias(params: &Value) -> Option<String> {
 
 async fn resolve_live_target(
     handle: &meerkat_mob::MobHandle,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authoritative: bool,
     params: &Value,
-) -> Option<meerkat_core::types::SessionId> {
+) -> Result<Option<meerkat_core::types::SessionId>, String> {
     if let Some(raw) = params.get("session_id").and_then(Value::as_str) {
-        return meerkat_core::types::SessionId::parse(raw).ok();
+        return Ok(meerkat_core::types::SessionId::parse(raw).ok());
     }
-    let raw = live_member_alias(params)?;
-    let direct = crate::member_comms_id::mob_member_id(&raw);
-    let member_id = if handle.get_member(&direct).await.ok().flatten().is_some() {
-        direct
-    } else if let Some(identity) = handle
-        .list_members_including_retiring()
-        .await
-        .into_iter()
-        .find(|entry| {
-            crate::member_comms_id::durable_identity_label(&entry.labels)
-                .is_some_and(|identity| identity == raw)
-        })
-        .map(|entry| entry.agent_identity)
-    {
-        identity
-    } else {
-        direct
+    let Some(raw) = live_member_alias(params) else {
+        return Ok(None);
     };
-    handle.resolve_bridge_session_id(&member_id).await
+    let current_alias = if identity_authoritative {
+        let identity_runtime = identity_runtime
+            .ok_or_else(|| "durable live target lost its IdentityRuntime authority".to_string())?;
+        let identity =
+            crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(&raw)
+                .or_else(|| crate::identity_first::AgentIdentity::parse(&raw).ok())
+                .ok_or_else(|| format!("invalid durable live target {raw:?}"))?;
+        identity_runtime
+            .status(&identity)
+            .await
+            .map_err(|error| error.to_string())?
+            .agent_runtime_id
+            .map(|runtime_id| runtime_id.to_string())
+            .ok_or_else(|| format!("identity {identity} has no current runtime member"))?
+    } else {
+        let direct = crate::member_comms_id::mob_member_id(&raw);
+        if handle
+            .get_member(&direct)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            raw.clone()
+        } else {
+            let candidates = handle
+                .list_members_including_retiring()
+                .await
+                .into_iter()
+                .filter(|entry| {
+                    crate::member_comms_id::durable_identity_label(&entry.labels)
+                        .is_some_and(|identity| identity == raw)
+                })
+                .map(|entry| {
+                    crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str())
+                        .into_owned()
+                })
+                .collect::<BTreeSet<_>>();
+            match candidates.len() {
+                0 => raw.clone(),
+                1 => candidates
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "live member alias candidate disappeared".to_string())?,
+                _ => {
+                    return Err(format!(
+                        "ambiguous live member alias {raw}: candidates [{}]",
+                        candidates.into_iter().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
+    };
+    let member_id = crate::member_comms_id::mob_member_id(&current_alias);
+    Ok(handle.resolve_bridge_session_id(&member_id).await)
 }
 
 fn maybe_error_response(
@@ -5484,7 +5622,7 @@ fn serialize_response(response: &JsonRpcResponse) -> String {
 mod tests {
     use super::{
         IdentityMemberReadiness, error_response, handle_unified_rpc_json, identity_error_response,
-        resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
+        resolve_live_target, resolve_rpc_identity_control_target, rpc_live_identity_alias_visible,
         rpc_member_id_matches_durable_identity, rpc_runtime_alias_generation,
         wait_identity_startup_ready,
     };
@@ -5697,6 +5835,20 @@ comms = true
         )
     }
 
+    /// Test-only identity bridge seam. Public raw creation deliberately
+    /// rejects generated aliases and runtime-owned `agent_identity` labels;
+    /// fixtures exercising already-projected identity members must model the
+    /// trusted lower plane that the identity runtime itself uses.
+    async fn spawn_identity_projection_fixture(
+        runtime: &UnifiedRuntime,
+        mut spec: SpawnMemberSpec,
+    ) -> Result<(), meerkat_mob::MobError> {
+        let runtime_alias = spec.identity.to_string();
+        spec.identity = crate::member_comms_id::mob_member_id(&runtime_alias);
+        Box::pin(runtime.mob_handle().spawn_spec(spec)).await?;
+        Ok(())
+    }
+
     fn rpc_reprofile_mob_spec(
         temp_dir: &tempfile::TempDir,
     ) -> Result<MobBootstrapSpec, Box<dyn std::error::Error + Send + Sync>> {
@@ -5859,6 +6011,171 @@ shell = true
             runtime.mob_handle().list_members().await.is_empty(),
             "reserved namespace rejection must happen before raw member spawn"
         );
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_spawn_holds_explicit_identity_context_alias_reservation()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-explicit-identity-context-reservation-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        assert!(runtime.identity_runtime().is_none());
+
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-explicit-identity-context-reservation-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity_ctx = IdentityFirstContext {
+            runtime: identity_runtime.clone(),
+            roster_provider: Arc::new(EmptyRosterProvider),
+            topology_provider: None,
+            customizer: None,
+            agent_memory_provider: None,
+            mob_definition: Some(runtime.mob_handle().definition().clone()),
+        };
+        let held_lock = identity_runtime
+            .raw_member_alias_lock("compat-worker")
+            .await
+            .lock_owned()
+            .await;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "mobkit/spawn_member",
+            "params": {
+                "profile": "worker",
+                "meerkat_id": " compat-worker ",
+            },
+        })
+        .to_string();
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(25),
+                handle_unified_rpc_json(
+                    &runtime,
+                    &request,
+                    Duration::from_secs(1),
+                    None,
+                    Some(&identity_ctx),
+                ),
+            )
+            .await
+            .is_err(),
+            "explicit identity authority must block the raw spawn on its canonical alias lock"
+        );
+        drop(held_lock);
+
+        let response: Value = serde_json::from_str(
+            &tokio::time::timeout(
+                Duration::from_secs(2),
+                handle_unified_rpc_json(
+                    &runtime,
+                    &request,
+                    Duration::from_secs(1),
+                    None,
+                    Some(&identity_ctx),
+                ),
+            )
+            .await?,
+        )?;
+        assert!(response["error"].is_null(), "{response:#?}");
+        assert_eq!(response["result"]["meerkat_id"], json!("compat-worker"));
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unified_rpc_rejects_encoded_roster_ingress_and_authoritative_identity_labels()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-public-alias-ingress-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+
+        let encoded = crate::member_comms_id::mob_member_id_str("rt:secret:0");
+        let encoded_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "mobkit/get_member",
+                    "params": { "member_id": encoded.as_ref() },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert_eq!(
+            encoded_response["error"]["code"],
+            json!(-32602),
+            "encoded roster spelling must be rejected before resolution: {encoded_response:#?}"
+        );
+
+        let forged_label_response: Value = serde_json::from_str(
+            &handle_unified_rpc_json(
+                &runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "mobkit/ensure_member",
+                    "params": {
+                        "role": "worker",
+                        "agent_identity": "raw-worker",
+                        "labels": { "agent_identity": "secret" },
+                    },
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                None,
+            )
+            .await,
+        )?;
+        assert_eq!(
+            forged_label_response["error"]["code"],
+            json!(-32602),
+            "raw creation must not mint runtime-authoritative identity labels: {forged_label_response:#?}"
+        );
+        assert!(runtime.mob_handle().list_members().await.is_empty());
+
         let _ = runtime.mob_handle().stop().await;
         Ok(())
     }
@@ -7491,18 +7808,18 @@ shell = true
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-            runtime
-                .spawn(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        runtime_id.to_string(),
-                        Some("You are a duplicate Review Agent.".into()),
-                        None,
-                        None,
-                    )
-                    .with_labels(labels),
+            spawn_identity_projection_fixture(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    runtime_id.to_string(),
+                    Some("You are a duplicate Review Agent.".into()),
+                    None,
+                    None,
                 )
-                .await?;
+                .with_labels(labels),
+            )
+            .await?;
         }
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -7548,18 +7865,18 @@ shell = true
         for runtime_id in ["rt:review:singleton:0", "rt:review:singleton:1"] {
             let mut labels = BTreeMap::new();
             labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-            runtime
-                .spawn(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        runtime_id.to_string(),
-                        Some("You are a duplicate Review Agent.".into()),
-                        None,
-                        None,
-                    )
-                    .with_labels(labels),
+            spawn_identity_projection_fixture(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    runtime_id.to_string(),
+                    Some("You are a duplicate Review Agent.".into()),
+                    None,
+                    None,
                 )
-                .await?;
+                .with_labels(labels),
+            )
+            .await?;
         }
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -7664,6 +7981,172 @@ shell = true
     }
 
     #[tokio::test]
+    async fn current_generation_resolvers_ignore_stale_reset_member_rows()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let mut runtime = Box::pin(
+            UnifiedRuntime::builder()
+                .mob_spec(rpc_test_mob_spec(&temp_dir)?)
+                .module_config(MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: DiscoverySpec {
+                        namespace: "rpc-current-generation-target-test".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                })
+                .timeout(Duration::from_secs(1))
+                .build(),
+        )
+        .await?;
+        let durable_identity = "review:current-generation";
+        let stale_alias = "rt:review:current-generation:0";
+        let current_alias = "rt:review:current-generation:1";
+        for runtime_id in [stale_alias, current_alias] {
+            spawn_identity_projection_fixture(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    runtime_id.to_string(),
+                    None,
+                    None,
+                    None,
+                )
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    durable_identity.to_string(),
+                )])),
+            )
+            .await?;
+        }
+
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "rpc-current-generation-target-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let identity = AgentIdentity::parse(durable_identity)?;
+        identity_runtime
+            .register(
+                rpc_durable_spec(durable_identity, "worker"),
+                IdentityLifecycleState::Active,
+                Some(ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse(current_alias)?,
+                    session_id: meerkat_core::types::SessionId::new(),
+                    generation: ContinuityGeneration::new(1),
+                    checkpoint_version: CheckpointVersion::new(0),
+                }),
+                None,
+            )
+            .await;
+
+        let expected_session = runtime
+            .mob_handle()
+            .resolve_bridge_session_id(&crate::member_comms_id::mob_member_id(current_alias))
+            .await
+            .ok_or("current member must have a bridge session")?;
+        let params = json!({"identity": durable_identity});
+        let target = identity_runtime
+            .member_alias_lifecycle_target(durable_identity)
+            .await?
+            .ok_or("durable identity must resolve to lifecycle authority")?;
+        let operation_runtime = Arc::clone(&identity_runtime);
+        let handle = runtime.mob_handle();
+        let resolved_session = IdentityRuntime::run_member_alias_targets_operation_tracked(
+            vec![target],
+            move || async move {
+                resolve_live_target(&handle, Some(&operation_runtime), true, &params).await
+            },
+        )
+        .await?;
+        assert_eq!(resolved_session, Some(expected_session));
+
+        let fallback_error = resolve_live_target(
+            &runtime.mob_handle(),
+            None,
+            false,
+            &json!({"identity": durable_identity}),
+        )
+        .await
+        .expect_err("two live generations without identity authority must be ambiguous");
+        assert!(
+            fallback_error.contains("ambiguous live member alias"),
+            "unexpected fallback error: {fallback_error}"
+        );
+        let cross_mob_fallback = runtime
+            .local_member_peer_info(durable_identity)
+            .await
+            .expect_err("cross-mob fallback without identity authority must be ambiguous");
+        assert!(
+            cross_mob_fallback
+                .to_string()
+                .contains("ambiguous durable member alias"),
+            "unexpected cross-mob fallback error: {cross_mob_fallback}"
+        );
+
+        runtime.attach_identity_first_context(Arc::new(
+            crate::identity_first::IdentityFirstRuntimeContext::new(
+                Arc::clone(&identity_runtime),
+                Arc::new(EmptyRosterProvider),
+                None,
+                None,
+                None,
+            ),
+        ));
+        let (_, comms_name, _) = runtime.local_member_peer_info(durable_identity).await?;
+        assert!(
+            comms_name.ends_with(crate::member_comms_id::mob_member_id_str(current_alias).as_ref()),
+            "peer info must use the current generation: {comms_name}"
+        );
+
+        let remote_comms_name = "remote-mob/worker/peer";
+        let remote_pubkey = [42_u8; 32];
+        let remote_peer_id =
+            meerkat_core::comms::PeerId::from_ed25519_pubkey(&remote_pubkey).to_string();
+        runtime
+            .wire_local(
+                durable_identity,
+                remote_comms_name,
+                &remote_peer_id,
+                &format!("inproc://{remote_comms_name}"),
+                Some(remote_pubkey),
+            )
+            .await?;
+        let current = runtime
+            .mob_handle()
+            .get_member(&crate::member_comms_id::mob_member_id(current_alias))
+            .await?
+            .ok_or("current member missing")?;
+        let stale = runtime
+            .mob_handle()
+            .get_member(&crate::member_comms_id::mob_member_id(stale_alias))
+            .await?
+            .ok_or("stale member missing")?;
+        assert!(
+            current
+                .wired_to
+                .iter()
+                .any(|peer| peer.as_str() == remote_comms_name),
+            "current generation must receive the wire"
+        );
+        assert!(
+            stale
+                .wired_to
+                .iter()
+                .all(|peer| peer.as_str() != remote_comms_name),
+            "stale generation must not receive the wire"
+        );
+
+        runtime.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn durable_resolution_rejects_hidden_registered_live_binding()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let temp_dir = tempfile::tempdir()?;
@@ -7682,22 +8165,22 @@ shell = true
                 .build(),
         )
         .await?;
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are a hidden Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([
-                    ("agent_identity".to_string(), "review:singleton".to_string()),
-                    ("role".to_string(), "delegate".to_string()),
-                    ("source_mob_id".to_string(), "upstream".to_string()),
-                ])),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are a hidden Review Agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([
+                ("agent_identity".to_string(), "review:singleton".to_string()),
+                ("role".to_string(), "delegate".to_string()),
+                ("source_mob_id".to_string(), "upstream".to_string()),
+            ])),
+        )
+        .await?;
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
             lease_provider: Arc::new(LocalLeaseProvider::new()),
@@ -7768,22 +8251,22 @@ shell = true
                 .build(),
         )
         .await?;
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are a hidden Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([
-                    ("agent_identity".to_string(), "review:singleton".to_string()),
-                    ("role".to_string(), "delegate".to_string()),
-                    ("source_mob_id".to_string(), "upstream".to_string()),
-                ])),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are a hidden Review Agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([
+                ("agent_identity".to_string(), "review:singleton".to_string()),
+                ("role".to_string(), "delegate".to_string()),
+                ("source_mob_id".to_string(), "upstream".to_string()),
+            ])),
+        )
+        .await?;
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
             lease_provider: Arc::new(LocalLeaseProvider::new()),
@@ -7861,18 +8344,18 @@ shell = true
         .await?;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "other:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are a wrong-projected Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are a wrong-projected Review Agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(labels),
+        )
+        .await?;
 
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -7961,21 +8444,21 @@ shell = true
             ("rt:atlas-base-001:0", "atlas-base-001"),
             ("rt:draco-base-001:0", "draco-base-001"),
         ] {
-            runtime
-                .spawn(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        runtime_id.to_string(),
-                        Some("You are a swarm base agent.".into()),
-                        None,
-                        None,
-                    )
-                    .with_labels(BTreeMap::from([(
-                        "agent_identity".to_string(),
-                        durable.to_string(),
-                    )])),
+            spawn_identity_projection_fixture(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    runtime_id.to_string(),
+                    Some("You are a swarm base agent.".into()),
+                    None,
+                    None,
                 )
-                .await?;
+                .with_labels(BTreeMap::from([(
+                    "agent_identity".to_string(),
+                    durable.to_string(),
+                )])),
+            )
+            .await?;
         }
         // Precedence probe: a bare roster member whose id collides with a
         // registered durable identity.
@@ -8335,17 +8818,26 @@ shell = true
 
         // Identity-first member backing the durable identity, plus a raw
         // roster member with the colliding bare id.
-        for member in ["rt:draco-base-001:0", "draco-base-001"] {
-            runtime
-                .spawn(SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    member.to_string(),
-                    None,
-                    None,
-                    None,
-                ))
-                .await?;
-        }
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:draco-base-001:0".to_string(),
+                None,
+                None,
+                None,
+            ),
+        )
+        .await?;
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "draco-base-001".to_string(),
+                None,
+                None,
+                None,
+            ))
+            .await?;
 
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -8469,21 +8961,21 @@ shell = true
         );
         let stale_alias = "rt:review:separate:0";
         let current_alias = "rt:review:separate:1";
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    stale_alias.to_string(),
-                    None,
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([(
-                    "agent_identity".to_string(),
-                    "review:separate".to_string(),
-                )])),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                stale_alias.to_string(),
+                None,
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([(
+                "agent_identity".to_string(),
+                "review:separate".to_string(),
+            )])),
+        )
+        .await?;
 
         let identity_rt = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -8606,21 +9098,21 @@ shell = true
         .await?;
         let stale_alias = "rt:review:owned-context:0";
         let current_alias = "rt:review:owned-context:1";
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    stale_alias.to_string(),
-                    None,
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([(
-                    "agent_identity".to_string(),
-                    "review:owned-context".to_string(),
-                )])),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                stale_alias.to_string(),
+                None,
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([(
+                "agent_identity".to_string(),
+                "review:owned-context".to_string(),
+            )])),
+        )
+        .await?;
 
         let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -8725,21 +9217,21 @@ shell = true
         .await?;
         let durable_identity = "review:delete-race";
         let runtime_alias = "rt:review:delete-race:0";
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    runtime_alias.to_string(),
-                    None,
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([(
-                    "agent_identity".to_string(),
-                    durable_identity.to_string(),
-                )])),
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                runtime_alias.to_string(),
+                None,
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([(
+                "agent_identity".to_string(),
+                durable_identity.to_string(),
+            )])),
+        )
+        .await?;
 
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
@@ -8838,15 +9330,17 @@ shell = true
         )
         .await?;
         let runtime_alias = "rt:review:owned:0";
-        runtime
-            .spawn(SpawnMemberSpec::from_wire(
+        spawn_identity_projection_fixture(
+            &runtime,
+            SpawnMemberSpec::from_wire(
                 "worker".to_string(),
                 runtime_alias.to_string(),
                 None,
                 None,
                 None,
-            ))
-            .await?;
+            ),
+        )
+        .await?;
 
         let continuity_store = Arc::new(LocalContinuityStore::in_memory()?);
         let identity_rt = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {

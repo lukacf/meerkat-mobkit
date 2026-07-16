@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   connection disappears. The borrowed dispatcher fails those mutations
   closed because it cannot transfer runtime ownership into the supervisor.
 
+### Fixed
+
+- Serialized continuity generation changes with foreground materialization and
+  reconcile, physically retired removed or changed roster members, and kept
+  typed bootstrap readiness synchronized with lifecycle transitions.
+- Hardened identity authority at raw member, RPC, console, SSE, and cross-mob
+  boundaries: reserved aliases cannot be forged or preclaimed, policy checks
+  use canonical targets, and operations resolve the current durable generation
+  instead of a stale reset-era roster row.
+- Prevented same-generation session rebinds from rewinding the durable
+  checkpoint head, rejected continuity-generation regressions even under a
+  newer fencing token, and moved persistent SQLite initialization and fencing
+  floor reads off async executor workers.
+
 ## [0.7.39] - 2026-07-15
 
 ### Added

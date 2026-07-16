@@ -144,6 +144,51 @@ pub trait ContinuityStore: Send + Sync {
         fencing_token: FencingToken,
     ) -> Result<(), ContinuityStoreError>;
 
+    /// Compensate a tentative continuity-generation advance only when the
+    /// durable row still belongs to that exact reset attempt.
+    ///
+    /// Ordinary upserts are generation-monotonic and must reject an older
+    /// generation even under a newer fence. Reset is the one workflow that
+    /// can need a compensating rollback after publishing a provisional row so
+    /// the persistent session service can construct the replacement. Stores
+    /// should override this with one atomic compare-and-swap transaction.
+    /// The compatibility implementation is safe for externally serialized
+    /// providers, but cannot make the comparison and replacement atomic.
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &ContinuityRecord,
+        previous: Option<&ContinuityRecord>,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        let resolved = self
+            .resolve_many(std::slice::from_ref(&expected_attempt.identity))
+            .await?;
+        let Some(ContinuityResolveState::Ready { record: current }) =
+            resolved.get(&expected_attempt.identity)
+        else {
+            return Err(ContinuityStoreError::NotFound {
+                identity: expected_attempt.identity.clone(),
+            });
+        };
+        if current.agent_runtime_id != expected_attempt.agent_runtime_id
+            || current.session_id != expected_attempt.session_id
+            || current.generation != expected_attempt.generation
+        {
+            return Err(ContinuityStoreError::StaleContinuityGeneration {
+                identity: expected_attempt.identity.clone(),
+                presented: expected_attempt.generation,
+                current: current.generation,
+            });
+        }
+        match previous {
+            Some(previous) => self.upsert_continuity_record(previous, fencing_token).await,
+            None => {
+                self.delete_continuity_record(&expected_attempt.identity, fencing_token)
+                    .await
+            }
+        }
+    }
+
     /// Delete a continuity record and associated session snapshots.
     ///
     /// After deletion, `resolve_many` for this identity returns `Uninitialized`.

@@ -29,16 +29,18 @@ pub struct GatewayIdentitySubstrate {
 ///
 /// Fails loudly rather than degrading: a 0 fencing floor on an existing
 /// store would re-arm the restart-abort class the floor seeding prevents.
-pub fn open_identity_substrate(continuity_db: &Path) -> Result<GatewayIdentitySubstrate, String> {
-    let store = LocalContinuityStore::open(continuity_db).map_err(|e| {
-        format!(
-            "failed to open continuity store {}: {e}",
-            continuity_db.display()
-        )
-    })?;
-    let fencing_floor = store
-        .max_fencing_token()
-        .map_err(|e| format!("failed to read continuity fencing high-water: {e}"))?;
+pub async fn open_identity_substrate(
+    continuity_db: &Path,
+) -> Result<GatewayIdentitySubstrate, String> {
+    let (store, fencing_floor) =
+        LocalContinuityStore::open_with_fencing_floor(continuity_db.to_path_buf())
+            .await
+            .map_err(|e| {
+                format!(
+                    "failed to open continuity store and read fencing high-water at {}: {e}",
+                    continuity_db.display()
+                )
+            })?;
     Ok(GatewayIdentitySubstrate {
         continuity_store: Arc::new(store),
         lease_provider: Arc::new(LocalLeaseProvider::with_floor(fencing_floor)),

@@ -62,19 +62,22 @@ impl UnifiedRuntime {
     /// which MobKit's identity-first aliases like `rt:review:singleton:0`
     /// contain). Hooks and error events keep speaking the alias.
     pub async fn spawn(&self, mut spec: SpawnMemberSpec) -> Result<SpawnResult, MobRuntimeError> {
-        let member_id = if self.identity_runtime().is_some() {
-            crate::member_comms_id::validate_raw_member_target(
-                self.identity_runtime(),
-                spec.identity.as_str(),
-            )
-            .await
-            .map_err(MobRuntimeError::InvalidConfig)?
-        } else {
-            spec.identity.to_string()
-        };
+        if let Some(labels) = spec.labels.as_ref() {
+            crate::member_comms_id::validate_raw_identity_labels(labels)
+                .map_err(|message| MobRuntimeError::InvalidConfig(message.to_string()))?;
+        }
+        let raw_reservation = crate::member_comms_id::reserve_raw_member_target(
+            self.identity_runtime(),
+            spec.identity.as_str(),
+        )
+        .await
+        .map_err(MobRuntimeError::InvalidConfig)?;
+        let member_id = raw_reservation.alias().to_string();
         let profile = spec.role_name.to_string();
         spec.identity = crate::member_comms_id::mob_member_id(member_id.as_str());
-        match Box::pin(self.mob_handle().spawn_spec(spec)).await {
+        let spawn_result = Box::pin(self.mob_handle().spawn_spec(spec)).await;
+        drop(raw_reservation);
+        match spawn_result {
             Ok(result) => {
                 if let Some(hook) = &self.post_spawn_hook {
                     hook(vec![member_id]).await;
@@ -97,22 +100,35 @@ impl UnifiedRuntime {
         &self,
         mut specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<SpawnResult>, MobRuntimeError> {
-        let mut member_ids = Vec::with_capacity(specs.len());
+        let requested_member_ids = specs
+            .iter()
+            .map(|spec| spec.identity.to_string())
+            .collect::<Vec<_>>();
         for spec in &specs {
-            member_ids.push(if self.identity_runtime().is_some() {
-                crate::member_comms_id::validate_raw_member_target(
+            if let Some(labels) = spec.labels.as_ref() {
+                crate::member_comms_id::validate_raw_identity_labels(labels)
+                    .map_err(|message| MobRuntimeError::InvalidConfig(message.to_string()))?;
+            }
+        }
+        let raw_reservation = if specs.is_empty() {
+            None
+        } else {
+            Some(
+                crate::member_comms_id::reserve_raw_member_targets(
                     self.identity_runtime(),
-                    spec.identity.as_str(),
+                    requested_member_ids.iter().map(String::as_str),
                 )
                 .await
-                .map_err(MobRuntimeError::InvalidConfig)?
-            } else {
-                spec.identity.to_string()
-            });
-        }
+                .map_err(MobRuntimeError::InvalidConfig)?,
+            )
+        };
+        let member_ids = raw_reservation
+            .as_ref()
+            .map(|reservation| reservation.aliases().to_vec())
+            .unwrap_or(requested_member_ids);
         // As in `spawn`: wire aliases become comms-safe roster ids.
-        for spec in &mut specs {
-            spec.identity = crate::member_comms_id::mob_member_id(spec.identity.as_str());
+        for (spec, member_id) in specs.iter_mut().zip(&member_ids) {
+            spec.identity = crate::member_comms_id::mob_member_id(member_id);
         }
         let handle = self.mob_handle();
         let refs = try_join_in_batches(specs, MAX_CONCURRENT_SPAWN_MANY, |spec| {
@@ -121,6 +137,7 @@ impl UnifiedRuntime {
         })
         .await
         .map_err(MobRuntimeError::from)?;
+        drop(raw_reservation);
         if !member_ids.is_empty()
             && let Some(hook) = &self.post_spawn_hook
         {

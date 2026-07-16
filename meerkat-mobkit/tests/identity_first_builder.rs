@@ -30,6 +30,7 @@ use meerkat_mobkit::identity_first::{
     IdentityRuntimeConfig, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
     LocalContinuityStore, ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome,
     RosterContext, RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
+    restore_flow,
 };
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
@@ -1411,6 +1412,47 @@ async fn identity_first_builder_background_warm_is_tracked_to_active() {
 }
 
 #[tokio::test]
+async fn durable_restore_customizers_for_different_aliases_run_concurrently() {
+    let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+        failing_identity: None,
+    });
+    let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: Arc::new(StubContinuityStore),
+        lease_provider: Arc::new(StubLeaseProvider),
+        runtime_instance_id: "durable-restore-alias-concurrency-test".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: None,
+        default_timeout: None,
+    });
+
+    let restore = restore_flow(&runtime, &specs, None, Some(customizer.as_ref()));
+    let observe_concurrency = async {
+        let observed = tokio::time::timeout(Duration::from_secs(2), async {
+            while customizer.entered.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        permits.add_permits(2);
+        observed
+    };
+    let (result, observed_concurrency) = tokio::join!(restore, observe_concurrency);
+
+    assert!(
+        observed_concurrency,
+        "different durable aliases must not collapse restore customizers onto one namespace lock"
+    );
+    let result = result.expect("durable restore should complete");
+    assert_eq!(result.outcomes.len(), 2);
+}
+
+#[tokio::test]
 async fn identity_first_background_warm_bounds_concurrency_and_reports_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let specs = vec![
@@ -1595,6 +1637,80 @@ async fn identity_first_shutdown_joins_abandoned_foreground_materialization_clea
         lease_provider.released(),
         1,
         "shutdown cancellation must release the abandoned caller's uninstalled lease"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_shutdown_joins_abandoned_reconcile_transaction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+        failing_identity: None,
+    });
+    let lease_provider = Arc::new(TrackingLeaseProvider::default());
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(lease_provider.clone())
+                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                    "agent:alpha",
+                )])))
+                .agent_customizer(customizer.clone())
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-abandoned-reconcile-shutdown-test")
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("initial eager bootstrap should consume the first customizer permit"),
+    );
+
+    let outer = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reconcile should enter customization under its runtime-owned task");
+    outer.abort();
+    assert!(outer.await.unwrap_err().is_cancelled());
+
+    let shutdown = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.shutdown().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must join, not abort, the reconcile transaction"
+    );
+    permits.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown should finish after reconcile reaches its boundary")
+        .expect("shutdown task should not panic");
+    assert!(
+        lease_provider.released() > 0,
+        "shutdown must release the reconciled identity lease"
+    );
+    let status = runtime
+        .identity_runtime()
+        .unwrap()
+        .status(&AgentIdentity::parse("agent:alpha").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+    assert!(
+        status.lease.is_none(),
+        "post-shutdown status must not project an Active identity without authority"
     );
 }
 
@@ -1809,6 +1925,272 @@ async fn identity_first_superseded_warm_task_cannot_complete_new_reconcile_barri
         .expect("reconcile task should not panic")
         .expect("reconcile should succeed after roster discovery resumes");
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_lazy_reconcile_serializes_with_foreground_materialization() {
+    let tmp = tempfile::tempdir().unwrap();
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let original = durable_spec(identity.as_str());
+    let mut replacement = original.clone();
+    replacement
+        .labels
+        .insert("roster_revision".to_string(), "v2".to_string());
+    let roster = Arc::new(StubRosterProvider::new(vec![original]));
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+        failing_identity: None,
+    });
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(Arc::new(StubLeaseProvider))
+                .roster_provider(roster.clone())
+                .agent_customizer(customizer.clone())
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-lazy-materialize-reconcile-race-test")
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("lazy builder should register the original spec"),
+    );
+
+    let materialize = tokio::spawn({
+        let identity_runtime = runtime.identity_runtime().unwrap().clone();
+        let identity = identity.clone();
+        async move { identity_runtime.materialize_tracked(&identity).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("foreground materialization should capture the original spec");
+
+    roster.set(vec![replacement.clone()]).await;
+    let reconcile = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !reconcile.is_finished(),
+        "reconcile must wait for the in-flight identity lifecycle transaction"
+    );
+
+    permits.add_permits(1);
+    materialize
+        .await
+        .expect("materialize task should not panic")
+        .expect("original materialization should reach its commit boundary");
+    reconcile
+        .await
+        .expect("reconcile task should not panic")
+        .expect("reconcile should retire the stale embodiment and install v2 metadata");
+
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let status = identity_runtime.status(&identity).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+    assert_eq!(
+        status.labels.get("roster_revision").map(String::as_str),
+        Some("v2")
+    );
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert!(bootstrap.complete);
+    assert!(!bootstrap.ready);
+    assert_eq!(
+        bootstrap.identities[&identity].state,
+        IdentityBootstrapState::Dormant
+    );
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "the old physical member must be retired before v2 metadata is published"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_lazy_reconcile_retires_members_removed_from_roster() {
+    let tmp = tempfile::tempdir().unwrap();
+    let alpha = AgentIdentity::parse("agent:alpha").unwrap();
+    let beta = AgentIdentity::parse("agent:beta").unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![
+        durable_spec(alpha.as_str()),
+        durable_spec(beta.as_str()),
+    ]));
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(roster.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-lazy-roster-removal-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 2,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("initial background warm should start");
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let (ready, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(
+        !timed_out && ready.ready,
+        "initial roster must fully materialize"
+    );
+
+    roster.set(vec![durable_spec(alpha.as_str())]).await;
+    runtime
+        .refresh_desired_topology()
+        .await
+        .expect("reduced roster reconcile should succeed");
+
+    let registered = identity_runtime
+        .statuses()
+        .await
+        .into_iter()
+        .map(|status| status.identity)
+        .collect::<Vec<_>>();
+    assert_eq!(registered, vec![alpha.clone()]);
+    assert!(identity_runtime.status(&beta).await.is_err());
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert!(bootstrap.complete && bootstrap.ready);
+    assert_eq!(
+        bootstrap.identities.keys().cloned().collect::<Vec<_>>(),
+        vec![alpha]
+    );
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .iter()
+            .all(|member| !member.agent_identity.as_str().contains("beta")),
+        "removed roster identity must not retain a lower-plane embodiment"
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_bootstrap_status_tracks_reset_retire_materialize_and_delete() {
+    let tmp = tempfile::tempdir().unwrap();
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory().unwrap()))
+            .lease_provider(Arc::new(
+                meerkat_mobkit::identity_first::LocalLeaseProvider::new(),
+            ))
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                identity.as_str(),
+            )])))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-bootstrap-lifecycle-status-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 1,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("background-warm builder should start");
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let (ready, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out && ready.ready);
+
+    identity_runtime
+        .reset_tracked(&identity)
+        .await
+        .expect("reset should complete");
+    assert_eq!(
+        identity_runtime.identity_bootstrap_status().identities[&identity].state,
+        IdentityBootstrapState::Active
+    );
+    assert!(identity_runtime.identity_bootstrap_status().ready);
+
+    identity_runtime
+        .retire_tracked(&identity)
+        .await
+        .expect("retire should complete");
+    let retired = identity_runtime.identity_bootstrap_status();
+    assert!(!retired.ready);
+    assert_eq!(
+        retired.identities[&identity].state,
+        IdentityBootstrapState::Dormant
+    );
+
+    identity_runtime
+        .respawn_tracked(&identity)
+        .await
+        .expect("respawn after retire should reactivate the identity");
+    assert!(identity_runtime.identity_bootstrap_status().ready);
+
+    runtime.shutdown().await;
+
+    // Deletion has its own bootstrap-projection contract. Keep this half on a
+    // never-embodied lazy identity so it does not depend on the upstream
+    // MobMachine Running-authority recovery defect exercised by a rapid
+    // retire -> respawn -> delete sequence.
+    let delete_tmp = tempfile::tempdir().unwrap();
+    let delete_identity = AgentIdentity::parse("agent:delete").unwrap();
+    let delete_runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(LocalContinuityStore::in_memory().unwrap()))
+            .lease_provider(Arc::new(
+                meerkat_mobkit::identity_first::LocalLeaseProvider::new(),
+            ))
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                delete_identity.as_str(),
+            )])))
+            .scratch_dir(delete_tmp.path())
+            .identity_runtime_instance_id("builder-bootstrap-delete-status-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("lazy builder should register the delete target without embodying it");
+    let delete_identity_runtime = delete_runtime.identity_runtime().unwrap();
+
+    delete_identity_runtime
+        .delete_identity_tracked(&delete_identity)
+        .await
+        .expect("delete should complete");
+    let deleted = delete_identity_runtime.identity_bootstrap_status();
+    assert!(!deleted.ready);
+    assert_eq!(
+        deleted.identities[&delete_identity].state,
+        IdentityBootstrapState::Dormant
+    );
+    assert!(
+        delete_identity_runtime
+            .status(&delete_identity)
+            .await
+            .is_err()
+    );
+
+    delete_runtime.shutdown().await;
 }
 
 #[tokio::test]

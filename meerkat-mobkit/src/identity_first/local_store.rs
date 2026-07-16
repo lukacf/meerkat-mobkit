@@ -3,7 +3,7 @@
 //! Implements CONTRACT-06. Designed for single-process, local-disk persistence.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use async_trait::async_trait;
@@ -196,6 +196,27 @@ impl LocalContinuityStore {
                 readers: ReadConnections::Pool(ReadConnectionPool::new(readers)),
             }),
         })
+    }
+
+    /// Open the store and read its fencing-token floor without blocking a
+    /// Tokio worker. Async builders and gateways must use this seam because
+    /// SQLite open/schema/WAL setup can wait on the filesystem or a database
+    /// lock for the configured busy timeout.
+    pub async fn open_with_fencing_floor(
+        path: impl Into<PathBuf>,
+    ) -> Result<(Self, u64), ContinuityStoreError> {
+        let path = path.into();
+        tokio::task::spawn_blocking(move || {
+            let store = Self::open(path)?;
+            let fencing_floor = store.max_fencing_token()?;
+            Ok((store, fencing_floor))
+        })
+        .await
+        .map_err(|error| {
+            ContinuityStoreError::Io(format!(
+                "open_with_fencing_floor blocking worker failed: {error}"
+            ))
+        })?
     }
 
     /// Open an in-memory store (for testing).
@@ -592,25 +613,32 @@ impl ContinuityStore for LocalContinuityStore {
             inner.with_writer(|connection| {
                 let mut stmt = connection
                     .prepare_cached(
-                        "SELECT fencing_token FROM continuity_records WHERE identity = ?1",
+                        "SELECT fencing_token, generation FROM continuity_records WHERE identity = ?1",
                     )
                     .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
-                let existing_token = stmt
+                let existing = stmt
                     .query_row(rusqlite::params![record.identity.as_str()], |row| {
-                        row.get::<_, u64>(0)
+                        Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
                     })
                     .optional()
                     .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
                 drop(stmt);
 
-                if let Some(current) = existing_token
-                    && fencing_token.get() < current
-                {
-                    return Err(ContinuityStoreError::StaleFencingToken {
-                        identity: record.identity.clone(),
-                        presented: fencing_token,
-                        current: FencingToken::new(current),
-                    });
+                if let Some((current_token, current_generation)) = existing {
+                    if fencing_token.get() < current_token {
+                        return Err(ContinuityStoreError::StaleFencingToken {
+                            identity: record.identity.clone(),
+                            presented: fencing_token,
+                            current: FencingToken::new(current_token),
+                        });
+                    }
+                    if record.generation.get() < current_generation {
+                        return Err(ContinuityStoreError::StaleContinuityGeneration {
+                            identity: record.identity.clone(),
+                            presented: record.generation,
+                            current: ContinuityGeneration::new(current_generation),
+                        });
+                    }
                 }
 
                 connection
@@ -622,8 +650,7 @@ impl ContinuityStore for LocalContinuityStore {
                             session_id = excluded.session_id,
                             generation = excluded.generation,
                             checkpoint_version = CASE
-                                WHEN continuity_records.session_id = excluded.session_id
-                                 AND continuity_records.generation = excluded.generation
+                                WHEN continuity_records.generation = excluded.generation
                                 THEN MAX(continuity_records.checkpoint_version, excluded.checkpoint_version)
                                 ELSE excluded.checkpoint_version
                             END,
@@ -638,6 +665,127 @@ impl ContinuityStore for LocalContinuityStore {
                         ],
                     )
                     .map_err(|e| ContinuityStoreError::Io(format!("upsert record: {e}")))?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn rollback_continuity_record(
+        &self,
+        expected_attempt: &ContinuityRecord,
+        previous: Option<&ContinuityRecord>,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        let expected_attempt = expected_attempt.clone();
+        let previous = previous.cloned();
+        self.run_blocking("rollback_continuity_record", move |inner| {
+            inner.with_writer(|connection| {
+                if previous
+                    .as_ref()
+                    .is_some_and(|record| record.identity != expected_attempt.identity)
+                {
+                    return Err(ContinuityStoreError::Corruption(format!(
+                        "reset rollback identity mismatch: attempted {}, previous {}",
+                        expected_attempt.identity,
+                        previous
+                            .as_ref()
+                            .map(|record| record.identity.as_str())
+                            .unwrap_or_default(),
+                    )));
+                }
+
+                let tx = connection
+                    .unchecked_transaction()
+                    .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+                let current = tx
+                    .query_row(
+                        "SELECT agent_runtime_id, session_id, generation, fencing_token
+                         FROM continuity_records WHERE identity = ?1",
+                        rusqlite::params![expected_attempt.identity.as_str()],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, u64>(2)?,
+                                row.get::<_, u64>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?
+                    .ok_or_else(|| ContinuityStoreError::NotFound {
+                        identity: expected_attempt.identity.clone(),
+                    })?;
+
+                let (current_runtime_id, current_session_id, current_generation, current_token) =
+                    current;
+                if current_token != fencing_token.get() {
+                    return Err(ContinuityStoreError::StaleFencingToken {
+                        identity: expected_attempt.identity.clone(),
+                        presented: fencing_token,
+                        current: FencingToken::new(current_token),
+                    });
+                }
+                if current_runtime_id != expected_attempt.agent_runtime_id.as_str()
+                    || current_session_id != expected_attempt.session_id.to_string()
+                    || current_generation != expected_attempt.generation.get()
+                {
+                    return Err(ContinuityStoreError::StaleContinuityGeneration {
+                        identity: expected_attempt.identity.clone(),
+                        presented: expected_attempt.generation,
+                        current: ContinuityGeneration::new(current_generation),
+                    });
+                }
+
+                // Only the provisional reset generation is abandoned. Older
+                // snapshots remain the rollback authority for the restored
+                // row, while a concurrently advanced generation is protected
+                // by the exact CAS above.
+                tx.execute(
+                    "DELETE FROM session_snapshots WHERE identity = ?1 AND generation = ?2",
+                    rusqlite::params![
+                        expected_attempt.identity.as_str(),
+                        expected_attempt.generation.get(),
+                    ],
+                )
+                .map_err(|e| {
+                    ContinuityStoreError::Io(format!("delete attempted snapshots: {e}"))
+                })?;
+
+                if let Some(previous) = previous {
+                    tx.execute(
+                        "UPDATE continuity_records
+                         SET agent_runtime_id = ?1,
+                             session_id = ?2,
+                             generation = ?3,
+                             checkpoint_version = ?4,
+                             fencing_token = ?5
+                         WHERE identity = ?6",
+                        rusqlite::params![
+                            previous.agent_runtime_id.as_str(),
+                            previous.session_id.to_string(),
+                            previous.generation.get(),
+                            previous.checkpoint_version.get(),
+                            fencing_token.get(),
+                            expected_attempt.identity.as_str(),
+                        ],
+                    )
+                    .map_err(|e| {
+                        ContinuityStoreError::Io(format!("restore previous record: {e}"))
+                    })?;
+                } else {
+                    tx.execute(
+                        "DELETE FROM continuity_records WHERE identity = ?1",
+                        rusqlite::params![expected_attempt.identity.as_str()],
+                    )
+                    .map_err(|e| {
+                        ContinuityStoreError::Io(format!("delete attempted record: {e}"))
+                    })?;
+                }
+
+                tx.commit()
+                    .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
                 Ok(())
             })
         })
@@ -810,6 +958,269 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn continuity_upsert_rejects_generation_regression_even_with_newer_fence() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        let mut current = record(&identity, &session_id);
+        current.generation = ContinuityGeneration::new(1);
+        store
+            .upsert_continuity_record(&current, FencingToken::new(2))
+            .await
+            .unwrap();
+
+        let mut stale = current.clone();
+        stale.generation = ContinuityGeneration::new(0);
+        let error = store
+            .upsert_continuity_record(&stale, FencingToken::new(3))
+            .await
+            .expect_err("a newer fence must not authorize generation rollback");
+        assert!(matches!(
+            error,
+            ContinuityStoreError::StaleContinuityGeneration { .. }
+        ));
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        let ContinuityResolveState::Ready { record } = &resolved[&identity] else {
+            panic!("continuity should remain ready");
+        };
+        assert_eq!(record.generation, ContinuityGeneration::new(1));
+    }
+
+    #[tokio::test]
+    async fn same_generation_session_rebind_preserves_durable_checkpoint_head() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let old_session_id = meerkat_core::types::SessionId::new();
+        let mut old = record(&identity, &old_session_id);
+        old.checkpoint_version = CheckpointVersion::new(10);
+        store
+            .upsert_continuity_record(&old, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &old_session_id,
+                old.generation,
+                CheckpointVersion::new(11),
+                FencingToken::new(2),
+                &SessionSnapshot { data: vec![11] },
+            )
+            .await
+            .unwrap();
+
+        let new_session_id = meerkat_core::types::SessionId::new();
+        let mut stale_rebind = old;
+        stale_rebind.session_id = new_session_id.clone();
+        store
+            .upsert_continuity_record(&stale_rebind, FencingToken::new(3))
+            .await
+            .unwrap();
+
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        let ContinuityResolveState::Ready { record } = &resolved[&identity] else {
+            panic!("continuity should remain ready");
+        };
+        assert_eq!(record.session_id, new_session_id);
+        assert_eq!(record.checkpoint_version, CheckpointVersion::new(11));
+    }
+
+    #[tokio::test]
+    async fn reset_rollback_cas_restores_previous_row_and_only_removes_attempt_snapshots() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let previous_session = meerkat_core::types::SessionId::new();
+        let mut previous = record(&identity, &previous_session);
+        store
+            .upsert_continuity_record(&previous, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &previous_session,
+                previous.generation,
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: vec![10] },
+            )
+            .await
+            .unwrap();
+        previous.checkpoint_version = CheckpointVersion::new(1);
+
+        let attempted_session = meerkat_core::types::SessionId::new();
+        let mut attempted = record(&identity, &attempted_session);
+        attempted.agent_runtime_id = AgentRuntimeId::parse("rt:triage:main:1").unwrap();
+        attempted.generation = ContinuityGeneration::new(1);
+        store
+            .upsert_continuity_record(&attempted, FencingToken::new(2))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &attempted_session,
+                attempted.generation,
+                CheckpointVersion::new(1),
+                FencingToken::new(2),
+                &SessionSnapshot { data: vec![20] },
+            )
+            .await
+            .unwrap();
+
+        // The session service may have advanced the attempted checkpoint
+        // after reset captured the provisional record. Runtime/session/
+        // generation/fence identify the attempt; its checkpoint is not part
+        // of the rollback CAS.
+        store
+            .rollback_continuity_record(&attempted, Some(&previous), FencingToken::new(2))
+            .await
+            .unwrap();
+
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Ready {
+                record: previous.clone(),
+            })
+        );
+        assert_eq!(
+            store
+                .load_session_snapshot(&previous_session)
+                .await
+                .unwrap(),
+            Some(SessionSnapshot { data: vec![10] })
+        );
+        assert_eq!(
+            store
+                .load_session_snapshot(&attempted_session)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_rollback_cas_deletes_uninitialized_attempt_and_its_snapshots() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:new").unwrap();
+        let attempted_session = meerkat_core::types::SessionId::new();
+        let mut attempted = record(&identity, &attempted_session);
+        attempted.agent_runtime_id = AgentRuntimeId::parse("rt:triage:new:1").unwrap();
+        attempted.generation = ContinuityGeneration::new(1);
+        store
+            .upsert_continuity_record(&attempted, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &attempted_session,
+                attempted.generation,
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: vec![30] },
+            )
+            .await
+            .unwrap();
+
+        store
+            .rollback_continuity_record(&attempted, None, FencingToken::new(1))
+            .await
+            .unwrap();
+
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Uninitialized)
+        );
+        assert!(
+            store
+                .load_session_snapshot(&attempted_session)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_rollback_cas_cannot_clobber_a_newer_attempt() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let previous_session = meerkat_core::types::SessionId::new();
+        let previous = record(&identity, &previous_session);
+        store
+            .upsert_continuity_record(&previous, FencingToken::new(1))
+            .await
+            .unwrap();
+
+        let attempted_session = meerkat_core::types::SessionId::new();
+        let mut attempted = record(&identity, &attempted_session);
+        attempted.agent_runtime_id = AgentRuntimeId::parse("rt:triage:main:1").unwrap();
+        attempted.generation = ContinuityGeneration::new(1);
+        store
+            .upsert_continuity_record(&attempted, FencingToken::new(2))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &attempted_session,
+                attempted.generation,
+                CheckpointVersion::new(1),
+                FencingToken::new(2),
+                &SessionSnapshot { data: vec![40] },
+            )
+            .await
+            .unwrap();
+
+        let newer_session = meerkat_core::types::SessionId::new();
+        let mut newer = record(&identity, &newer_session);
+        newer.agent_runtime_id = AgentRuntimeId::parse("rt:triage:main:2").unwrap();
+        newer.generation = ContinuityGeneration::new(2);
+        store
+            .upsert_continuity_record(&newer, FencingToken::new(3))
+            .await
+            .unwrap();
+
+        let error = store
+            .rollback_continuity_record(&attempted, Some(&previous), FencingToken::new(2))
+            .await
+            .expect_err("a stale reset attempt must not overwrite a newer generation");
+        assert!(matches!(
+            error,
+            ContinuityStoreError::StaleFencingToken { .. }
+        ));
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        assert_eq!(
+            resolved.get(&identity),
+            Some(&ContinuityResolveState::Ready { record: newer })
+        );
+        assert_eq!(
+            store
+                .load_session_snapshot(&attempted_session)
+                .await
+                .unwrap(),
+            Some(SessionSnapshot { data: vec![40] })
+        );
+    }
+
+    #[tokio::test]
     async fn max_fencing_token_recovers_high_water_across_tables_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("continuity.db");
@@ -877,6 +1288,37 @@ mod tests {
             7,
             "high-water must come from session_snapshots when no continuity record is present"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_open_keeps_tokio_worker_responsive_while_sqlite_is_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("async-open.db");
+        let lock = Connection::open(&path).unwrap();
+        lock.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; BEGIN IMMEDIATE;")
+            .unwrap();
+
+        let open = tokio::spawn({
+            let path = path.clone();
+            async move { LocalContinuityStore::open_with_fencing_floor(path).await }
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            tokio::time::sleep(std::time::Duration::from_millis(25)),
+        )
+        .await
+        .expect("the current-thread Tokio worker must remain responsive");
+        assert!(
+            !open.is_finished(),
+            "schema initialization should still be waiting on the held SQLite writer lock"
+        );
+
+        lock.execute_batch("ROLLBACK;").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), open)
+            .await
+            .expect("async open should finish after releasing the SQLite lock")
+            .expect("open task should not panic")
+            .expect("store should open and read its fencing floor");
     }
 
     /// The end-to-end restart regression: a lease provider seeded from the

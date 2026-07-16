@@ -53,11 +53,10 @@ pub(crate) fn durable_identity_label(
 pub(crate) fn validate_raw_identity_labels(
     labels: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), &'static str> {
-    if labels
-        .get("agent_identity")
-        .is_some_and(|value| is_reserved_generated_alias(value.trim()))
-    {
-        return Err("labels.agent_identity may not use the reserved rt:* namespace");
+    if labels.contains_key("agent_identity") {
+        return Err(
+            "labels.agent_identity is runtime-authoritative and may not be supplied by raw member creation",
+        );
     }
     Ok(())
 }
@@ -167,7 +166,52 @@ pub(crate) fn is_reserved_generated_alias(member_id: &str) -> bool {
 /// spelling at a raw lower-plane creation boundary can collide with the
 /// projection of the corresponding decoded alias.
 pub(crate) fn uses_reserved_roster_marker(member_id: &str) -> bool {
-    member_id.starts_with(MARKER)
+    member_id.trim().starts_with(MARKER)
+}
+
+/// Validate one caller-supplied member/identity target at a public ingress.
+///
+/// Public APIs speak aliases. The comms-safe `mk--*` roster spelling is an
+/// implementation detail and must be rejected before ABAC, dispatch, or
+/// alias resolution; otherwise a policy written against the decoded alias
+/// can be bypassed by presenting its encoded spelling.
+pub(crate) fn validate_public_member_alias(field: &str, value: &str) -> Result<(), String> {
+    if uses_reserved_roster_marker(value) {
+        return Err(format!(
+            "{field} may not use the reserved encoded roster-id namespace"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate every member/identity target field understood by public JSON-RPC
+/// surfaces. Keep this list at the ingress choke point so new handlers cannot
+/// accidentally perform ABAC against an encoded roster id and decode it only
+/// afterwards.
+pub(crate) fn validate_public_rpc_member_aliases(params: &serde_json::Value) -> Result<(), String> {
+    const TARGET_FIELDS: &[&str] = &[
+        "identity",
+        "member_id",
+        "agent_id",
+        "agent_identity",
+        "meerkat_id",
+        "local_member_id",
+        "remote_member_id",
+        "from_member_id",
+        "source_member_id",
+        "runtime_member_id",
+        "agent_runtime_id",
+    ];
+
+    let Some(params) = params.as_object() else {
+        return Ok(());
+    };
+    for field in TARGET_FIELDS {
+        if let Some(value) = params.get(*field).and_then(serde_json::Value::as_str) {
+            validate_public_member_alias(field, value)?;
+        }
+    }
+    Ok(())
 }
 
 /// Admit a caller-chosen member id to the raw mob plane.
@@ -181,6 +225,7 @@ pub(crate) async fn validate_raw_member_target(
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     member_id: &str,
 ) -> Result<String, String> {
+    let member_id = member_id.trim();
     let alias = runtime_alias_str(member_id).into_owned();
     if uses_reserved_roster_marker(member_id) || is_reserved_generated_alias(&alias) {
         return Err(format!(
@@ -195,6 +240,88 @@ pub(crate) async fn validate_raw_member_target(
         ));
     }
     Ok(alias)
+}
+
+/// Reservation for one or more caller-chosen raw member aliases.
+///
+/// When an identity runtime is installed, the owned namespace guard keeps the
+/// validation result stable until the raw member has been created. Durable
+/// identity materialization takes the same guard before checking the raw
+/// roster, so the two planes cannot both claim the same plain alias through a
+/// validate-then-spawn race.
+pub(crate) struct RawMemberTargetReservation {
+    aliases: Vec<String>,
+    _alias_guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl RawMemberTargetReservation {
+    pub(crate) fn alias(&self) -> &str {
+        self.aliases.first().map(String::as_str).unwrap_or_default()
+    }
+
+    pub(crate) fn aliases(&self) -> &[String] {
+        &self.aliases
+    }
+}
+
+pub(crate) async fn reserve_raw_member_target(
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_id: &str,
+) -> Result<RawMemberTargetReservation, String> {
+    reserve_raw_member_targets(identity_runtime, std::iter::once(member_id)).await
+}
+
+pub(crate) async fn reserve_raw_member_targets<'a>(
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<RawMemberTargetReservation, String> {
+    let member_ids = member_ids
+        .into_iter()
+        .map(str::trim)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if member_ids.is_empty() {
+        return Err("raw member reservation requires at least one member id".to_string());
+    }
+    // Reject statelessly invalid and currently identity-owned targets before
+    // allocating keyed locks. This preflight is not the authority boundary:
+    // durable ownership can change while we wait, so the same validation is
+    // repeated below after all canonical alias guards are held.
+    for member_id in &member_ids {
+        validate_raw_member_target(identity_runtime, member_id).await?;
+    }
+    let canonical_aliases = member_ids
+        .iter()
+        .map(|member_id| runtime_alias_str(member_id).into_owned())
+        .collect::<Vec<_>>();
+    let sorted_aliases = canonical_aliases
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    // Every multi-member caller takes the same deterministic alias order.
+    // Duplicate spellings share one guard, while the returned aliases retain
+    // request order so batch spawn results continue to line up with specs.
+    let mut alias_guards = Vec::with_capacity(sorted_aliases.len());
+    if let Some(identity_runtime) = identity_runtime {
+        for alias in sorted_aliases {
+            let lock = identity_runtime.raw_member_alias_lock(&alias).await;
+            alias_guards.push(lock.lock_owned().await);
+        }
+    }
+
+    // Re-run the full authority check only after all target locks are held.
+    // Preserve the original trimmed spelling for reserved encoded-id checks;
+    // successful values are the canonical aliases used by the lock map.
+    let mut aliases = Vec::with_capacity(member_ids.len());
+    for member_id in member_ids {
+        aliases.push(validate_raw_member_target(identity_runtime, &member_id).await?);
+    }
+    debug_assert_eq!(aliases, canonical_aliases);
+    Ok(RawMemberTargetReservation {
+        aliases,
+        _alias_guards: alias_guards,
+    })
 }
 
 /// Project a mob runtime id (`{roster_member_id}:{generation}`) into the
@@ -216,6 +343,28 @@ pub fn runtime_event_alias(runtime_id: &meerkat_mob::ids::AgentRuntimeId) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_lock_test_runtime()
+    -> Result<std::sync::Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error>>
+    {
+        Ok(std::sync::Arc::new(
+            crate::identity_first::IdentityRuntime::new(
+                crate::identity_first::IdentityRuntimeConfig {
+                    continuity_store: std::sync::Arc::new(
+                        crate::identity_first::LocalContinuityStore::in_memory()?,
+                    ),
+                    lease_provider: std::sync::Arc::new(
+                        crate::identity_first::LocalLeaseProvider::new(),
+                    ),
+                    runtime_instance_id: "raw-lock-test".to_string(),
+                    has_runtime_store: true,
+                    durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                    bridge: None,
+                    default_timeout: None,
+                },
+            ),
+        ))
+    }
 
     #[test]
     fn plain_member_names_pass_through_unchanged() {
@@ -330,18 +479,265 @@ mod tests {
             validate_raw_member_target(Some(&identity_runtime), "worker").await,
             Ok("worker".to_string())
         );
+
+        let reservation = reserve_raw_member_target(Some(&identity_runtime), "worker").await?;
+        assert_eq!(reservation.alias(), "worker");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(25),
+                reserve_raw_member_target(Some(&identity_runtime), " worker "),
+            )
+            .await
+            .is_err(),
+            "canonical spellings of one alias must block on the same reservation"
+        );
+        let other_reservation = match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reserve_raw_member_target(Some(&identity_runtime), "other-worker"),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(
+                    format!("different raw aliases must reserve concurrently: {error}").into(),
+                );
+            }
+        };
+        assert_eq!(other_reservation.alias(), "other-worker");
+        drop(other_reservation);
+        drop(reservation);
+
+        let same_alias = match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reserve_raw_member_target(Some(&identity_runtime), " worker "),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(format!("alias lock released with reservation: {error}").into());
+            }
+        };
+        assert_eq!(same_alias.alias(), "worker");
+        drop(same_alias);
+
+        let batch = match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reserve_raw_member_targets(Some(&identity_runtime), ["zeta", " alpha ", "zeta"]),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(format!(
+                    "sorted deduplicated acquisition must not self-deadlock: {error}"
+                )
+                .into());
+            }
+        };
+        assert_eq!(batch.aliases(), ["zeta", "alpha", "zeta"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejected_unique_aliases_do_not_allocate_keyed_locks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity_runtime = raw_lock_test_runtime()?;
+        for index in 0..4_096 {
+            let alias = format!("rt:rejected:{index}:0");
+            assert!(
+                reserve_raw_member_target(Some(&identity_runtime), &alias)
+                    .await
+                    .is_err(),
+                "generated alias {alias} must be rejected"
+            );
+        }
+
+        let (entry_count, _next_sweep_len, sweep_count) =
+            identity_runtime.raw_member_alias_lock_metrics().await;
+        assert_eq!(
+            entry_count, 0,
+            "preflight rejection must not allocate locks"
+        );
+        assert_eq!(sweep_count, 0, "no allocation means no sweep work");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_alias_lock_survives_sweep_and_blocks_same_alias()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity_runtime = raw_lock_test_runtime()?;
+        let held_lock = identity_runtime.raw_member_alias_lock("held-worker").await;
+        let held_guard = held_lock.clone().lock_owned().await;
+
+        // Cross the minimum sweep watermark twice with short-lived aliases.
+        for index in 0..600 {
+            let lock = identity_runtime
+                .raw_member_alias_lock(&format!("transient-{index}"))
+                .await;
+            drop(lock);
+        }
+        let (_entry_count, _next_sweep_len, sweep_count) =
+            identity_runtime.raw_member_alias_lock_metrics().await;
+        assert!(sweep_count >= 2, "test must exercise opportunistic sweep");
+
+        let observed = identity_runtime
+            .raw_member_alias_lock(" held-worker ")
+            .await;
+        assert!(
+            std::sync::Arc::ptr_eq(&held_lock, &observed),
+            "sweep must retain the live mutex for canonical spellings"
+        );
+        drop(observed);
+
+        let waiter_runtime = identity_runtime.clone();
+        let mut waiter = tokio::spawn(async move {
+            let lock = waiter_runtime.raw_member_alias_lock("held-worker").await;
+            let _guard = lock.lock_owned().await;
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut waiter)
+                .await
+                .is_err(),
+            "same-alias waiter must remain blocked on the live pre-sweep lock"
+        );
+        drop(held_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter).await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_alias_lock_creation_has_one_critical_section()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const TASKS: usize = 64;
+        let identity_runtime = raw_lock_test_runtime()?;
+        // Leave an expired weak entry so every racing caller exercises the
+        // upgrade-miss and write-side recheck path.
+        drop(identity_runtime.raw_member_alias_lock("same-worker").await);
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(TASKS + 1));
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks = Vec::with_capacity(TASKS);
+        for _ in 0..TASKS {
+            let runtime = identity_runtime.clone();
+            let barrier = barrier.clone();
+            let active = active.clone();
+            let max_active = max_active.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let lock = runtime.raw_member_alias_lock("same-worker").await;
+                let _guard = lock.lock_owned().await;
+                let now = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                max_active.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+        barrier.wait().await;
+        for task in tasks {
+            task.await?;
+        }
+        assert_eq!(
+            max_active.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "write-side recheck must prevent split locks for one alias"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn large_live_alias_set_uses_geometric_sweeps_and_reclaims_after_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ALIASES: usize = 4_096;
+        let identity_runtime = raw_lock_test_runtime()?;
+        let mut live_locks = Vec::with_capacity(ALIASES);
+        for index in 0..ALIASES {
+            live_locks.push(
+                identity_runtime
+                    .raw_member_alias_lock(&format!("roster-{index}"))
+                    .await,
+            );
+        }
+        let (entry_count, next_sweep_len, sweep_count) =
+            identity_runtime.raw_member_alias_lock_metrics().await;
+        assert_eq!(entry_count, ALIASES);
+        assert!(next_sweep_len >= ALIASES);
+        assert!(
+            sweep_count <= 8,
+            "live roster acquisition must sweep geometrically, got {sweep_count} sweeps"
+        );
+
+        drop(live_locks);
+        let post_drop_lock = identity_runtime
+            .raw_member_alias_lock("post-roster-sweep")
+            .await;
+        let (entry_count, next_sweep_len, post_drop_sweeps) =
+            identity_runtime.raw_member_alias_lock_metrics().await;
+        assert_eq!(entry_count, 1, "next miss must reclaim the expired cohort");
+        assert_eq!(next_sweep_len, 256);
+        assert_eq!(post_drop_sweeps, sweep_count + 1);
+        drop(post_drop_lock);
         Ok(())
     }
 
     #[test]
-    fn raw_identity_labels_reject_encoded_generated_aliases() {
+    fn raw_identity_labels_reserve_agent_identity_for_the_runtime() {
         let mut labels = std::collections::BTreeMap::new();
+        labels.insert(
+            "agent_identity".to_string(),
+            "forged-durable-id".to_string(),
+        );
+        assert!(validate_raw_identity_labels(&labels).is_err());
+
         labels.insert(
             "agent_identity".to_string(),
             mob_member_id_str("rt:forged:0").into_owned(),
         );
         assert!(validate_raw_identity_labels(&labels).is_err());
         assert_eq!(durable_identity_label(&labels), None);
+
+        labels.remove("agent_identity");
+        labels.insert("team".to_string(), "red".to_string());
+        assert_eq!(validate_raw_identity_labels(&labels), Ok(()));
+    }
+
+    #[test]
+    fn public_rpc_ingress_rejects_encoded_roster_targets() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for field in [
+            "identity",
+            "member_id",
+            "agent_id",
+            "agent_identity",
+            "meerkat_id",
+            "local_member_id",
+            "remote_member_id",
+            "from_member_id",
+            "source_member_id",
+        ] {
+            let params = serde_json::json!({ (field): "  mk--rt_csecret_c0  " });
+            let error = match validate_public_rpc_member_aliases(&params) {
+                Err(error) => error,
+                Ok(()) => {
+                    return Err(format!(
+                        "encoded roster id in {field} was admitted as a public alias"
+                    )
+                    .into());
+                }
+            };
+            assert!(error.contains(field), "{field}: {error}");
+        }
+
+        assert_eq!(
+            validate_public_rpc_member_aliases(&serde_json::json!({
+                "identity": "rt:secret:0",
+                "member_id": "plain-member",
+            })),
+            Ok(())
+        );
+        Ok(())
     }
 
     #[test]

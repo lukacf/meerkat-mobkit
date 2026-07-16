@@ -76,10 +76,11 @@ comms = true
     let mut labels = BTreeMap::new();
     labels.insert("agent_identity".to_string(), "lead".to_string());
     runtime
-        .spawn(
+        .mob_handle()
+        .spawn_spec(
             SpawnMemberSpec::from_wire(
                 "worker".to_string(),
-                "rt:lead:0".to_string(),
+                meerkat_mobkit::member_comms_id::mob_member_id_str("rt:lead:0").into_owned(),
                 Some("You are the lead.".into()),
                 None,
                 None,

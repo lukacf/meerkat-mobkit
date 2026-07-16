@@ -5418,24 +5418,40 @@ comms = true
             .expect("runtime builds")
     }
 
+    /// Build an intentionally identity-projected lower-plane member for
+    /// aggregator authority tests. Public raw spawn APIs reserve
+    /// `labels.agent_identity` for the identity runtime; these fixtures are
+    /// modeling the already-authorized output of that runtime.
+    async fn spawn_trusted_identity_projected_member(
+        runtime: &UnifiedRuntime,
+        mut spec: SpawnMemberSpec,
+    ) {
+        let alias = spec.identity.to_string();
+        spec.identity = crate::member_comms_id::mob_member_id(&alias);
+        runtime
+            .mob_handle()
+            .spawn_spec(spec)
+            .await
+            .expect("trusted identity-projected member spawns");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_selection_ignores_a_retiring_generation_when_one_active_generation_remains() {
         let runtime = build_empty_runtime("console-send-retiring-generation-test").await;
         let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
         for generation in 0..=1 {
-            runtime
-                .spawn(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        format!("rt:builder:{generation}"),
-                        Some("You are Builder.".into()),
-                        None,
-                        None,
-                    )
-                    .with_labels(labels.clone()),
+            spawn_trusted_identity_projected_member(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    format!("rt:builder:{generation}"),
+                    Some("You are Builder.".into()),
+                    None,
+                    None,
                 )
-                .await
-                .expect("member spawns");
+                .with_labels(labels.clone()),
+            )
+            .await;
         }
 
         let aggregator = MobKitConsoleAggregator::in_memory();
@@ -5834,21 +5850,21 @@ comms = true
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let runtime = build_empty_runtime("namespaced-runtime-alias-retire-test").await;
         let runtime_alias = "rt:review:owned:0";
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    runtime_alias.to_string(),
-                    Some("You are the owned review agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(BTreeMap::from([(
-                    "agent_identity".to_string(),
-                    "review:owned".to_string(),
-                )])),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                runtime_alias.to_string(),
+                Some("You are the owned review agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(BTreeMap::from([(
+                "agent_identity".to_string(),
+                "review:owned".to_string(),
+            )])),
+        )
+        .await;
         let live_session_id = runtime
             .mob_handle()
             .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
@@ -5953,19 +5969,18 @@ comms = true
             "channel:C0SMOKEOB3".to_string(),
         );
         labels.insert("display_name".to_string(), "C0SMOKEOB3".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:channel:C0SMOKEOB3:0".to_string(),
-                    Some("You are C0SMOKEOB3.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:channel:C0SMOKEOB3:0".to_string(),
+                Some("You are C0SMOKEOB3.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let entry = RuntimeEntry {
             runtime_key: "runtime-a".to_string(),
@@ -6181,18 +6196,18 @@ comms = true
         let runtime = build_empty_runtime("identity-member-hidden-policy-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the Review Agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(labels),
+        )
+        .await;
         let hidden_session_id = runtime
             .mob_handle()
             .resolve_bridge_session_id_observation(&meerkat_mob::ids::AgentIdentity::from(
@@ -6202,18 +6217,18 @@ comms = true
             .map(|sid| sid.to_string());
         let mut duplicate_labels = BTreeMap::new();
         duplicate_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:1".to_string(),
-                    Some("You are a visible duplicate Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(duplicate_labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:1".to_string(),
+                Some("You are a visible duplicate Review Agent.".into()),
+                None,
+                None,
             )
-            .await?;
+            .with_labels(duplicate_labels),
+        )
+        .await;
 
         let identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
         let aggregator = MobKitConsoleAggregator::in_memory();
@@ -6373,19 +6388,18 @@ comms = true
         let runtime = build_empty_runtime("identity-label-backfill-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let entry = RuntimeEntry {
             runtime_key: "runtime-a".to_string(),
@@ -6419,19 +6433,18 @@ comms = true
         let runtime = build_empty_runtime("identity-stale-durable-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the live Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the live Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
             crate::identity_first::IdentityRuntimeConfig {
@@ -6591,19 +6604,18 @@ comms = true
         let runtime = build_empty_runtime("identity-session-rebind-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the live Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the live Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
         let live_session_id = runtime
             .mob_handle()
             .resolve_bridge_session_id_observation(&crate::member_comms_id::mob_member_id(
@@ -6717,19 +6729,18 @@ comms = true
         let runtime = build_empty_runtime("identity-wrong-projection-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "other:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the mislabeled Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the mislabeled Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
             crate::identity_first::IdentityRuntimeConfig {
@@ -6895,19 +6906,18 @@ comms = true
         let runtime = build_empty_runtime("identity-hidden-wrong-projection-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "other:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are a hidden wrong projection.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are a hidden wrong projection.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
             crate::identity_first::IdentityRuntimeConfig {
@@ -7118,36 +7128,34 @@ comms = true
         let runtime = build_empty_runtime("identity-cross-source-primary-test").await;
         let mut primary_labels = BTreeMap::new();
         primary_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the primary Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(primary_labels),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the primary Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("primary member spawns");
+            .with_labels(primary_labels),
+        )
+        .await;
 
         let delegate_runtime = build_empty_runtime("identity-cross-source-delegate-test").await;
         let mut delegate_labels = BTreeMap::new();
         delegate_labels.insert("agent_identity".to_string(), "other:singleton".to_string());
-        delegate_runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the wrong projected Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(delegate_labels),
+        spawn_trusted_identity_projected_member(
+            &delegate_runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the wrong projected Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("delegate member spawns");
+            .with_labels(delegate_labels),
+        )
+        .await;
         runtime
             .mob_runtime()
             .agent_mob_mcp_state()
@@ -7246,19 +7254,18 @@ comms = true
         let runtime = build_empty_runtime("identity-respawn-send-authority-test").await;
         let labels = BTreeMap::from([("agent_identity".to_string(), "builder".to_string())]);
         for generation in 0..=1 {
-            runtime
-                .spawn(
-                    SpawnMemberSpec::from_wire(
-                        "worker".to_string(),
-                        format!("rt:builder:{generation}"),
-                        Some(format!("You are Builder generation {generation}.").into()),
-                        None,
-                        None,
-                    )
-                    .with_labels(labels.clone()),
+            spawn_trusted_identity_projected_member(
+                &runtime,
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    format!("rt:builder:{generation}"),
+                    Some(format!("You are Builder generation {generation}.").into()),
+                    None,
+                    None,
                 )
-                .await
-                .expect("both live generations spawn");
+                .with_labels(labels.clone()),
+            )
+            .await;
         }
         let bound_session_id = runtime
             .mob_handle()
@@ -7391,32 +7398,30 @@ comms = true
         let runtime = build_empty_runtime("identity-ambiguous-durable-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the first Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels.clone()),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the first Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("first member spawns");
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:1".to_string(),
-                    Some("You are the second Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+            .with_labels(labels.clone()),
+        )
+        .await;
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:1".to_string(),
+                Some("You are the second Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("second member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
             crate::identity_first::IdentityRuntimeConfig {
@@ -7549,32 +7554,30 @@ comms = true
         let runtime = build_empty_runtime("identity-hidden-ambiguous-live-test").await;
         let mut labels = BTreeMap::new();
         labels.insert("agent_identity".to_string(), "review:singleton".to_string());
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:0".to_string(),
-                    Some("You are the visible Review Agent.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels.clone()),
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:0".to_string(),
+                Some("You are the visible Review Agent.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("visible member spawns");
-        runtime
-            .spawn(
-                SpawnMemberSpec::from_wire(
-                    "worker".to_string(),
-                    "rt:review:singleton:1".to_string(),
-                    Some("You are hidden maintenance noise.".into()),
-                    None,
-                    None,
-                )
-                .with_labels(labels),
+            .with_labels(labels.clone()),
+        )
+        .await;
+        spawn_trusted_identity_projected_member(
+            &runtime,
+            SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "rt:review:singleton:1".to_string(),
+                Some("You are hidden maintenance noise.".into()),
+                None,
+                None,
             )
-            .await
-            .expect("hidden member spawns");
+            .with_labels(labels),
+        )
+        .await;
 
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator.register_runtime_handles_with_policy(

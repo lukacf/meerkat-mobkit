@@ -201,23 +201,6 @@ impl std::fmt::Display for CrossMobError {
     }
 }
 
-async fn run_member_operation_with_authority<T, F, Fut>(
-    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
-    member_id: &str,
-    mob_id: &str,
-    operation: F,
-) -> Result<T, CrossMobError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<T, CrossMobError>> + Send + 'static,
-{
-    let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
-    let target =
-        member_lifecycle_target_with_authority(identity_runtime, &member_id, mob_id).await?;
-    run_member_authority_transaction([target], member_id, mob_id.to_string(), operation).await
-}
-
 async fn member_lifecycle_target_with_authority(
     identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
     member_id: &str,
@@ -241,6 +224,95 @@ async fn member_lifecycle_target_with_authority(
         });
     }
     Ok(None)
+}
+
+/// Resolve a public member alias to the concrete member generation used by a
+/// cross-mob operation. Callers pass `identity_authoritative = true` only
+/// while holding the target returned by `member_alias_lifecycle_target`.
+/// Under that lock the continuity row is the sole generation authority; live
+/// roster labels are an observation surface and may still contain both the
+/// pre-reset and post-reset members.
+async fn resolve_member_alias_under_authority(
+    handle: &MobHandle,
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    identity_authoritative: bool,
+    member_alias: &str,
+    mob_id: &str,
+) -> Result<String, CrossMobError> {
+    let member_alias = crate::member_comms_id::runtime_alias_str(member_alias).into_owned();
+    if identity_authoritative {
+        let runtime = identity_runtime.ok_or_else(|| CrossMobError::IdentityAuthority {
+            member_id: member_alias.clone(),
+            mob_id: mob_id.to_string(),
+            message: "durable member target lost its IdentityRuntime authority".to_string(),
+        })?;
+        let identity = crate::identity_first::IdentityRuntime::identity_for_generated_member_alias(
+            &member_alias,
+        )
+        .or_else(|| crate::identity_first::AgentIdentity::parse(&member_alias).ok())
+        .ok_or_else(|| CrossMobError::IdentityAuthority {
+            member_id: member_alias.clone(),
+            mob_id: mob_id.to_string(),
+            message: "durable member target is not a valid identity alias".to_string(),
+        })?;
+        let status =
+            runtime
+                .status(&identity)
+                .await
+                .map_err(|error| CrossMobError::IdentityAuthority {
+                    member_id: member_alias.clone(),
+                    mob_id: mob_id.to_string(),
+                    message: error.to_string(),
+                })?;
+        return status
+            .agent_runtime_id
+            .map(|runtime_id| runtime_id.to_string())
+            .ok_or_else(|| CrossMobError::IdentityAuthority {
+                member_id: member_alias,
+                mob_id: mob_id.to_string(),
+                message: format!("identity {identity} has no current runtime member"),
+            });
+    }
+
+    let direct = crate::member_comms_id::mob_member_id(&member_alias);
+    if handle
+        .get_member(&direct)
+        .await
+        .map_err(CrossMobError::Mob)?
+        .is_some()
+    {
+        return Ok(member_alias);
+    }
+
+    // Compatibility fallback for classic runtimes. Never select the first
+    // matching durable label: reset cleanup is asynchronous, so two rows are
+    // a normal transient and must fail closed without an IdentityRuntime.
+    let candidates = handle
+        .list_members_including_retiring()
+        .await
+        .into_iter()
+        .filter(|entry| {
+            crate::member_comms_id::durable_identity_label(&entry.labels)
+                .is_some_and(|identity| identity == member_alias)
+        })
+        .map(|entry| {
+            crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str()).into_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    match candidates.len() {
+        0 => Ok(member_alias),
+        1 => candidates.into_iter().next().ok_or_else(|| {
+            CrossMobError::PeerSpec("member alias candidate disappeared".to_string())
+        }),
+        _ => Err(CrossMobError::IdentityAuthority {
+            member_id: member_alias.clone(),
+            mob_id: mob_id.to_string(),
+            message: format!(
+                "ambiguous durable member alias {member_alias}: candidates [{}]",
+                candidates.into_iter().collect::<Vec<_>>().join(", ")
+            ),
+        }),
+    }
 }
 
 async fn run_member_authority_transaction<T, F, Fut>(
@@ -438,9 +510,31 @@ async fn wire_member_with_authority(
     wire: bool,
 ) -> Result<(), CrossMobError> {
     let operation_member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
-    run_member_operation_with_authority(identity_runtime, member_id, mob_id, move || async move {
-        mutate_member_unchecked(handle, &operation_member_id, peer, wire).await
-    })
+    let operation_mob_id = mob_id.to_string();
+    let identity_runtime = identity_runtime.cloned();
+    let target = member_lifecycle_target_with_authority(
+        identity_runtime.as_ref(),
+        &operation_member_id,
+        &operation_mob_id,
+    )
+    .await?;
+    let identity_authoritative = target.is_some();
+    run_member_authority_transaction(
+        [target],
+        operation_member_id.clone(),
+        operation_mob_id.clone(),
+        move || async move {
+            let current_member_id = resolve_member_alias_under_authority(
+                &handle,
+                identity_runtime.as_ref(),
+                identity_authoritative,
+                &operation_member_id,
+                &operation_mob_id,
+            )
+            .await?;
+            mutate_member_unchecked(handle, &current_member_id, peer, wire).await
+        },
+    )
     .await
 }
 
@@ -1228,16 +1322,14 @@ impl UnifiedRuntime {
 
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-        // Cross-mob callers speak the public alias space (identity-first
-        // runtime ids like `rt:{identity}:{gen}` included); the mob roster
-        // holds comms-safe encoded ids, so encode at this boundary.
-        let local_mid = crate::member_comms_id::mob_member_id(&local_member_id);
+        let local_identity_runtime = local_identity_runtime.cloned();
         let local_target = member_lifecycle_target_with_authority(
-            local_identity_runtime,
+            local_identity_runtime.as_ref(),
             &local_member_id,
             &local_mob_id,
         )
         .await?;
+        let local_identity_authoritative = local_target.is_some();
         let entry = self.resolve_contact(remote_mob_id)?;
         let remote = self.dispatch_for(&entry).await?;
         let remote_target = match &remote {
@@ -1251,6 +1343,7 @@ impl UnifiedRuntime {
             }
             LocalOrRemote::Remote(_) => None,
         };
+        let remote_identity_authoritative = remote_target.is_some();
         let pubkey_b64 = self
             .gateway_peer_keys
             .as_ref()
@@ -1261,6 +1354,28 @@ impl UnifiedRuntime {
             format!("{local_member_id} <-> {remote_member_id}"),
             format!("{local_mob_id} <-> {remote_mob_id}"),
             move || async move {
+                let local_member_id = resolve_member_alias_under_authority(
+                    &local_handle,
+                    local_identity_runtime.as_ref(),
+                    local_identity_authoritative,
+                    &local_member_id,
+                    &local_mob_id,
+                )
+                .await?;
+                let local_mid = crate::member_comms_id::mob_member_id(&local_member_id);
+                let remote_member_id = match &remote {
+                    LocalOrRemote::Local(authority) => {
+                        resolve_member_alias_under_authority(
+                            &authority.handle,
+                            authority.identity_runtime.as_ref(),
+                            remote_identity_authoritative,
+                            &remote_member_id,
+                            &remote_mob_id,
+                        )
+                        .await?
+                    }
+                    LocalOrRemote::Remote(_) => remote_member_id,
+                };
                 wire_cross_mob_transaction(
                     entry,
                     remote,
@@ -1311,13 +1426,14 @@ impl UnifiedRuntime {
             crate::member_comms_id::runtime_alias_str(remote_member_id).into_owned();
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-        let local_mid = crate::member_comms_id::mob_member_id(&local_member_id);
+        let local_identity_runtime = local_identity_runtime.cloned();
         let local_target = member_lifecycle_target_with_authority(
-            local_identity_runtime,
+            local_identity_runtime.as_ref(),
             &local_member_id,
             &local_mob_id,
         )
         .await?;
+        let local_identity_authoritative = local_target.is_some();
         let entry = self.resolve_contact(remote_mob_id)?;
         let remote = self.dispatch_for(&entry).await?;
         let remote_target = match &remote {
@@ -1331,6 +1447,7 @@ impl UnifiedRuntime {
             }
             LocalOrRemote::Remote(_) => None,
         };
+        let remote_identity_authoritative = remote_target.is_some();
         let pubkey_b64 = self
             .gateway_peer_keys
             .as_ref()
@@ -1341,6 +1458,28 @@ impl UnifiedRuntime {
             format!("{local_member_id} <-> {remote_member_id}"),
             format!("{local_mob_id} <-> {remote_mob_id}"),
             move || async move {
+                let local_member_id = resolve_member_alias_under_authority(
+                    &local_handle,
+                    local_identity_runtime.as_ref(),
+                    local_identity_authoritative,
+                    &local_member_id,
+                    &local_mob_id,
+                )
+                .await?;
+                let local_mid = crate::member_comms_id::mob_member_id(&local_member_id);
+                let remote_member_id = match &remote {
+                    LocalOrRemote::Local(authority) => {
+                        resolve_member_alias_under_authority(
+                            &authority.handle,
+                            authority.identity_runtime.as_ref(),
+                            remote_identity_authoritative,
+                            &remote_member_id,
+                            &remote_mob_id,
+                        )
+                        .await?
+                    }
+                    LocalOrRemote::Remote(_) => remote_member_id,
+                };
                 unwire_cross_mob_transaction(
                     entry,
                     remote,
@@ -1399,8 +1538,9 @@ impl UnifiedRuntime {
         let remote_member_id =
             crate::member_comms_id::runtime_alias_str(remote_member_id).into_owned();
         let local_mob_id = self.mob_id();
+        let local_identity_runtime = local_identity_runtime.cloned();
         let local_target = member_lifecycle_target_with_authority(
-            local_identity_runtime,
+            local_identity_runtime.as_ref(),
             &from_local_member,
             &local_mob_id,
         )
@@ -1418,6 +1558,7 @@ impl UnifiedRuntime {
             }
             LocalOrRemote::Remote(_) => None,
         };
+        let remote_identity_authoritative = remote_target.is_some();
         let remote_mob_id = remote_mob_id.to_string();
         run_member_authority_transaction(
             [local_target, remote_target],
@@ -1426,6 +1567,14 @@ impl UnifiedRuntime {
             move || async move {
                 match remote {
                     LocalOrRemote::Local(authority) => {
+                        let remote_member_id = resolve_member_alias_under_authority(
+                            &authority.handle,
+                            authority.identity_runtime.as_ref(),
+                            remote_identity_authoritative,
+                            &remote_member_id,
+                            &remote_mob_id,
+                        )
+                        .await?;
                         send_member_unchecked(
                             authority.handle,
                             &remote_member_id,
@@ -1506,29 +1655,26 @@ impl UnifiedRuntime {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
         let member_alias = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
-        let target =
-            member_lifecycle_target_with_authority(self.identity_runtime(), &member_alias, &mob_id)
-                .await?;
+        let identity_runtime = self.identity_runtime().cloned();
+        let target = member_lifecycle_target_with_authority(
+            identity_runtime.as_ref(),
+            &member_alias,
+            &mob_id,
+        )
+        .await?;
+        let identity_authoritative = target.is_some();
         let operation_alias = member_alias.clone();
         let operation_mob_id = mob_id.clone();
         run_member_authority_transaction([target], member_alias, mob_id, move || async move {
-            let direct = crate::member_comms_id::mob_member_id(&operation_alias);
-            let mid = if handle.get_member(&direct).await.ok().flatten().is_some() {
-                direct
-            } else if let Some(identity) = handle
-                .list_members_including_retiring()
-                .await
-                .into_iter()
-                .find(|entry| {
-                    crate::member_comms_id::durable_identity_label(&entry.labels)
-                        .is_some_and(|identity| identity == operation_alias)
-                })
-                .map(|entry| entry.agent_identity)
-            {
-                identity
-            } else {
-                direct
-            };
+            let current_alias = resolve_member_alias_under_authority(
+                &handle,
+                identity_runtime.as_ref(),
+                identity_authoritative,
+                &operation_alias,
+                &operation_mob_id,
+            )
+            .await?;
+            let mid = crate::member_comms_id::mob_member_id(&current_alias);
             let info = member_peer_info(&handle, &mid, &operation_mob_id).await?;
             let address = format!("inproc://{}", info.comms_name);
             Ok((info.peer_id, info.comms_name, address))

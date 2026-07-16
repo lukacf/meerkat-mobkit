@@ -1003,6 +1003,11 @@ pub enum ContinuityStoreError {
         presented: CheckpointVersion,
         current: CheckpointVersion,
     },
+    StaleContinuityGeneration {
+        identity: AgentIdentity,
+        presented: ContinuityGeneration,
+        current: ContinuityGeneration,
+    },
     NotFound {
         identity: AgentIdentity,
     },
@@ -1028,6 +1033,14 @@ impl fmt::Display for ContinuityStoreError {
             } => write!(
                 f,
                 "stale checkpoint version for {identity}: presented {presented}, current {current}"
+            ),
+            Self::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            } => write!(
+                f,
+                "stale continuity generation for {identity}: presented {presented}, current {current}"
             ),
             Self::NotFound { identity } => {
                 write!(f, "continuity record not found for {identity}")

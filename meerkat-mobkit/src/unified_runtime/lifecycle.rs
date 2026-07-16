@@ -188,9 +188,7 @@ impl UnifiedRuntime {
         }
         if let Some(task) = self.implicit_delegate_retirement_task.lock().await.take() {
             task.abort();
-        }
-        if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
-            task.abort();
+            let _ = task.await;
         }
 
         // Phase 1: Drain in-flight events
@@ -224,6 +222,28 @@ impl UnifiedRuntime {
         // are still alive. Closing them first can race Stop against an
         // already-dropped actor reply channel under teardown pressure.
         let mob_stop = self.stop_mob_quiescing().await;
+
+        // Fencing authority must outlive the physical members it protects.
+        // Keep renewal running through mob quiescence, then stop it before the
+        // final provider release so no renewal can race the release boundary.
+        if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            if mob_stop.is_ok() {
+                if let Err(error) = identity_runtime.release_all_leases_for_shutdown().await {
+                    tracing::warn!(
+                        %error,
+                        "failed to release identity authority after mob shutdown"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    "mob shutdown did not quiesce physical members; retaining identity grants"
+                );
+            }
+        }
 
         // Phase 3: Close event router
         self.close_event_router().await;

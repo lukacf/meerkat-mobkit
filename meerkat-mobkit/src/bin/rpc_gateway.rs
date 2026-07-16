@@ -4156,6 +4156,7 @@ external_addressable = true
                 std::env::temp_dir().join(format!("mobkit-continuity-{}.db", std::process::id()))
             };
             let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&db_path)
+                .await
                 .unwrap_or_else(|e| fail_init(&request_id, -32603, e));
             local_default_lease_provider = Some(substrate.lease_provider);
             substrate.continuity_store

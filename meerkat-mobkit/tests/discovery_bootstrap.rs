@@ -278,6 +278,41 @@ async fn mk007_spawn_many_spawns_multiple_agents() {
 }
 
 #[tokio::test]
+async fn unified_runtime_raw_spawn_apis_reject_authoritative_identity_labels() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = UnifiedRuntime::bootstrap(
+        build_mob_spec(&temp_dir),
+        empty_module_config(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("bootstrap");
+    let forged_labels =
+        BTreeMap::from([("agent_identity".to_string(), "durable:forged".to_string())]);
+
+    let single_error = runtime
+        .spawn(
+            SpawnMemberSpec::from_wire("worker".into(), "raw-single".into(), None, None, None)
+                .with_labels(forged_labels.clone()),
+        )
+        .await
+        .expect_err("single raw spawn must reject runtime-authoritative labels");
+    assert!(single_error.to_string().contains("runtime-authoritative"));
+
+    let batch_error = runtime
+        .spawn_many(vec![
+            SpawnMemberSpec::from_wire("worker".into(), "raw-batch".into(), None, None, None)
+                .with_labels(forged_labels),
+        ])
+        .await
+        .expect_err("batch raw spawn must reject runtime-authoritative labels");
+    assert!(batch_error.to_string().contains("runtime-authoritative"));
+    assert!(runtime.mob_handle().list_members().await.is_empty());
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 #[ignore]
 async fn mk002_builder_with_discovery_spawns_discovered_agents() {
     let temp_dir = tempfile::tempdir().expect("temp dir");

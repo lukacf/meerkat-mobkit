@@ -209,6 +209,9 @@ impl UnifiedRuntime {
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
         let access = self.access_controller().cloned();
+        let agent_sse_visibility_policy = visibility_policy.clone();
+        let mob_sse_visibility_policy = visibility_policy.clone();
+        let structural_sse_visibility_policy = visibility_policy.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
@@ -292,7 +295,8 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_a),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                Some(self.mob_runtime.clone()),
+                agent_sse_visibility_policy,
             ))
             .merge(mob_events_sse_router_with_access_and_priming(
                 Arc::new(move || {
@@ -301,14 +305,16 @@ impl UnifiedRuntime {
                 }),
                 Some(sse_decisions_b),
                 access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                Some(self.mob_runtime.clone()),
+                mob_sse_visibility_policy,
             ))
             .merge(mob_structural_events_sse_router_with_access_and_priming(
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
-                access.clone(),
-                access.as_ref().map(|_| self.mob_runtime.clone()),
+                access,
+                Some(self.mob_runtime.clone()),
+                structural_sse_visibility_policy,
             ))
             .layer(ConcurrencyLimitLayer::new(
                 DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,

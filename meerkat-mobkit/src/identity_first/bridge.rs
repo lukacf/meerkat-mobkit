@@ -289,6 +289,14 @@ async fn submit_internal_bridge_work(
 /// mob-level counterpart.
 #[async_trait]
 pub trait SessionBridge: Send + Sync {
+    /// Whether the lower mob plane already contains a caller-owned raw member
+    /// whose public alias collides with a durable identity. Identity restore
+    /// uses this under the shared namespace reservation before publishing or
+    /// materializing a durable owner.
+    async fn raw_member_alias_exists(&self, _alias: &str) -> Result<bool, BridgeError> {
+        Ok(false)
+    }
+
     /// Spawn a new mob member for a freshly-created identity.
     async fn create_session(
         &self,
@@ -1144,6 +1152,18 @@ fn runtime_binding_from_wire(
 
 #[async_trait]
 impl SessionBridge for MobSessionBridge {
+    async fn raw_member_alias_exists(&self, alias: &str) -> Result<bool, BridgeError> {
+        let members = self.handle.list_members_including_retiring().await;
+        let authoritative_members = self.runtime_members.read().await;
+        Ok(members.iter().any(|member| {
+            crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()) == alias
+                && !authoritative_members
+                    .values()
+                    .any(|owned| owned == member.agent_identity.as_str())
+                && crate::member_comms_id::durable_identity_label(&member.labels) != Some(alias)
+        }))
+    }
+
     fn requires_resume_snapshot(&self) -> bool {
         // MemberLaunchMode::Resume loads the durable session by id from the
         // configured Meerkat session store; this bridge never reads the

@@ -686,7 +686,7 @@ impl UnifiedRuntime {
         crate::identity_first::IdentityRuntimeError,
     > {
         match self.identity_first_context.as_ref() {
-            Some(ctx) => ctx.refresh_desired_topology().await.map(Some),
+            Some(ctx) => ctx.refresh_desired_topology_tracked().await.map(Some),
             None => Ok(None),
         }
     }

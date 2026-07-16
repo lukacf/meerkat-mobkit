@@ -787,18 +787,15 @@ impl UnifiedRuntimeBuilder {
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
             ) = if let Some(state_path) = self.persistent_state_path.as_ref() {
                 let continuity_path = state_path.join("identity_continuity.sqlite");
-                let local_store = LocalContinuityStore::open(&continuity_path).map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open identity_continuity.sqlite at {}: {e}",
-                        continuity_path.display()
-                    ))
-                })?;
-                let high_water = local_store.max_fencing_token().map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to read identity continuity fencing high-water at {}: {e}",
-                        continuity_path.display()
-                    ))
-                })?;
+                let (local_store, high_water) =
+                    LocalContinuityStore::open_with_fencing_floor(continuity_path.clone())
+                        .await
+                        .map_err(|e| {
+                            UnifiedRuntimeBuilderError::Io(format!(
+                                "failed to open identity_continuity.sqlite and read its fencing high-water at {}: {e}",
+                                continuity_path.display()
+                            ))
+                        })?;
                 (
                     Arc::new(local_store),
                     Arc::new(LocalLeaseProvider::with_floor(high_water)),

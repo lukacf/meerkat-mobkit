@@ -4,12 +4,18 @@ Tests that identity-first methods exist on MobKitRuntime and
 delegate to the correct RPC methods with correct argument shapes.
 """
 import asyncio
+import json
+import os
+import subprocess
+import sys
 import threading
 
 import pytest
 
-from meerkat_mobkit.runtime import MobKitRuntime
-from meerkat_mobkit.errors import NotConnectedError
+from meerkat_mobkit import IdentityBootstrapMode
+from meerkat_mobkit._transport import PersistentTransport
+from meerkat_mobkit.builder import MobKit
+from meerkat_mobkit.errors import NotConnectedError, RpcError
 from meerkat_mobkit.identity_first_models import (
     DispatchInput,
     IdentityBootstrapState,
@@ -17,6 +23,38 @@ from meerkat_mobkit.identity_first_models import (
     ImageBlock,
     TextBlock,
 )
+from meerkat_mobkit.runtime import MobKitRuntime
+
+
+def _write_test_gateway(tmp_path, body: str):
+    gateway = tmp_path / "test_gateway.py"
+    gateway.write_text(f"#!{sys.executable}\n{body}")
+    gateway.chmod(0o755)
+    return gateway
+
+
+def _tracking_transport_type(*, env: dict[str, str] | None = None):
+    class TrackingPersistentTransport(PersistentTransport):
+        instances: list["TrackingPersistentTransport"] = []
+
+        def __init__(self, gateway_bin: str):
+            super().__init__(gateway_bin, env=env)
+            self.spawned_process: subprocess.Popen[bytes] | None = None
+            self.reaped_processes: list[subprocess.Popen[bytes]] = []
+            TrackingPersistentTransport.instances.append(self)
+
+        def start(self) -> None:
+            super().start()
+            if self.spawned_process is None:
+                self.spawned_process = self._process
+
+        def stop(self) -> None:
+            process = self._process
+            super().stop()
+            if process is not None:
+                self.reaped_processes.append(process)
+
+    return TrackingPersistentTransport
 
 
 class FakeTransport:
@@ -189,6 +227,156 @@ class TestIdentityFirstRuntimeAPIs:
         assert stop_calls == 1
         assert bootstrap_started.is_set()
         assert rt.is_running
+
+    @pytest.mark.asyncio
+    async def test_create_reaps_gateway_when_lazy_bootstrap_has_no_roster(
+        self, tmp_path, monkeypatch
+    ):
+        gateway = _write_test_gateway(
+            tmp_path,
+            """import json
+import sys
+
+for raw_line in sys.stdin:
+    request = json.loads(raw_line)
+    params = request.get("params", {})
+    mode = params.get("runtime_options", {}).get("identity_bootstrap_mode", {})
+    invalid_lazy = (
+        mode.get("mode") == "lazy_materialize"
+        and not params.get("has_roster_provider", False)
+    )
+    if invalid_lazy:
+        response = {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": {
+                "code": -32602,
+                "message": "identity bootstrap mode requires a roster provider",
+            },
+        }
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"http_base_url": "http://127.0.0.1:1"},
+        }
+    print(json.dumps(response), flush=True)
+""",
+        )
+        tracking_transport = _tracking_transport_type()
+        monkeypatch.setattr(
+            "meerkat_mobkit.runtime.PersistentTransport", tracking_transport
+        )
+
+        with pytest.raises(RpcError) as rejected:
+            await (
+                MobKit.builder()
+                .gateway(str(gateway))
+                .identity_bootstrap_mode(IdentityBootstrapMode.lazy_materialize())
+                .build()
+            )
+
+        assert rejected.value.code == -32602
+        assert len(tracking_transport.instances) == 1
+        transport = tracking_transport.instances[0]
+        child = transport.spawned_process
+        assert child is not None
+        assert transport._process is None
+        assert transport.reaped_processes == [child]
+        assert child.poll() is not None
+
+    @pytest.mark.asyncio
+    async def test_connect_retry_waits_for_failed_provider_gateway_to_be_reaped(
+        self, tmp_path, monkeypatch
+    ):
+        gateway = _write_test_gateway(
+            tmp_path,
+            """import json
+import sys
+
+for raw_line in sys.stdin:
+    request = json.loads(raw_line)
+    callback_id = f"roster:{request['id']}"
+    callback = {
+        "jsonrpc": "2.0",
+        "id": callback_id,
+        "method": "callback/roster_provider/roster",
+        "params": {"context": {}},
+    }
+    print(json.dumps(callback), flush=True)
+    callback_response = json.loads(sys.stdin.readline())
+    if "error" in callback_response:
+        response = {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": {
+                "code": -32000,
+                "message": callback_response["error"]["message"],
+            },
+        }
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"http_base_url": "http://127.0.0.1:1"},
+        }
+    print(json.dumps(response), flush=True)
+""",
+        )
+
+        class FailOnceRoster:
+            def __init__(self):
+                self.calls = 0
+
+            async def roster(self, context):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("injected roster provider failure")
+                return []
+
+        provider = FailOnceRoster()
+        tracking_transport = _tracking_transport_type(env=dict(os.environ))
+        monkeypatch.setattr(
+            "meerkat_mobkit.runtime.PersistentTransport", tracking_transport
+        )
+        config = (
+            MobKit.builder()
+            .gateway(str(gateway))
+            .roster(provider)
+            .identity_bootstrap_mode(IdentityBootstrapMode.lazy_materialize())
+            ._config
+        )
+        runtime = MobKitRuntime(config)
+
+        with pytest.raises(RpcError, match="injected roster provider failure"):
+            await runtime.connect()
+
+        assert runtime._transport is None
+        assert not runtime.is_running
+        assert len(tracking_transport.instances) == 1
+        failed_transport = tracking_transport.instances[0]
+        failed_child = failed_transport.spawned_process
+        assert failed_child is not None
+        assert failed_transport.reaped_processes == [failed_child]
+        assert failed_child.poll() is not None
+
+        await runtime.connect()
+
+        assert runtime.is_running
+        assert provider.calls == 2
+        assert len(tracking_transport.instances) == 2
+        live_transport = tracking_transport.instances[1]
+        live_child = live_transport.spawned_process
+        assert runtime._transport is live_transport
+        assert live_child is not None
+        assert live_child.poll() is None
+        assert failed_transport.reaped_processes == [failed_child]
+
+        await runtime.shutdown()
+
+        assert runtime._transport is None
+        assert live_transport.reaped_processes == [live_child]
+        assert live_child.poll() is not None
 
 
 class TestSendMethod:

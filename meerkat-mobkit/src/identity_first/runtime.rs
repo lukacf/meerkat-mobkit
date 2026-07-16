@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
@@ -39,6 +39,7 @@ use crate::memory::records::{
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN: usize = 256;
 const BACKGROUND_WARM_CANCELLED: &str =
     "identity background warm cancelled before session installation";
 fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
@@ -97,6 +98,11 @@ pub enum IdentityRuntimeError {
         presented: CheckpointVersion,
         current: CheckpointVersion,
     },
+    StaleContinuityGeneration {
+        identity: AgentIdentity,
+        presented: ContinuityGeneration,
+        current: ContinuityGeneration,
+    },
     /// A lifecycle request named an old generated runtime alias after the
     /// durable identity had already advanced to another generation.
     StaleRuntimeAlias {
@@ -147,6 +153,14 @@ impl std::fmt::Display for IdentityRuntimeError {
                 f,
                 "stale checkpoint version for {identity}: presented {presented}, current {current}"
             ),
+            Self::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            } => write!(
+                f,
+                "stale continuity generation for {identity}: presented {presented}, current {current}"
+            ),
             Self::StaleRuntimeAlias {
                 identity,
                 requested,
@@ -187,6 +201,15 @@ impl From<ContinuityStoreError> for IdentityRuntimeError {
                 presented,
                 current,
             },
+            ContinuityStoreError::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            } => Self::StaleContinuityGeneration {
+                identity,
+                presented,
+                current,
+            },
             other => Self::Store(other),
         }
     }
@@ -203,6 +226,12 @@ pub(crate) struct IdentityEntry {
     pub state: IdentityLifecycleState,
     pub continuity: Option<ContinuityRecord>,
     pub lease: Option<LeaseEntry>,
+    /// Exact authority that a completed lower-plane transition tried and
+    /// failed to release. This is deliberately separate from `lease`: Broken
+    /// identities must not advertise or renew active authority, but repair
+    /// still needs the exact fencing token to retry the provider release
+    /// before any reacquire attempt.
+    pub pending_lease_release: Option<LeaseGrant>,
     pub checkpoint_version: CheckpointVersion,
     /// Whether a durable runtime_store is available (affects dispatch ack semantics).
     pub has_runtime_store: bool,
@@ -477,6 +506,16 @@ impl IdentityFirstRuntimeContext {
         self.runtime
             .begin_identity_bootstrap(generation, self.bootstrap_mode.clone(), roster)
             .await;
+        // Converge the physical runtime before either restore policy publishes
+        // the new roster. The restore flows only iterate desired identities;
+        // without this boundary a removed member can remain live (and leased)
+        // while the reduced bootstrap snapshot reports ready. Likewise, an
+        // already-active member must not keep running an old build after its
+        // desired spec changes.
+        if let Err(error) = self.runtime.reconcile_roster_members(roster).await {
+            self.runtime.fail_identity_bootstrap(generation, &error);
+            return Err(error);
+        }
         let result = match (&self.bootstrap_mode, optimize_startup_snapshot_load) {
             (IdentityBootstrapMode::EagerMaterialize, true) => {
                 super::orchestrator::restore_flow_for_bootstrap(
@@ -560,6 +599,20 @@ impl IdentityFirstRuntimeContext {
         };
 
         self.apply_roster_controlled(generation, &roster, false)
+            .await
+    }
+
+    /// Cancellation-safe reconcile for RPC/host request boundaries.
+    /// Dropping the caller only drops its result receiver; the runtime owns
+    /// the pass until every acquired lease and bridge mutation reaches an
+    /// explicit commit or rollback boundary.
+    pub async fn refresh_desired_topology_tracked(
+        self: &Arc<Self>,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let context = Arc::clone(self);
+        let runtime = Arc::clone(&self.runtime);
+        runtime
+            .run_tracked_foreground(async move { context.refresh_desired_topology().await })
             .await
     }
 
@@ -708,6 +761,46 @@ impl Default for ContinuityRepairPolicy {
     }
 }
 
+/// Weak keyed locks serialize claims on the shared raw/durable alias
+/// namespace without retaining every caller-chosen alias for the lifetime of
+/// the runtime. Sweeps grow geometrically while many aliases are live (as in
+/// fleet bootstrap), avoiding a full-map scan for every new roster member.
+struct RawMemberAliasLockTable {
+    entries: BTreeMap<String, Weak<Mutex<()>>>,
+    next_sweep_len: usize,
+    #[cfg(test)]
+    sweep_count: usize,
+}
+
+impl Default for RawMemberAliasLockTable {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_sweep_len: RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN,
+            #[cfg(test)]
+            sweep_count: 0,
+        }
+    }
+}
+
+impl RawMemberAliasLockTable {
+    fn sweep_if_needed(&mut self) {
+        if self.entries.len() < self.next_sweep_len {
+            return;
+        }
+        self.entries.retain(|_, lock| lock.upgrade().is_some());
+        self.next_sweep_len = self
+            .entries
+            .len()
+            .saturating_mul(2)
+            .max(RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN);
+        #[cfg(test)]
+        {
+            self.sweep_count += 1;
+        }
+    }
+}
+
 /// The identity-first runtime tracks active identities and enforces delivery,
 /// ownership, and lifecycle invariants.
 pub struct IdentityRuntime {
@@ -728,6 +821,7 @@ pub struct IdentityRuntime {
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     best_effort_materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
+    raw_member_alias_locks: RwLock<RawMemberAliasLockTable>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     agent_memory: RwLock<Option<AgentMemoryRuntimeInjector>>,
     lease_renewal_notify: Notify,
@@ -801,6 +895,7 @@ impl IdentityRuntime {
             materialization_locks: RwLock::new(BTreeMap::new()),
             best_effort_materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
+            raw_member_alias_locks: RwLock::new(RawMemberAliasLockTable::default()),
             customizer: RwLock::new(None),
             agent_memory: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
@@ -1218,6 +1313,33 @@ impl IdentityRuntime {
             };
             entry.state = IdentityBootstrapState::Warming;
             entry.error = None;
+            snapshot.refresh_aggregates();
+        });
+    }
+
+    fn mark_bootstrap_from_lifecycle(
+        &self,
+        identity: &AgentIdentity,
+        lifecycle: IdentityLifecycleState,
+        error: Option<String>,
+    ) {
+        self.modify_bootstrap_status(None, |snapshot| {
+            let Some(entry) = snapshot.identities.get_mut(identity) else {
+                return;
+            };
+            entry.state = match lifecycle {
+                IdentityLifecycleState::Active => IdentityBootstrapState::Active,
+                IdentityLifecycleState::Broken => IdentityBootstrapState::Broken,
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Retiring
+                | IdentityLifecycleState::Suspended
+                | IdentityLifecycleState::Uninitialized => IdentityBootstrapState::Dormant,
+            };
+            entry.error = if entry.state == IdentityBootstrapState::Broken {
+                error
+            } else {
+                None
+            };
             snapshot.refresh_aggregates();
         });
     }
@@ -2344,6 +2466,7 @@ impl IdentityRuntime {
             state,
             continuity,
             lease: lease_entry,
+            pending_lease_release: None,
             checkpoint_version: cpv,
             has_runtime_store: self.has_runtime_store,
         };
@@ -2360,6 +2483,7 @@ impl IdentityRuntime {
         if has_active_lease {
             self.lease_renewal_notify.notify_one();
         }
+        self.mark_bootstrap_from_lifecycle(&identity, state, None);
     }
 
     async fn materialization_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
@@ -2392,7 +2516,7 @@ impl IdentityRuntime {
             .clone()
     }
 
-    async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
+    pub(crate) async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
         if let Some(lock) = self.lifecycle_locks.read().await.get(identity) {
             return lock.clone();
         }
@@ -2401,6 +2525,58 @@ impl IdentityRuntime {
             .entry(identity.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    pub(crate) async fn raw_member_alias_lock(&self, alias: &str) -> Arc<Mutex<()>> {
+        let alias = crate::member_comms_id::runtime_alias_str(alias.trim()).into_owned();
+        if let Some(lock) = self
+            .raw_member_alias_locks
+            .read()
+            .await
+            .entries
+            .get(&alias)
+            .and_then(Weak::upgrade)
+        {
+            return lock;
+        }
+        let mut table = self.raw_member_alias_locks.write().await;
+        table.sweep_if_needed();
+        // Another caller may have installed the key after our read miss. The
+        // write-side upgrade is the authority boundary that prevents two live
+        // mutexes from serializing the same alias independently.
+        if let Some(lock) = table.entries.get(&alias).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        table.entries.insert(alias, Arc::downgrade(&lock));
+        lock
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn raw_member_alias_lock_metrics(&self) -> (usize, usize, usize) {
+        let table = self.raw_member_alias_locks.read().await;
+        (table.entries.len(), table.next_sweep_len, table.sweep_count)
+    }
+
+    pub(crate) async fn ensure_raw_member_alias_available(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        if let Some(bridge) = self.bridge.as_ref()
+            && bridge
+                .raw_member_alias_exists(identity.as_str())
+                .await
+                .map_err(|error| {
+                    IdentityRuntimeError::Internal(format!(
+                        "raw member namespace inspection for {identity}: {error}"
+                    ))
+                })?
+        {
+            return Err(IdentityRuntimeError::Internal(format!(
+                "durable identity '{identity}' collides with an existing raw member alias"
+            )));
+        }
+        Ok(())
     }
 
     /// Resolve an alias into a lifecycle-lock target. Classic members return
@@ -2676,6 +2852,73 @@ impl IdentityRuntime {
         }
     }
 
+    /// Release every durable identity grant after the lower mob plane has
+    /// quiesced. Successful release clears the in-memory authority so the
+    /// method is idempotent; failures retain the exact grants for inspection
+    /// or a subsequent retry.
+    pub(crate) async fn release_all_leases_for_shutdown(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let grants = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter_map(|(identity, entry)| {
+                entry.pending_lease_release.clone().or_else(|| {
+                    entry.lease.as_ref().map(|lease| LeaseGrant {
+                        identity: identity.clone(),
+                        fencing_token: lease.fencing_token,
+                        ttl: lease.ttl,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        if grants.is_empty() {
+            return Ok(0);
+        }
+
+        self.lease_provider
+            .release_leases(&grants)
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+
+        let mut entries = self.entries.write().await;
+        let mut lifecycle_updates = Vec::new();
+        for grant in &grants {
+            if let Some(entry) = entries.get_mut(&grant.identity) {
+                let released_active_lease = entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.fencing_token == grant.fencing_token);
+                if released_active_lease {
+                    entry.lease = None;
+                }
+                if entry
+                    .pending_lease_release
+                    .as_ref()
+                    .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+                if released_active_lease
+                    && matches!(
+                        entry.state,
+                        IdentityLifecycleState::Active | IdentityLifecycleState::Suspended
+                    )
+                {
+                    entry.state = IdentityLifecycleState::Dormant;
+                    lifecycle_updates.push(grant.identity.clone());
+                }
+            }
+        }
+        drop(entries);
+        for identity in lifecycle_updates {
+            self.mark_bootstrap_from_lifecycle(&identity, IdentityLifecycleState::Dormant, None);
+        }
+        Ok(grants.len())
+    }
+
     /// Materialize a dormant identity into a concrete mob member/session.
     ///
     /// This is the lazy counterpart to eager `restore_flow`: it performs the
@@ -2742,6 +2985,28 @@ impl IdentityRuntime {
         let identity = identity.clone();
         self.run_tracked_foreground(async move { runtime.materialize(&identity).await })
             .await
+    }
+
+    /// Cancellation-safe compatibility restore used by embedders that pass
+    /// an RPC identity context without attaching an
+    /// [`IdentityFirstRuntimeContext`] to the unified runtime.
+    pub(crate) async fn restore_flow_tracked(
+        self: &Arc<Self>,
+        roster: Vec<DurableAgentSpec>,
+        topology_provider: Option<Arc<dyn TopologyProvider>>,
+        customizer: Option<Arc<dyn AgentCustomizer>>,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        self.run_tracked_foreground(async move {
+            super::orchestrator::restore_flow(
+                runtime.as_ref(),
+                &roster,
+                topology_provider.as_deref(),
+                customizer.as_deref(),
+            )
+            .await
+        })
+        .await
     }
 
     /// Cancellation-safe retirement for RPC/host request boundaries.
@@ -3140,6 +3405,9 @@ impl IdentityRuntime {
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        let raw_alias_lock = self.raw_member_alias_lock(identity.as_str()).await;
+        let _raw_alias_guard = raw_alias_lock.lock().await;
+        self.ensure_raw_member_alias_available(identity).await?;
         if let Some(expected_alias) = expected_alias {
             self.ensure_expected_member_alias_current(identity, expected_alias)
                 .await?;
@@ -3964,6 +4232,184 @@ impl IdentityRuntime {
         Ok(())
     }
 
+    /// Retry a release that failed after a lower-plane transition had already
+    /// committed. The caller owns this identity's lifecycle lock. A failed
+    /// retry leaves the exact grant parked on the Broken entry and aborts the
+    /// reconcile before restore can reacquire or materialize.
+    async fn release_pending_broken_lease_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<bool, IdentityRuntimeError> {
+        let pending = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            if entry.state == IdentityLifecycleState::Broken {
+                entry.pending_lease_release.clone()
+            } else {
+                None
+            }
+        };
+        let Some(grant) = pending else {
+            return Ok(false);
+        };
+
+        if let Err(error) = self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await
+        {
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(format!("pending lease release retry: {error}")),
+            );
+            return Err(IdentityRuntimeError::Lease(error));
+        }
+
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        match entry.pending_lease_release.as_ref() {
+            Some(current) if current.fencing_token == grant.fencing_token => {
+                entry.pending_lease_release = None;
+            }
+            Some(current) => {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "pending lease release for {identity} changed from fencing token {} to {} under lifecycle authority",
+                    grant.fencing_token, current.fencing_token
+                )));
+            }
+            None => {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "pending lease release for {identity} disappeared under lifecycle authority"
+                )));
+            }
+        }
+        Ok(true)
+    }
+
+    /// Converge currently registered embodiments with a newly desired roster.
+    ///
+    /// Restore flows only walk the desired roster, so removal and replacement
+    /// must happen first. Each transition shares the same per-identity lock as
+    /// foreground materialization and lifecycle RPCs. A changed live spec is
+    /// deliberately retired to Dormant before the new metadata is installed;
+    /// the selected eager/background/lazy policy then decides when to rebuild
+    /// it. This prevents an Active projection from describing an old physical
+    /// member with a newly published spec.
+    async fn reconcile_roster_members(
+        &self,
+        roster: &[DurableAgentSpec],
+    ) -> Result<(), IdentityRuntimeError> {
+        Self::validate_roster_uniqueness(roster)?;
+        let desired = roster
+            .iter()
+            .map(|spec| (spec.identity.clone(), spec.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let registered = self.registered_identities().await;
+
+        for identity in registered
+            .iter()
+            .filter(|identity| !desired.contains_key(*identity))
+        {
+            let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            self.release_pending_broken_lease_locked(identity).await?;
+            let state = self
+                .entries
+                .read()
+                .await
+                .get(identity)
+                .map(|entry| entry.state);
+            let Some(state) = state else {
+                continue;
+            };
+            match state {
+                IdentityLifecycleState::Active => {
+                    self.retire_locked(identity).await?;
+                }
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Broken
+                | IdentityLifecycleState::Uninitialized => {
+                    let lease = self
+                        .entries
+                        .read()
+                        .await
+                        .get(identity)
+                        .and_then(|entry| entry.lease.as_ref())
+                        .map(|lease| LeaseGrant {
+                            identity: identity.clone(),
+                            fencing_token: lease.fencing_token,
+                            ttl: lease.ttl,
+                        });
+                    if let Some(lease) = lease {
+                        self.lease_provider
+                            .release_leases(std::slice::from_ref(&lease))
+                            .await
+                            .map_err(IdentityRuntimeError::Lease)?;
+                    }
+                }
+                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity: identity.clone(),
+                        state,
+                        operation: "reconcile_roster_remove",
+                    });
+                }
+            }
+            self.event_channels.write().await.remove(identity);
+            self.entries.write().await.remove(identity);
+        }
+
+        for (identity, desired_spec) in desired {
+            let lifecycle_lock = self.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+            // Initial bootstrap reaches this loop before lazy/eager restore has
+            // registered the desired identities. Pending-release recovery only
+            // applies to an existing lifecycle entry.
+            if !self.entries.read().await.contains_key(&identity) {
+                continue;
+            }
+            // This runs before the same-spec fast path. A failed retire may
+            // leave the desired metadata unchanged while the physical member
+            // is already gone and its exact provider grant is still held.
+            self.release_pending_broken_lease_locked(&identity).await?;
+            let current = self
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .map(|entry| (entry.spec.clone(), entry.state));
+            let Some((current_spec, state)) = current else {
+                continue;
+            };
+            if current_spec == desired_spec {
+                continue;
+            }
+            match state {
+                IdentityLifecycleState::Active => {
+                    self.retire_locked(&identity).await?;
+                }
+                IdentityLifecycleState::Dormant
+                | IdentityLifecycleState::Broken
+                | IdentityLifecycleState::Uninitialized => {}
+                IdentityLifecycleState::Retiring | IdentityLifecycleState::Suspended => {
+                    return Err(IdentityRuntimeError::InvalidState {
+                        identity,
+                        state,
+                        operation: "reconcile_roster_replace",
+                    });
+                }
+            }
+            self.update_spec(desired_spec).await?;
+        }
+
+        Ok(())
+    }
+
     /// Adopt the roster's CURRENT spec for `identity` into the in-memory entry,
     /// so a subsequent [`reset`](Self::reset) rebuilds the regenerated session
     /// on the current profile instead of carrying the stored one forward.
@@ -4221,11 +4667,15 @@ impl IdentityRuntime {
         let snapshot = entry.clone();
         entry.state = state;
         entry.lease = None;
+        drop(entries);
+        self.mark_bootstrap_materialization_started(identity, None);
         Ok(snapshot)
     }
 
     async fn restore_entry(&self, identity: &AgentIdentity, entry: IdentityEntry) {
+        let state = entry.state;
         self.entries.write().await.insert(identity.clone(), entry);
+        self.mark_bootstrap_from_lifecycle(identity, state, None);
     }
 
     /// Fail closed after the lower member plane could not complete a compound
@@ -4261,6 +4711,11 @@ impl IdentityRuntime {
                 ttl: lease.ttl,
             })
         };
+        self.mark_bootstrap_from_lifecycle(
+            identity,
+            IdentityLifecycleState::Broken,
+            Some(format!("live member respawn failed for {respawned_alias}")),
+        );
         self.emit_event(
             identity,
             IdentityEvent::StateChanged {
@@ -4375,6 +4830,11 @@ impl IdentityRuntime {
                 entry.lease = None;
             }
             drop(entries);
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(err.to_string()),
+            );
             self.emit_event(
                 identity,
                 IdentityEvent::StateChanged {
@@ -4464,6 +4924,49 @@ impl IdentityRuntime {
             .await;
     }
 
+    /// A failed reset rollback means the caller's pre-reset entry is no
+    /// longer authoritative. Re-resolve under the lifecycle transaction and
+    /// publish only the store's actual record; if the store itself cannot be
+    /// read, fail closed without continuity rather than claiming the old
+    /// generation still owns the durable row.
+    async fn restore_broken_entry_from_authoritative_continuity(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+    ) {
+        let authoritative = self
+            .continuity_store
+            .resolve_many(std::slice::from_ref(identity))
+            .await;
+        entry.continuity = match authoritative {
+            Ok(resolved) => match resolved.get(identity) {
+                Some(super::types::ContinuityResolveState::Ready { record }) => {
+                    Some(record.clone())
+                }
+                Some(super::types::ContinuityResolveState::Broken { failure }) => {
+                    failure.record.clone()
+                }
+                Some(super::types::ContinuityResolveState::Uninitialized) | None => None,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    %identity,
+                    error = %error,
+                    "failed to resolve authoritative continuity after reset rollback failure"
+                );
+                None
+            }
+        };
+        entry.checkpoint_version = entry
+            .continuity
+            .as_ref()
+            .map(|record| record.checkpoint_version)
+            .unwrap_or(CheckpointVersion::new(0));
+        self.restore_broken_entry_and_release_grant(identity, entry, grant)
+            .await;
+    }
+
     async fn mark_rebind_failure_broken(
         &self,
         identity: &AgentIdentity,
@@ -4494,25 +4997,30 @@ impl IdentityRuntime {
     async fn restore_entry_after_reset_bridge_failure(
         &self,
         identity: &AgentIdentity,
+        expected_attempt: &ContinuityRecord,
         entry: IdentityEntry,
         grant: &LeaseGrant,
         force_broken: bool,
     ) -> Option<ContinuityStoreError> {
-        let delete_error = if entry.continuity.is_none() {
-            self.continuity_store
-                .delete_continuity_record(identity, grant.fencing_token)
-                .await
-                .err()
-        } else {
-            None
-        };
-        if force_broken || delete_error.is_some() {
-            self.restore_broken_entry_with_fenced_store(identity, entry, grant)
+        let rollback_error = self
+            .continuity_store
+            .rollback_continuity_record(
+                expected_attempt,
+                entry.continuity.as_ref(),
+                grant.fencing_token,
+            )
+            .await
+            .err();
+        if rollback_error.is_some() {
+            self.restore_broken_entry_from_authoritative_continuity(identity, entry, grant)
+                .await;
+        } else if force_broken {
+            self.restore_broken_entry_and_release_grant(identity, entry, grant)
                 .await;
         } else {
             self.restore_entry_with_grant(identity, entry, grant).await;
         }
-        delete_error
+        rollback_error
     }
 
     async fn restore_continuity_after_materialize_failure(
@@ -5226,10 +5734,28 @@ impl IdentityRuntime {
             )));
         }
 
-        self.lease_provider
+        let release_result = self
+            .lease_provider
             .release_leases(std::slice::from_ref(&grant))
-            .await
-            .map_err(IdentityRuntimeError::Lease)?;
+            .await;
+        let (state, bootstrap_error) = match &release_result {
+            Ok(()) => (IdentityLifecycleState::Retiring, None),
+            Err(error) => (
+                IdentityLifecycleState::Broken,
+                Some(format!("lease release after retire: {error}")),
+            ),
+        };
+        {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry.state = state;
+            entry.lease = None;
+            entry.pending_lease_release = release_result.as_ref().err().map(|_| grant.clone());
+        }
+        self.mark_bootstrap_from_lifecycle(identity, state, bootstrap_error);
+        release_result.map_err(IdentityRuntimeError::Lease)?;
         Ok(grant.fencing_token)
     }
 
@@ -5402,6 +5928,8 @@ impl IdentityRuntime {
         });
         entry.state = IdentityLifecycleState::Active;
         entry.checkpoint_version = record.checkpoint_version;
+        drop(entries);
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
 
         Ok(record)
     }
@@ -5556,6 +6084,41 @@ impl IdentityRuntime {
             return Err(IdentityRuntimeError::Store(err));
         }
 
+        // A lower session-store save can advance the durable checkpoint head
+        // while a respawn is rebinding to a different session id. The local
+        // store preserves that same-generation maximum; read the effective
+        // row back before seeding bridge runtime state so neither the in-memory
+        // entry nor the new session counter rewinds to the stale captured
+        // version.
+        let effective = match self
+            .continuity_store
+            .resolve_many(std::slice::from_ref(identity))
+            .await
+        {
+            Ok(effective) => effective,
+            Err(error) => {
+                self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                    .await;
+                return Err(IdentityRuntimeError::Store(error));
+            }
+        };
+        match effective.get(identity) {
+            Some(super::types::ContinuityResolveState::Ready {
+                record: effective_record,
+            }) if effective_record.session_id == record.session_id
+                && effective_record.generation == record.generation =>
+            {
+                record = effective_record.clone();
+            }
+            other => {
+                self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                    .await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "rebind continuity read-back did not return the committed session/generation: {other:?}"
+                )));
+            }
+        }
+
         if let Some(bridge) = self.bridge.as_ref() {
             match bridge
                 .register_session_runtime_state(
@@ -5567,7 +6130,10 @@ impl IdentityRuntime {
                 )
                 .await
             {
-                Ok(version) => record.checkpoint_version = version,
+                Ok(version) => {
+                    record.checkpoint_version =
+                        CheckpointVersion::new(record.checkpoint_version.get().max(version.get()));
+                }
                 Err(err) => {
                     if let Err(unregister_err) = bridge
                         .unregister_session_runtime_state(&record.session_id)
@@ -5800,6 +6366,7 @@ impl IdentityRuntime {
                     .await;
                 return Err(IdentityRuntimeError::Store(err));
             }
+            let provisional_record = new_record.clone();
 
             let old_runtime_id = registered_entry
                 .continuity
@@ -5834,6 +6401,7 @@ impl IdentityRuntime {
                     let delete_error = self
                         .restore_entry_after_reset_bridge_failure(
                             identity,
+                            &provisional_record,
                             registered_entry.clone(),
                             &grant,
                             cleanup_error.is_some(),
@@ -5882,6 +6450,7 @@ impl IdentityRuntime {
                 let delete_error = self
                     .restore_entry_after_reset_bridge_failure(
                         identity,
+                        &provisional_record,
                         registered_entry.clone(),
                         &grant,
                         unregister_error.is_some() || cleanup_error.is_some(),
@@ -5940,6 +6509,7 @@ impl IdentityRuntime {
                     let delete_error = self
                         .restore_entry_after_reset_bridge_failure(
                             identity,
+                            &new_record,
                             registered_entry.clone(),
                             &grant,
                             unregister_error.is_some() || cleanup_error.is_some(),
@@ -5983,14 +6553,25 @@ impl IdentityRuntime {
                     .await
                     .err();
                 let rollback_error = self
-                    .restore_continuity_after_materialize_failure(
-                        identity,
+                    .continuity_store
+                    .rollback_continuity_record(
+                        &new_record,
                         registered_entry.continuity.as_ref(),
+                        grant.fencing_token,
+                    )
+                    .await
+                    .err();
+                if rollback_error.is_some() {
+                    self.restore_broken_entry_from_authoritative_continuity(
+                        identity,
+                        registered_entry,
                         &grant,
                     )
                     .await;
-                self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
-                    .await;
+                } else {
+                    self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                        .await;
+                }
                 if unregister_error.is_some() || cleanup_error.is_some() || rollback_error.is_some()
                 {
                     return Err(IdentityRuntimeError::Internal(format!(
@@ -6026,11 +6607,20 @@ impl IdentityRuntime {
                     .unregister_session_runtime_state(&new_record.session_id)
                     .await;
                 let _ = bridge.retire_member(&new_record.agent_runtime_id).await;
-                if registered_entry.continuity.is_none() {
-                    let _ = self
-                        .continuity_store
-                        .delete_continuity_record(identity, grant.fencing_token)
-                        .await;
+                if let Err(err) = self
+                    .continuity_store
+                    .rollback_continuity_record(
+                        &new_record,
+                        registered_entry.continuity.as_ref(),
+                        grant.fencing_token,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %identity,
+                        error = %err,
+                        "failed to roll back continuity after reset entry disappeared"
+                    );
                 }
                 if let Err(err) = self
                     .lease_provider
@@ -6112,6 +6702,7 @@ impl IdentityRuntime {
                     );
                 }
             }
+            self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
             return Ok(new_record);
         }
 
@@ -6130,6 +6721,21 @@ impl IdentityRuntime {
         let mut entries = self.entries.write().await;
         let Some(entry) = entries.get_mut(identity) else {
             drop(entries);
+            if let Err(err) = self
+                .continuity_store
+                .rollback_continuity_record(
+                    &new_record,
+                    registered_entry.continuity.as_ref(),
+                    grant.fencing_token,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to roll back continuity after reset validation entry disappeared"
+                );
+            }
             if let Err(err) = self
                 .lease_provider
                 .release_leases(std::slice::from_ref(&grant))
@@ -6162,6 +6768,7 @@ impl IdentityRuntime {
             }
         }
 
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Active, None);
         Ok(new_record)
     }
 
@@ -6331,6 +6938,10 @@ impl IdentityRuntime {
         // member and authoritative continuity row are already gone.
         self.event_channels.write().await.remove(identity);
         self.entries.write().await.remove(identity);
+        // The identity remains part of the desired bootstrap roster until a
+        // roster reconcile removes it. Deleting continuity therefore makes
+        // readiness Dormant, never silently ready via a missing runtime row.
+        self.mark_bootstrap_from_lifecycle(identity, IdentityLifecycleState::Dormant, None);
 
         release_result.map_err(IdentityRuntimeError::Lease)?;
         Ok(())
@@ -6960,6 +7571,17 @@ mod reset_reprofile_tests {
             }
             self.inner
                 .upsert_continuity_record(record, fencing_token)
+                .await
+        }
+
+        async fn rollback_continuity_record(
+            &self,
+            expected_attempt: &ContinuityRecord,
+            previous: Option<&ContinuityRecord>,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .rollback_continuity_record(expected_attempt, previous, fencing_token)
                 .await
         }
 
