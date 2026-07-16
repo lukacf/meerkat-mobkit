@@ -140,7 +140,9 @@ Unsupported nested fields fail initialization with `-32602` instead of being sil
 
     runtime = await (
         MobKit.builder()
+        .gateway("./target/debug/rpc_gateway")
         .mob("config/mob.toml")
+        .persistent_state("state/mobkit")
         .roster(roster_provider)
         .identity_bootstrap_mode(
             IdentityBootstrapMode.lazy_with_background_warm(concurrency=2)
@@ -169,6 +171,16 @@ a configured roster with no mode continues to use eager materialization.
 rather than leaving the barrier pending indefinitely. Provider or restore
 failures that apply to the whole pass are reported in the snapshot's optional
 `error` field.
+
+The stock persistent gateway also advertises a private shutdown handshake and
+its bounded `stdio_shutdown_horizon_ms` in the `mobkit/init` result. SDK hosts
+keep stdin and provider callbacks open until that handshake completes, then
+close the process. The current 310-second horizon covers an already-admitted
+provider callback, runtime event and mob drains, the final lease-release
+callback, and bounded response-delivery/reaping margin. Older and custom
+gateways that do not advertise the handshake retain the EOF shutdown protocol.
+If the gateway exhausts its runtime deadline, it reports incomplete cleanup;
+the SDK still reaps the bounded child process and then surfaces the failure.
 
 Rust hosts that dispatch JSON-RPC from an `Arc<UnifiedRuntime>` should call
 `handle_unified_rpc_json_arc` (or the corresponding `with_live_arc` entrypoint).

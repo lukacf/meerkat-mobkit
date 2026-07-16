@@ -147,6 +147,80 @@ def test_reader_drops_response_after_request_is_no_longer_pending():
     assert transport._results == {}
 
 
+def test_init_negotiates_explicit_gateway_shutdown_horizon():
+    transport = PersistentTransport("unused")
+    transport._ensure_running = lambda: None
+    transport._send_sync_running = MagicMock(
+        return_value={
+            "jsonrpc": "2.0",
+            "id": "init-horizon",
+            "result": {
+                "stdio_shutdown_handshake": True,
+                "stdio_shutdown_horizon_ms": 321_000,
+            },
+        }
+    )
+
+    transport.send_sync(
+        {
+            "jsonrpc": "2.0",
+            "id": "init-horizon",
+            "method": "mobkit/init",
+            "params": {},
+        }
+    )
+
+    assert transport._supports_shutdown_handshake is True
+    assert transport._shutdown_horizon_seconds == 321.0
+
+
+@pytest.mark.parametrize("invalid_horizon", [None, True, 0, -1, 1.5, "310000"])
+def test_init_uses_safe_shutdown_horizon_for_invalid_capability(invalid_horizon):
+    transport = PersistentTransport("unused")
+    transport._ensure_running = lambda: None
+    transport._send_sync_running = MagicMock(
+        return_value={
+            "jsonrpc": "2.0",
+            "id": "init-invalid-horizon",
+            "result": {
+                "stdio_shutdown_handshake": True,
+                "stdio_shutdown_horizon_ms": invalid_horizon,
+            },
+        }
+    )
+
+    transport.send_sync(
+        {
+            "jsonrpc": "2.0",
+            "id": "init-invalid-horizon",
+            "method": "mobkit/init",
+            "params": {},
+        }
+    )
+
+    assert transport._supports_shutdown_handshake is True
+    assert transport._shutdown_horizon_seconds == _GATEWAY_SHUTDOWN_GRACE_SECONDS
+
+
+def test_start_resets_shutdown_capabilities_for_replacement_process():
+    transport = PersistentTransport("unused")
+    transport._supports_shutdown_handshake = True
+    transport._shutdown_horizon_seconds = 321.0
+    process = MagicMock()
+    process.poll.return_value = None
+    process.stdout.readline.return_value = b""
+
+    with patch(
+        "meerkat_mobkit._transport.subprocess.Popen",
+        return_value=process,
+    ):
+        transport.start()
+
+    assert transport._supports_shutdown_handshake is False
+    assert transport._shutdown_horizon_seconds == _GATEWAY_SHUTDOWN_GRACE_SECONDS
+    transport._process = None
+
+
 def test_stop_gives_gateway_full_cleanup_budget_before_termination():
     transport = PersistentTransport("unused")
     process = MagicMock()
@@ -178,30 +252,80 @@ def test_stop_gives_gateway_full_cleanup_budget_before_termination():
     assert transport._process is None
 
 
-def test_stop_keeps_stdin_open_until_gateway_shutdown_handshake_answers():
+def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
     transport = PersistentTransport("unused")
     process = MagicMock()
     process.poll.return_value = None
     process.wait.return_value = 0
     transport._process = process
     transport._supports_shutdown_handshake = True
+    transport._shutdown_horizon_seconds = 321.0
+    gate = threading.Barrier(2)
 
     def answer_shutdown(request, *, timeout):
         process.stdin.close.assert_not_called()
         assert request["method"] == "mobkit/shutdown"
         assert request["id"].startswith("mobkit-shutdown-")
-        assert timeout == _GATEWAY_SHUTDOWN_GRACE_SECONDS
+        assert timeout == 321.0
+        gate.wait(timeout=2)
+        gate.wait(timeout=2)
         return {"jsonrpc": "2.0", "id": request["id"], "result": {"shutdown": True}}
 
     transport._send_sync_running = MagicMock(side_effect=answer_shutdown)
+    errors: list[BaseException] = []
+
+    def stop_transport():
+        try:
+            transport.stop()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
     with patch(
         "meerkat_mobkit._transport.time.monotonic",
         side_effect=[100.0, 100.0],
     ):
+        worker = threading.Thread(target=stop_transport)
+        worker.start()
+        gate.wait(timeout=2)
+        process.stdin.close.assert_not_called()
+        assert worker.is_alive(), "stop must remain gated on the callback-backed handshake"
+        gate.wait(timeout=2)
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    process.stdin.close.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=321.0)
+    assert transport._process is None
+
+
+def test_stop_propagates_incomplete_runtime_cleanup_after_reaping_gateway():
+    transport = PersistentTransport("unused")
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.return_value = 0
+    transport._process = process
+    transport._supports_shutdown_handshake = True
+    transport._shutdown_horizon_seconds = 321.0
+    transport._send_sync_running = MagicMock(
+        return_value={
+            "jsonrpc": "2.0",
+            "id": "shutdown-failed",
+            "result": {
+                "shutdown": False,
+                "runtime_cleanup_completed": False,
+            },
+        }
+    )
+
+    with patch(
+        "meerkat_mobkit._transport.time.monotonic",
+        side_effect=[100.0, 100.0],
+    ), pytest.raises(RuntimeError, match="failed after bounded cleanup"):
         transport.stop()
 
     process.stdin.close.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS)
+    process.wait.assert_called_once_with(timeout=321.0)
     assert transport._process is None
 
 

@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   commit or rollback boundary. EOF, Ctrl-C, callback closure, HTTP draining,
   and the Python/TypeScript host transports preserve that cleanup ordering
   before escalating to bounded process termination.
+- Persistent SDK shutdown now negotiates the stock gateway's explicit
+  310-second bounded horizon. The gateway keeps provider callbacks routable
+  through runtime cleanup, while Python and TypeScript retain EOF compatibility
+  for older/custom gateways and no longer preempt a valid 120-second callback.
 - Hosts embedding an `Arc<UnifiedRuntime>` can use
   `handle_unified_rpc_json_arc`; the gateway uses its live-handler counterpart
   so identity-owned cross-mob mutations remain supervised if the requesting

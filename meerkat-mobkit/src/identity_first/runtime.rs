@@ -223,6 +223,12 @@ impl From<ContinuityStoreError> for IdentityRuntimeError {
 #[derive(Debug, Clone)]
 pub(crate) struct IdentityEntry {
     pub spec: DurableAgentSpec,
+    /// Bootstrap pass that last accepted `spec` as this entry's desired
+    /// roster projection. Foreground materialization binds readiness writes
+    /// to this entry-owned generation only after acquiring the lifecycle
+    /// lock, so a pass that wins that lock cannot be mistaken for either its
+    /// predecessor or successor merely because the global status epoch moved.
+    pub bootstrap_generation: u64,
     pub state: IdentityLifecycleState,
     pub continuity: Option<ContinuityRecord>,
     pub lease: Option<LeaseEntry>,
@@ -512,7 +518,11 @@ impl IdentityFirstRuntimeContext {
         // while the reduced bootstrap snapshot reports ready. Likewise, an
         // already-active member must not keep running an old build after its
         // desired spec changes.
-        if let Err(error) = self.runtime.reconcile_roster_members(roster).await {
+        if let Err(error) = self
+            .runtime
+            .reconcile_roster_members(roster, generation)
+            .await
+        {
             self.runtime.fail_identity_bootstrap(generation, &error);
             return Err(error);
         }
@@ -2547,6 +2557,7 @@ impl IdentityRuntime {
         lease: Option<LeaseGrant>,
     ) {
         let identity = spec.identity.clone();
+        let bootstrap_generation = self.identity_bootstrap_status_with_generation().0;
         let cpv = continuity
             .as_ref()
             .map(|r| r.checkpoint_version)
@@ -2558,6 +2569,7 @@ impl IdentityRuntime {
         });
         let entry = IdentityEntry {
             spec,
+            bootstrap_generation,
             state,
             continuity,
             lease: lease_entry,
@@ -3154,20 +3166,20 @@ impl IdentityRuntime {
     where
         F: Future<Output = ()>,
     {
-        // Fence readiness bookkeeping to the bootstrap pass visible when this
-        // foreground attempt begins. `materialize_inner` releases the
-        // lifecycle lock before the outer topology follow-up and terminal
-        // status update. A newer roster reconcile can therefore retire or
-        // replace the just-materialized member in that interval; its status
-        // snapshot must not be overwritten by this older completion.
-        let bootstrap_generation = self.identity_bootstrap_status_with_generation().0;
+        // `materialize_inner` binds this attempt to the generation stored on
+        // the IdentityEntry after it acquires the lifecycle lock. Sampling the
+        // global generation here is insufficient: a newer reconcile can
+        // publish G+1 and win that lock before this future reaches the entry,
+        // in which case the materialized spec belongs to G+1, not G.
+        let mut bootstrap_generation = None;
         let mut shutdown = self.foreground_cancel.subscribe();
         let result = self
             .materialize_inner(
                 identity,
                 expected_alias,
                 Some(&mut shutdown),
-                Some(bootstrap_generation),
+                None,
+                &mut bootstrap_generation,
             )
             .await;
         after_inner.await;
@@ -3175,7 +3187,9 @@ impl IdentityRuntime {
             &result,
             Err(IdentityRuntimeError::Internal(message)) if message == BACKGROUND_WARM_CANCELLED
         ) {
-            self.mark_bootstrap_materialization_cancelled(identity, Some(bootstrap_generation));
+            if let Some(generation) = bootstrap_generation {
+                self.mark_bootstrap_materialization_cancelled(identity, Some(generation));
+            }
             return result;
         }
         // Alias validation happens under the lifecycle lock before
@@ -3201,7 +3215,9 @@ impl IdentityRuntime {
                 );
             }
         }
-        self.mark_bootstrap_materialization_finished(identity, &result, Some(bootstrap_generation));
+        if let Some(generation) = bootstrap_generation {
+            self.mark_bootstrap_materialization_finished(identity, &result, Some(generation));
+        }
         result
     }
 
@@ -3599,8 +3615,15 @@ impl IdentityRuntime {
         cancellation: &mut watch::Receiver<bool>,
         generation: u64,
     ) -> Option<Result<ContinuityRecord, IdentityRuntimeError>> {
+        let mut bound_generation = None;
         let result = self
-            .materialize_inner(identity, None, Some(cancellation), Some(generation))
+            .materialize_inner(
+                identity,
+                None,
+                Some(cancellation),
+                Some(generation),
+                &mut bound_generation,
+            )
             .await;
         if matches!(
             &result,
@@ -3630,10 +3653,28 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         mut cancellation: Option<&mut watch::Receiver<bool>>,
-        bootstrap_generation: Option<u64>,
+        expected_bootstrap_generation: Option<u64>,
+        bound_bootstrap_generation: &mut Option<u64>,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        let bootstrap_generation = {
+            let entries = self.entries.read().await;
+            entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?
+                .bootstrap_generation
+        };
+        *bound_bootstrap_generation = Some(bootstrap_generation);
+        // A background item belongs to one controller generation. If a newer
+        // roster pass converged the entry before this item acquired lifecycle
+        // authority, treat the old work as cancelled instead of materializing
+        // the newer spec on behalf of a superseded pass.
+        if expected_bootstrap_generation.is_some_and(|expected| expected != bootstrap_generation) {
+            return Err(IdentityRuntimeError::Internal(
+                BACKGROUND_WARM_CANCELLED.to_string(),
+            ));
+        }
         let raw_alias_lock = self.raw_member_alias_lock(identity.as_str()).await;
         let _raw_alias_guard = raw_alias_lock.lock().await;
         self.ensure_raw_member_alias_available(identity).await?;
@@ -3685,7 +3726,7 @@ impl IdentityRuntime {
         // only for an identity that will actually materialize. An old alias
         // can now fail without a transient or terminal mutation of the
         // replacement generation's bootstrap entry.
-        self.mark_bootstrap_materialization_started(identity, bootstrap_generation);
+        self.mark_bootstrap_materialization_started(identity, Some(bootstrap_generation));
 
         // A previous customization/installation failure can leave its exact
         // unactivated grant parked when provider cleanup itself fails. Strict
@@ -4528,6 +4569,66 @@ impl IdentityRuntime {
         Ok(true)
     }
 
+    /// Dispose the concrete member and its session-store authority retained by
+    /// a continuity-backed Broken entry. Lease loss is fail-closed at the
+    /// identity plane, but it cannot synchronously remove the lower member;
+    /// roster removal and profile replacement must do so before abandoning or
+    /// reusing the runtime alias. The real bridge treats an already-retired
+    /// member as success, and session unregister is idempotent, making retries
+    /// safe when a later exact-grant cleanup step fails.
+    ///
+    /// This deliberately does not mutate `lease` or `pending_lease_release`:
+    /// provider authority is an independent exact-token cleanup obligation.
+    async fn cleanup_broken_lower_plane_locked(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<(), IdentityRuntimeError> {
+        let continuity = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            (entry.state == IdentityLifecycleState::Broken)
+                .then(|| entry.continuity.clone())
+                .flatten()
+        };
+        let (Some(bridge), Some(record)) = (self.bridge.as_ref(), continuity) else {
+            return Ok(());
+        };
+
+        let retire_error = bridge.retire_member(&record.agent_runtime_id).await.err();
+        let unregister_error = bridge
+            .unregister_session_runtime_state(&record.session_id)
+            .await
+            .err();
+        match (retire_error, unregister_error) {
+            (None, None) => Ok(()),
+            (retire_error, unregister_error) => Err(IdentityRuntimeError::Internal(format!(
+                "cleanup Broken lower-plane state for {identity}{}{}",
+                retire_error
+                    .map(|error| format!("; retire member: {error}"))
+                    .unwrap_or_default(),
+                unregister_error
+                    .map(|error| format!("; unregister session: {error}"))
+                    .unwrap_or_default()
+            ))),
+        }
+    }
+
+    async fn accept_bootstrap_spec_locked(
+        &self,
+        spec: DurableAgentSpec,
+        generation: u64,
+    ) -> Result<(), IdentityRuntimeError> {
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(&spec.identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(spec.identity.clone()))?;
+        entry.spec = spec;
+        entry.bootstrap_generation = generation;
+        Ok(())
+    }
+
     /// Converge currently registered embodiments with a newly desired roster.
     ///
     /// Restore flows only walk the desired roster, so removal and replacement
@@ -4540,7 +4641,27 @@ impl IdentityRuntime {
     async fn reconcile_roster_members(
         &self,
         roster: &[DurableAgentSpec],
+        generation: u64,
     ) -> Result<(), IdentityRuntimeError> {
+        self.reconcile_roster_members_after_lifecycle_lock(roster, generation, |_| {
+            std::future::ready(())
+        })
+        .await
+    }
+
+    /// Internal deterministic seam used by concurrency regressions. The hook
+    /// runs with each identity's lifecycle lock held and before the entry is
+    /// inspected or mutated.
+    async fn reconcile_roster_members_after_lifecycle_lock<H, F>(
+        &self,
+        roster: &[DurableAgentSpec],
+        generation: u64,
+        mut after_lifecycle_lock: H,
+    ) -> Result<(), IdentityRuntimeError>
+    where
+        H: FnMut(&AgentIdentity) -> F,
+        F: Future<Output = ()>,
+    {
         Self::validate_roster_uniqueness(roster)?;
         let desired = roster
             .iter()
@@ -4554,6 +4675,8 @@ impl IdentityRuntime {
         {
             let lifecycle_lock = self.lifecycle_lock_for(identity).await;
             let _lifecycle_guard = lifecycle_lock.lock().await;
+            after_lifecycle_lock(identity).await;
+            self.cleanup_broken_lower_plane_locked(identity).await?;
             self.release_pending_broken_lease_locked(identity).await?;
             let state = self
                 .entries
@@ -4604,11 +4727,22 @@ impl IdentityRuntime {
         for (identity, desired_spec) in desired {
             let lifecycle_lock = self.lifecycle_lock_for(&identity).await;
             let _lifecycle_guard = lifecycle_lock.lock().await;
+            after_lifecycle_lock(&identity).await;
             // Initial bootstrap reaches this loop before lazy/eager restore has
             // registered the desired identities. Pending-release recovery only
             // applies to an existing lifecycle entry.
             if !self.entries.read().await.contains_key(&identity) {
                 continue;
+            }
+            let replacing_broken_profile = {
+                let entries = self.entries.read().await;
+                entries.get(&identity).is_some_and(|entry| {
+                    entry.state == IdentityLifecycleState::Broken
+                        && entry.spec.profile != desired_spec.profile
+                })
+            };
+            if replacing_broken_profile {
+                self.cleanup_broken_lower_plane_locked(&identity).await?;
             }
             // This runs before the same-spec fast path. A failed retire may
             // leave the desired metadata unchanged while the physical member
@@ -4624,6 +4758,8 @@ impl IdentityRuntime {
                 continue;
             };
             if current_spec == desired_spec {
+                self.accept_bootstrap_spec_locked(desired_spec, generation)
+                    .await?;
                 continue;
             }
             if matches!(
@@ -4642,7 +4778,8 @@ impl IdentityRuntime {
             // an Active member here needlessly rotates its exact grant and can
             // collide with a still-draining session during eager restore.
             if current_spec.profile == desired_spec.profile {
-                self.update_spec(desired_spec).await?;
+                self.accept_bootstrap_spec_locked(desired_spec, generation)
+                    .await?;
                 continue;
             }
             match state {
@@ -4660,7 +4797,8 @@ impl IdentityRuntime {
                     });
                 }
             }
-            self.update_spec(desired_spec).await?;
+            self.accept_bootstrap_spec_locked(desired_spec, generation)
+                .await?;
         }
 
         Ok(())
@@ -8049,7 +8187,7 @@ pub async fn wire_cross_mob_by_identity(
 mod reset_reprofile_tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 
     use super::super::bridge::{BridgeError, MemberInspection, ResumeSessionOutcome};
@@ -8063,6 +8201,57 @@ mod reset_reprofile_tests {
 
     struct MutableRoster {
         specs: AsyncRwLock<Vec<DurableAgentSpec>>,
+    }
+
+    struct LostRenewLeaseProvider {
+        inner: LocalLeaseProvider,
+        lose_renewals: AtomicBool,
+    }
+
+    impl Default for LostRenewLeaseProvider {
+        fn default() -> Self {
+            Self {
+                inner: LocalLeaseProvider::new(),
+                lose_renewals: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LeaseProvider for LostRenewLeaseProvider {
+        async fn acquire_leases(
+            &self,
+            identities: &[AgentIdentity],
+            runtime_instance: &str,
+        ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+            self.inner
+                .acquire_leases(identities, runtime_instance)
+                .await
+        }
+
+        async fn renew_leases(
+            &self,
+            grants: &[LeaseGrant],
+        ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+            if self.lose_renewals.load(Ordering::SeqCst) {
+                return Ok(grants
+                    .iter()
+                    .map(|grant| {
+                        (
+                            grant.identity.clone(),
+                            LeaseRenewResult::Lost {
+                                identity: grant.identity.clone(),
+                            },
+                        )
+                    })
+                    .collect());
+            }
+            self.inner.renew_leases(grants).await
+        }
+
+        async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+            self.inner.release_leases(grants).await
+        }
     }
 
     struct GatedResetContinuityStore {
@@ -8500,6 +8689,153 @@ mod reset_reprofile_tests {
             Err(BridgeError::Mob(
                 "inspect not used in hot-reload test".to_string(),
             ))
+        }
+    }
+
+    /// Lower-plane model for lease-loss reconciliation. Resume rejects a
+    /// duplicate concrete alias, so the tests prove Broken cleanup happens
+    /// before profile replacement rather than merely observing call counts.
+    #[derive(Default)]
+    struct LostCleanupBridge {
+        members: AsyncMutex<BTreeSet<String>>,
+        session_runtime_states: AsyncMutex<BTreeSet<String>>,
+        retire_calls: AtomicUsize,
+        unregister_calls: AtomicUsize,
+        resume_collisions: AtomicUsize,
+    }
+
+    impl LostCleanupBridge {
+        async fn member_count(&self) -> usize {
+            self.members.lock().await.len()
+        }
+
+        async fn session_runtime_state_count(&self) -> usize {
+            self.session_runtime_states.lock().await.len()
+        }
+    }
+
+    async fn force_renewal_lost(
+        runtime: &IdentityRuntime,
+        lease_provider: &LostRenewLeaseProvider,
+        identity: &AgentIdentity,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        lease_provider.lose_renewals.store(true, Ordering::SeqCst);
+        {
+            let mut entries = runtime.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or("identity disappeared before forced renewal")?;
+            let lease = entry
+                .lease
+                .as_mut()
+                .ok_or("active identity has no lease before forced renewal")?;
+            lease.ttl = Duration::ZERO;
+        }
+        assert!(matches!(
+            runtime.renew_due_leases_once().await,
+            Err(IdentityRuntimeError::LeaseLost(lost)) if lost == *identity
+        ));
+        Ok(())
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for LostCleanupBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+        ) -> Result<SessionId, BridgeError> {
+            if !self.members.lock().await.insert(runtime_id.to_string()) {
+                return Err(BridgeError::Mob(format!(
+                    "member collision for {runtime_id}"
+                )));
+            }
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            if !self.members.lock().await.insert(runtime_id.to_string()) {
+                self.resume_collisions.fetch_add(1, Ordering::SeqCst);
+                return Err(BridgeError::Mob(format!(
+                    "member collision for {runtime_id}"
+                )));
+            }
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<SessionId, BridgeError> {
+            Err(BridgeError::Mob(
+                "deliver not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob(
+                "checkpoint not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            self.retire_calls.fetch_add(1, Ordering::SeqCst);
+            self.members.lock().await.remove(runtime_id.as_str());
+            Ok(())
+        }
+
+        async fn inspect_member(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+        ) -> Result<MemberInspection, BridgeError> {
+            Err(BridgeError::Mob(
+                "inspect not used in lost cleanup test".to_string(),
+            ))
+        }
+
+        async fn register_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+            _identity: &AgentIdentity,
+            _generation: ContinuityGeneration,
+            checkpoint_version: CheckpointVersion,
+            _fencing_token: FencingToken,
+        ) -> Result<CheckpointVersion, BridgeError> {
+            self.session_runtime_states
+                .lock()
+                .await
+                .insert(session_id.to_string());
+            Ok(checkpoint_version)
+        }
+
+        async fn unregister_session_runtime_state(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), BridgeError> {
+            self.unregister_calls.fetch_add(1, Ordering::SeqCst);
+            self.session_runtime_states
+                .lock()
+                .await
+                .remove(&session_id.to_string());
+            Ok(())
         }
     }
 
@@ -9576,6 +9912,124 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
+    async fn lease_lost_then_roster_remove_cleans_lower_plane_before_dropping_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:lost-remove")?;
+        let spec = durable_spec(identity.clone(), "personal");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let bridge = Arc::new(LostCleanupBridge::default());
+        let lease_provider = Arc::new(LostRenewLeaseProvider::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "lost-remove-cleanup".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::EagerMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&spec))
+            .await?;
+        assert_eq!(bridge.member_count().await, 1);
+        assert_eq!(bridge.session_runtime_state_count().await, 1);
+
+        force_renewal_lost(&runtime, &lease_provider, &identity).await?;
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Broken
+        );
+        assert_eq!(bridge.member_count().await, 1);
+        let unregisters_after_lost = bridge.unregister_calls.load(Ordering::SeqCst);
+
+        roster.set(Vec::new()).await;
+        context.refresh_desired_topology().await?;
+        assert!(!runtime.contains(&identity).await);
+        assert_eq!(
+            bridge.member_count().await,
+            0,
+            "stale member survived removal"
+        );
+        assert_eq!(
+            bridge.session_runtime_state_count().await,
+            0,
+            "stale session authority survived removal"
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bridge.unregister_calls.load(Ordering::SeqCst),
+            unregisters_after_lost + 1,
+            "roster removal must idempotently unregister after Lost"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_lost_then_profile_replace_cleans_old_member_before_resume()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("identity:lost-replace")?;
+        let original = durable_spec(identity.clone(), "personal-v1");
+        let roster = Arc::new(MutableRoster::new(vec![original.clone()]));
+        let bridge = Arc::new(LostCleanupBridge::default());
+        let lease_provider = Arc::new(LostRenewLeaseProvider::default());
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: lease_provider.clone(),
+            runtime_instance_id: "lost-replace-cleanup".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge.clone()),
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster.clone(),
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::EagerMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&original))
+            .await?;
+        force_renewal_lost(&runtime, &lease_provider, &identity).await?;
+        let unregisters_after_lost = bridge.unregister_calls.load(Ordering::SeqCst);
+
+        let replacement = durable_spec(identity.clone(), "personal-v2");
+        roster.set(vec![replacement]).await;
+        context.refresh_desired_topology().await?;
+
+        let status = runtime.status(&identity).await?;
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(
+            status.profile.as_ref().map(ToString::to_string).as_deref(),
+            Some("personal-v2")
+        );
+        assert_eq!(bridge.retire_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bridge.unregister_calls.load(Ordering::SeqCst),
+            unregisters_after_lost + 1,
+            "profile replacement must idempotently unregister before resume"
+        );
+        assert_eq!(
+            bridge.resume_collisions.load(Ordering::SeqCst),
+            0,
+            "replacement encountered the stale lower-plane alias"
+        );
+        assert_eq!(bridge.member_count().await, 1);
+        assert_eq!(bridge.session_runtime_state_count().await, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn foreground_materialization_completion_cannot_overwrite_newer_lazy_reconcile_status()
     -> Result<(), Box<dyn std::error::Error>> {
         let identity = AgentIdentity::parse("domain:foreground-generation")?;
@@ -9674,6 +10128,110 @@ mod reset_reprofile_tests {
         assert_ne!(
             runtime.identity_bootstrap_status_with_generation().0,
             v1_generation
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_materialization_uses_generation_of_reconcile_that_wins_lifecycle_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:foreground-reconcile-first")?;
+        let spec = durable_spec(identity.clone(), "domain");
+        let roster = Arc::new(MutableRoster::new(vec![spec.clone()]));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "foreground-reconcile-first".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+        let context = IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            runtime.clone(),
+            roster,
+            None,
+            None,
+            None,
+            IdentityBootstrapMode::LazyMaterialize,
+        );
+        context
+            .bootstrap_roster(std::slice::from_ref(&spec))
+            .await?;
+        let first_generation = runtime.identity_bootstrap_status_with_generation().0;
+
+        // Publish G+1 with an unchanged desired spec, then pause its reconcile
+        // while it owns the lifecycle lock. This is the ordering that a
+        // pre-lock global generation sample gets wrong: materialization starts
+        // during G+1 and must operate on the G+1-stamped entry, even though the
+        // entry itself was originally registered by G.
+        let next_generation =
+            runtime.begin_identity_bootstrap_pending(IdentityBootstrapMode::LazyMaterialize);
+        assert_ne!(next_generation, first_generation);
+        runtime
+            .begin_identity_bootstrap(
+                next_generation,
+                IdentityBootstrapMode::LazyMaterialize,
+                std::slice::from_ref(&spec),
+            )
+            .await;
+
+        let reconcile_holds_lock = Arc::new(Notify::new());
+        let release_reconcile = Arc::new(Notify::new());
+        let paused = Arc::new(AtomicBool::new(false));
+        let reconcile = tokio::spawn({
+            let runtime = runtime.clone();
+            let spec = spec.clone();
+            let reconcile_holds_lock = reconcile_holds_lock.clone();
+            let release_reconcile = release_reconcile.clone();
+            let paused = paused.clone();
+            async move {
+                runtime
+                    .reconcile_roster_members_after_lifecycle_lock(
+                        std::slice::from_ref(&spec),
+                        next_generation,
+                        move |_| {
+                            let should_pause = !paused.swap(true, Ordering::SeqCst);
+                            let reconcile_holds_lock = reconcile_holds_lock.clone();
+                            let release_reconcile = release_reconcile.clone();
+                            async move {
+                                if should_pause {
+                                    reconcile_holds_lock.notify_one();
+                                    release_reconcile.notified().await;
+                                }
+                            }
+                        },
+                    )
+                    .await
+            }
+        });
+        reconcile_holds_lock.notified().await;
+
+        let materialize = tokio::spawn({
+            let runtime = runtime.clone();
+            let identity = identity.clone();
+            async move { runtime.materialize(&identity).await }
+        });
+        // Poll the spawned future until it queues behind the lifecycle owner.
+        tokio::task::yield_now().await;
+        release_reconcile.notify_one();
+        reconcile.await??;
+        materialize.await??;
+
+        let (published_generation, status) = runtime.identity_bootstrap_status_with_generation();
+        assert_eq!(published_generation, next_generation);
+        assert_eq!(
+            status.identities.get(&identity).map(|entry| entry.state),
+            Some(IdentityBootstrapState::Active),
+            "G+1 materialization completion was misbound to the older pass"
+        );
+        let entries = runtime.entries.read().await;
+        assert_eq!(
+            entries
+                .get(&identity)
+                .map(|entry| entry.bootstrap_generation),
+            Some(next_generation),
+            "unchanged roster acceptance must still stamp the new generation"
         );
         Ok(())
     }

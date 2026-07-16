@@ -4,11 +4,11 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
-- Persistent gateway shutdown now closes stdin and gives runtime-owned
-  identity cleanup its full graceful-drain budget before escalating to process
-  termination, preventing host teardown from interrupting lease release or
-  continuity persistence. The blocking child-process wait runs off the asyncio
-  event loop.
+- Persistent gateway shutdown now negotiates an explicit bounded horizon and
+  keeps stdin/provider callbacks open until the gateway acknowledges runtime
+  cleanup. The stock 310-second horizon covers valid 120-second provider
+  callbacks; older/custom gateways retain the EOF protocol, and blocking
+  child-process waits remain off the asyncio event loop.
 - Failed gateway bootstrap now detaches and reaps its child process before a
   reconnect can start a replacement, including provider callback failures and
   cancellation while cleanup is in progress.

@@ -72,14 +72,19 @@ export type FetchLike = (
 /**
  * Grace period for the persistent gateway to finish its own shutdown.
  *
- * The gateway can spend up to 50 seconds draining request handlers, HTTP
- * handlers, runtime work, and mob quiescence. Keep the SDK grace above that
- * complete cleanup budget so closing the transport does not cut it short.
+ * Stock gateways bound their complete shutdown path to 300 seconds: two
+ * five-second admission drains, a 285-second runtime cleanup window (long
+ * enough for an admitted 120-second provider callback and the final
+ * 120-second lease-release callback), and a five-second stdout drain. The
+ * advertised 310-second horizon adds response-delivery/process-reap margin
+ * and is the safe fallback for handshake-capable gateways without the newer
+ * explicit capability.
  */
-export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 60_000;
+export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 310_000;
 
 const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
 const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
+const MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647;
 const GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown";
 
 type ChildExitWaiter = (
@@ -113,6 +118,28 @@ function sanitizeForJson(obj: unknown): unknown {
 
 function childHasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
+}
+
+function validateGatewayShutdownResponse(response: unknown): void {
+  if (typeof response !== "object" || response === null) {
+    throw new Error("gateway shutdown returned a malformed response");
+  }
+  const envelope = response as Record<string, unknown>;
+  if (typeof envelope.error === "object" && envelope.error !== null) {
+    const message = String(
+      (envelope.error as Record<string, unknown>).message ?? "unknown gateway error",
+    );
+    throw new Error(`gateway shutdown failed: ${message}`);
+  }
+  const result = envelope.result;
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    (result as Record<string, unknown>).shutdown !== true ||
+    (result as Record<string, unknown>).runtime_cleanup_completed === false
+  ) {
+    throw new Error("gateway shutdown did not complete runtime-owned cleanup");
+  }
 }
 
 async function waitForChildExit(
@@ -204,6 +231,7 @@ export class PersistentTransport {
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
   private _supportsShutdownHandshake = false;
+  private _shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
   private readonly _pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -232,6 +260,7 @@ export class PersistentTransport {
     // Capabilities are process-scoped and must be renegotiated on init after
     // a child restart.
     this._supportsShutdownHandshake = false;
+    this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
     this._process = spawn(this.gatewayBin, ["--persistent"], {
       env: this._env,
       stdio: ["pipe", "pipe", "ignore"],
@@ -331,6 +360,18 @@ export class PersistentTransport {
         typeof result === "object" &&
         result !== null &&
         (result as Record<string, unknown>).stdio_shutdown_handshake === true;
+      this._shutdownHorizonMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS;
+      if (this._supportsShutdownHandshake) {
+        const horizonMs = (result as Record<string, unknown>).stdio_shutdown_horizon_ms;
+        if (
+          typeof horizonMs === "number" &&
+          Number.isSafeInteger(horizonMs) &&
+          horizonMs > 0 &&
+          horizonMs <= MAX_GATEWAY_SHUTDOWN_HORIZON_MS
+        ) {
+          this._shutdownHorizonMs = horizonMs;
+        }
+      }
     }
     return response;
   }
@@ -383,32 +424,39 @@ export class PersistentTransport {
     const shutdownStarted = performance.now();
     let stopping: Promise<void>;
     stopping = (async () => {
+      let shutdownError: Error | null = null;
       try {
         // Keep stdin open while the gateway shuts its runtime down: external
         // lease/continuity providers may still need callback round-trips.
         // Capability negotiation keeps older/custom gateways on their EOF
         // protocol instead of assuming method-not-found behavior.
         if (this._supportsShutdownHandshake) {
-          await this._sendAsyncWithTimeout(
+          const response = await this._sendAsyncWithTimeout(
             {
               jsonrpc: "2.0",
               id: `mobkit-shutdown-${randomUUID()}`,
               method: GATEWAY_SHUTDOWN_METHOD,
               params: {},
             },
-            PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS,
+            this._shutdownHorizonMs,
             child,
           );
+          validateGatewayShutdownResponse(response);
         }
-      } catch {
-        // Broken/older gateways still receive the bounded EOF/signal path.
+      } catch (error) {
+        shutdownError = error instanceof Error ? error : new Error(String(error));
       }
       const elapsedMs = performance.now() - shutdownStarted;
       const remainingGraceMs = Math.max(
         0,
-        PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS - elapsedMs,
+        this._shutdownHorizonMs - elapsedMs,
       );
       await stopChildProcess(child, waitForChildExit, remainingGraceMs);
+      if (shutdownError !== null) {
+        throw new Error(
+          `persistent transport: gateway shutdown failed after bounded cleanup: ${shutdownError.message}`,
+        );
+      }
     })().finally(() => {
       if (this._process === child) this._process = null;
       if (this._stopping === stopping) this._stopping = null;

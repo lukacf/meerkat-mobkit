@@ -14,12 +14,15 @@ from uuid import uuid4
 
 _log = logging.getLogger("meerkat_mobkit")
 
-# The gateway closes two outer request surfaces (5 seconds each), drains the
-# runtime event pipeline (30 seconds by default), and may spend up to 10 seconds
-# quiescing the mob actor before it has completed runtime-owned cleanup.  Keep
-# the host process alive beyond that 50-second budget so closing stdin remains
-# a graceful shutdown request rather than an almost-immediate SIGKILL.
-_GATEWAY_SHUTDOWN_GRACE_SECONDS = 60.0
+# Stock gateways bound their complete shutdown path to 300 seconds: two
+# five-second admission drains, a 285-second runtime cleanup window (long
+# enough for an admitted 120-second provider callback and the final
+# 120-second lease-release callback), and a five-second stdout drain. The
+# advertised 310-second horizon adds response-delivery/process-reap margin.
+# It is also the safe fallback for handshake-capable custom gateways which do
+# not yet advertise an explicit horizon.
+_GATEWAY_SHUTDOWN_GRACE_SECONDS = 310.0
+_MAX_GATEWAY_SHUTDOWN_HORIZON_MS = 2_147_483_647
 _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
 _GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown"
@@ -74,6 +77,7 @@ class PersistentTransport:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stderr_file = None
         self._supports_shutdown_handshake = False
+        self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
@@ -89,6 +93,7 @@ class PersistentTransport:
         # Transport capabilities belong to one gateway process. A restarted
         # child must negotiate them again through mobkit/init.
         self._supports_shutdown_handshake = False
+        self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
         # Capture event loop for async callback dispatch
         try:
             self._loop = asyncio.get_running_loop()
@@ -232,6 +237,15 @@ class PersistentTransport:
                 isinstance(result, dict)
                 and result.get("stdio_shutdown_handshake") is True
             )
+            self._shutdown_horizon_seconds = _GATEWAY_SHUTDOWN_GRACE_SECONDS
+            if self._supports_shutdown_handshake and isinstance(result, dict):
+                horizon_ms = result.get("stdio_shutdown_horizon_ms")
+                if (
+                    isinstance(horizon_ms, int)
+                    and not isinstance(horizon_ms, bool)
+                    and 0 < horizon_ms <= _MAX_GATEWAY_SHUTDOWN_HORIZON_MS
+                ):
+                    self._shutdown_horizon_seconds = horizon_ms / 1000.0
         return response
 
     def _send_sync_running(
@@ -299,8 +313,8 @@ class PersistentTransport:
     ) -> None:
         """Wait for runtime cleanup while the current child's stdin stays open."""
         if self._process is not process or process.poll() is not None:
-            return
-        self._send_sync_running(
+            raise RuntimeError("gateway exited before shutdown handshake")
+        response = self._send_sync_running(
             {
                 "jsonrpc": "2.0",
                 "id": f"mobkit-shutdown-{uuid4()}",
@@ -309,6 +323,21 @@ class PersistentTransport:
             },
             timeout=timeout,
         )
+        if not isinstance(response, dict):
+            raise RuntimeError("gateway shutdown returned a malformed response")
+        error = response.get("error")
+        if isinstance(error, dict):
+            message = error.get("message", "unknown gateway error")
+            raise RuntimeError(f"gateway shutdown failed: {message}")
+        result = response.get("result")
+        if (
+            not isinstance(result, dict)
+            or result.get("shutdown") is not True
+            or result.get("runtime_cleanup_completed") is False
+        ):
+            raise RuntimeError(
+                "gateway shutdown did not complete runtime-owned cleanup"
+            )
 
     async def send_async(
         self,
@@ -322,6 +351,12 @@ class PersistentTransport:
         process = getattr(self, "_process", None)
         if process is None:
             return
+        shutdown_horizon = getattr(
+            self,
+            "_shutdown_horizon_seconds",
+            _GATEWAY_SHUTDOWN_GRACE_SECONDS,
+        )
+        shutdown_error: Exception | None = None
         shutdown_started = time.monotonic()
         try:
             # The gateway may need to round-trip lease/continuity provider
@@ -332,13 +367,14 @@ class PersistentTransport:
                 try:
                     self._request_gateway_shutdown(
                         process,
-                        timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS,
+                        timeout=shutdown_horizon,
                     )
                 except Exception as exc:
                     _log.debug("gateway shutdown handshake failed: %s", exc)
+                    shutdown_error = exc
 
             elapsed = time.monotonic() - shutdown_started
-            remaining_grace = max(0.0, _GATEWAY_SHUTDOWN_GRACE_SECONDS - elapsed)
+            remaining_grace = max(0.0, shutdown_horizon - elapsed)
             if process.stdin:
                 try:
                     process.stdin.close()
@@ -376,6 +412,10 @@ class PersistentTransport:
             if stderr_file is not None:
                 stderr_file.close()
                 self._stderr_file = None
+        if shutdown_error is not None:
+            raise RuntimeError(
+                "persistent transport: gateway shutdown failed after bounded cleanup"
+            ) from shutdown_error
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -385,7 +425,12 @@ class PersistentTransport:
             self.start()
 
     def __del__(self) -> None:
-        self.stop()
+        try:
+            self.stop()
+        except Exception:
+            # Explicit shutdown surfaces handshake failures. Destructors run
+            # outside a caller-owned error channel and must stay best effort.
+            pass
 
 
 def create_persistent_transport(gateway_bin: str, **kwargs: Any) -> PersistentTransport:

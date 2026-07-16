@@ -11,9 +11,10 @@
 ### Graceful gateway shutdown
 
 - `MobKitRuntime.shutdown()` now closes the persistent gateway's stdin and
-  awaits its runtime cleanup. It allows a 60-second graceful drain before a
-  bounded `SIGTERM` / `SIGKILL` fallback, preventing SDK shutdown from cutting
-  short session persistence or lease cleanup.
+  awaits its runtime cleanup. Handshake-capable gateways advertise a bounded
+  shutdown horizon (310 seconds for the stock gateway), keeping provider
+  callbacks routable for their full 120-second timeout before the bounded
+  `SIGTERM` / `SIGKILL` fallback. Older/custom gateways retain the EOF protocol.
 
 ### Identity-first agent memory
 

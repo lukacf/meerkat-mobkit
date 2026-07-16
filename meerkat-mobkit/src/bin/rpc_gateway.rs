@@ -1931,6 +1931,35 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn advertised_shutdown_horizon_covers_every_bounded_gateway_phase() {
+        let gateway_phase_budget = GATEWAY_RPC_DRAIN_TIMEOUT
+            + GATEWAY_HTTP_DRAIN_TIMEOUT
+            + GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
+            + GATEWAY_STDOUT_DRAIN_TIMEOUT;
+        assert_eq!(gateway_phase_budget, Duration::from_mins(5));
+        assert_eq!(
+            Duration::from_millis(GATEWAY_SHUTDOWN_HORIZON_MS).saturating_sub(gateway_phase_budget),
+            Duration::from_secs(10),
+            "advertised horizon must leave response/reaping margin"
+        );
+        assert!(
+            GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT
+                >= PROVIDER_CALLBACK_TIMEOUT
+                    + PROVIDER_CALLBACK_TIMEOUT
+                    + GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT
+                    + Duration::from_secs(15),
+            "runtime budget must cover admitted + release callbacks and runtime drains"
+        );
+
+        let timed_out = gateway_shutdown_response(json!("shutdown"), true);
+        assert_eq!(timed_out["result"]["shutdown"], false);
+        assert_eq!(timed_out["result"]["runtime_cleanup_completed"], false);
+        let completed = gateway_shutdown_response(json!("shutdown"), false);
+        assert_eq!(completed["result"]["shutdown"], true);
+        assert_eq!(completed["result"]["runtime_cleanup_completed"], true);
+    }
+
+    #[test]
     fn gateway_explicit_identity_bootstrap_mode_always_requires_roster() {
         use meerkat_mobkit::IdentityBootstrapMode;
 
@@ -3300,6 +3329,24 @@ struct StdioCallbackState {
 
 const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
 
+// Shutdown is negotiated with SDK hosts because the callback bridge must stay
+// open while identity-owned cleanup runs. The runtime budget deliberately
+// covers two complete callback windows: one for an already-admitted identity
+// operation which shutdown must join, and one for the final batched lease
+// release. The remaining 45 seconds cover the runtime's 30-second event
+// drain, 10-second mob quiesce window, and scheduler overhead.
+const PROVIDER_CALLBACK_TIMEOUT: Duration = Duration::from_mins(2);
+const GATEWAY_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+const GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(285);
+const GATEWAY_STDOUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+// The bounded gateway phases total at most 300 seconds (5 + 5 + 285 + 5).
+// Advertise another 10 seconds for response delivery and process reaping so
+// an SDK never races the gateway's own deadline and preempts a valid callback.
+const GATEWAY_SHUTDOWN_HORIZON_MS: u64 = 310_000;
+
 #[derive(Debug)]
 struct GatewayShutdownRequest {
     response_id: Value,
@@ -3314,6 +3361,20 @@ fn gateway_shutdown_request(message: &Value) -> Option<GatewayShutdownRequest> {
     // (including provider callbacks) is complete.
     Some(GatewayShutdownRequest {
         response_id: message.get("id")?.clone(),
+    })
+}
+
+fn gateway_shutdown_response(response_id: Value, runtime_shutdown_timed_out: bool) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": response_id,
+        "result": {
+            // A runtime deadline is process-bounded, not successful authority
+            // cleanup. SDKs validate this field and surface the failure only
+            // after reaping the gateway.
+            "shutdown": !runtime_shutdown_timed_out,
+            "runtime_cleanup_completed": !runtime_shutdown_timed_out
+        }
     })
 }
 
@@ -3389,7 +3450,7 @@ impl StdioCallbackBridge {
         }
 
         // Wait for Python to respond (routed by the stdin multiplexer)
-        match tokio::time::timeout(Duration::from_mins(2), rx).await {
+        match tokio::time::timeout(PROVIDER_CALLBACK_TIMEOUT, rx).await {
             Ok(Ok(value)) => {
                 if let Some(error) = value.get("error") {
                     Err(format!(
@@ -4682,7 +4743,7 @@ external_addressable = true
         mob_spec
     };
 
-    let timeout = Duration::from_secs(30);
+    let timeout = GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT;
     let persistent_metadata: Arc<dyn PersistentMetadataStore> =
         if let Some(state_path) = persistent_state.as_ref() {
             let metadata_path = state_path.join("mobkit_metadata.sqlite");
@@ -5574,6 +5635,9 @@ external_addressable = true
             // the shutdown control method to older/custom gateways that may
             // not implement normal JSON-RPC method-not-found semantics.
             "stdio_shutdown_handshake": true,
+            // Complete, bounded host wait for the private shutdown request.
+            // SDKs keep callback admission and stdin alive for this horizon.
+            "stdio_shutdown_horizon_ms": GATEWAY_SHUTDOWN_HORIZON_MS,
         }
     });
     let _ = stdout_tx
@@ -5654,7 +5718,7 @@ external_addressable = true
         // are independently owned by the runtime foreground supervisor and
         // are cancelled or joined below at their explicit cleanup boundary.
         let drain = async { while inflight.join_next().await.is_some() {} };
-        if tokio::time::timeout(Duration::from_secs(5), drain)
+        if tokio::time::timeout(GATEWAY_RPC_DRAIN_TIMEOUT, drain)
             .await
             .is_err()
         {
@@ -5672,7 +5736,7 @@ external_addressable = true
         stdin_reader.abort();
     }
     let _ = shutdown_tx.send(true);
-    if tokio::time::timeout(Duration::from_secs(5), &mut serve_task)
+    if tokio::time::timeout(GATEWAY_HTTP_DRAIN_TIMEOUT, &mut serve_task)
         .await
         .is_err()
     {
@@ -5680,14 +5744,19 @@ external_addressable = true
         let _ = serve_task.await;
     }
     event_drain_task.abort();
-    runtime.shutdown().await;
+    let runtime_shutdown_timed_out =
+        tokio::time::timeout(GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown())
+            .await
+            .is_err();
+    if runtime_shutdown_timed_out {
+        tracing::warn!(
+            timeout_ms = GATEWAY_RUNTIME_SHUTDOWN_TIMEOUT.as_millis(),
+            "gateway runtime shutdown exceeded its bounded horizon"
+        );
+    }
     bridge.close().await;
     if let Some(request) = gateway_shutdown {
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": request.response_id,
-            "result": { "shutdown": true }
-        });
+        let response = gateway_shutdown_response(request.response_id, runtime_shutdown_timed_out);
         if let Ok(line) = serde_json::to_string(&response) {
             let _ = stdout_tx.send(line).await;
         }
@@ -5703,7 +5772,7 @@ external_addressable = true
     // ownership to disappear.
     let _ = stdout_shutdown_tx.send(());
     let _ = stdin_reader.await;
-    if tokio::time::timeout(Duration::from_secs(5), &mut stdout_writer)
+    if tokio::time::timeout(GATEWAY_STDOUT_DRAIN_TIMEOUT, &mut stdout_writer)
         .await
         .is_err()
     {
