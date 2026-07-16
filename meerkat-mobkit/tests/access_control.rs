@@ -799,7 +799,23 @@ async fn structural_sse_replay_fails_closed_when_historical_agent_attributes_are
     );
     runtime.set_access_controller(controller);
     let app = runtime.build_reference_app_router(decision_state(false));
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({ "after_seq": after_seq, "identity": identity }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        assert!(
+            page["result"]["events"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "cold historical attributes must fail closed in {method}: {page:#?}"
+        );
+    }
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -833,7 +849,23 @@ async fn structural_sse_replay_fails_closed_without_live_visibility_projection()
         decision_state(false),
         Arc::new(HideHistoricalSecret),
     );
+    for method in ["mobkit/mob_events/query", "mobkit/mob_events/subscribe"] {
+        let page = rpc(
+            &app,
+            method,
+            json!({ "after_seq": after_seq, "identity": identity }),
+        )
+        .await;
+        assert_eq!(page["error"], Value::Null, "{method}: {page:#?}");
+        assert!(
+            page["result"]["events"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "missing live visibility projection must fail closed in {method}: {page:#?}"
+        );
+    }
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")

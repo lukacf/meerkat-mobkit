@@ -146,9 +146,13 @@ pub struct UnifiedRuntime {
     /// permanently capture `None`.
     implicit_delegate_identity_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
-    identity_lease_renewal_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    identity_lease_renewal_task:
+        tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedLeaseRenewalTask>>,
     identity_continuity_repair_task:
         tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedContinuityRepairTask>>,
+    agent_memory_observer_task:
+        tokio::sync::Mutex<Option<crate::memory::taint::TaintObserverGuard>>,
+    agent_memory_steward_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -283,6 +287,8 @@ impl UnifiedRuntime {
             implicit_delegate_identity_runtime: Arc::new(std::sync::RwLock::new(None)),
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
+            agent_memory_observer_task: tokio::sync::Mutex::new(None),
+            agent_memory_steward_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,
@@ -653,13 +659,14 @@ impl UnifiedRuntime {
         // installation below. Active callback/local-provider leases need the
         // same proactive renewal regardless of which construction path is
         // used.
-        let lease_task = context.runtime.clone().spawn_lease_renewal_task();
+        let lease_task = context.runtime.clone().spawn_tracked_lease_renewal_task();
         if let Some(previous) = self
             .identity_lease_renewal_task
             .get_mut()
             .replace(lease_task)
         {
-            previous.abort();
+            previous.cancel();
+            tokio::spawn(previous.cancel_and_join());
         }
         // Broken identities must self-heal: a rejected resume parks the
         // identity "pending reconcile retry", and this task is what runs

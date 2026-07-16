@@ -179,6 +179,84 @@ struct CountingContinuityStore {
     load_snapshot_calls: AtomicUsize,
 }
 
+struct TransientBrokenContinuityStore {
+    broken: AtomicBool,
+}
+
+impl TransientBrokenContinuityStore {
+    fn new_broken() -> Self {
+        Self {
+            broken: AtomicBool::new(true),
+        }
+    }
+
+    fn recover(&self) {
+        self.broken.store(false, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for TransientBrokenContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                let state = if self.broken.load(Ordering::SeqCst) {
+                    ContinuityResolveState::Broken {
+                        failure: ContinuityFailure {
+                            identity: identity.clone(),
+                            kind: ContinuityFailureKind::StoreUnavailable,
+                            record: None,
+                            detail: "transient store outage".to_string(),
+                        },
+                    }
+                } else {
+                    ContinuityResolveState::Uninitialized
+                };
+                (identity.clone(), state)
+            })
+            .collect())
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        Ok(None)
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        _identity: &AgentIdentity,
+        _session_id: &meerkat_core::types::SessionId,
+        _generation: ContinuityGeneration,
+        _version: CheckpointVersion,
+        _fencing_token: FencingToken,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        _record: &ContinuityRecord,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        _identity: &AgentIdentity,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct MissingLeaseProvider;
 
@@ -6430,6 +6508,120 @@ async fn identity_first_runtime_restore_flow_releases_leases_on_customizer_failu
         ),
         "customizer failure must release the acquired lease: {acquired:?}"
     );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_reconcile_retries_unpublished_exact_grant_before_reacquire() {
+    struct FailingCustomizer;
+
+    #[async_trait]
+    impl AgentCustomizer for FailingCustomizer {
+        async fn customize_build(
+            &self,
+            _context: &AgentBuildContext,
+            _spec: &DurableAgentSpec,
+            _draft: &mut AgentBuildDraft,
+        ) -> Result<(), CustomizerError> {
+            Err(CustomizerError::BuildFailed("boom".to_string()))
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(FailOnceStrictReleaseLeaseProvider::default());
+    let runtime = make_runtime_with_store(store, lease.clone());
+    let identity = make_identity("review:unpublished-pending-release");
+    let spec = make_spec(identity.as_str());
+
+    let first_error = restore_flow(
+        &runtime,
+        std::slice::from_ref(&spec),
+        None,
+        Some(&FailingCustomizer),
+    )
+    .await
+    .expect_err("customization and its first cleanup release must fail");
+    assert!(first_error.to_string().contains("boom"));
+    assert!(first_error.to_string().contains("lease cleanup failed"));
+    assert!(
+        !runtime.contains(&identity).await,
+        "failure before lifecycle publication intentionally has no entry"
+    );
+    let held = lease
+        .held_grant(&identity)
+        .expect("provider still holds the exact unpublished grant");
+    assert_eq!(lease.release_attempts(), vec![held.clone()]);
+
+    restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+        .await
+        .expect("reconcile must release the parked grant before reacquiring");
+
+    let recovered = runtime.status(&identity).await.unwrap();
+    assert_eq!(recovered.state, IdentityLifecycleState::Active);
+    assert!(
+        recovered
+            .lease
+            .is_some_and(|grant| grant.fencing_token > held.fencing_token)
+    );
+    assert_eq!(
+        lease.release_attempts(),
+        vec![held.clone(), held],
+        "failure cleanup and reconcile must address the same fencing token"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_repair_supervisor_heals_eager_provider_broken_entry() {
+    let store = Arc::new(TransientBrokenContinuityStore::new_broken());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let runtime = Arc::new(make_runtime_with_store(store.clone(), lease));
+    let identity = make_identity("review:transient-broken");
+    let spec = make_spec(identity.as_str());
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(vec![spec.clone()])),
+            None,
+            None,
+            None,
+        ),
+    );
+
+    let first = restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
+        .await
+        .expect("provider Broken is a typed terminal restore outcome");
+    assert!(matches!(
+        first.outcomes.get(&identity),
+        Some(RestoreOutcome::Broken(_))
+    ));
+    assert_eq!(
+        runtime.status(&identity).await.unwrap().state,
+        IdentityLifecycleState::Broken,
+        "eager Broken must have a lifecycle projection discoverable by repair"
+    );
+
+    store.recover();
+    let repair = context.spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(20),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if runtime
+                .status(&identity)
+                .await
+                .is_ok_and(|status| status.state == IdentityLifecycleState::Active)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("repair supervisor should heal Broken to Active");
+    repair.abort();
+    let _ = repair.await;
 }
 
 #[tokio::test]

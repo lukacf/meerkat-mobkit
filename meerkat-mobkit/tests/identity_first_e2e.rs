@@ -818,9 +818,15 @@ async fn identity_first_e2e_09_broken_continuity_fails_loudly() {
         }
     }
 
-    // Identity NOT silently activated or fresh-created
-    assert!(!runtime.contains(&make_identity("triage:main")).await);
-    assert!(!runtime.contains(&make_identity("worker:main")).await);
+    // Identity is NOT silently activated or fresh-created. A Broken
+    // lifecycle projection is retained so the repair supervisor can discover
+    // and retry transient provider failures automatically.
+    for identity in [make_identity("triage:main"), make_identity("worker:main")] {
+        let status = runtime.status(&identity).await.unwrap();
+        assert_eq!(status.state, IdentityLifecycleState::Broken);
+        assert!(status.agent_runtime_id.is_none());
+        assert!(status.lease.is_none());
+    }
 }
 
 // ===========================================================================

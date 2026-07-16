@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,8 +29,9 @@ use meerkat_mobkit::identity_first::{
     DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapState,
     IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
     LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalContinuityStore,
-    ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome, RosterContext,
-    RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError, restore_flow,
+    LocalLeaseProvider, ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome,
+    RosterContext, RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
+    restore_flow,
 };
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
@@ -276,6 +277,70 @@ struct TrackingLeaseProvider {
     released: AtomicUsize,
 }
 
+struct FailOnceCleanupLeaseProvider {
+    inner: LocalLeaseProvider,
+    release_attempts: AtomicUsize,
+}
+
+impl FailOnceCleanupLeaseProvider {
+    fn new() -> Self {
+        Self {
+            inner: LocalLeaseProvider::new(),
+            release_attempts: AtomicUsize::new(0),
+        }
+    }
+
+    fn release_attempts(&self) -> usize {
+        self.release_attempts.load(Ordering::SeqCst)
+    }
+}
+
+struct GatedCommittedRenewLeaseProvider {
+    held: Mutex<BTreeMap<AgentIdentity, LeaseGrant>>,
+    renew_entered: AtomicBool,
+    renew_notify: tokio::sync::Notify,
+    renew_permits: tokio::sync::Semaphore,
+    released: Mutex<Vec<LeaseGrant>>,
+}
+
+impl GatedCommittedRenewLeaseProvider {
+    fn new() -> Self {
+        Self {
+            held: Mutex::new(BTreeMap::new()),
+            renew_entered: AtomicBool::new(false),
+            renew_notify: tokio::sync::Notify::new(),
+            renew_permits: tokio::sync::Semaphore::new(0),
+            released: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn wait_for_committed_renewal(&self) {
+        while !self.renew_entered.load(Ordering::SeqCst) {
+            self.renew_notify.notified().await;
+        }
+    }
+
+    fn return_committed_renewal(&self) {
+        self.renew_permits.add_permits(1);
+    }
+
+    fn released(&self) -> Vec<LeaseGrant> {
+        self.released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn held(&self) -> Vec<LeaseGrant> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
+    }
+}
+
 impl TrackingLeaseProvider {
     fn acquired(&self) -> usize {
         self.acquired.load(Ordering::SeqCst)
@@ -319,6 +384,33 @@ impl LeaseProvider for StubLeaseProvider {
 }
 
 #[async_trait]
+impl LeaseProvider for FailOnceCleanupLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        self.inner.acquire_leases(identities, instance).await
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        self.inner.renew_leases(grants).await
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        if self.release_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(LeaseError::Io(
+                "synthetic first cleanup release failure".to_string(),
+            ));
+        }
+        self.inner.release_leases(grants).await
+    }
+}
+
+#[async_trait]
 impl LeaseProvider for TrackingLeaseProvider {
     async fn acquire_leases(
         &self,
@@ -350,6 +442,102 @@ impl LeaseProvider for TrackingLeaseProvider {
 
     async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
         self.released.fetch_add(grants.len(), Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LeaseProvider for GatedCommittedRenewLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                let result = if held.contains_key(identity) {
+                    LeaseAcquireResult::AlreadyHeld {
+                        identity: identity.clone(),
+                        holder: instance.to_string(),
+                    }
+                } else {
+                    let grant = LeaseGrant {
+                        identity: identity.clone(),
+                        fencing_token: FencingToken::new(1),
+                        ttl: Duration::from_millis(20),
+                    };
+                    held.insert(identity.clone(), grant.clone());
+                    LeaseAcquireResult::Acquired(grant)
+                };
+                (identity.clone(), result)
+            })
+            .collect())
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        let renewed = {
+            let mut held = self
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            grants
+                .iter()
+                .map(|grant| {
+                    let result = if held
+                        .get(&grant.identity)
+                        .is_some_and(|current| current.fencing_token == grant.fencing_token)
+                    {
+                        let next = LeaseGrant {
+                            identity: grant.identity.clone(),
+                            fencing_token: FencingToken::new(grant.fencing_token.get() + 1),
+                            ttl: Duration::from_mins(5),
+                        };
+                        held.insert(grant.identity.clone(), next.clone());
+                        LeaseRenewResult::Renewed(next)
+                    } else {
+                        LeaseRenewResult::Lost {
+                            identity: grant.identity.clone(),
+                        }
+                    };
+                    (grant.identity.clone(), result)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        self.renew_entered.store(true, Ordering::SeqCst);
+        self.renew_notify.notify_waiters();
+        self.renew_permits
+            .acquire()
+            .await
+            .expect("test renewal gate remains open")
+            .forget();
+        Ok(renewed)
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        self.released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(grants);
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants {
+            if held
+                .get(&grant.identity)
+                .is_some_and(|current| current.fencing_token == grant.fencing_token)
+            {
+                held.remove(&grant.identity);
+            }
+        }
         Ok(())
     }
 }
@@ -1472,6 +1660,114 @@ async fn identity_first_builder_eager_broken_continuity_is_terminal_without_time
 }
 
 #[tokio::test]
+async fn identity_first_failed_builder_shutdown_retries_unpublished_lease() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lease = Arc::new(FailOnceCleanupLeaseProvider::new());
+    let result = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(BrokenContinuityStore))
+            .lease_provider(lease.clone())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                "agent:alpha",
+            )])))
+            .scratch_dir(tmp.path().join("scratch"))
+            .identity_runtime_instance_id("builder-failed-memory-task-ownership-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::EagerMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await;
+    let error = match result {
+        Ok(_) => panic!("the first unactivated lease cleanup must fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("synthetic first cleanup release failure"),
+        "unexpected build error: {error}"
+    );
+    assert_eq!(
+        lease.release_attempts(),
+        2,
+        "builder shutdown must retry the exact unpublished grant"
+    );
+
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let acquired = lease
+        .acquire_leases(std::slice::from_ref(&identity), "builder-failure-failover")
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            acquired.get(&identity),
+            Some(LeaseAcquireResult::Acquired(_))
+        ),
+        "failed construction must leave neither ghost tasks nor hidden lease authority: {acquired:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_failed_builder_terminates_runtime_owned_memory_supervisors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: Arc::new(tokio::sync::Semaphore::new(1)),
+        failing_identity: Some(identity.clone()),
+    });
+    let engines = || meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
+        steward: meerkat_mobkit::memory::steward::StewardConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let failed = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .persistent_state(state.clone())
+            .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                identity.as_str(),
+            )])))
+            .agent_customizer(customizer.clone())
+            .identity_runtime_instance_id("builder-failed-memory-supervisor-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await;
+    let error = match failed {
+        Ok(_) => panic!("customizer failure must fail identity bootstrap"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("injected warm failure"));
+    assert_eq!(customizer.entered.load(Ordering::SeqCst), 1);
+
+    // The failed runtime must have aborted/joined its memory observer and
+    // steward before returning Err, leaving the same durable stack reusable
+    // immediately by a fresh runtime.
+    let retry = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .persistent_state(state)
+            .persistent_agent_memory_stack(AgentMemoryConfig::default(), engines())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                identity.as_str(),
+            )])))
+            .identity_runtime_instance_id("builder-memory-supervisor-retry-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("memory stack should be immediately reusable after failed bootstrap cleanup");
+    retry.shutdown().await;
+}
+
+#[tokio::test]
 async fn identity_first_builder_background_warm_is_tracked_to_active() {
     let tmp = tempfile::tempdir().unwrap();
     let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
@@ -1728,6 +2024,59 @@ async fn identity_first_shutdown_cancels_blocked_background_warm() {
         lease_provider.released(),
         1,
         "a warm cancelled inside customization must release its uninstalled lease"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_shutdown_joins_committed_renewal_before_releasing_authority() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lease = Arc::new(GatedCommittedRenewLeaseProvider::new());
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(lease.clone())
+                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                    "agent:alpha",
+                )])))
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-renewal-shutdown-test")
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("eager builder should install the short initial lease"),
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), lease.wait_for_committed_renewal())
+        .await
+        .expect("renewal provider should commit token 2 and gate its response");
+    let shutdown = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.shutdown().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must join a provider-committed renewal instead of aborting it"
+    );
+
+    lease.return_committed_renewal();
+    tokio::time::timeout(Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown should finish after renewal publishes token 2")
+        .expect("shutdown task should not panic");
+    let released = lease.released();
+    assert_eq!(released.len(), 1);
+    assert_eq!(
+        released[0].fencing_token,
+        FencingToken::new(2),
+        "final release must use the provider-committed renewed token"
+    );
+    assert!(
+        lease.held().is_empty(),
+        "exact token 2 release must clear provider authority"
     );
 }
 

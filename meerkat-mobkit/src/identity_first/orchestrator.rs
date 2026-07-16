@@ -268,12 +268,10 @@ async fn release_unactivated_restore_grants(
     if unactivated.is_empty() {
         return None;
     }
-    runtime
-        .lease_provider()
-        .release_leases(&unactivated)
-        .await
-        .err()
-        .map(|err| err.to_string())
+    match runtime.release_or_park_untracked_leases(&unactivated).await {
+        Ok(()) => None,
+        Err(error) => Some(error.to_string()),
+    }
 }
 
 fn append_cleanup_error(message: String, cleanup_error: Option<String>) -> String {
@@ -457,6 +455,7 @@ async fn restore_flow_with_snapshot_policy(
     // corresponding concurrent restore future and remains held through that
     // member's explicit commit/rollback boundary.
     let mut authority_guards = acquire_roster_authority_guards(runtime, &identities).await?;
+    runtime.release_parked_unactivated_leases().await?;
     let resolved = runtime
         .continuity_store()
         .resolve_many(&identities)
@@ -1435,6 +1434,19 @@ async fn restore_flow_with_snapshot_policy(
 
             // Step 11: Broken → fail loudly (REQ-13)
             ContinuityResolveState::Broken { failure } => {
+                // Keep a lifecycle projection even though no member was
+                // materialized. The continuity repair supervisor discovers
+                // Broken entries through the runtime roster; omitting this
+                // entry made a transient eager-store failure terminal until a
+                // manual reconcile or process restart.
+                runtime
+                    .register(
+                        spec.clone(),
+                        IdentityLifecycleState::Broken,
+                        failure.record.clone(),
+                        None,
+                    )
+                    .await;
                 outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure));
             }
         }

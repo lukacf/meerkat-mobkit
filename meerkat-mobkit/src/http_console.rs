@@ -7684,18 +7684,26 @@ async fn handle_console_runtime_rpc_with_visibility(
             match result {
                 Ok(mut events) => {
                     // `mob.observe` gates the surface; agent-attributed
-                    // ledger entries are still filtered by `agent.view` so a
-                    // mob.observe grant cannot reveal the lifecycle of an
-                    // agent the caller is denied. Mob-level entries (no
-                    // attribution) pass on the mob.observe grant alone.
-                    if let Some(view) = access_view.filter(|view| view.enforced()) {
-                        events.retain(|event| {
-                            event
-                                .agent_identity
-                                .as_deref()
-                                .is_none_or(|identity| view.can_view_agent(identity))
-                        });
+                    // ledger entries still require known `agent.view`
+                    // attributes and the same visibility/redaction projection
+                    // as the SSE continuation. This prevents the initial JSON
+                    // snapshot from becoming a side door for retired members.
+                    let handle = runtime.handle();
+                    let mut projected = Vec::with_capacity(events.len());
+                    for event in events {
+                        if let Some(event) =
+                            crate::http_sse::project_structural_envelope_for_console(
+                                &handle,
+                                visibility_policy,
+                                access_view,
+                                event,
+                            )
+                            .await
+                        {
+                            projected.push(event);
+                        }
                     }
+                    events = projected;
                     let last_cursor = events.last().map(|event| event.cursor);
                     let body = if request.method == "mobkit/mob_events/subscribe" {
                         let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(

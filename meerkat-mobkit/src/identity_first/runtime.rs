@@ -748,6 +748,27 @@ impl TrackedContinuityRepairTask {
     }
 }
 
+/// Runtime-owned lease-renewal supervisor with cooperative cancellation.
+///
+/// Cancellation is observed while the supervisor is idle or between ticks.
+/// An in-flight renewal is always joined through publication of the provider's
+/// returned fencing token so final shutdown releases current authority.
+pub(crate) struct TrackedLeaseRenewalTask {
+    cancel: watch::Sender<bool>,
+    join: JoinHandle<()>,
+}
+
+impl TrackedLeaseRenewalTask {
+    pub(crate) fn cancel(&self) {
+        let _ = self.cancel.send(true);
+    }
+
+    pub(crate) async fn cancel_and_join(self) {
+        self.cancel();
+        let _ = self.join.await;
+    }
+}
+
 /// Retry cadence for [`IdentityFirstRuntimeContext::spawn_broken_identity_repair_task`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContinuityRepairPolicy {
@@ -830,6 +851,11 @@ pub struct IdentityRuntime {
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     agent_memory: RwLock<Option<AgentMemoryRuntimeInjector>>,
     lease_renewal_notify: Notify,
+    /// Exact grants whose restore task failed before an IdentityEntry existed.
+    /// These must outlive the failed task so reconcile or shutdown can retry
+    /// provider release instead of leaving invisible, non-expiring authority.
+    pending_unactivated_lease_releases: RwLock<Vec<LeaseGrant>>,
+    pending_unactivated_lease_release_gate: Mutex<()>,
     default_timeout: Duration,
     materialization_failure_backoff: RwLock<BTreeMap<AgentIdentity, MaterializationFailureBackoff>>,
     error_hook: StdRwLock<Option<crate::unified_runtime::ErrorHook>>,
@@ -904,6 +930,8 @@ impl IdentityRuntime {
             customizer: RwLock::new(None),
             agent_memory: RwLock::new(None),
             lease_renewal_notify: Notify::new(),
+            pending_unactivated_lease_releases: RwLock::new(Vec::new()),
+            pending_unactivated_lease_release_gate: Mutex::new(()),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
             materialization_failure_backoff: RwLock::new(BTreeMap::new()),
             error_hook: StdRwLock::new(None),
@@ -1672,6 +1700,25 @@ impl IdentityRuntime {
         self.spawn_lease_renewal_task_with_poll_interval(DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL)
     }
 
+    /// Spawn the runtime-owned renewal supervisor. Unlike the public
+    /// fire-and-forget helper, this handle cooperatively cancels while idle
+    /// and joins any in-flight renewal through provider, continuity-store,
+    /// bridge, and local-publication commit boundaries.
+    pub(crate) fn spawn_tracked_lease_renewal_task(self: Arc<Self>) -> TrackedLeaseRenewalTask {
+        self.spawn_tracked_lease_renewal_task_with_poll_interval(
+            DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL,
+        )
+    }
+
+    pub(crate) fn spawn_tracked_lease_renewal_task_with_poll_interval(
+        self: Arc<Self>,
+        max_poll_interval: Duration,
+    ) -> TrackedLeaseRenewalTask {
+        let (cancel, receiver) = watch::channel(false);
+        let join = tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, Some(receiver)));
+        TrackedLeaseRenewalTask { cancel, join }
+    }
+
     /// Spawn a lease renewal supervisor with a caller-provided maximum poll
     /// interval. Embedders can use this for shorter external lease TTLs; tests
     /// use it to exercise renewal without waiting on wall-clock TTLs.
@@ -1679,48 +1726,85 @@ impl IdentityRuntime {
         self: Arc<Self>,
         max_poll_interval: Duration,
     ) -> JoinHandle<()> {
+        tokio::spawn(self.run_lease_renewal_loop(max_poll_interval, None))
+    }
+
+    async fn run_lease_renewal_loop(
+        self: Arc<Self>,
+        max_poll_interval: Duration,
+        mut cancellation: Option<watch::Receiver<bool>>,
+    ) {
         let max_poll_interval = max_poll_interval.max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL);
-        tokio::spawn(async move {
-            let mut consecutive_failures: u32 = 0;
-            loop {
-                let base = self.lease_renewal_sleep_interval(max_poll_interval).await;
-                // While the provider is failing, hold off at least the backoff
-                // delay so a persistent outage retries at a bounded rate
-                // instead of the TTL-derived floor (down to 10ms).
-                let sleep = if consecutive_failures > 0 {
-                    base.max(lease_renewal_failure_backoff(
-                        consecutive_failures,
-                        max_poll_interval,
-                    ))
-                } else {
-                    base
-                };
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| *cancellation.borrow())
+            {
+                return;
+            }
+            let base = self.lease_renewal_sleep_interval(max_poll_interval).await;
+            // While the provider is failing, hold off at least the backoff
+            // delay so a persistent outage retries at a bounded rate instead
+            // of the TTL-derived floor (down to 10ms).
+            let sleep = if consecutive_failures > 0 {
+                base.max(lease_renewal_failure_backoff(
+                    consecutive_failures,
+                    max_poll_interval,
+                ))
+            } else {
+                base
+            };
+            if let Some(cancellation) = cancellation.as_mut() {
+                tokio::select! {
+                    () = tokio::time::sleep(sleep) => {}
+                    () = self.lease_renewal_notify.notified() => {}
+                    changed = cancellation.changed() => {
+                        match changed {
+                            Ok(()) if *cancellation.borrow() => return,
+                            Ok(()) => continue,
+                            Err(_) => return,
+                        }
+                    }
+                }
+            } else {
                 tokio::select! {
                     () = tokio::time::sleep(sleep) => {}
                     () = self.lease_renewal_notify.notified() => {}
                 }
-                match self.renew_due_leases_once().await {
-                    Ok(_) => consecutive_failures = 0,
-                    Err(err) => {
-                        // Warn once, then debounce to debug so a backend outage
-                        // can't flood the log at the renewal cadence.
-                        if consecutive_failures == 0 {
-                            tracing::warn!(
-                                error = %err,
-                                "identity-first proactive lease renewal tick failed; backing off"
-                            );
-                        } else {
-                            tracing::debug!(
-                                error = %err,
-                                consecutive_failures,
-                                "identity-first lease renewal still failing; backing off"
-                            );
-                        }
-                        consecutive_failures = consecutive_failures.saturating_add(1);
+            }
+
+            // Do not select cancellation against this future. Once renewal
+            // has entered the provider, the returned token may already be
+            // authoritative; the runtime must publish that exact grant before
+            // shutdown performs its final release.
+            match self.renew_due_leases_once().await {
+                Ok(_) => consecutive_failures = 0,
+                Err(err) => {
+                    // Warn once, then debounce to debug so a backend outage
+                    // can't flood the log at the renewal cadence.
+                    if consecutive_failures == 0 {
+                        tracing::warn!(
+                            error = %err,
+                            "identity-first proactive lease renewal tick failed; backing off"
+                        );
+                    } else {
+                        tracing::debug!(
+                            error = %err,
+                            consecutive_failures,
+                            "identity-first lease renewal still failing; backing off"
+                        );
                     }
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                 }
             }
-        })
+            if cancellation
+                .as_ref()
+                .is_some_and(|cancellation| *cancellation.borrow())
+            {
+                return;
+            }
+        }
     }
 
     async fn lease_renewal_sleep_interval(&self, max_poll_interval: Duration) -> Duration {
@@ -1774,8 +1858,7 @@ impl IdentityRuntime {
     }
 
     async fn release_uninstalled_materialize_lease(&self, grant: &LeaseGrant) -> Option<String> {
-        self.lease_provider
-            .release_leases(std::slice::from_ref(grant))
+        self.release_or_park_untracked_leases(std::slice::from_ref(grant))
             .await
             .err()
             .map(|err| err.to_string())
@@ -2864,6 +2947,63 @@ impl IdentityRuntime {
         }
     }
 
+    /// Preserve exact grants acquired by a restore task that failed before it
+    /// could publish an [`IdentityEntry`]. Entry-scoped pending-release state
+    /// cannot represent this phase, so the runtime owns a small orphan-grant
+    /// ledger until reconcile or shutdown successfully releases it.
+    pub(crate) async fn park_unactivated_lease_releases(&self, grants: &[LeaseGrant]) {
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        for grant in grants {
+            if !pending.iter().any(|parked| {
+                parked.identity == grant.identity && parked.fencing_token == grant.fencing_token
+            }) {
+                pending.push(grant.clone());
+            }
+        }
+    }
+
+    /// Release grants that do not yet have an IdentityEntry capable of
+    /// retaining retry state. A provider failure atomically transfers their
+    /// exact fencing tokens into the runtime-owned orphan ledger.
+    pub(crate) async fn release_or_park_untracked_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<(), super::types::LeaseError> {
+        let _release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        match self.lease_provider.release_leases(grants).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.park_unactivated_lease_releases(grants).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Retry every grant parked before lifecycle publication. This runs under
+    /// the restore controller before any new batch acquisition, and again from
+    /// shutdown after all identity work has joined.
+    pub(crate) async fn release_parked_unactivated_leases(
+        &self,
+    ) -> Result<usize, IdentityRuntimeError> {
+        let _release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        let grants = self.pending_unactivated_lease_releases.read().await.clone();
+        if grants.is_empty() {
+            return Ok(0);
+        }
+        self.lease_provider
+            .release_leases(&grants)
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        pending.retain(|parked| {
+            !grants.iter().any(|released| {
+                released.identity == parked.identity
+                    && released.fencing_token == parked.fencing_token
+            })
+        });
+        Ok(grants.len())
+    }
+
     /// Release every durable identity grant after the lower mob plane has
     /// quiesced. Successful release clears the in-memory authority so the
     /// method is idempotent; failures retain the exact grants for inspection
@@ -2871,7 +3011,8 @@ impl IdentityRuntime {
     pub(crate) async fn release_all_leases_for_shutdown(
         &self,
     ) -> Result<usize, IdentityRuntimeError> {
-        let grants = self
+        let _parked_release_guard = self.pending_unactivated_lease_release_gate.lock().await;
+        let mut grants = self
             .entries
             .read()
             .await
@@ -2886,6 +3027,14 @@ impl IdentityRuntime {
                 })
             })
             .collect::<Vec<_>>();
+        let parked_grants = self.pending_unactivated_lease_releases.read().await.clone();
+        for grant in parked_grants {
+            if !grants.iter().any(|existing| {
+                existing.identity == grant.identity && existing.fencing_token == grant.fencing_token
+            }) {
+                grants.push(grant);
+            }
+        }
         if grants.is_empty() {
             return Ok(0);
         }
@@ -2925,6 +3074,14 @@ impl IdentityRuntime {
             }
         }
         drop(entries);
+        let mut pending = self.pending_unactivated_lease_releases.write().await;
+        pending.retain(|parked| {
+            !grants.iter().any(|released| {
+                released.identity == parked.identity
+                    && released.fencing_token == parked.fencing_token
+            })
+        });
+        drop(pending);
         for identity in lifecycle_updates {
             self.mark_bootstrap_from_lifecycle(&identity, IdentityLifecycleState::Dormant, None);
         }
@@ -4717,11 +4874,13 @@ impl IdentityRuntime {
                 ));
             }
             entry.state = IdentityLifecycleState::Broken;
-            entry.lease.take().map(|lease| LeaseGrant {
+            let grant = entry.lease.take().map(|lease| LeaseGrant {
                 identity: identity.clone(),
                 fencing_token: lease.fencing_token,
                 ttl: lease.ttl,
-            })
+            });
+            entry.pending_lease_release = grant.clone();
+            grant
         };
         self.mark_bootstrap_from_lifecycle(
             identity,
@@ -4736,14 +4895,25 @@ impl IdentityRuntime {
             },
         )
         .await;
-        match grant {
-            Some(grant) => self
-                .lease_provider
-                .release_leases(std::slice::from_ref(&grant))
-                .await
-                .err()
-                .map(|error| error.to_string()),
-            None => None,
+        let grant = grant?;
+        match self
+            .lease_provider
+            .release_leases(std::slice::from_ref(&grant))
+            .await
+        {
+            Ok(()) => {
+                let mut entries = self.entries.write().await;
+                if let Some(entry) = entries.get_mut(identity)
+                    && entry
+                        .pending_lease_release
+                        .as_ref()
+                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
+                {
+                    entry.pending_lease_release = None;
+                }
+                None
+            }
+            Err(error) => Some(error.to_string()),
         }
     }
 
@@ -4791,18 +4961,23 @@ impl IdentityRuntime {
         // their restored local state does not expose.
         let retain_grant = restore_live_lease;
         entry.lease = retain_grant.then(|| Self::lease_entry_from_grant(grant));
-        if !retain_grant
-            && let Err(err) = self
+        if !retain_grant {
+            entry.pending_lease_release = Some(grant.clone());
+            match self
                 .lease_provider
                 .release_leases(std::slice::from_ref(grant))
                 .await
-        {
-            tracing::warn!(
-                %identity,
-                error = %err,
-                "failed to release lifecycle rollback lease for non-active identity"
-            );
-            entry.state = IdentityLifecycleState::Broken;
+            {
+                Ok(()) => entry.pending_lease_release = None,
+                Err(err) => {
+                    tracing::warn!(
+                        %identity,
+                        error = %err,
+                        "failed to release lifecycle rollback lease for non-active identity; exact grant parked for retry"
+                    );
+                    entry.state = IdentityLifecycleState::Broken;
+                }
+            }
         }
         self.restore_entry(identity, entry).await;
         if retain_grant {
@@ -5942,14 +6117,13 @@ impl IdentityRuntime {
         let Some(entry) = entries.get_mut(identity) else {
             drop(entries);
             if let Err(err) = self
-                .lease_provider
-                .release_leases(std::slice::from_ref(&grant))
+                .release_or_park_untracked_leases(std::slice::from_ref(&grant))
                 .await
             {
                 tracing::warn!(
                     %identity,
                     error = %err,
-                    "failed to release lease after respawn entry disappeared"
+                    "failed to release lease after respawn entry disappeared; exact grant parked for retry"
                 );
             }
             return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
@@ -6657,14 +6831,13 @@ impl IdentityRuntime {
                     );
                 }
                 if let Err(err) = self
-                    .lease_provider
-                    .release_leases(std::slice::from_ref(&grant))
+                    .release_or_park_untracked_leases(std::slice::from_ref(&grant))
                     .await
                 {
                     tracing::warn!(
                         %identity,
                         error = %err,
-                        "failed to release lease after reset entry disappeared"
+                        "failed to release lease after reset entry disappeared; exact grant parked for retry"
                     );
                 }
                 return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
@@ -6771,14 +6944,13 @@ impl IdentityRuntime {
                 );
             }
             if let Err(err) = self
-                .lease_provider
-                .release_leases(std::slice::from_ref(&grant))
+                .release_or_park_untracked_leases(std::slice::from_ref(&grant))
                 .await
             {
                 tracing::warn!(
                     %identity,
                     error = %err,
-                    "failed to release lease after reset validation entry disappeared"
+                    "failed to release lease after reset validation entry disappeared; exact grant parked for retry"
                 );
             }
             return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));

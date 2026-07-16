@@ -3558,6 +3558,18 @@ impl MobRuntime {
         }
     }
 
+    /// Remove the late-bound identity authority after the mob has fully
+    /// quiesced. IdentityRuntime owns a MobHandle in its runtime services, so
+    /// retaining the reverse Arc here would form a shutdown cycle and keep
+    /// persistent controller locks alive after failed construction.
+    pub(crate) fn clear_identity_runtime_authority(&self) {
+        if let Some(slot) = self.identity_runtime_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
     /// Console identity metadata registered by agent-tool spawns, keyed by
     /// console identity. Empty when no console sink is installed.
     pub(crate) async fn console_identity_labels(

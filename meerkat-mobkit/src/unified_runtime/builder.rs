@@ -989,15 +989,17 @@ impl UnifiedRuntimeBuilder {
             )
             .map_err(UnifiedRuntimeBuilderError::Io)?;
             runtime.set_memory_panel_store(stack.store.clone());
-            // Observe-stream feed lives for the runtime's lifetime.
-            std::mem::forget(crate::spawn_member_event_observer(
-                runtime.mob_handle(),
-                stack.sinks,
-            ));
+            // Runtime ownership makes both infinite supervisors visible to
+            // normal shutdown and to the identity-bootstrap failure cleanup
+            // path below. Leaking either handle here would leave ghost memory
+            // work behind after build() returned Err.
+            *runtime.agent_memory_observer_task.lock().await = Some(
+                crate::spawn_member_event_observer(runtime.mob_handle(), stack.sinks),
+            );
             if let Some(steward) = stack.steward.as_ref() {
                 // Library mode has no schedule host; the guarded interval
                 // loop drives dreams.
-                std::mem::forget(steward.spawn_dream_loop());
+                *runtime.agent_memory_steward_task.lock().await = Some(steward.spawn_dream_loop());
             }
             tracing::info!(
                 distiller = stack.distiller.is_some(),
@@ -1025,7 +1027,7 @@ impl UnifiedRuntimeBuilder {
             }
 
             *runtime.identity_lease_renewal_task.lock().await =
-                Some(context.runtime.clone().spawn_lease_renewal_task());
+                Some(context.runtime.clone().spawn_tracked_lease_renewal_task());
             *runtime.identity_continuity_repair_task.lock().await = Some(
                 context
                     .clone()

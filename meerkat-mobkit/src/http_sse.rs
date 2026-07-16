@@ -385,6 +385,45 @@ fn sse_access_allows_known_agent(view: Option<&AccessView>, identity: &str) -> b
     view.is_none_or(|view| view.knows_agent(identity) && view.can_view_agent(identity))
 }
 
+/// Apply the shared authorization and console-visibility projection for one
+/// structural event envelope. Callers must prime the access cache first; an
+/// enforced view then fails closed for identities whose attributes remain
+/// unknown. Attributed historical events also fail closed when no live member
+/// projection exists to evaluate the configured console policy.
+pub(crate) async fn project_structural_envelope_for_console(
+    handle: &MobHandle,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+    access_view: Option<&AccessView>,
+    mut envelope: crate::MobStructuralEventEnvelope,
+) -> Option<crate::MobStructuralEventEnvelope> {
+    let access_view = access_view.filter(|view| view.enforced());
+    let policy_identity = if let Some(identity) = envelope.agent_identity.as_deref() {
+        if !sse_access_allows_known_agent(access_view, identity) {
+            return None;
+        }
+        let (console_identity, visible) = crate::http_console::sse_member_identity_visibility(
+            handle,
+            visibility_policy,
+            identity,
+        )
+        .await?;
+        if !visible {
+            return None;
+        }
+        console_identity
+    } else {
+        crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string()
+    };
+    envelope.data = project_sse_payload(
+        visibility_policy,
+        &policy_identity,
+        &envelope.kind,
+        envelope.timestamp_ms,
+        envelope.data,
+    )?;
+    Some(envelope)
+}
+
 async fn mob_events_sse_handler(
     State(state): State<MobSseState>,
     headers: HeaderMap,
@@ -901,7 +940,7 @@ async fn mob_structural_events_sse_handler(
         // genuinely has no roster attributes does not re-prime on every event.
         let mut reprimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some(event) = subscription.event_rx.recv().await {
-            let mut envelope = store.project_event_for_query(&event).await;
+            let envelope = store.project_event_for_query(&event).await;
             if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
                 continue;
             }
@@ -932,42 +971,16 @@ async fn mob_structural_events_sse_handler(
                         .await;
                     }
                 }
-                if !sse_access_allows_known_agent(stream_view.as_ref(), identity) {
-                    continue;
-                }
             }
-            let policy_identity = if let Some(identity) = envelope.agent_identity.as_deref() {
-                let Some((console_identity, visible)) =
-                    crate::http_console::sse_member_identity_visibility(
-                        &visibility_handle,
-                        visibility_policy.as_ref(),
-                        identity,
-                    )
-                    .await
-                else {
-                    // Structural catch-up can replay an attributed lifecycle
-                    // event after the member has completed and left the live
-                    // roster. Without the historical member projection the
-                    // visibility policy cannot authorize it.
-                    continue;
-                };
-                if !visible {
-                    continue;
-                }
-                console_identity
-            } else {
-                crate::console_contracts::SYSTEM_EVENT_IDENTITY.to_string()
-            };
-            let Some(payload) = project_sse_payload(
+            let Some(envelope) = project_structural_envelope_for_console(
+                &visibility_handle,
                 visibility_policy.as_ref(),
-                &policy_identity,
-                &envelope.kind,
-                envelope.timestamp_ms,
-                envelope.data.clone(),
-            ) else {
+                stream_view.as_ref(),
+                envelope,
+            )
+            .await else {
                 continue;
             };
-            envelope.data = payload;
             let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
             yield Ok::<Event, Infallible>(
                 Event::default()

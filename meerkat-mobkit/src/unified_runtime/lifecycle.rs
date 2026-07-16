@@ -162,6 +162,13 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        if let Some(observer) = self.agent_memory_observer_task.lock().await.take() {
+            observer.abort_and_join().await;
+        }
+        if let Some(task) = self.agent_memory_steward_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
         let identity_runtime = self.identity_runtime().cloned();
         if let Some(identity_runtime) = identity_runtime.as_ref() {
             // Close request admission before any supervisor is drained. A
@@ -227,8 +234,7 @@ impl UnifiedRuntime {
         // Keep renewal running through mob quiescence, then stop it before the
         // final provider release so no renewal can race the release boundary.
         if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
-            task.abort();
-            let _ = task.await;
+            task.cancel_and_join().await;
         }
         if let Some(identity_runtime) = identity_runtime.as_ref() {
             if mob_stop.is_ok() {
@@ -243,6 +249,18 @@ impl UnifiedRuntime {
                     "mob shutdown did not quiesce physical members; retaining identity grants"
                 );
             }
+        }
+        if mob_stop.is_ok() {
+            // Break the MobRuntime <-> IdentityRuntime authority cycle only
+            // after physical members are gone. This is required for failed
+            // builders to release persistent topology/store locks before
+            // returning Err; on a failed mob stop the authority and grants
+            // deliberately remain intact.
+            self.mob_runtime.clear_identity_runtime_authority();
+            *self
+                .implicit_delegate_identity_runtime
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
         // Phase 3: Close event router
