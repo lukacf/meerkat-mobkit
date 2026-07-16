@@ -18,6 +18,8 @@ from meerkat_mobkit.builder import MobKit
 from meerkat_mobkit.identity_first_models import (
     DispatchInput,
     DurableAgentSpec,
+    IdentityBootstrapMode,
+    IdentityBootstrapState,
     ManagedPeerEdge,
 )
 from meerkat_mobkit.identity_first_providers import (
@@ -233,6 +235,44 @@ def state_dir(tmp_path):
     d = str(tmp_path / "state")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+@_skip_no_binary
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_lazy_gateway_init_exposes_typed_dormant_bootstrap_status(
+    mob_toml, state_dir
+):
+    """Lazy init is metadata-only and needs no model-provider credential."""
+    roster = HomeCoreRoster(_DEFAULT_ROSTER)
+    runtime = await (
+        MobKit.builder()
+        .gateway(_GATEWAY_BIN)
+        .mob(mob_toml)
+        .persistent_state(state_dir)
+        .roster(roster)
+        .identity_bootstrap_mode(IdentityBootstrapMode.lazy_materialize())
+        .build()
+    )
+    try:
+        status = await runtime.identity_bootstrap_status()
+        assert status.mode == IdentityBootstrapMode.lazy_materialize()
+        assert status.complete is True
+        assert status.ready is False
+        assert status.counts.dormant == len(_DEFAULT_ROSTER)
+        assert status.counts.warming == 0
+        assert status.counts.active == 0
+        assert status.counts.broken == 0
+        assert all(
+            entry.state is IdentityBootstrapState.DORMANT
+            for entry in status.identities.values()
+        )
+
+        immediate = await runtime.wait_identity_bootstrap(timeout=0)
+        assert immediate.timed_out is True
+        assert immediate.ready is False
+    finally:
+        await runtime.shutdown()
 
 
 # ===========================================================================

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Graceful gateway shutdown
+
+- `MobKitRuntime.shutdown()` now closes the persistent gateway's stdin and
+  awaits its runtime cleanup. It allows a 60-second graceful drain before a
+  bounded `SIGTERM` / `SIGKILL` fallback, preventing SDK shutdown from cutting
+  short session persistence or lease cleanup.
+
 ### Identity-first agent memory
 
 - Added `MobKit.builder().agentMemory(...)` for gateway-backed

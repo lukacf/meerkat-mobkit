@@ -4,18 +4,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{self, StreamExt};
 use meerkat_client::LlmClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
 use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore};
 use crate::contact_directory::ContactDirectory;
+pub use crate::identity_first::IdentityBootstrapMode;
 use crate::identity_first::{
     AgentCustomizer, AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryProvider,
     AgentMemoryRuntimeInjector, AgentRuntimeServices, ContinuitySessionStoreAdapter,
     DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig,
     LocalContinuityStore, LocalLeaseProvider, MarkdownAgentMemoryStore, RosterContext,
-    RosterProvider, TopologyProvider, lazy_register_flow, restore_flow,
+    RosterProvider, TopologyProvider,
 };
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
@@ -45,22 +45,6 @@ const DEFAULT_MAX_SESSIONS: usize = 64;
 
 /// Default builder timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Controls how identity-first durable agents are materialized during
-/// `UnifiedRuntime::build()`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum IdentityBootstrapMode {
-    /// Compatibility mode: `build()` synchronously creates/resumes every
-    /// identity in the roster.
-    #[default]
-    EagerMaterialize,
-    /// Register roster/topology/continuity metadata only; create/resume a
-    /// concrete member on first send/dispatch/explicit materialize.
-    LazyMaterialize,
-    /// Return from `build()` after lazy metadata registration and warm
-    /// identities in a background task with bounded concurrency.
-    LazyWithBackgroundWarm { concurrency: usize },
-}
 
 #[derive(Default)]
 pub struct UnifiedRuntimeBuilder {
@@ -479,6 +463,10 @@ impl UnifiedRuntimeBuilder {
     pub async fn build(mut self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         // --- Identity-first builder validation ---
 
+        self.identity_bootstrap_mode
+            .validate()
+            .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
+
         let has_persistent_state = self.persistent_state_path.is_some();
         let has_continuity_store = self.continuity_store.is_some();
         let has_lease_provider = self.lease_provider.is_some();
@@ -882,89 +870,26 @@ impl UnifiedRuntimeBuilder {
                     )
                 })?;
 
-            match self.identity_bootstrap_mode.clone() {
-                IdentityBootstrapMode::EagerMaterialize => {
-                    restore_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                        agent_customizer.as_deref(),
+            let identity_context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+                identity_runtime,
+                roster_provider,
+                self.topology_provider.clone(),
+                agent_customizer.clone(),
+                Some(runtime.mob_runtime.handle().definition().clone()),
+                self.identity_bootstrap_mode.clone(),
+            ));
+            identity_context
+                .bootstrap_roster(&roster_specs)
+                .await
+                .map_err(|err| {
+                    UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::IdentityFirst(format!(
+                            "identity bootstrap failed: {err}"
+                        )),
                     )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "restore_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                }
-                IdentityBootstrapMode::LazyMaterialize => {
-                    lazy_register_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "lazy_register_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                }
-                IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency } => {
-                    if concurrency == 0 {
-                        return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                            "LazyWithBackgroundWarm concurrency must be greater than 0".to_string(),
-                        ));
-                    }
-                    lazy_register_flow(
-                        &identity_runtime,
-                        &roster_specs,
-                        self.topology_provider.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| {
-                        UnifiedRuntimeBuilderError::Bootstrap(
-                            UnifiedRuntimeBootstrapError::IdentityFirst(format!(
-                                "lazy_register_flow failed: {err}"
-                            )),
-                        )
-                    })?;
-                    let warm_runtime = identity_runtime.clone();
-                    let warm_identities = roster_specs
-                        .iter()
-                        .map(|spec| spec.identity.clone())
-                        .collect::<Vec<_>>();
-                    tokio::spawn(async move {
-                        stream::iter(warm_identities.into_iter().map(|identity| {
-                            let runtime = warm_runtime.clone();
-                            async move {
-                                runtime.best_effort_background_warm_identity(identity).await;
-                            }
-                        }))
-                        .buffer_unordered(concurrency)
-                        .collect::<Vec<_>>()
-                        .await;
-                    });
-                }
-            }
+                })?;
 
-            Some(Arc::new(
-                IdentityFirstRuntimeContext::new_with_lazy_materialization(
-                    identity_runtime,
-                    roster_provider,
-                    self.topology_provider.clone(),
-                    agent_customizer.clone(),
-                    Some(runtime.mob_runtime.handle().definition().clone()),
-                    !matches!(
-                        self.identity_bootstrap_mode,
-                        IdentityBootstrapMode::EagerMaterialize
-                    ),
-                ),
-            ))
+            Some(identity_context)
         } else {
             None
         };
@@ -974,8 +899,18 @@ impl UnifiedRuntimeBuilder {
         let identity_continuity_repair_task = identity_first_context.as_ref().map(|context| {
             context
                 .clone()
-                .spawn_broken_identity_repair_task(Default::default())
+                .spawn_tracked_broken_identity_repair_task(Default::default())
         });
+        if let Some(context) = identity_first_context.as_ref() {
+            runtime
+                .mob_runtime
+                .install_identity_runtime_authority(Arc::clone(&context.runtime));
+            *runtime
+                .implicit_delegate_identity_runtime
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Arc::clone(&context.runtime));
+        }
 
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {

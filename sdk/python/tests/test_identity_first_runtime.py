@@ -1,12 +1,22 @@
 """TDD tests for identity-first runtime APIs (REQ-41).
 
-Tests that all 9 identity-first methods exist on MobKitRuntime and
+Tests that identity-first methods exist on MobKitRuntime and
 delegate to the correct RPC methods with correct argument shapes.
 """
+import asyncio
+import threading
+
 import pytest
 
 from meerkat_mobkit.runtime import MobKitRuntime
-from meerkat_mobkit.identity_first_models import DispatchInput, ImageBlock, TextBlock
+from meerkat_mobkit.errors import NotConnectedError
+from meerkat_mobkit.identity_first_models import (
+    DispatchInput,
+    IdentityBootstrapState,
+    IdentityBootstrapStatus,
+    ImageBlock,
+    TextBlock,
+)
 
 
 class FakeTransport:
@@ -14,13 +24,16 @@ class FakeTransport:
 
     def __init__(self, result=None):
         self.calls: list[dict] = []
+        self.async_timeouts: list[float | None] = []
+        self.request_timeout = 60.0
         self._result = result or {}
 
     def send_sync(self, request):
         self.calls.append(request)
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._result}
 
-    async def send_async(self, request):
+    async def send_async(self, request, *, timeout=None):
+        self.async_timeouts.append(timeout)
         return self.send_sync(request)
 
     def is_running(self):
@@ -43,14 +56,31 @@ def _make_runtime(result=None) -> tuple[MobKitRuntime, FakeTransport]:
     rt._transport = transport
     rt._running = True
     rt._rust_http_base = None
+    rt._lifecycle_lock = asyncio.Lock()
+    rt._shutdown_task = None
     # Import here to avoid circular issues
     from meerkat_mobkit.agent_builder import CallbackDispatcher
     rt._dispatcher = CallbackDispatcher()
     return rt, transport
 
 
+def _bootstrap_status_result(**overrides):
+    result = {
+        "mode": {"mode": "lazy_with_background_warm", "concurrency": 2},
+        "complete": False,
+        "ready": False,
+        "counts": {"dormant": 1, "warming": 1, "active": 0, "broken": 0},
+        "identities": {
+            "agent:a": {"state": "dormant"},
+            "agent:b": {"state": "warming"},
+        },
+    }
+    result.update(overrides)
+    return result
+
+
 class TestIdentityFirstRuntimeAPIs:
-    """REQ-41: All 9 identity-first methods exist on MobKitRuntime."""
+    """REQ-41: identity-first methods exist on MobKitRuntime."""
 
     def test_agent_method_exists(self):
         assert hasattr(MobKitRuntime, "agent")
@@ -87,6 +117,78 @@ class TestIdentityFirstRuntimeAPIs:
     def test_delete_identity_method_exists(self):
         assert hasattr(MobKitRuntime, "delete_identity")
         assert callable(getattr(MobKitRuntime, "delete_identity"))
+
+    def test_identity_bootstrap_status_method_exists(self):
+        assert hasattr(MobKitRuntime, "identity_bootstrap_status")
+        assert callable(getattr(MobKitRuntime, "identity_bootstrap_status"))
+
+    def test_wait_identity_bootstrap_method_exists(self):
+        assert hasattr(MobKitRuntime, "wait_identity_bootstrap")
+        assert callable(getattr(MobKitRuntime, "wait_identity_bootstrap"))
+
+    @pytest.mark.asyncio
+    async def test_shutdown_keeps_blocking_process_wait_off_event_loop(self):
+        rt, transport = _make_runtime()
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+
+        def blocking_stop():
+            stop_started.set()
+            if not release_stop.wait(timeout=0.5):
+                raise AssertionError("transport.stop blocked the asyncio event loop")
+
+        transport.stop = blocking_stop
+        shutdown = asyncio.create_task(rt.shutdown())
+        assert await asyncio.to_thread(stop_started.wait, 0.2)
+
+        # This continuation can only run while stop() is blocked if shutdown
+        # delegated the subprocess wait to a worker thread.
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        release_stop.set()
+        await shutdown
+        assert rt._transport is None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_shutdowns_coalesce_and_connect_waits_for_drain(self):
+        rt, transport = _make_runtime()
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+        stop_calls = 0
+
+        def blocking_stop():
+            nonlocal stop_calls
+            stop_calls += 1
+            stop_started.set()
+            if not release_stop.wait(timeout=0.5):
+                raise AssertionError("test did not release transport.stop")
+
+        transport.stop = blocking_stop
+        first_shutdown = asyncio.create_task(rt.shutdown())
+        assert await asyncio.to_thread(stop_started.wait, 0.2)
+        second_shutdown = asyncio.create_task(rt.shutdown())
+
+        with pytest.raises(NotConnectedError) as not_connected:
+            await rt._rpc("mobkit/status", {})
+        assert "no transport available" in str(not_connected.value)
+
+        bootstrap_started = asyncio.Event()
+
+        async def fake_bootstrap():
+            bootstrap_started.set()
+            rt._running = True
+
+        rt._bootstrap = fake_bootstrap
+        reconnect = asyncio.create_task(rt.connect())
+        await asyncio.sleep(0)
+        assert not second_shutdown.done()
+        assert not bootstrap_started.is_set()
+
+        release_stop.set()
+        await asyncio.gather(first_shutdown, second_shutdown, reconnect)
+        assert stop_calls == 1
+        assert bootstrap_started.is_set()
+        assert rt.is_running
 
 
 class TestSendMethod:
@@ -211,6 +313,99 @@ class TestStatusMethod:
         assert result.lease.fencing_token == 42
         assert result.continuity_health is not None
         assert result.continuity_health.store_reachable is True
+
+
+class TestIdentityBootstrapMethods:
+    @pytest.mark.asyncio
+    async def test_status_uses_distinct_rpc_and_returns_typed_model(self):
+        rt, transport = _make_runtime(result=_bootstrap_status_result())
+
+        result = await rt.identity_bootstrap_status()
+
+        assert isinstance(result, IdentityBootstrapStatus)
+        assert transport.calls[0]["method"] == "mobkit/status_identity_bootstrap"
+        assert transport.calls[0]["params"] == {}
+        assert result.identities["agent:b"].state is IdentityBootstrapState.WARMING
+
+    @pytest.mark.asyncio
+    async def test_wait_defaults_to_materialized_target(self):
+        rt, transport = _make_runtime(
+            result=_bootstrap_status_result(
+                complete=True,
+                timed_out=False,
+                target="materialized",
+            )
+        )
+
+        result = await rt.wait_identity_bootstrap()
+
+        assert isinstance(result, IdentityBootstrapStatus)
+        assert transport.calls[0]["method"] == "mobkit/wait_identity_bootstrap"
+        assert transport.calls[0]["params"] == {
+            "target": "materialized",
+            "timeout_ms": 60_000,
+        }
+        assert transport.async_timeouts == [65.0]
+        assert result.target == "materialized"
+
+    @pytest.mark.asyncio
+    async def test_wait_forwards_startup_ready_target_and_timeout(self):
+        rt, transport = _make_runtime(
+            result=_bootstrap_status_result(
+                timed_out=True,
+                target="startup_ready",
+                startup_ready=False,
+            )
+        )
+
+        result = await rt.wait_identity_bootstrap(
+            target="startup_ready", timeout=2.5
+        )
+
+        assert transport.calls[0]["params"] == {
+            "target": "startup_ready",
+            "timeout_ms": 2500,
+        }
+        assert transport.async_timeouts == [7.5]
+        assert result.timed_out is True
+        assert result.startup_ready is False
+
+    @pytest.mark.asyncio
+    async def test_wait_uses_per_request_transport_timeout_beyond_default(self):
+        rt, transport = _make_runtime(
+            result=_bootstrap_status_result(
+                complete=True,
+                ready=True,
+                target="materialized",
+            )
+        )
+
+        await rt.wait_identity_bootstrap(timeout=120)
+
+        assert transport.calls[0]["params"]["timeout_ms"] == 120_000
+        assert transport.async_timeouts == [125.0]
+
+    @pytest.mark.asyncio
+    async def test_wait_rejects_invalid_target_before_rpc(self):
+        rt, transport = _make_runtime(result=_bootstrap_status_result())
+
+        with pytest.raises(ValueError, match="target"):
+            await rt.wait_identity_bootstrap(target="kickoff")
+
+        assert transport.calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "timeout",
+        [-0.1, True, "1", float("nan"), float("inf")],
+    )
+    async def test_wait_rejects_invalid_timeout_before_rpc(self, timeout):
+        rt, transport = _make_runtime(result=_bootstrap_status_result())
+
+        with pytest.raises(ValueError, match="timeout"):
+            await rt.wait_identity_bootstrap(timeout=timeout)
+
+        assert transport.calls == []
 
 
 class TestAgentMethod:

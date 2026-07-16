@@ -36,6 +36,32 @@
 
 use std::borrow::Cow;
 
+/// Return a safe durable-identity projection from raw member labels.
+/// `rt:*` belongs exclusively to generated runtime aliases and must never be
+/// minted by a caller-controlled label on an unrelated raw member.
+pub(crate) fn durable_identity_label(
+    labels: &std::collections::BTreeMap<String, String>,
+) -> Option<&str> {
+    labels
+        .get("agent_identity")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !is_reserved_generated_alias(value))
+}
+
+/// Validate labels accepted by raw member-creation surfaces.
+pub(crate) fn validate_raw_identity_labels(
+    labels: &std::collections::BTreeMap<String, String>,
+) -> Result<(), &'static str> {
+    if labels
+        .get("agent_identity")
+        .is_some_and(|value| is_reserved_generated_alias(value.trim()))
+    {
+        return Err("labels.agent_identity may not use the reserved rt:* namespace");
+    }
+    Ok(())
+}
+
 /// Reserved marker prefix for encoded member ids.
 const MARKER: &str = "mk--";
 
@@ -127,6 +153,50 @@ pub fn runtime_alias_str(member_id: &str) -> Cow<'_, str> {
     }
 }
 
+/// Whether an input names MobKit's reserved generated-runtime namespace.
+///
+/// Raw mob surfaces may receive either the public alias (`rt:...`) or the
+/// comms-safe roster encoding (`mk--rt_c...`). Decode first so the latter
+/// cannot bypass identity authority checks.
+pub(crate) fn is_reserved_generated_alias(member_id: &str) -> bool {
+    runtime_alias_str(member_id).starts_with("rt:")
+}
+
+/// Whether a caller supplied the comms-safe roster marker directly.
+/// Public surfaces speak aliases, never encoded roster ids; accepting this
+/// spelling at a raw lower-plane creation boundary can collide with the
+/// projection of the corresponding decoded alias.
+pub(crate) fn uses_reserved_roster_marker(member_id: &str) -> bool {
+    member_id.starts_with(MARKER)
+}
+
+/// Admit a caller-chosen member id to the raw mob plane.
+///
+/// Generated aliases and encoded roster ids are runtime-owned namespaces.
+/// Once an identity runtime is present, a registered plain durable identity
+/// is runtime-owned as well. Raw creation surfaces must use this single check
+/// before spawning, ensuring, attaching, or forking a member so they cannot
+/// create a second lower-plane owner behind continuity and lease authority.
+pub(crate) async fn validate_raw_member_target(
+    identity_runtime: Option<&std::sync::Arc<crate::identity_first::IdentityRuntime>>,
+    member_id: &str,
+) -> Result<String, String> {
+    let alias = runtime_alias_str(member_id).into_owned();
+    if uses_reserved_roster_marker(member_id) || is_reserved_generated_alias(&alias) {
+        return Err(format!(
+            "member id '{member_id}' uses an identity-runtime reserved namespace"
+        ));
+    }
+    if let Some(identity_runtime) = identity_runtime
+        && let Some(identity) = identity_runtime.identity_for_member_mutation(&alias).await
+    {
+        return Err(format!(
+            "member id '{alias}' is owned by durable identity '{identity}'"
+        ));
+    }
+    Ok(alias)
+}
+
 /// Project a mob runtime id (`{roster_member_id}:{generation}`) into the
 /// public alias space (`{alias}:{generation}`).
 ///
@@ -189,6 +259,89 @@ mod tests {
         let encoded = mob_member_id_str(alias);
         assert_ne!(encoded, alias, "marker-prefixed names must be re-encoded");
         assert_eq!(runtime_alias_str(&encoded), alias);
+    }
+
+    #[test]
+    fn generated_alias_reservation_applies_to_public_and_encoded_forms() {
+        let alias = "rt:review:singleton:0";
+        let encoded = mob_member_id_str(alias);
+        assert!(is_reserved_generated_alias(alias));
+        assert!(is_reserved_generated_alias(&encoded));
+        assert!(!is_reserved_generated_alias("review:singleton"));
+    }
+
+    #[tokio::test]
+    async fn raw_member_targets_reject_reserved_and_registered_durable_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity_runtime = std::sync::Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: std::sync::Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?,
+                ),
+                lease_provider: std::sync::Arc::new(
+                    crate::identity_first::LocalLeaseProvider::new(),
+                ),
+                runtime_instance_id: "raw-target-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("lead")?;
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity,
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: std::collections::BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Dormant,
+                None,
+                None,
+            )
+            .await;
+
+        for target in [
+            "lead".to_string(),
+            "rt:lead:0".to_string(),
+            mob_member_id_str("rt:lead:0").into_owned(),
+        ] {
+            let error = match validate_raw_member_target(Some(&identity_runtime), &target).await {
+                Err(error) => error,
+                Ok(alias) => {
+                    return Err(format!(
+                        "identity-owned target {target:?} was admitted as {alias:?}"
+                    )
+                    .into());
+                }
+            };
+            assert!(error.contains("identity-runtime") || error.contains("durable identity"));
+        }
+        assert_eq!(
+            validate_raw_member_target(Some(&identity_runtime), "worker").await,
+            Ok("worker".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn raw_identity_labels_reject_encoded_generated_aliases() {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert(
+            "agent_identity".to_string(),
+            mob_member_id_str("rt:forged:0").into_owned(),
+        );
+        assert!(validate_raw_identity_labels(&labels).is_err());
+        assert_eq!(durable_identity_label(&labels), None);
     }
 
     #[test]

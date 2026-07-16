@@ -39,7 +39,7 @@ comms = true
 
 struct Gateway {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     lines: mpsc::Receiver<String>,
 }
 
@@ -65,19 +65,37 @@ impl Gateway {
         });
         Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             lines: rx,
         }
     }
 
     fn send(&mut self, value: Value) {
+        let stdin = self.stdin.as_mut().expect("gateway stdin remains open");
         writeln!(
-            self.stdin,
+            stdin,
             "{}",
             serde_json::to_string(&value).expect("request json")
         )
         .expect("write request");
-        self.stdin.flush().expect("flush request");
+        stdin.flush().expect("flush request");
+    }
+
+    fn close_stdin(&mut self) {
+        drop(self.stdin.take());
+    }
+
+    fn wait_for_exit(&mut self, deadline: Duration) {
+        let start = Instant::now();
+        while start.elapsed() < deadline {
+            if self.child.try_wait().expect("poll gateway exit").is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        panic!("rpc_gateway did not exit within {deadline:?}");
     }
 
     /// Read messages until `predicate` matches one; unmatched messages are
@@ -119,6 +137,54 @@ fn is_response_with_id(message: &Value, id: &str) -> bool {
 
 fn is_callback_request(message: &Value, method: &str) -> bool {
     message.get("method").and_then(Value::as_str) == Some(method) && message.get("id").is_some()
+}
+
+fn initialize_for_shutdown(gateway: &mut Gateway, state_dir: &tempfile::TempDir) {
+    gateway.send(json!({
+        "jsonrpc": "2.0",
+        "id": "init",
+        "method": "mobkit/init",
+        "params": {
+            "persistent_state": state_dir.path(),
+            "mob_config": MOB_CONFIG
+        }
+    }));
+    let init = gateway
+        .wait_for(
+            Duration::from_mins(1),
+            |_, _| {},
+            |m| is_response_with_id(m, "init"),
+        )
+        .expect("init response");
+    assert!(
+        init["result"]["contract_version"].is_string(),
+        "init failed: {init}"
+    );
+}
+
+#[test]
+fn persistent_gateway_exits_after_stdin_eof() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    initialize_for_shutdown(&mut gateway, &state_dir);
+
+    gateway.close_stdin();
+    gateway.wait_for_exit(Duration::from_secs(15));
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_gateway_exits_after_sigint_with_stdin_open() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = Gateway::start();
+    initialize_for_shutdown(&mut gateway, &state_dir);
+
+    let status = Command::new("kill")
+        .args(["-INT", &gateway.child.id().to_string()])
+        .status()
+        .expect("send SIGINT to rpc_gateway");
+    assert!(status.success(), "kill -INT failed: {status}");
+    gateway.wait_for_exit(Duration::from_mins(1));
 }
 
 #[test]

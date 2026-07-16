@@ -67,6 +67,23 @@ export type FetchLike = (
   },
 ) => Promise<FetchLikeResponse>;
 
+/**
+ * Grace period for the persistent gateway to finish its own shutdown.
+ *
+ * The gateway can spend up to 50 seconds draining request handlers, HTTP
+ * handlers, runtime work, and mob quiescence. Keep the SDK grace above that
+ * complete cleanup budget so closing the transport does not cut it short.
+ */
+export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 60_000;
+
+const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
+const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
+
+type ChildExitWaiter = (
+  child: ChildProcess,
+  timeoutMs: number,
+) => Promise<boolean>;
+
 // -- Helpers --------------------------------------------------------------
 
 export function buildJsonRpcRequest(
@@ -91,6 +108,82 @@ function sanitizeForJson(obj: unknown): unknown {
   return String(obj);
 }
 
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForChildExit(
+  child: ChildProcess,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (childHasExited(child)) return true;
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      child.removeListener("exit", onExit);
+      child.removeListener("close", onExit);
+      if (timer !== null) clearTimeout(timer);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+
+    child.once("exit", onExit);
+    child.once("close", onExit);
+
+    // Close the check/listener race: the process may have exited between the
+    // initial fast path and listener registration.
+    if (childHasExited(child)) {
+      finish(true);
+      return;
+    }
+
+    timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    timer.unref?.();
+    if (settled) clearTimeout(timer);
+  });
+}
+
+/** @internal Exported for deterministic lifecycle policy tests. */
+export async function stopChildProcess(
+  child: ChildProcess,
+  waitForExit: ChildExitWaiter = waitForChildExit,
+): Promise<void> {
+  try {
+    child.stdin?.end();
+  } catch {
+    // Continue with signal-based cleanup if stdin is already unavailable.
+  }
+
+  if (
+    await waitForExit(child, PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS)
+  ) {
+    return;
+  }
+
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    // A concurrent exit is observed by the bounded wait below.
+  }
+
+  if (await waitForExit(child, PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS)) {
+    return;
+  }
+
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // Best effort: never make SDK shutdown unbounded on a failed kill call.
+  }
+
+  await waitForExit(child, PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS);
+}
+
 // -- PersistentTransport --------------------------------------------------
 
 /**
@@ -102,6 +195,7 @@ function sanitizeForJson(obj: unknown): unknown {
  */
 export class PersistentTransport {
   private _process: ChildProcess | null = null;
+  private _stopping: Promise<void> | null = null;
   private readonly _env: Record<string, string>;
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
@@ -123,6 +217,9 @@ export class PersistentTransport {
   }
 
   start(): void {
+    if (this._stopping !== null) {
+      throw new Error("persistent transport is stopping");
+    }
     if (this._process !== null && this._process.exitCode === null) {
       return;
     }
@@ -240,18 +337,18 @@ export class PersistentTransport {
     });
   }
 
-  stop(): void {
-    if (this._process === null) return;
-    try {
-      if (this._process.stdin) {
-        this._process.stdin.end();
-      }
-      this._process.kill();
-    } catch {
-      // Ignore cleanup errors
-    } finally {
-      this._process = null;
-    }
+  async stop(): Promise<void> {
+    if (this._stopping !== null) return this._stopping;
+
+    const child = this._process;
+    if (child === null) return;
+
+    const stopping = stopChildProcess(child).finally(() => {
+      if (this._process === child) this._process = null;
+      if (this._stopping === stopping) this._stopping = null;
+    });
+    this._stopping = stopping;
+    return stopping;
   }
 
   isRunning(): boolean {
@@ -259,6 +356,9 @@ export class PersistentTransport {
   }
 
   private _ensureRunning(): void {
+    if (this._stopping !== null) {
+      throw new Error("persistent transport is stopping");
+    }
     if (!this.isRunning()) {
       this.start();
     }

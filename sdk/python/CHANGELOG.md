@@ -4,6 +4,21 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Persistent gateway shutdown now closes stdin and gives runtime-owned
+  identity cleanup its full graceful-drain budget before escalating to process
+  termination, preventing host teardown from interrupting lease release or
+  continuity persistence. The blocking child-process wait runs off the asyncio
+  event loop.
+
+### Identity bootstrap
+
+- Added `IdentityBootstrapMode` and
+  `MobKit.builder().identity_bootstrap_mode(...)` for eager, lazy, and bounded
+  background-warm gateway startup.
+- Added typed `identity_bootstrap_status()` and `wait_identity_bootstrap()`
+  runtime methods, including materialized and startup-ready barriers with
+  per-identity progress and terminal error details.
+
 ### Identity-first agent memory
 
 - Added `.agent_memory(...)` on `MobKit.builder()` for gateway-backed

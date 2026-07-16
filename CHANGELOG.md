@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Exposed identity-first startup materialization through the SDK gateway and
+  Python builder. Deployments can keep eager compatibility, register lazily,
+  or return after metadata registration and warm the roster in a tracked,
+  bounded background task. Typed status and wait RPCs report per-identity
+  `dormant`, `warming`, `active`, and `broken` progress and support an exact
+  startup-readiness barrier.
+
+### Changed
+
+- Identity bootstrap and reconcile now share one mode-aware controller;
+  background work is cancelled during shutdown and the concrete Mob bridge
+  skips unused checkpoint payload reads without weakening custom bridge
+  contracts.
+- Identity continuity persistence now serializes mutations per session,
+  short-circuits provenance-identical snapshot saves, and runs bundled SQLite
+  work on blocking workers with one writer and a bounded WAL read pool.
+- Gateway and console identity operations are now runtime-owned through their
+  commit or rollback boundary. EOF, Ctrl-C, callback closure, HTTP draining,
+  and the Python/TypeScript host transports preserve that cleanup ordering
+  before escalating to bounded process termination.
+- Hosts embedding an `Arc<UnifiedRuntime>` can use
+  `handle_unified_rpc_json_arc`; the gateway uses its live-handler counterpart
+  so identity-owned cross-mob mutations remain supervised if the requesting
+  connection disappears. The borrowed dispatcher fails those mutations
+  closed because it cannot transfer runtime ownership into the supervisor.
+
 ## [0.7.39] - 2026-07-15
 
 ### Added

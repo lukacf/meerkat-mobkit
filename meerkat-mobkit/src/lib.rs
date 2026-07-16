@@ -151,7 +151,7 @@ pub use rpc::{
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE,
     MOBKIT_CONTRACT_VERSION, handle_console_ingress_json, handle_mobkit_rpc_json,
-    handle_unified_rpc_json,
+    handle_unified_rpc_json, handle_unified_rpc_json_arc,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{

@@ -62,7 +62,16 @@ impl UnifiedRuntime {
     /// which MobKit's identity-first aliases like `rt:review:singleton:0`
     /// contain). Hooks and error events keep speaking the alias.
     pub async fn spawn(&self, mut spec: SpawnMemberSpec) -> Result<SpawnResult, MobRuntimeError> {
-        let member_id = spec.identity.to_string();
+        let member_id = if self.identity_runtime().is_some() {
+            crate::member_comms_id::validate_raw_member_target(
+                self.identity_runtime(),
+                spec.identity.as_str(),
+            )
+            .await
+            .map_err(MobRuntimeError::InvalidConfig)?
+        } else {
+            spec.identity.to_string()
+        };
         let profile = spec.role_name.to_string();
         spec.identity = crate::member_comms_id::mob_member_id(member_id.as_str());
         match Box::pin(self.mob_handle().spawn_spec(spec)).await {
@@ -88,7 +97,19 @@ impl UnifiedRuntime {
         &self,
         mut specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<SpawnResult>, MobRuntimeError> {
-        let member_ids: Vec<String> = specs.iter().map(|s| s.identity.to_string()).collect();
+        let mut member_ids = Vec::with_capacity(specs.len());
+        for spec in &specs {
+            member_ids.push(if self.identity_runtime().is_some() {
+                crate::member_comms_id::validate_raw_member_target(
+                    self.identity_runtime(),
+                    spec.identity.as_str(),
+                )
+                .await
+                .map_err(MobRuntimeError::InvalidConfig)?
+            } else {
+                spec.identity.to_string()
+            });
+        }
         // As in `spawn`: wire aliases become comms-safe roster ids.
         for spec in &mut specs {
             spec.identity = crate::member_comms_id::mob_member_id(spec.identity.as_str());

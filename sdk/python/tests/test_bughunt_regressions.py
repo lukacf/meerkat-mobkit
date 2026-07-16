@@ -14,14 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from meerkat_mobkit._sse import SseEvent
-from meerkat_mobkit._transport import PersistentTransport
+from meerkat_mobkit._transport import (
+    _GATEWAY_SHUTDOWN_GRACE_SECONDS,
+    _PROCESS_KILL_GRACE_SECONDS,
+    _PROCESS_TERMINATE_GRACE_SECONDS,
+    PersistentTransport,
+)
 from meerkat_mobkit.errors import RpcError
 from meerkat_mobkit.events import AgentEvent, MobEvent
 from meerkat_mobkit.types import EventEnvelope, KeepAliveConfig
@@ -114,6 +120,54 @@ def test_send_sync_rejects_duplicate_id_already_in_flight():
 
     with pytest.raises(ValueError, match="already"):
         transport.send_sync({"jsonrpc": "2.0", "id": "abc", "method": "x"})
+
+
+@pytest.mark.asyncio
+async def test_send_async_forwards_per_request_timeout():
+    transport = PersistentTransport("unused")
+    transport.send_sync = MagicMock(return_value={"result": {}})
+    request = {"jsonrpc": "2.0", "id": "wait-1", "method": "wait"}
+
+    response = await transport.send_async(request, timeout=125.0)
+
+    assert response == {"result": {}}
+    transport.send_sync.assert_called_once_with(request, timeout=125.0)
+
+
+def test_reader_drops_response_after_request_is_no_longer_pending():
+    transport = PersistentTransport("unused")
+    process = MagicMock()
+    process.stdout.readline.side_effect = [
+        b'{"jsonrpc":"2.0","id":"late","result":{}}\n',
+        b"",
+    ]
+    transport._process = process
+    transport._reader_loop()
+
+    assert transport._results == {}
+
+
+def test_stop_gives_gateway_full_cleanup_budget_before_termination():
+    transport = PersistentTransport("unused")
+    process = MagicMock()
+    process.wait.side_effect = [
+        subprocess.TimeoutExpired("rpc_gateway", _GATEWAY_SHUTDOWN_GRACE_SECONDS),
+        subprocess.TimeoutExpired("rpc_gateway", _PROCESS_TERMINATE_GRACE_SECONDS),
+        0,
+    ]
+    transport._process = process
+
+    transport.stop()
+
+    process.stdin.close.assert_called_once_with()
+    assert process.wait.call_args_list == [
+        call(timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS),
+        call(timeout=_PROCESS_TERMINATE_GRACE_SECONDS),
+        call(timeout=_PROCESS_KILL_GRACE_SECONDS),
+    ]
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert transport._process is None
 
 
 # -- Bug #16: numeric field coercion --

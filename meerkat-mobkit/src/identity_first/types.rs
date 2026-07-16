@@ -583,6 +583,135 @@ pub struct DurableAgentSpec {
 // IdentityStatus + supporting types
 // ---------------------------------------------------------------------------
 
+/// Highest supported fan-out for background identity hydration.
+///
+/// Restore already caps concurrent resume work at sixteen because every
+/// materialization can contend on the session/continuity stores.  Keep the
+/// public background-warm control inside that same operational envelope.
+pub const MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY: usize = 16;
+
+/// Controls how identity-first durable agents are materialized at startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum IdentityBootstrapMode {
+    /// Compatibility mode: startup synchronously creates or resumes every
+    /// identity in the roster.
+    #[default]
+    EagerMaterialize,
+    /// Register roster/topology/continuity metadata only. A concrete member is
+    /// created or resumed on first use or explicit materialization.
+    LazyMaterialize,
+    /// Return after metadata registration and hydrate identities in a tracked
+    /// background task with bounded concurrency.
+    LazyWithBackgroundWarm { concurrency: usize },
+}
+
+impl IdentityBootstrapMode {
+    /// Validate the operational concurrency contract.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Self::LazyWithBackgroundWarm { concurrency } = self {
+            if *concurrency == 0 {
+                return Err("LazyWithBackgroundWarm concurrency must be greater than 0".to_string());
+            }
+            if *concurrency > MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY {
+                return Err(format!(
+                    "LazyWithBackgroundWarm concurrency must be at most {MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_lazy(&self) -> bool {
+        !matches!(self, Self::EagerMaterialize)
+    }
+}
+
+/// Transient startup-hydration state. This is deliberately separate from
+/// [`IdentityLifecycleState`]: warming is coordination progress, not a durable
+/// identity lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityBootstrapState {
+    Dormant,
+    Warming,
+    Active,
+    Broken,
+}
+
+/// Bootstrap progress for one durable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityBootstrapEntry {
+    pub state: IdentityBootstrapState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Aggregate bootstrap-state counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityBootstrapCounts {
+    pub dormant: usize,
+    pub warming: usize,
+    pub active: usize,
+    pub broken: usize,
+}
+
+/// Typed snapshot for bootstrap observability and readiness barriers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityBootstrapStatus {
+    pub mode: IdentityBootstrapMode,
+    /// True once the configured startup coordination pass has stopped running.
+    /// Lazy materialization can therefore be complete while `ready` remains
+    /// false because dormant identities intentionally remain.
+    pub complete: bool,
+    /// True exactly when every tracked roster identity is materialized.
+    pub ready: bool,
+    /// Pass-level failure, for example a roster/topology provider or restore
+    /// error that is not attributable to one durable identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub counts: IdentityBootstrapCounts,
+    pub identities: std::collections::BTreeMap<AgentIdentity, IdentityBootstrapEntry>,
+}
+
+impl IdentityBootstrapStatus {
+    pub fn empty(mode: IdentityBootstrapMode) -> Self {
+        Self {
+            mode,
+            complete: true,
+            ready: true,
+            error: None,
+            counts: IdentityBootstrapCounts::default(),
+            identities: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn refresh_aggregates(&mut self) {
+        let mut counts = IdentityBootstrapCounts::default();
+        for entry in self.identities.values() {
+            match entry.state {
+                IdentityBootstrapState::Dormant => counts.dormant += 1,
+                IdentityBootstrapState::Warming => counts.warming += 1,
+                IdentityBootstrapState::Active => counts.active += 1,
+                IdentityBootstrapState::Broken => counts.broken += 1,
+            }
+        }
+        self.ready = self.complete
+            && self.error.is_none()
+            && counts.dormant == 0
+            && counts.warming == 0
+            && counts.broken == 0;
+        self.counts = counts;
+    }
+
+    /// All identities have reached a terminal hydration result. Broken is
+    /// terminal but not ready, allowing barriers to return a truthful failure
+    /// instead of waiting forever.
+    pub fn materialization_terminal(&self) -> bool {
+        self.counts.dormant == 0 && self.counts.warming == 0
+    }
+}
+
 /// Lifecycle state of an identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

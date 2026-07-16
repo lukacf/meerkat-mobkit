@@ -65,6 +65,7 @@ struct GatewayGatingConfig {
 
 struct GatewayRuntimeOptions {
     runtime_options: RuntimeOptions,
+    identity_bootstrap_mode: meerkat_mobkit::IdentityBootstrapMode,
     max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
     schedules: Vec<ScheduleDefinition>,
@@ -174,6 +175,7 @@ impl Default for GatewayRuntimeOptions {
     fn default() -> Self {
         Self {
             runtime_options: RuntimeOptions::default(),
+            identity_bootstrap_mode: meerkat_mobkit::IdentityBootstrapMode::default(),
             max_sessions: 16,
             routing_routes: Vec::new(),
             schedules: Vec::new(),
@@ -1845,6 +1847,156 @@ actions = ["agent.view"]
             assert!(err.contains("runtime_options.workgraph"), "{err}");
         }
     }
+
+    #[test]
+    fn gateway_identity_bootstrap_mode_parse_matrix_is_strict() {
+        use meerkat_mobkit::IdentityBootstrapMode;
+
+        let defaults = parse_gateway_runtime_options(&json!({}), None).expect("defaults");
+        assert_eq!(
+            defaults.identity_bootstrap_mode,
+            IdentityBootstrapMode::EagerMaterialize
+        );
+
+        for (wire, expected) in [
+            (
+                json!({"mode": "eager_materialize"}),
+                IdentityBootstrapMode::EagerMaterialize,
+            ),
+            (
+                json!({"mode": "lazy_materialize"}),
+                IdentityBootstrapMode::LazyMaterialize,
+            ),
+            (
+                json!({"mode": "lazy_with_background_warm", "concurrency": 2}),
+                IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+            ),
+        ] {
+            let options = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"identity_bootstrap_mode": wire}}),
+                None,
+            )
+            .expect("valid bootstrap mode");
+            assert_eq!(options.identity_bootstrap_mode, expected);
+        }
+
+        for invalid in [
+            json!("lazy_materialize"),
+            json!({}),
+            json!({"mode": "unknown"}),
+            json!({"mode": "lazy_materialize", "concurrency": 2}),
+            json!({"mode": "lazy_with_background_warm"}),
+            json!({"mode": "lazy_with_background_warm", "concurrency": 0}),
+            json!({"mode": "lazy_with_background_warm", "concurrency": 17}),
+            json!({"mode": "eager_materialize", "extra": true}),
+        ] {
+            let error = parse_gateway_runtime_options(
+                &json!({"runtime_options": {"identity_bootstrap_mode": invalid}}),
+                None,
+            )
+            .err()
+            .expect("invalid bootstrap mode must fail");
+            assert!(error.contains("identity_bootstrap_mode"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_close_wakes_pending_call_and_rejects_late_admission() {
+        let (stdout_tx, mut stdout_rx) = mpsc::channel(4);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let pending = tokio::spawn({
+            let bridge = bridge.clone();
+            async move { bridge.call("callback/build_agent", json!({})).await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), stdout_rx.recv())
+            .await
+            .expect("pending callback should be written")
+            .expect("stdout callback channel should remain open");
+        bridge.close().await;
+
+        let error = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("close should wake the pending callback")
+            .expect("callback task should not panic")
+            .expect_err("closed callback must fail");
+        assert!(error.contains("channel dropped"), "{error}");
+
+        let late_error = bridge
+            .call("callback/build_agent", json!({}))
+            .await
+            .expect_err("close must reject callbacks admitted after EOF");
+        assert!(late_error.contains("transport closed"), "{late_error}");
+        assert!(bridge.state.lock().await.pending.is_empty());
+    }
+}
+
+fn parse_gateway_identity_bootstrap_mode(
+    value: &Value,
+) -> Result<meerkat_mobkit::IdentityBootstrapMode, String> {
+    use meerkat_mobkit::identity_first::MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY;
+
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.identity_bootstrap_mode must be an object".to_string())?;
+    let unsupported = object
+        .keys()
+        .filter(|key| !matches!(key.as_str(), "mode" | "concurrency"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.identity_bootstrap_mode fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let mode = object.get("mode").and_then(Value::as_str).ok_or_else(|| {
+        "runtime_options.identity_bootstrap_mode.mode must be a string".to_string()
+    })?;
+    let parsed = match mode {
+        "eager_materialize" => {
+            if object.contains_key("concurrency") {
+                return Err(
+                    "runtime_options.identity_bootstrap_mode.concurrency is only valid for lazy_with_background_warm"
+                        .to_string(),
+                );
+            }
+            meerkat_mobkit::IdentityBootstrapMode::EagerMaterialize
+        }
+        "lazy_materialize" => {
+            if object.contains_key("concurrency") {
+                return Err(
+                    "runtime_options.identity_bootstrap_mode.concurrency is only valid for lazy_with_background_warm"
+                        .to_string(),
+                );
+            }
+            meerkat_mobkit::IdentityBootstrapMode::LazyMaterialize
+        }
+        "lazy_with_background_warm" => {
+            let concurrency = object
+                .get("concurrency")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "runtime_options.identity_bootstrap_mode.concurrency must be a positive integer"
+                        .to_string()
+                })?;
+            let concurrency = usize::try_from(concurrency).map_err(|_| {
+                "runtime_options.identity_bootstrap_mode.concurrency is too large".to_string()
+            })?;
+            if !(1..=MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY).contains(&concurrency) {
+                return Err(format!(
+                    "runtime_options.identity_bootstrap_mode.concurrency must be between 1 and {MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY}"
+                ));
+            }
+            meerkat_mobkit::IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency }
+        }
+        _ => {
+            return Err(format!(
+                "runtime_options.identity_bootstrap_mode.mode '{mode}' is unsupported"
+            ));
+        }
+    };
+    Ok(parsed)
 }
 
 fn parse_gateway_runtime_options(
@@ -1859,6 +2011,7 @@ fn parse_gateway_runtime_options(
         .ok_or_else(|| "runtime_options must be a JSON object".to_string())?;
     let supported = [
         "memory_config",
+        "identity_bootstrap_mode",
         "routing_config_path",
         "scheduling_files",
         "gating_config_path",
@@ -1891,6 +2044,9 @@ fn parse_gateway_runtime_options(
     }
 
     let mut parsed = GatewayRuntimeOptions::default();
+    if let Some(value) = runtime_options.get("identity_bootstrap_mode") {
+        parsed.identity_bootstrap_mode = parse_gateway_identity_bootstrap_mode(value)?;
+    }
     if let Some(memory_config) = runtime_options.get("memory_config") {
         parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
             memory_config,
@@ -3094,17 +3250,24 @@ fn run_single_shot() {
 struct StdioCallbackBridge {
     /// Send a line to stdout (the stdout writer task reads from this).
     stdout_tx: mpsc::Sender<String>,
-    /// Pending callback responses keyed by callback ID.
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    /// Callback admission and pending responses share one lock so EOF cannot
+    /// race a late insertion after pending callers have been cancelled.
+    state: Arc<Mutex<StdioCallbackState>>,
     /// Counter for generating unique callback IDs.
     counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(Default)]
+struct StdioCallbackState {
+    closed: bool,
+    pending: HashMap<String, oneshot::Sender<Value>>,
 }
 
 impl StdioCallbackBridge {
     fn new(stdout_tx: mpsc::Sender<String>) -> Self {
         Self {
             stdout_tx,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(Mutex::new(StdioCallbackState::default())),
             counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
@@ -3145,7 +3308,13 @@ impl StdioCallbackBridge {
         let id_str = format!("cb-{id}");
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id_str.clone(), tx);
+        {
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return Err("callback transport closed".to_string());
+            }
+            state.pending.insert(id_str.clone(), tx);
+        }
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -3156,12 +3325,12 @@ impl StdioCallbackBridge {
         let line = match serde_json::to_string(&request) {
             Ok(l) => l,
             Err(e) => {
-                self.pending.lock().await.remove(&id_str);
+                self.state.lock().await.pending.remove(&id_str);
                 return Err(e.to_string());
             }
         };
         if let Err(_) = self.stdout_tx.send(line).await {
-            self.pending.lock().await.remove(&id_str);
+            self.state.lock().await.pending.remove(&id_str);
             return Err("stdout channel closed".to_string());
         }
 
@@ -3182,7 +3351,7 @@ impl StdioCallbackBridge {
             }
             Ok(Err(_)) => Err("callback response channel dropped".to_string()),
             Err(_) => {
-                self.pending.lock().await.remove(&id_str);
+                self.state.lock().await.pending.remove(&id_str);
                 Err("callback timed out after 120s".to_string())
             }
         }
@@ -3195,9 +3364,21 @@ impl StdioCallbackBridge {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if let Some(tx) = self.pending.lock().await.remove(&id) {
+        if let Some(tx) = self.state.lock().await.pending.remove(&id) {
             let _ = tx.send(msg);
         }
+    }
+
+    /// Close callback admission and wake every pending caller. The pending
+    /// senders are dropped after releasing the lock, resolving their oneshot
+    /// receivers immediately without holding callback state across wakeups.
+    async fn close(&self) {
+        let pending = {
+            let mut state = self.state.lock().await;
+            state.closed = true;
+            std::mem::take(&mut state.pending)
+        };
+        drop(pending);
     }
 }
 
@@ -3810,8 +3991,24 @@ external_addressable = true
 
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
-    let stdout_writer = tokio::spawn(async move {
-        while let Some(line) = stdout_rx.recv().await {
+    let (stdout_shutdown_tx, mut stdout_shutdown_rx) = oneshot::channel::<()>();
+    let mut stdout_writer = tokio::spawn(async move {
+        loop {
+            let line = tokio::select! {
+                shutdown = &mut stdout_shutdown_rx => {
+                    let _ = shutdown;
+                    while let Ok(line) = stdout_rx.try_recv() {
+                        let mut stdout = std::io::stdout().lock();
+                        let _ = writeln!(stdout, "{line}");
+                        let _ = stdout.flush();
+                    }
+                    break;
+                }
+                line = stdout_rx.recv() => match line {
+                    Some(line) => line,
+                    None => break,
+                },
+            };
             let mut stdout = std::io::stdout().lock();
             let _ = writeln!(stdout, "{line}");
             let _ = stdout.flush();
@@ -3859,8 +4056,13 @@ external_addressable = true
                     let _ = rpc_tx.send(trimmed.to_string()).await;
                 }
             }
+            bridge.close().await;
         }
     });
+    // The reader task owns the sole producer. Dropping this setup copy is
+    // what lets EOF close `rpc_rx`; retaining it would make the dispatch loop
+    // wait forever and skip graceful runtime shutdown entirely.
+    drop(rpc_tx);
 
     /// Helper: send a JSON-RPC error response for the init request and exit.
     fn fail_init(request_id: &Value, code: i32, message: String) -> ! {
@@ -3907,6 +4109,14 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
+    if gateway_options.identity_bootstrap_mode.is_lazy() && !has_roster_provider {
+        fail_init(
+            &request_id,
+            -32602,
+            "runtime_options.identity_bootstrap_mode requires an identity-first roster provider"
+                .to_string(),
+        );
+    }
     if gateway_options.agent_memory.is_some() && !has_roster_provider {
         fail_init(
             &request_id,
@@ -4520,17 +4730,19 @@ external_addressable = true
                 ))
             };
 
-        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store,
-            lease_provider,
-            runtime_instance_id: format!("gateway-{}", std::process::id()),
-            has_runtime_store: identity_session_store_adapter.is_some()
-                || persistent_state.is_some(),
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(bridge_arc),
-            default_timeout: None,
-        })
-        .with_runtime_services(AgentRuntimeServices::new(mob_handle));
+        let irt = Arc::new(
+            IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store,
+                lease_provider,
+                runtime_instance_id: format!("gateway-{}", std::process::id()),
+                has_runtime_store: identity_session_store_adapter.is_some()
+                    || persistent_state.is_some(),
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge_arc),
+                default_timeout: None,
+            })
+            .with_runtime_services(AgentRuntimeServices::new(mob_handle)),
+        );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
 
         // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
@@ -4985,7 +5197,8 @@ external_addressable = true
         };
         irt.set_agent_memory(agent_memory_injector).await;
 
-        // Call restore_flow to bootstrap identities from the roster provider
+        // Bootstrap identities from the roster provider using the explicit
+        // gateway mode (eager remains the compatibility default).
         let roster_specs = roster
             .roster(&RosterContext {
                 mob_definition: Some(mob_definition.clone()),
@@ -5003,32 +5216,26 @@ external_addressable = true
             .lock()
             .unwrap_or_else(|err| err.into_inner()) = roster_specs.clone();
 
-        if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
-            &irt,
-            &roster_specs,
-            topology.as_deref(),
-            customizer.as_deref(),
-        )
-        .await
-        {
-            fail_init(
-                &request_id,
-                -32603,
-                format!("identity-first restore_flow failed: {e}"),
-            );
-        }
-
-        let identity_runtime = Arc::new(irt);
-        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
-            identity_runtime.clone(),
+        let identity_context = Arc::new(IdentityFirstRuntimeContext::new_with_bootstrap_mode(
+            irt.clone(),
             roster.clone(),
             topology.clone(),
             customizer.clone(),
             Some(runtime.mob_handle().definition().clone()),
-        )));
+            gateway_options.identity_bootstrap_mode.clone(),
+        ));
+        if let Err(e) = identity_context.bootstrap_roster(&roster_specs).await {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("identity-first bootstrap failed: {e}"),
+            );
+        }
+
+        runtime.attach_identity_first_context(identity_context);
 
         Some(meerkat_mobkit::rpc::IdentityFirstContext {
-            runtime: identity_runtime,
+            runtime: irt,
             roster_provider: roster,
             topology_provider: topology,
             customizer,
@@ -5125,12 +5332,13 @@ external_addressable = true
             Default::default(),
         );
         (
-            meerkat_mobkit::schedule_wiring::spawn_schedule_host(
+            meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
                 service,
                 adapter,
                 schedule_service,
                 mob_state,
                 runtime.mob_handle(),
+                runtime.identity_runtime().cloned(),
                 runnable_host,
                 workgraph_service.clone(),
                 schedule_owner_id.clone(),
@@ -5212,7 +5420,7 @@ external_addressable = true
         } else {
             (app, None)
         };
-    let serve_task = tokio::spawn({
+    let mut serve_task = tokio::spawn({
         let mut shutdown_rx = shutdown_rx.clone();
         async move {
             axum::serve(listener, app)
@@ -5240,6 +5448,9 @@ external_addressable = true
         );
         format!("{:x}", hasher.finalize())
     };
+    let identity_bootstrap = identity_ctx
+        .as_ref()
+        .map(|ctx| ctx.runtime.identity_bootstrap_status());
     let init_response = json!({
         "jsonrpc": "2.0",
         "id": request_id,
@@ -5249,6 +5460,7 @@ external_addressable = true
             "contract_version": MOBKIT_CONTRACT_VERSION,
             "runtime_origin": runtime_origin,
             "runtime_fingerprint": runtime_fingerprint,
+            "identity_bootstrap": identity_bootstrap,
         }
     });
     let _ = stdout_tx
@@ -5268,15 +5480,19 @@ external_addressable = true
     // the same methods concurrently, so completion order is free.
     let identity_ctx = identity_ctx.map(Arc::new);
     let http_base_url_shared: Arc<str> = http_base_url.clone().into();
+    let mut interrupted_with_open_stdin = false;
     {
         let mut inflight = tokio::task::JoinSet::new();
         loop {
             let request_line = tokio::select! {
-                line = rpc_rx.recv() => match line {
-                    Some(l) => l,
-                    None => break, // stdin reader closed (EOF or error)
+                line = rpc_rx.recv() => line,
+                _ = tokio::signal::ctrl_c() => {
+                    interrupted_with_open_stdin = true;
+                    None
                 },
-                _ = tokio::signal::ctrl_c() => break,
+            };
+            let Some(request_line) = request_line else {
+                break; // stdin reader closed (EOF/error), or Ctrl-C won
             };
             let request_line = apply_gateway_runtime_config_to_request(
                 &request_line,
@@ -5289,7 +5505,7 @@ external_addressable = true
             let http_base_url = http_base_url_shared.clone();
             let live_rpc = live_rpc.clone();
             inflight.spawn(async move {
-                let response = meerkat_mobkit::rpc::handle_unified_rpc_json_with_live(
+                let response = meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc(
                     &runtime,
                     &request_line,
                     timeout,
@@ -5305,10 +5521,14 @@ external_addressable = true
             // Reap completed handlers so the set does not grow unbounded.
             while inflight.try_join_next().is_some() {}
         }
-        // stdin is closed: the client that would consume these responses is
-        // gone or leaving. Give in-flight handlers a short grace period,
-        // then abort rather than waiting out callback timeouts against a
-        // departed host; runtime.shutdown() below still runs.
+        // Ctrl-C can stop dispatch while stdin remains open. Close callback
+        // admission here too so handler/customizer waits wake immediately.
+        bridge.close().await;
+        // EOF closes request admission. Give ordinary handlers a bounded
+        // response grace, then abort their outer waiters so runtime shutdown
+        // can begin promptly. Identity materialization/delivery transactions
+        // are independently owned by the runtime foreground supervisor and
+        // are cancelled or joined below at their explicit cleanup boundary.
         let drain = async { while inflight.join_next().await.is_some() {} };
         if tokio::time::timeout(Duration::from_secs(5), drain)
             .await
@@ -5318,16 +5538,44 @@ external_addressable = true
         }
     }
 
-    // 10. Graceful shutdown: stop HTTP server, then runtime
+    // 10. Graceful shutdown: stop HTTP admission, bound the outer-handler
+    // drain, then let the runtime cancel/join identity-owned transactions.
+    // Dispatch can also end on Ctrl-C while stdin is still open. Stop the
+    // reader now so its blocking read cannot outlive the runtime shutdown.
+    // Aborting an already-completed EOF reader is harmless.
+    stdin_reader.abort();
     let _ = shutdown_tx.send(true);
-    let _ = serve_task.await;
+    if tokio::time::timeout(Duration::from_secs(5), &mut serve_task)
+        .await
+        .is_err()
+    {
+        serve_task.abort();
+        let _ = serve_task.await;
+    }
     event_drain_task.abort();
     runtime.shutdown().await;
-    drop(rpc_tx);
     drop(stdout_tx);
+    // Runtime and callback objects intentionally retain sender clones until
+    // function exit. Signal the writer explicitly after all producers have
+    // quiesced so it drains queued responses without waiting for channel
+    // ownership to disappear.
+    let _ = stdout_shutdown_tx.send(());
     let _ = stdin_reader.await;
-    let _ = stdout_writer.await;
+    if tokio::time::timeout(Duration::from_secs(5), &mut stdout_writer)
+        .await
+        .is_err()
+    {
+        stdout_writer.abort();
+        let _ = stdout_writer.await;
+    }
     drop(_temp_dir);
+    if interrupted_with_open_stdin {
+        // Tokio's stdin adapter performs a blocking read that cannot be
+        // cancelled by aborting its task. All MobKit/runtime/stdout cleanup is
+        // complete above; exit explicitly so the runtime destructor does not
+        // wait forever for that helper thread while stdin remains open.
+        std::process::exit(0);
+    }
 }
 
 fn main() {

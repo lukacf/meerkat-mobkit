@@ -299,6 +299,17 @@ pub trait SessionBridge: Send + Sync {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
 
+    /// Whether `resume_session` consumes the continuity-store snapshot payload.
+    ///
+    /// The default is deliberately conservative for compatibility with custom
+    /// bridges: restore callers must load and pass the persisted snapshot unless
+    /// an implementation explicitly declares that session-id-based resume is
+    /// sufficient. Implementations returning `false` must not inspect the
+    /// `snapshot` argument; bootstrap callers may pass an empty payload.
+    fn requires_resume_snapshot(&self) -> bool {
+        true
+    }
+
     /// Resume a mob member from a previously checkpointed snapshot.
     ///
     /// The `session_id` comes from the ContinuityRecord — it's the session
@@ -1133,6 +1144,13 @@ fn runtime_binding_from_wire(
 
 #[async_trait]
 impl SessionBridge for MobSessionBridge {
+    fn requires_resume_snapshot(&self) -> bool {
+        // MemberLaunchMode::Resume loads the durable session by id from the
+        // configured Meerkat session store; this bridge never reads the
+        // continuity-store payload passed to resume_session.
+        false
+    }
+
     async fn create_session(
         &self,
         _identity: &AgentIdentity,

@@ -7,11 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 
-use super::contracts::{AgentCustomizer, RosterProvider, TopologyProvider};
+use super::contracts::{
+    AgentCustomizer, RosterProvider, SessionSnapshotMatchCandidate, TopologyProvider,
+};
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, ContinuityStoreError,
     CustomizerError, DurableAgentSpec, ManagedPeerEdge, RosterContext, RosterError,
@@ -230,8 +232,10 @@ pub struct ContinuitySessionStoreAdapter {
     /// actors must fail closed instead of becoming pre-registration pending
     /// snapshots for a future session with the same id.
     unregistered_sessions: Mutex<HashSet<String>>,
-    /// Serializes persisted session writes, including projection CAS load/write pairs.
-    save_guard: tokio::sync::Mutex<()>,
+    /// Per-session serialization for registry, pending, version, and durable
+    /// load/guard/write transitions. Weak values let inactive locks be reclaimed
+    /// without ever creating a second lock while an operation or waiter exists.
+    session_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl ContinuitySessionStoreAdapter {
@@ -242,8 +246,37 @@ impl ContinuitySessionStoreAdapter {
             session_registry: Mutex::new(HashMap::new()),
             pending_unregistered: Mutex::new(HashMap::new()),
             unregistered_sessions: Mutex::new(HashSet::new()),
-            save_guard: tokio::sync::Mutex::new(()),
+            session_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn session_lock(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        const PRUNE_THRESHOLD: usize = 1_024;
+
+        let key = session_id.to_string();
+        let mut locks = self
+            .session_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        if locks.len() >= PRUNE_THRESHOLD {
+            locks.retain(|_, lock| lock.strong_count() > 0);
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
+    async fn lock_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.session_lock(session_id).lock_owned().await
     }
 
     /// Register a session with its owning identity's runtime state.
@@ -256,7 +289,7 @@ impl ContinuitySessionStoreAdapter {
         session_id: &meerkat_core::types::SessionId,
         state: SessionRuntimeState,
     ) -> Result<super::types::CheckpointVersion, meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(session_id).await;
         let session_key = session_id.to_string();
         let checkpoint_version = state.checkpoint_version.get();
         let previous_registry = {
@@ -315,22 +348,6 @@ impl ContinuitySessionStoreAdapter {
         Ok(effective_checkpoint_version)
     }
 
-    /// Update the fencing token for a session (e.g., after lease renewal).
-    #[allow(dead_code)]
-    pub(crate) fn update_fencing_token(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-        token: super::types::FencingToken,
-    ) {
-        let mut registry = self
-            .session_registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(state) = registry.get_mut(&session_id.to_string()) {
-            state.fencing_token = token;
-        }
-    }
-
     fn forget_session(&self, session_id: &meerkat_core::types::SessionId) {
         let key = session_id.to_string();
         self.session_registry
@@ -351,7 +368,7 @@ impl ContinuitySessionStoreAdapter {
         &self,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), ContinuityStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(session_id).await;
         self.forget_session(session_id);
         self.unregistered_sessions
             .lock()
@@ -486,13 +503,13 @@ impl ContinuitySessionStoreAdapter {
         let checkpoint_version = super::types::CheckpointVersion::new(version);
         let snapshot = super::types::SessionSnapshot { data };
         self.store
-            .save_session_snapshot(
-                &state.identity,
-                session_id,
+            .save_session_snapshot_owned(
+                state.identity,
+                session_id.clone(),
                 state.generation,
                 checkpoint_version,
                 state.fencing_token,
-                &snapshot,
+                snapshot,
             )
             .await
             .map_err(|e| {
@@ -565,13 +582,49 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         &self,
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(session.id()).await;
         if self.session_was_unregistered(session.id()) {
             return Err(meerkat_store::SessionStoreError::Internal(format!(
                 "session {} was unregistered from identity runtime state",
                 session.id()
             )));
         }
+
+        // Serialize once up front. Stores that can prove the exact bytes and
+        // ownership/CAS tuple are already durable avoid loading and reparsing
+        // the previous full session document. The ordinary save guard still
+        // validates the incoming document against its byte-identical durable
+        // predecessor before the no-op is accepted.
+        let snapshot = Arc::new(super::types::SessionSnapshot {
+            data: serde_json::to_vec(session)
+                .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?,
+        });
+        let sid_str = session.id().to_string();
+        let state = self.lookup_session(&sid_str);
+        if let Some(state) = state.as_ref() {
+            let candidate = SessionSnapshotMatchCandidate {
+                identity: state.identity.clone(),
+                session_id: session.id().clone(),
+                generation: state.generation,
+                checkpoint_version: self.current_version(session.id()),
+                fencing_token: state.fencing_token,
+                snapshot: snapshot.clone(),
+            };
+            let matches = self
+                .store
+                .session_snapshot_matches_current(candidate)
+                .await
+                .map_err(|e| {
+                    meerkat_store::SessionStoreError::Internal(format!(
+                        "continuity snapshot match: {e}"
+                    ))
+                })?;
+            if matches {
+                meerkat_core::session_store::append_only_save_guard(session, Some(session))?;
+                return Ok(());
+            }
+        }
+
         let previous = self.load_previous_session_for_save(session.id()).await?;
         if let Err(save_error) =
             meerkat_core::session_store::append_only_save_guard(session, previous.as_ref())
@@ -603,12 +656,11 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                  rebuilding the row to committed authority (RebuildToAuthority)"
             );
         }
-        let data = serde_json::to_vec(session)
-            .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
-        let sid_str = session.id().to_string();
+        let snapshot = Arc::try_unwrap(snapshot).unwrap_or_else(|snapshot| (*snapshot).clone());
+        let data = snapshot.data;
 
         // Use real identity/generation/fencing from the runtime registry.
-        match self.lookup_session(&sid_str) {
+        match state {
             Some(state) => {
                 self.save_registered_snapshot(session.id(), data, state)
                     .await?;
@@ -637,7 +689,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
         commit: &meerkat_core::TranscriptRewriteCommit,
     ) -> Result<(), meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(session.id()).await;
         if self.session_was_unregistered(session.id()) {
             return Err(meerkat_store::SessionStoreError::Internal(format!(
                 "session {} was unregistered from identity runtime state",
@@ -674,11 +726,10 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         &self,
         session: &meerkat_core::Session,
     ) -> Result<(), meerkat_store::SessionStoreError> {
+        let _guard = self.lock_session(session.id()).await;
         let data = serde_json::to_vec(session)
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
-
-        let _guard = self.save_guard.lock().await;
         match self.lookup_session(&sid_str) {
             Some(state) => {
                 self.save_registered_snapshot(session.id(), data, state)
@@ -700,7 +751,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         session: &meerkat_core::Session,
         expected_current_revision: Option<String>,
     ) -> Result<(), meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(session.id()).await;
         let previous = self.load_persisted_session(session.id()).await?;
         meerkat_core::session_store::authoritative_projection_current_revision_guard(
             session,
@@ -753,7 +804,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         &self,
         id: &meerkat_core::types::SessionId,
     ) -> Result<(), meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(id).await;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
             return Ok(());
@@ -780,7 +831,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
         expected_current_revision: &str,
     ) -> Result<bool, meerkat_store::SessionStoreError> {
-        let _guard = self.save_guard.lock().await;
+        let _guard = self.lock_session(id).await;
         let Some(session) = self.load_persisted_session(id).await? else {
             self.forget_session(id);
             return Ok(false);
@@ -946,7 +997,7 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
     use serde_json::json;
 
@@ -973,6 +1024,22 @@ mod tests {
 
         fn fail_saves(&self, fail: bool) {
             self.fail_save.store(fail, AtomicOrdering::SeqCst);
+        }
+    }
+
+    struct ConcurrentLoadStore {
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        rendezvous: tokio::sync::Barrier,
+    }
+
+    impl ConcurrentLoadStore {
+        fn new(expected_concurrent_loads: usize) -> Self {
+            Self {
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                rendezvous: tokio::sync::Barrier::new(expected_concurrent_loads),
+            }
         }
     }
 
@@ -1048,6 +1115,189 @@ mod tests {
                 .delete_continuity_record(identity, fencing_token)
                 .await
         }
+    }
+
+    #[async_trait]
+    impl ContinuityStore for ConcurrentLoadStore {
+        async fn resolve_many(
+            &self,
+            identities: &[AgentIdentity],
+        ) -> Result<
+            std::collections::BTreeMap<AgentIdentity, ContinuityResolveState>,
+            ContinuityStoreError,
+        > {
+            Ok(identities
+                .iter()
+                .cloned()
+                .map(|identity| (identity, ContinuityResolveState::Uninitialized))
+                .collect())
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+            let now = self.in_flight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, AtomicOrdering::SeqCst);
+            self.rendezvous.wait().await;
+            self.in_flight.fetch_sub(1, AtomicOrdering::SeqCst);
+            Ok(None)
+        }
+
+        async fn save_session_snapshot(
+            &self,
+            _identity: &AgentIdentity,
+            _session_id: &meerkat_core::types::SessionId,
+            _generation: ContinuityGeneration,
+            _version: CheckpointVersion,
+            _fencing_token: FencingToken,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn upsert_continuity_record(
+            &self,
+            _record: &ContinuityRecord,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn delete_continuity_record(
+            &self,
+            _identity: &AgentIdentity,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_parallelizes_different_sessions() {
+        let store = Arc::new(ConcurrentLoadStore::new(2));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let first = meerkat_core::Session::new();
+        let second = meerkat_core::Session::new();
+        assert_ne!(first.id(), second.id());
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let (first_result, second_result) = tokio::join!(
+                meerkat::SessionStore::save(&adapter, &first),
+                meerkat::SessionStore::save(&adapter, &second),
+            );
+            first_result.expect("first save");
+            second_result.expect("second save");
+        })
+        .await
+        .expect("different session IDs must not share one global save lock");
+
+        assert_eq!(
+            store.max_in_flight.load(AtomicOrdering::SeqCst),
+            2,
+            "both independent session loads should overlap"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_exact_resave_is_a_noop() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        let identity = AgentIdentity::parse("agent:exact-resave").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:exact-resave:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(3);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("initial save");
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("exact resave");
+
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .expect("resolve");
+        let ContinuityResolveState::Ready { record } = resolved.get(&identity).expect("record")
+        else {
+            panic!("expected ready record");
+        };
+        assert_eq!(
+            record.checkpoint_version,
+            CheckpointVersion::new(1),
+            "an exact durable resave must not manufacture a new checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_session_store_adapter_exact_bytes_do_not_mask_a_newer_fence() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        let identity = AgentIdentity::parse("agent:exact-stale-fence").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:exact-stale-fence:0")
+                .expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(3);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("initial save");
+
+        store
+            .upsert_continuity_record(&record, FencingToken::new(4))
+            .await
+            .expect("advance durable fence");
+        let error = meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect_err("the stale registered fence must still be rejected");
+        assert!(
+            error.to_string().contains("stale fencing token"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

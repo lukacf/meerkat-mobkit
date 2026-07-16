@@ -873,65 +873,6 @@ async fn run() -> anyhow::Result<()> {
     .await
     .context("failed to bootstrap local runtime")?;
 
-    // Run the schedule driver so members' authored schedules actually fire: at
-    // due time it materializes a session and runs the prompt as a real agent
-    // turn (session targets via the runtime-backed host, mob targets via the
-    // mob runtime). Held for the gateway's lifetime — dropping the handle shuts
-    // the host down. Persistent sessions only.
-    let (_schedule_host, _schedule_watchdog) = if let Some((
-        schedule_service,
-        mob_target_registry,
-        service,
-        schedule_store_path,
-        adapter,
-    )) = schedule_host_inputs
-    {
-        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
-        mob_target_registry.set_mob_state(mob_state.clone());
-        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
-            &schedule_service,
-            &mob_target_registry,
-        )
-        .await
-        {
-            Ok(repaired) if repaired > 0 => {
-                tracing::info!(
-                    repaired,
-                    "repaired persisted resumable-session schedules to identity mob targets"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "failed to repair persisted resumable-session schedules to identity mob targets",
-                );
-            }
-        }
-        // Same silent-stall guard as rpc_gateway: the upstream driver
-        // discards tick errors, so stalls only become visible here.
-        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
-            schedule_service.clone(),
-            schedule_store_path,
-            Default::default(),
-        );
-        (
-            meerkat_mobkit::schedule_wiring::spawn_schedule_host(
-                service,
-                adapter,
-                schedule_service,
-                mob_state,
-                runtime.mob_handle(),
-                None,
-                workgraph_service.clone(),
-                runtime_id.clone(),
-            ),
-            Some(watchdog),
-        )
-    } else {
-        (None, None)
-    };
-
     // Load contacts.toml if present. This enables mobkit/cross_mob/directory
     // (lookup of known mob addresses) without requiring peer mob handles.
     // High-level wire/unwire/send still need peer handles and are gated
@@ -1052,6 +993,64 @@ async fn run() -> anyhow::Result<()> {
         Some(roster)
     } else {
         None
+    };
+
+    // Start schedule delivery only after identity-first attachment. The host
+    // owns a snapshot of the authority Arc, so starting it before this point
+    // would permanently reject every generated `rt:*` target.
+    let (_schedule_host, _schedule_watchdog) = if let Some((
+        schedule_service,
+        mob_target_registry,
+        service,
+        schedule_store_path,
+        adapter,
+    )) = schedule_host_inputs
+    {
+        let mob_state = runtime.mob_runtime().agent_mob_mcp_state();
+        mob_target_registry.set_mob_state(mob_state.clone());
+        match meerkat_mobkit::schedule_wiring::repair_resumable_session_targets_to_mob_members(
+            &schedule_service,
+            &mob_target_registry,
+        )
+        .await
+        {
+            Ok(repaired) if repaired > 0 => {
+                tracing::info!(
+                    repaired,
+                    "repaired persisted resumable-session schedules to identity mob targets"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to repair persisted resumable-session schedules to identity mob targets",
+                );
+            }
+        }
+        // Same silent-stall guard as rpc_gateway: the upstream driver
+        // discards tick errors, so stalls only become visible here.
+        let watchdog = meerkat_mobkit::schedule_wiring::spawn_schedule_claim_watchdog(
+            schedule_service.clone(),
+            schedule_store_path,
+            Default::default(),
+        );
+        (
+            meerkat_mobkit::schedule_wiring::spawn_schedule_host_with_identity_runtime(
+                service,
+                adapter,
+                schedule_service,
+                mob_state,
+                runtime.mob_handle(),
+                runtime.identity_runtime().cloned(),
+                None,
+                workgraph_service.clone(),
+                runtime_id.clone(),
+            ),
+            Some(watchdog),
+        )
+    } else {
+        (None, None)
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -8,6 +8,7 @@
 //! - [`TopologyProvider`] — managed dynamic topology edges (CONTRACT-05)
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -22,6 +23,22 @@ use crate::mob_handle_runtime::SessionCreatedContext;
 // ---------------------------------------------------------------------------
 // CONTRACT-01: ContinuityStore
 // ---------------------------------------------------------------------------
+
+/// Candidate used by stores that can prove an exact, provenance-preserving
+/// snapshot no-op without returning and reparsing the durable document.
+///
+/// A store may report a match only when both the bytes and every ownership/CAS
+/// field identify its current durable row. Implementations that cannot prove
+/// the complete predicate must use the trait's default `false` response.
+#[derive(Debug, Clone)]
+pub struct SessionSnapshotMatchCandidate {
+    pub identity: AgentIdentity,
+    pub session_id: meerkat_core::types::SessionId,
+    pub generation: ContinuityGeneration,
+    pub checkpoint_version: CheckpointVersion,
+    pub fencing_token: FencingToken,
+    pub snapshot: Arc<SessionSnapshot>,
+}
 
 /// Authoritative durable state provider for identity-first continuity.
 ///
@@ -54,6 +71,20 @@ pub trait ContinuityStore: Send + Sync {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<SessionSnapshot>, ContinuityStoreError>;
 
+    /// Return `true` only when `candidate` is byte-for-byte identical to the
+    /// current durable row and its identity, generation, checkpoint version,
+    /// and fencing token all match.
+    ///
+    /// This additive capability lets adapters skip a full document load and
+    /// parse for an already-durable save. The conservative default preserves
+    /// compatibility and correctness for external stores.
+    async fn session_snapshot_matches_current(
+        &self,
+        _candidate: SessionSnapshotMatchCandidate,
+    ) -> Result<bool, ContinuityStoreError> {
+        Ok(false)
+    }
+
     /// Delete a saved session snapshot only if its serialized session
     /// projection still matches `expected_current_revision`.
     ///
@@ -77,6 +108,31 @@ pub trait ContinuityStore: Send + Sync {
         fencing_token: FencingToken,
         snapshot: &SessionSnapshot,
     ) -> Result<(), ContinuityStoreError>;
+
+    /// Owned equivalent of [`Self::save_session_snapshot`].
+    ///
+    /// Stores backed by blocking workers can override this method to move a
+    /// large snapshot into the worker without cloning it. Existing providers
+    /// inherit the compatibility implementation.
+    async fn save_session_snapshot_owned(
+        &self,
+        identity: AgentIdentity,
+        session_id: meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        self.save_session_snapshot(
+            &identity,
+            &session_id,
+            generation,
+            version,
+            fencing_token,
+            &snapshot,
+        )
+        .await
+    }
 
     /// Upsert a continuity record with fencing precondition.
     ///

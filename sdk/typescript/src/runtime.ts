@@ -405,6 +405,10 @@ export class MobKitRuntime {
   private _config: MobKitBuilderConfig;
   private _transport: PersistentTransport | null;
   private _running = false;
+  private _lifecycleTail: Promise<void> = Promise.resolve();
+  private _lifecycleTailResult: Promise<void> | null = null;
+  private _lifecycleTailIntent: "connect" | "shutdown" | null = null;
+  private _lifecycleSequence = 0;
   private _dispatcher = new CallbackDispatcher();
   private _rustHttpBase: string | null = null;
 
@@ -417,14 +421,63 @@ export class MobKitRuntime {
   /** @internal */
   static async _create(config: MobKitBuilderConfig): Promise<MobKitRuntime> {
     const runtime = new MobKitRuntime(config);
-    await runtime._bootstrap();
+    await runtime.connect();
     return runtime;
   }
 
   /** Explicitly connect to the runtime. Idempotent. */
   async connect(): Promise<void> {
-    if (this._running) return;
-    await this._bootstrap();
+    if (this._running && this._lifecycleTailIntent === null) return;
+    if (
+      this._lifecycleTailIntent === "connect" &&
+      this._lifecycleTailResult !== null
+    ) {
+      return this._lifecycleTailResult;
+    }
+
+    const previous = this._lifecycleTail;
+    const sequence = ++this._lifecycleSequence;
+    const operation = (async () => {
+      await previous;
+      if (this._running) return;
+
+      try {
+        await this._bootstrap();
+      } catch (error) {
+        // A failed bootstrap must not leave an unowned child behind for a
+        // later connect attempt to overwrite.
+        const transport = this._transport;
+        this._transport = null;
+        this._rustHttpBase = null;
+        if (transport !== null) {
+          try {
+            await transport.stop();
+          } catch {
+            // Preserve the bootstrap error, which carries the actionable
+            // gateway/RPC failure.
+          }
+        }
+        throw error;
+      }
+
+      // A later queued operation owns the final state. Do not briefly reopen
+      // RPC admission when an ordered shutdown is already waiting behind us.
+      if (this._lifecycleSequence === sequence) this._running = true;
+    })();
+
+    const connect = operation.finally(() => {
+      if (this._lifecycleSequence === sequence) {
+        this._lifecycleTailResult = null;
+        this._lifecycleTailIntent = null;
+      }
+    });
+    this._lifecycleTailResult = connect;
+    this._lifecycleTailIntent = "connect";
+    this._lifecycleTail = connect.then(
+      () => undefined,
+      () => undefined,
+    );
+    return connect;
   }
 
   private async _bootstrap(): Promise<void> {
@@ -469,7 +522,7 @@ export class MobKitRuntime {
       }
 
       try {
-        const initResult = await this._rpc(
+        const initResult = await this._rpcUnchecked(
           "mobkit/init",
           this._buildInitParams(),
         );
@@ -508,7 +561,6 @@ export class MobKitRuntime {
           "RPC calls will fail with NotConnectedError",
       );
     }
-    this._running = true;
   }
 
   private _buildInitParams(): Record<string, unknown> {
@@ -602,6 +654,18 @@ export class MobKitRuntime {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<unknown> {
+    if (!this._running) {
+      throw new NotConnectedError(
+        "runtime not started — no transport available",
+      );
+    }
+    return this._rpcUnchecked(method, params);
+  }
+
+  private async _rpcUnchecked(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
     if (this._transport === null) {
       throw new NotConnectedError(
         "runtime not started — no transport available",
@@ -661,11 +725,40 @@ export class MobKitRuntime {
   }
 
   async shutdown(): Promise<void> {
+    // Close public RPC admission synchronously, even when teardown must wait
+    // for an already-admitted connect to finish its ordered bootstrap.
     this._running = false;
-    if (this._transport !== null) {
-      this._transport.stop();
-      this._transport = null;
+    if (
+      this._lifecycleTailIntent === "shutdown" &&
+      this._lifecycleTailResult !== null
+    ) {
+      return this._lifecycleTailResult;
     }
+
+    const previous = this._lifecycleTail;
+    const sequence = ++this._lifecycleSequence;
+    const operation = (async () => {
+      await previous;
+      this._running = false;
+      const transport = this._transport;
+      this._transport = null;
+      this._rustHttpBase = null;
+      if (transport !== null) await transport.stop();
+    })();
+
+    const shutdown = operation.finally(() => {
+      if (this._lifecycleSequence === sequence) {
+        this._lifecycleTailResult = null;
+        this._lifecycleTailIntent = null;
+      }
+    });
+    this._lifecycleTailResult = shutdown;
+    this._lifecycleTailIntent = "shutdown";
+    this._lifecycleTail = shutdown.then(
+      () => undefined,
+      () => undefined,
+    );
+    return shutdown;
   }
 
   get isRunning(): boolean {

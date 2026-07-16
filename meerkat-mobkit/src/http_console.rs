@@ -968,15 +968,28 @@ async fn console_send_identity_first(
     }
 
     if handling_mode == meerkat_core::types::HandlingMode::Steer {
-        match identity_runtime
-            .send_with_mode_and_interaction(
-                &identity,
-                &content,
-                handling_mode,
-                Some(accepted.interaction_id.as_str()),
-            )
-            .await
-        {
+        let send_result =
+            if crate::member_comms_id::is_reserved_generated_alias(&requested_identity) {
+                identity_runtime
+                    .send_with_mode_and_interaction_member_alias_tracked(
+                        &identity,
+                        requested_identity.as_str(),
+                        &content,
+                        handling_mode,
+                        Some(accepted.interaction_id.as_str()),
+                    )
+                    .await
+            } else {
+                identity_runtime
+                    .send_with_mode_and_interaction_tracked(
+                        &identity,
+                        &content,
+                        handling_mode,
+                        Some(accepted.interaction_id.as_str()),
+                    )
+                    .await
+            };
+        match send_result {
             Ok(_) => {
                 if let Err(err) = aggregator
                     .mark_steer_interaction_delivered(
@@ -1029,16 +1042,31 @@ async fn console_send_identity_first(
     let dispatch_content = content.clone();
     let dispatch_origin = request.origin.clone();
     let dispatch_accepted = accepted.clone();
+    let dispatch_expected_alias =
+        crate::member_comms_id::is_reserved_generated_alias(&requested_identity)
+            .then_some(requested_identity);
     tokio::spawn(async move {
-        match identity_runtime
-            .send_with_mode_and_interaction(
-                &dispatch_identity,
-                &dispatch_content,
-                handling_mode,
-                Some(dispatch_accepted.interaction_id.as_str()),
-            )
-            .await
-        {
+        let send_result = if let Some(expected_alias) = dispatch_expected_alias.as_deref() {
+            identity_runtime
+                .send_with_mode_and_interaction_member_alias_tracked(
+                    &dispatch_identity,
+                    expected_alias,
+                    &dispatch_content,
+                    handling_mode,
+                    Some(dispatch_accepted.interaction_id.as_str()),
+                )
+                .await
+        } else {
+            identity_runtime
+                .send_with_mode_and_interaction_tracked(
+                    &dispatch_identity,
+                    &dispatch_content,
+                    handling_mode,
+                    Some(dispatch_accepted.interaction_id.as_str()),
+                )
+                .await
+        };
+        match send_result {
             Ok(_) => {
                 if let Err(err) = dispatch_aggregator
                     .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
@@ -1607,8 +1635,7 @@ fn retain_visible_member_rows(rows: &mut Vec<Value>, view: Option<&AccessView>) 
             .and_then(Value::as_str);
         let identity = labels
             .as_ref()
-            .and_then(|labels| labels.get("agent_identity"))
-            .map(String::as_str)
+            .and_then(crate::member_comms_id::durable_identity_label)
             .or_else(|| row.get("identity").and_then(Value::as_str))
             .or(agent_id);
         let role = row
@@ -3790,12 +3817,24 @@ struct ConsoleRuntimeIdentityAlias {
     session_id: Option<String>,
 }
 
+/// Legacy live-only compatibility applies only to genuinely raw member ids.
+/// A generated `rt:*` projection remains identity-owned even if target
+/// resolution races the interval between durable deletion and member cleanup.
+fn console_live_only_fallback_allowed(
+    was_registered: bool,
+    requested_identity: &str,
+    live_alias: Option<&ConsoleRuntimeIdentityAlias>,
+) -> bool {
+    !was_registered
+        && !crate::member_comms_id::is_reserved_generated_alias(requested_identity)
+        && live_alias.is_some_and(|alias| {
+            !crate::member_comms_id::is_reserved_generated_alias(&alias.runtime_member_id)
+        })
+}
+
 fn durable_identity_for_member(member: &meerkat_mob::runtime::MobMemberListEntry) -> String {
-    member
-        .labels
-        .get("agent_identity")
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
+    crate::member_comms_id::durable_identity_label(&member.labels)
+        .map(str::to_owned)
         // Fallback surfaces the public alias, not the comms-safe roster id.
         .unwrap_or_else(|| {
             crate::member_comms_id::runtime_alias_str(member.agent_identity.as_str()).into_owned()
@@ -3860,9 +3899,7 @@ async fn lookup_member_alias_candidates_with_session(
     let label_matches = entries
         .iter()
         .filter(|entry| {
-            entry
-                .labels
-                .get("agent_identity")
+            crate::member_comms_id::durable_identity_label(&entry.labels)
                 .is_some_and(|identity| identity == requested_identity)
         })
         .cloned()
@@ -3959,7 +3996,9 @@ async fn identity_runtime_alias(
     identity_runtime: &crate::identity_first::IdentityRuntime,
     requested_identity: &str,
 ) -> Result<Option<(crate::identity_first::AgentIdentity, bool)>, String> {
-    if requested_identity.starts_with("rt:") {
+    let requested_identity = crate::member_comms_id::runtime_alias_str(requested_identity);
+    let requested_identity = requested_identity.as_ref();
+    if crate::member_comms_id::is_reserved_generated_alias(requested_identity) {
         for status in identity_runtime.statuses().await {
             if status
                 .agent_runtime_id
@@ -4027,7 +4066,7 @@ async fn resolve_console_identity_control_target(
                         return Err(identity_hidden_by_policy_error(requested_identity));
                     }
                     if let Some(registered) = registered_live {
-                        return Ok(Some((identity, exact, Some(registered))));
+                        return Ok(Some((identity, true, Some(registered))));
                     }
                     let requested_live_candidates =
                         lookup_visible_member_alias_candidates_with_session(
@@ -4066,7 +4105,7 @@ async fn resolve_console_identity_control_target(
                         return Err(identity_hidden_by_policy_error(requested_identity));
                     }
                     if let Some(registered) = registered_live {
-                        return Ok(Some((identity, exact, Some(registered))));
+                        return Ok(Some((identity, true, Some(registered))));
                     }
                     let durable_live_candidates =
                         lookup_visible_member_alias_candidates_with_session(
@@ -4097,7 +4136,11 @@ async fn resolve_console_identity_control_target(
                         (None, durable) => durable,
                     }
                 };
-                return Ok(Some((identity, exact, live)));
+                // The second target flag records durable ownership observed
+                // during resolution. A later UnknownIdentity therefore means
+                // a concurrent delete, not permission to fall back to the
+                // captured raw member alias.
+                return Ok(Some((identity, true, live)));
             }
             Ok(None) => {}
             Err(err) => {
@@ -4115,6 +4158,9 @@ async fn resolve_console_identity_control_target(
     let Some(alias) = live_alias else {
         return Ok(None);
     };
+    if !runtime_alias_visible_to_console(handle, visibility_policy, &alias) {
+        return Err(identity_hidden_by_policy_error(requested_identity));
+    }
     if let Some(identity_runtime) = identity_runtime
         && let Some(bound_status) = identity_runtime
             .statuses()
@@ -4228,6 +4274,7 @@ async fn stale_live_alias_json_rpc_error(
 }
 
 fn identity_from_runtime_alias(alias: &str) -> Option<crate::identity_first::AgentIdentity> {
+    let alias = crate::member_comms_id::runtime_alias_str(alias);
     let rest = alias.strip_prefix("rt:")?;
     let (identity, generation) = rest.rsplit_once(':')?;
     if identity.is_empty()
@@ -4245,15 +4292,14 @@ async fn stale_runtime_alias_json_rpc_error(
     alias: &str,
 ) -> Option<JsonRpcError> {
     let identity_runtime = identity_runtime?;
-    let identity = identity_from_runtime_alias(alias)?;
-    let Ok(status) = identity_runtime.status(&identity).await else {
-        return None;
-    };
+    let alias = crate::member_comms_id::runtime_alias_str(alias).into_owned();
+    let identity = identity_from_runtime_alias(&alias)?;
+    let status = identity_runtime.status(&identity).await.ok();
     let registered_runtime_member_id = status
-        .agent_runtime_id
         .as_ref()
+        .and_then(|status| status.agent_runtime_id.as_ref())
         .map(crate::identity_first::AgentRuntimeId::as_str);
-    if registered_runtime_member_id == Some(alias) {
+    if registered_runtime_member_id == Some(alias.as_str()) {
         return None;
     }
     Some(JsonRpcError {
@@ -4269,7 +4315,7 @@ async fn stale_runtime_alias_json_rpc_error(
             "identity": identity.as_str(),
             "registered_runtime_member_id": registered_runtime_member_id,
             "live_runtime_member_id": alias,
-            "registered_session_id": status.session_id.as_ref().map(ToString::to_string),
+            "registered_session_id": status.as_ref().and_then(|status| status.session_id.as_ref()).map(ToString::to_string),
             "live_session_id": Value::Null,
         })),
     })
@@ -4705,24 +4751,81 @@ fn member_id_matches_durable_identity(member_id: &str, durable_identity: &str) -
     member_id == durable_identity
 }
 
-async fn retire_stale_console_members_for_identity(
+fn console_runtime_alias_generation(alias: &str, durable_identity: &str) -> Option<u64> {
+    let alias = crate::member_comms_id::runtime_alias_str(alias);
+    let rest = alias.strip_prefix("rt:")?;
+    let (identity, generation) = rest.rsplit_once(':')?;
+    if identity != durable_identity {
+        return None;
+    }
+    generation.parse().ok()
+}
+
+async fn stale_console_member_ids_for_identity(
     handle: &MobHandle,
     visibility_policy: &dyn ConsoleVisibilityPolicy,
     durable_identity: &str,
-    keep_runtime_member_id: Option<&str>,
-) -> Result<(), String> {
-    let stale_members = lookup_member_alias_candidates_with_session(handle, durable_identity)
+    current_runtime_member_id: Option<&str>,
+    include_current: bool,
+) -> Vec<AgentIdentity> {
+    let Some(current_generation) = current_runtime_member_id
+        .and_then(|alias| console_runtime_alias_generation(alias, durable_identity))
+    else {
+        return Vec::new();
+    };
+    lookup_member_alias_candidates_with_session(handle, durable_identity)
         .await
         .into_iter()
         .filter(|alias| {
             runtime_alias_visible_to_console(handle, visibility_policy, alias)
-                && keep_runtime_member_id
-                    .map(|keep| alias.runtime_member_id != keep)
-                    .unwrap_or(true)
+                && console_runtime_alias_generation(
+                    alias.runtime_member_id.as_str(),
+                    durable_identity,
+                )
+                .is_some_and(|generation| {
+                    generation < current_generation
+                        || (include_current && generation == current_generation)
+                })
         })
         .map(|alias| crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str()))
-        .collect::<Vec<_>>();
-    for member_id in stale_members {
+        .collect()
+}
+
+/// Lifecycle-authoritative stale aliases, independent of console projection.
+///
+/// This is used only while the durable identity lifecycle lock is held. A
+/// hidden generated alias is still an old concrete embodiment of the selected
+/// durable identity and must not survive beside its current generation.
+async fn stale_console_member_ids_for_identity_authoritative(
+    handle: &MobHandle,
+    durable_identity: &str,
+    current_runtime_member_id: &str,
+    include_current: bool,
+) -> Vec<AgentIdentity> {
+    let Some(current_generation) =
+        console_runtime_alias_generation(current_runtime_member_id, durable_identity)
+    else {
+        return Vec::new();
+    };
+    lookup_member_alias_candidates_with_session(handle, durable_identity)
+        .await
+        .into_iter()
+        .filter(|alias| {
+            console_runtime_alias_generation(alias.runtime_member_id.as_str(), durable_identity)
+                .is_some_and(|generation| {
+                    generation < current_generation
+                        || (include_current && generation == current_generation)
+                })
+        })
+        .map(|alias| crate::member_comms_id::mob_member_id(alias.runtime_member_id.as_str()))
+        .collect()
+}
+
+async fn retire_console_member_ids(
+    handle: &MobHandle,
+    member_ids: Vec<AgentIdentity>,
+) -> Result<(), String> {
+    for member_id in member_ids {
         retire_console_member(handle, &member_id).await?;
     }
     Ok(())
@@ -5901,7 +6004,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             if let Some(identity_runtime) = &identity_runtime {
-                let (parsed_identity, _requested_exact_identity, live_alias) =
+                let (parsed_identity, _was_registered, live_alias) =
                     match resolve_console_identity_control_target(
                         &handle,
                         Some(identity_runtime),
@@ -6035,7 +6138,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             if let Some(identity_runtime) = &identity_runtime {
-                let (parsed_identity, _requested_exact_identity, live_alias) =
+                let (parsed_identity, _was_registered, live_alias) =
                     match resolve_console_identity_control_target(
                         &handle,
                         Some(identity_runtime),
@@ -6171,7 +6274,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             if let Some(identity_runtime) = &identity_runtime {
-                let (parsed_identity, _requested_exact_identity, live_alias) =
+                let (parsed_identity, was_registered, live_alias) =
                     match resolve_console_identity_control_target(
                         &handle,
                         Some(identity_runtime),
@@ -6211,30 +6314,43 @@ async fn handle_console_runtime_rpc_with_visibility(
                         return response_value(response_id, None, Some(error));
                     }
                 }
-                match identity_runtime.retire(&parsed_identity).await {
-                    Ok(token) => {
-                        let keep_runtime_member_id = registered_status
-                            .as_ref()
-                            .and_then(|status| status.agent_runtime_id.as_ref())
-                            .filter(|_| identity_runtime.has_session_bridge())
-                            .map(crate::identity_first::AgentRuntimeId::as_str);
-                        let cleanup_warning = if registered_status.is_some()
-                            && let Err(err) = retire_stale_console_members_for_identity(
-                                &handle,
-                                visibility_policy,
-                                parsed_identity.as_str(),
-                                keep_runtime_member_id,
-                            )
-                            .await
-                        {
-                            Some(json!({
-                                "kind": "stale_member_cleanup_failed_after_identity_retire",
-                                "identity": parsed_identity.as_str(),
-                                "message": err,
-                            }))
-                        } else {
-                            None
-                        };
+                let cleanup_handle = handle.clone();
+                let cleanup_identity = parsed_identity.clone();
+                let include_current = !identity_runtime.has_session_bridge();
+                let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity)
+                    .then_some(identity);
+                let retire_result = identity_runtime
+                    .retire_and_cleanup_live_members_tracked(
+                        &parsed_identity,
+                        expected_alias,
+                        move |retired_alias| async move {
+                            let stale_member_ids = match retired_alias.as_ref() {
+                                Some(retired_alias) => {
+                                    stale_console_member_ids_for_identity_authoritative(
+                                        &cleanup_handle,
+                                        cleanup_identity.as_str(),
+                                        retired_alias.as_str(),
+                                        include_current,
+                                    )
+                                    .await
+                                }
+                                None => Vec::new(),
+                            };
+                            retire_console_member_ids(&cleanup_handle, stale_member_ids)
+                                .await
+                                .err()
+                                .map(|error| {
+                                    json!({
+                                        "kind": "stale_member_cleanup_failed_after_identity_retire",
+                                        "identity": cleanup_identity.as_str(),
+                                        "message": error,
+                                    })
+                                })
+                        },
+                    )
+                    .await;
+                match retire_result {
+                    Ok((token, cleanup_warning)) => {
                         if let Some(store) = &console_events {
                             store
                                 .record_lifecycle(
@@ -6257,7 +6373,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                             None,
                         );
                     }
-                    Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                    Err(err @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                        if !console_live_only_fallback_allowed(
+                            was_registered,
+                            identity,
+                            live_alias.as_ref(),
+                        ) {
+                            return console_identity_error_response(response_id, "retire", err);
+                        }
                         if let Some(alias) = live_alias.as_ref() {
                             if !runtime_alias_visible_to_console(&handle, visibility_policy, alias)
                             {
@@ -6372,7 +6495,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             };
             let handle = runtime.handle();
             if let Some(identity_runtime) = &identity_runtime {
-                let (parsed_identity, _requested_exact_identity, live_alias) =
+                let (parsed_identity, was_registered, live_alias) =
                     match resolve_console_identity_control_target(
                         &handle,
                         Some(identity_runtime),
@@ -6412,73 +6535,71 @@ async fn handle_console_runtime_rpc_with_visibility(
                         return response_value(response_id, None, Some(error));
                     }
                 }
-                match identity_runtime.respawn(&parsed_identity).await {
-                    Ok(mut record) => {
-                        let live_respawn_warning = match Box::pin(respawn_console_member(
-                            &handle,
-                            &crate::member_comms_id::mob_member_id(
-                                record.agent_runtime_id.as_str(),
-                            ),
-                        ))
-                        .await
-                        {
-                            Ok(topology_restore_warning) => {
-                                let live_session_id = handle
-                                    .resolve_bridge_session_id_observation(
-                                        &crate::member_comms_id::mob_member_id(
-                                            record.agent_runtime_id.as_str(),
-                                        ),
+                let live_handle = handle.clone();
+                let rollback_handle = handle.clone();
+                let cleanup_identity = parsed_identity.clone();
+                let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity)
+                    .then_some(identity);
+                let respawn_result = identity_runtime
+                    .respawn_and_rebind_live_member_tracked(
+                        &parsed_identity,
+                        expected_alias,
+                        move |runtime_alias| {
+                            let live_handle = live_handle;
+                            let cleanup_identity = cleanup_identity;
+                            async move {
+                                let member_id = crate::member_comms_id::mob_member_id(
+                                    runtime_alias.as_str(),
+                                );
+                                let topology_restore_warning =
+                                    respawn_console_member(&live_handle, &member_id).await?;
+                                let live_session_id = live_handle
+                                    .resolve_bridge_session_id_observation(&member_id)
+                                    .await
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "member respawn for {runtime_alias} returned no live session"
+                                        )
+                                    })?;
+                                let stale_member_ids =
+                                    stale_console_member_ids_for_identity_authoritative(
+                                        &live_handle,
+                                        cleanup_identity.as_str(),
+                                        runtime_alias.as_str(),
+                                        false,
                                     )
                                     .await;
-                                if let Some(live_session_id) = live_session_id {
-                                    match identity_runtime
-                                        .rebind_session_after_live_respawn(
-                                            &parsed_identity,
-                                            live_session_id.clone(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(updated_record) => {
-                                            record = updated_record;
-                                            topology_restore_warning
-                                        }
-                                        Err(err) => Some(json!({
-                                            "kind": "identity_rebind_failed_after_member_respawn",
-                                            "identity": record.identity.as_str(),
-                                            "agent_runtime_id": record.agent_runtime_id.as_str(),
-                                            "live_session_id": live_session_id.to_string(),
-                                            "message": err.to_string(),
-                                        })),
-                                    }
-                                } else {
-                                    topology_restore_warning
-                                }
+                                let cleanup_warning = retire_console_member_ids(
+                                    &live_handle,
+                                    stale_member_ids,
+                                )
+                                .await
+                                .err()
+                                .map(|error| {
+                                    json!({
+                                        "kind": "stale_member_cleanup_failed_after_identity_respawn",
+                                        "identity": cleanup_identity.as_str(),
+                                        "agent_runtime_id": runtime_alias.as_str(),
+                                        "message": error,
+                                    })
+                                });
+                                Ok((
+                                    live_session_id,
+                                    (topology_restore_warning, cleanup_warning),
+                                ))
                             }
-                            Err(err) => Some(json!({
-                                "kind": "member_respawn_failed_after_identity_refresh",
-                                "identity": record.identity.as_str(),
-                                "agent_runtime_id": record.agent_runtime_id.as_str(),
-                                "message": err,
-                            })),
-                        };
-                        let cleanup_warning = if registered_status.is_some()
-                            && let Err(err) = retire_stale_console_members_for_identity(
-                                &handle,
-                                visibility_policy,
-                                parsed_identity.as_str(),
-                                Some(record.agent_runtime_id.as_str()),
+                        },
+                        move |runtime_alias| async move {
+                            retire_console_member(
+                                &rollback_handle,
+                                &crate::member_comms_id::mob_member_id(runtime_alias.as_str()),
                             )
                             .await
-                        {
-                            Some(json!({
-                                "kind": "stale_member_cleanup_failed_after_identity_respawn",
-                                "identity": parsed_identity.as_str(),
-                                "agent_runtime_id": record.agent_runtime_id.as_str(),
-                                "message": err,
-                            }))
-                        } else {
-                            None
-                        };
+                        },
+                    )
+                    .await;
+                match respawn_result {
+                    Ok((record, (live_respawn_warning, cleanup_warning))) => {
                         if let Some(store) = &console_events {
                             store
                                 .record_lifecycle(
@@ -6508,7 +6629,11 @@ async fn handle_console_runtime_rpc_with_visibility(
                         );
                     }
                     Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
-                        if live_alias.is_none() {
+                        if !console_live_only_fallback_allowed(
+                            was_registered,
+                            identity,
+                            live_alias.as_ref(),
+                        ) {
                             return invalid_params(
                                 response_id,
                                 format!("identity not found: {identity}"),
@@ -6591,7 +6716,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 ))
                 .await;
             };
-            let (parsed_identity, _requested_exact_identity, live_alias) =
+            let (parsed_identity, was_registered, live_alias) =
                 match resolve_console_identity_control_target(
                     &handle,
                     Some(identity_runtime),
@@ -6633,7 +6758,12 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
                 Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
-                    if let Some(alias) = live_alias.as_ref() {
+                    if console_live_only_fallback_allowed(
+                        was_registered,
+                        identity,
+                        live_alias.as_ref(),
+                    ) && let Some(alias) = live_alias.as_ref()
+                    {
                         if !runtime_alias_visible_to_console(&handle, visibility_policy, alias) {
                             return identity_hidden_by_policy_response(response_id, identity);
                         }
@@ -6651,7 +6781,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 }
                 Err(err) => return console_identity_error_response(response_id, "reset", err),
             }
-            match identity_runtime.reset(&parsed_identity).await {
+            let reset_result = if crate::member_comms_id::is_reserved_generated_alias(identity) {
+                identity_runtime
+                    .reset_member_alias_tracked(&parsed_identity, identity)
+                    .await
+            } else {
+                identity_runtime.reset_tracked(&parsed_identity).await
+            };
+            match reset_result {
                 Ok(record) => {
                     let cleanup_warning = Some(json!({
                         "kind": "stale_member_cleanup_skipped_after_identity_reset",
@@ -6702,7 +6839,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "identity-first runtime required for delete_identity",
                 );
             };
-            let (parsed_identity, _requested_exact_identity, live_alias) =
+            let (parsed_identity, was_registered, live_alias) =
                 match resolve_console_identity_control_target(
                     &handle,
                     Some(identity_runtime),
@@ -6722,7 +6859,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                 };
             let registered_status = match identity_runtime.status(&parsed_identity).await {
                 Ok(status) => status,
-                Err(crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                Err(err @ crate::identity_first::IdentityRuntimeError::UnknownIdentity(_)) => {
+                    if was_registered {
+                        return console_identity_error_response(
+                            response_id,
+                            "delete_identity",
+                            err,
+                        );
+                    }
                     if let Some(alias) = live_alias.as_ref() {
                         if !runtime_alias_visible_to_console(&handle, visibility_policy, alias) {
                             return identity_hidden_by_policy_response(response_id, identity);
@@ -6762,30 +6906,43 @@ async fn handle_console_runtime_rpc_with_visibility(
             {
                 return response_value(response_id, None, Some(error));
             }
-            match identity_runtime.delete_identity(&parsed_identity).await {
-                Ok(()) => {
-                    let keep_runtime_member_id = registered_status
-                        .agent_runtime_id
-                        .as_ref()
-                        .filter(|_| identity_runtime.has_session_bridge())
-                        .map(crate::identity_first::AgentRuntimeId::as_str);
-                    let cleanup_warning = if let Err(err) =
-                        retire_stale_console_members_for_identity(
-                            &handle,
-                            visibility_policy,
-                            parsed_identity.as_str(),
-                            keep_runtime_member_id,
-                        )
-                        .await
-                    {
-                        Some(json!({
-                            "kind": "stale_member_cleanup_failed_after_identity_delete",
-                            "identity": parsed_identity.as_str(),
-                            "message": err,
-                        }))
-                    } else {
-                        None
-                    };
+            let cleanup_handle = handle.clone();
+            let cleanup_identity = parsed_identity.clone();
+            let include_current = !identity_runtime.has_session_bridge();
+            let expected_alias =
+                crate::member_comms_id::is_reserved_generated_alias(identity).then_some(identity);
+            let delete_result = identity_runtime
+                .delete_identity_and_cleanup_live_members_tracked(
+                    &parsed_identity,
+                    expected_alias,
+                    move |deleted_alias| async move {
+                        let stale_member_ids = match deleted_alias.as_ref() {
+                            Some(deleted_alias) => {
+                                stale_console_member_ids_for_identity_authoritative(
+                                    &cleanup_handle,
+                                    cleanup_identity.as_str(),
+                                    deleted_alias.as_str(),
+                                    include_current,
+                                )
+                                .await
+                            }
+                            None => Vec::new(),
+                        };
+                        retire_console_member_ids(&cleanup_handle, stale_member_ids)
+                            .await
+                            .err()
+                            .map(|error| {
+                                json!({
+                                    "kind": "stale_member_cleanup_failed_after_identity_delete",
+                                    "identity": cleanup_identity.as_str(),
+                                    "message": error,
+                                })
+                            })
+                    },
+                )
+                .await;
+            match delete_result {
+                Ok(cleanup_warning) => {
                     if let Some(store) = &console_events {
                         store
                             .record_lifecycle(
@@ -6986,6 +7143,12 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
+            if crate::member_comms_id::is_reserved_generated_alias(agent_identity) {
+                return invalid_params(
+                    response_id,
+                    "rt:* is reserved for identity-runtime generated aliases",
+                );
+            }
             let labels = match request.params.get("labels") {
                 None | Some(Value::Null) => std::collections::BTreeMap::new(),
                 Some(value) => match serde_json::from_value(value.clone()) {
@@ -6995,6 +7158,9 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 },
             };
+            if let Err(message) = crate::member_comms_id::validate_raw_identity_labels(&labels) {
+                return invalid_params(response_id, message);
+            }
             let context = request.params.get("context").cloned();
             let resume_session_id = match request.params.get("resume_session_id") {
                 None => None,
@@ -7154,6 +7320,14 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
+            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                return invalid_params(response_id, message);
+            }
             let mut spec = SpawnMemberSpec::new(
                 ProfileName::from(role),
                 crate::member_comms_id::mob_member_id(agent_identity),
@@ -7197,10 +7371,11 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "retire_member",
                 identity_runtime.as_ref(),
-                member_id,
+                &member_id,
             )
             .await
             {
@@ -7208,14 +7383,14 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             if let (Some(identity_runtime_ref), Some(roster)) =
                 (identity_runtime.as_ref(), identity_roster.as_ref())
+                && let Some(identity) = identity_runtime_ref
+                    .identity_for_member_mutation(&member_id)
+                    .await
             {
-                let identity = match crate::identity_first::AgentIdentity::parse(member_id) {
-                    Ok(identity) => identity,
-                    Err(err) => {
-                        return invalid_params(response_id, format!("invalid member_id: {err}"));
-                    }
-                };
-                return match identity_runtime_ref.retire(&identity).await {
+                return match identity_runtime_ref
+                    .retire_member_alias_tracked(&identity, &member_id)
+                    .await
+                {
                     Ok(_token) => {
                         // Off the desired roster too, or the next reconcile
                         // (or the repair task) re-creates it.
@@ -7250,10 +7425,13 @@ async fn handle_console_runtime_rpc_with_visibility(
             // constructed identity runtimes serve these arms too).
             if let Some(identity_runtime_ref) = identity_runtime.as_ref()
                 && let Some(durable) = identity_runtime_ref
-                    .owned_identity_for_member_alias(member_id)
+                    .identity_for_member_mutation(&member_id)
                     .await
             {
-                return match identity_runtime_ref.retire(&durable).await {
+                return match identity_runtime_ref
+                    .retire_member_alias_tracked(&durable, &member_id)
+                    .await
+                {
                     Ok(_token) => response_value(
                         response_id,
                         Some(serde_json::json!({
@@ -7267,8 +7445,16 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
+            if crate::member_comms_id::is_reserved_generated_alias(&member_id) {
+                return internal_error(
+                    response_id,
+                    format!(
+                        "generated member alias requires current identity authority: {member_id}"
+                    ),
+                );
+            }
             if let Some(aggregator) = &console_aggregator {
-                return match Box::pin(aggregator.retire_identity(member_id)).await {
+                return match Box::pin(aggregator.retire_identity(&member_id)).await {
                     Ok(true) => response_value(
                         response_id,
                         Some(serde_json::json!({ "accepted": true })),
@@ -7290,7 +7476,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             // paths: a completed-disposal cleanup miss reads as retired.
             match retire_console_member(
                 &runtime.handle(),
-                &crate::member_comms_id::mob_member_id(member_id),
+                &crate::member_comms_id::mob_member_id(&member_id),
             )
             .await
             {
@@ -7306,10 +7492,11 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "respawn_member",
                 identity_runtime.as_ref(),
-                member_id,
+                &member_id,
             )
             .await
             {
@@ -7317,17 +7504,17 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             if identity_roster.is_some()
                 && let Some(identity_runtime_ref) = identity_runtime.as_ref()
+                && let Some(identity) = identity_runtime_ref
+                    .identity_for_member_mutation(&member_id)
+                    .await
             {
-                let identity = match crate::identity_first::AgentIdentity::parse(member_id) {
-                    Ok(identity) => identity,
-                    Err(err) => {
-                        return invalid_params(response_id, format!("invalid member_id: {err}"));
-                    }
-                };
                 // Identity-first respawn = reset: retire the live session and
                 // rebuild from the current roster spec under the same durable
                 // identity (fresh session, new generation).
-                return match identity_runtime_ref.reset(&identity).await {
+                return match identity_runtime_ref
+                    .reset_member_alias_tracked(&identity, &member_id)
+                    .await
+                {
                     Ok(record) => response_value(
                         response_id,
                         Some(serde_json::json!({
@@ -7356,10 +7543,13 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             if let Some(identity_runtime_ref) = identity_runtime.as_ref()
                 && let Some(durable) = identity_runtime_ref
-                    .owned_identity_for_member_alias(member_id)
+                    .identity_for_member_mutation(&member_id)
                     .await
             {
-                return match identity_runtime_ref.reset(&durable).await {
+                return match identity_runtime_ref
+                    .reset_member_alias_tracked(&durable, &member_id)
+                    .await
+                {
                     Ok(record) => response_value(
                         response_id,
                         Some(serde_json::json!({
@@ -7375,11 +7565,19 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 };
             }
+            if crate::member_comms_id::is_reserved_generated_alias(&member_id) {
+                return internal_error(
+                    response_id,
+                    format!(
+                        "generated member alias requires current identity authority: {member_id}"
+                    ),
+                );
+            }
             // Parity with respawn_console_member's tolerance set: topology
             // warnings degrade, completed-disposal cleanup misses repair.
             match Box::pin(respawn_console_member(
                 &runtime.handle(),
-                &crate::member_comms_id::mob_member_id(member_id),
+                &crate::member_comms_id::mob_member_id(&member_id),
             ))
             .await
             {
@@ -7489,10 +7687,11 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "member_status",
                 identity_runtime.as_ref(),
-                member_id,
+                &member_id,
             )
             .await
             {
@@ -7500,7 +7699,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
             match runtime
                 .handle()
-                .member_status(&crate::member_comms_id::mob_member_id(member_id))
+                .member_status(&crate::member_comms_id::mob_member_id(&member_id))
                 .await
             {
                 Ok(snapshot) => response_value(
@@ -7520,21 +7719,22 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "identity required");
             };
+            let identity = crate::member_comms_id::runtime_alias_str(identity).into_owned();
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "identity_resolved_tools",
                 identity_runtime.as_ref(),
-                identity,
+                &identity,
             )
             .await
             {
                 return response_value(response_id, None, Some(error));
             }
             if let Some(identity_runtime) = identity_runtime.as_ref()
-                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(identity)
+                && let Ok(parsed) = crate::identity_first::AgentIdentity::parse(&identity)
                 && let Ok(status) = identity_runtime.status(&parsed).await
                 && let Some(session_id) = status.session_id
             {
-                match resolved_tools_for_session(runtime.session_service(), identity, session_id)
+                match resolved_tools_for_session(runtime.session_service(), &identity, session_id)
                     .await
                 {
                     Ok(snapshot) => {
@@ -7552,7 +7752,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     }
                 }
             }
-            match resolved_tools_for_member(&runtime.handle(), runtime.session_service(), identity)
+            match resolved_tools_for_member(&runtime.handle(), runtime.session_service(), &identity)
                 .await
             {
                 Ok(snapshot) => response_value(
@@ -7567,20 +7767,44 @@ async fn handle_console_runtime_rpc_with_visibility(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            let member_id = crate::member_comms_id::runtime_alias_str(member_id).into_owned();
             if let Some(error) = stale_runtime_alias_json_rpc_error(
                 "force_cancel_member",
                 identity_runtime.as_ref(),
-                member_id,
+                &member_id,
             )
             .await
             {
                 return response_value(response_id, None, Some(error));
             }
-            match runtime
-                .handle()
-                .force_cancel_member(crate::member_comms_id::mob_member_id(member_id))
-                .await
+            let result = if let Some(identity_runtime_ref) = identity_runtime.as_ref()
+                && let Some(identity) = identity_runtime_ref
+                    .identity_for_member_mutation(&member_id)
+                    .await
             {
+                let handle = runtime.handle();
+                let member_id_value = crate::member_comms_id::mob_member_id(&member_id);
+                identity_runtime_ref
+                    .run_member_alias_operation_tracked(&identity, &member_id, move || async move {
+                        handle
+                            .force_cancel_member(member_id_value)
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+            } else if crate::member_comms_id::is_reserved_generated_alias(&member_id) {
+                Err(format!(
+                    "generated member alias requires current identity authority: {member_id}"
+                ))
+            } else {
+                runtime
+                    .handle()
+                    .force_cancel_member(crate::member_comms_id::mob_member_id(&member_id))
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            match result {
                 Ok(()) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
@@ -7750,7 +7974,7 @@ async fn handle_console_runtime_rpc_with_visibility(
             let flow_id = meerkat_mob::FlowId::from(flow_id_str);
             let flow_params = request.params.get("params").cloned().unwrap_or(Value::Null);
             if let Some(identity_runtime) = &identity_runtime
-                && let Err(err) = identity_runtime.materialize_all_required().await
+                && let Err(err) = identity_runtime.materialize_all_required_tracked().await
             {
                 return internal_error(
                     response_id,
@@ -7771,6 +7995,14 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
+            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                return invalid_params(response_id, message);
+            }
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
             };
@@ -7811,10 +8043,19 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "source_member_id required");
             };
+            let source = crate::member_comms_id::runtime_alias_str(source).into_owned();
             let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
+            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                return invalid_params(response_id, message);
+            }
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
             };
@@ -7837,15 +8078,54 @@ async fn handle_console_runtime_rpc_with_visibility(
                 Err(msg) => return invalid_params(response_id, msg),
             };
             let handle = runtime.handle();
-            match Box::pin(handle.fork_helper(
-                &crate::member_comms_id::mob_member_id(source),
-                crate::member_comms_id::mob_member_id(agent_identity),
-                task,
-                fork_context,
-                options,
-            ))
-            .await
-            {
+            let source_member_id = crate::member_comms_id::mob_member_id(&source);
+            let helper_member_id = crate::member_comms_id::mob_member_id(agent_identity);
+            let task = task.to_string();
+            let authority_target = if let Some(identity_runtime_ref) = identity_runtime.as_ref() {
+                identity_runtime_ref
+                    .member_alias_lifecycle_target(&source)
+                    .await
+            } else {
+                Ok(None)
+            };
+            let fork_result = match authority_target {
+                Err(error) => Err(error.to_string()),
+                Ok(Some(target)) => {
+                    crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                        vec![target],
+                        move || async move {
+                        handle
+                            .fork_helper(
+                                &source_member_id,
+                                helper_member_id,
+                                task.as_str(),
+                                fork_context,
+                                options,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                }
+                Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&source) => {
+                    Err(format!(
+                        "generated source alias requires current identity authority: {source}"
+                    ))
+                }
+                Ok(None) => handle
+                    .fork_helper(
+                        &source_member_id,
+                        helper_member_id,
+                        task.as_str(),
+                        fork_context,
+                        options,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+            };
+            match fork_result {
                 Ok(result) => {
                     // See `spawn_helper`: meerkat 0.6 retires the forked
                     // helper before returning, so session_id is omitted
@@ -7870,6 +8150,14 @@ async fn handle_console_runtime_rpc_with_visibility(
             else {
                 return invalid_params(response_id, "agent_identity required");
             };
+            if let Err(message) = crate::member_comms_id::validate_raw_member_target(
+                identity_runtime.as_ref(),
+                agent_identity,
+            )
+            .await
+            {
+                return invalid_params(response_id, message);
+            }
             let Some(session_id_str) = request.params.get("session_id").and_then(Value::as_str)
             else {
                 return invalid_params(response_id, "session_id required");
@@ -7901,10 +8189,24 @@ async fn handle_console_runtime_rpc_with_visibility(
             }
         }
         "mobkit/cross_mob/wire_local" => {
-            handle_console_wire_local(runtime, &request.params, response_id, true).await
+            handle_console_wire_local(
+                runtime,
+                identity_runtime.as_ref(),
+                &request.params,
+                response_id,
+                true,
+            )
+            .await
         }
         "mobkit/cross_mob/unwire_local" => {
-            handle_console_wire_local(runtime, &request.params, response_id, false).await
+            handle_console_wire_local(
+                runtime,
+                identity_runtime.as_ref(),
+                &request.params,
+                response_id,
+                false,
+            )
+            .await
         }
         "mobkit/peer_pubkey" => match gateway_peer_keys {
             Some(keys) => response_value(
@@ -7926,53 +8228,38 @@ async fn handle_console_runtime_rpc_with_visibility(
             let member_id = request.params.get("member_id").and_then(Value::as_str);
             match member_id {
                 Some(mid) if !mid.is_empty() => {
+                    let mid = crate::member_comms_id::runtime_alias_str(mid).into_owned();
                     let handle = runtime.handle();
-                    let mob_id = handle.mob_id().to_string();
-                    let meerkat_id = crate::member_comms_id::mob_member_id(mid);
-                    match handle.get_member(&meerkat_id).await {
-                        Err(err) => response_value(
+                    let authority_target = if let Some(identity_runtime) = identity_runtime.as_ref()
+                    {
+                        identity_runtime.member_alias_lifecycle_target(&mid).await
+                    } else {
+                        Ok(None)
+                    };
+                    let result = match authority_target {
+                        Err(error) => Err(error.to_string()),
+                        Ok(Some(target)) => {
+                            crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                                vec![target],
+                                move || async move {
+                                    console_member_peer_info(handle, mid).await
+                                },
+                            )
+                            .await
+                            .map_err(|error| error.to_string())
+                        }
+                        Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&mid) => {
+                            Err(format!(
+                                "generated member alias requires current identity authority: {mid}"
+                            ))
+                        }
+                        Ok(None) => console_member_peer_info(handle, mid).await,
+                    };
+                    match result {
+                        Ok(value) => response_value(response_id, Some(value), None),
+                        Err(error) => internal_error(
                             response_id,
-                            None,
-                            Some(JsonRpcError {
-                                code: -32000,
-                                message: format!("member lookup failed: {err}"),
-                                data: None,
-                            }),
-                        ),
-                        Ok(Some(entry)) => match entry.peer_id() {
-                            Some(peer_id) => {
-                                let comms_name = format!("{}/{}/{}", mob_id, entry.role, mid);
-                                let address = format!("inproc://{comms_name}");
-                                response_value(
-                                    response_id,
-                                    Some(serde_json::json!({
-                                        "member_id": mid,
-                                        "mob_id": mob_id,
-                                        "comms_name": comms_name,
-                                        "peer_id": peer_id,
-                                        "address": address,
-                                    })),
-                                    None,
-                                )
-                            }
-                            None => response_value(
-                                response_id,
-                                None,
-                                Some(JsonRpcError {
-                                    code: -32000,
-                                    message: format!("member {mid:?} has no comms runtime"),
-                                    data: None,
-                                }),
-                            ),
-                        },
-                        Ok(None) => response_value(
-                            response_id,
-                            None,
-                            Some(JsonRpcError {
-                                code: -32000,
-                                message: format!("member {mid:?} not found"),
-                                data: None,
-                            }),
+                            format!("cross_mob/peer_info failed: {error}"),
                         ),
                     }
                 }
@@ -8121,6 +8408,58 @@ async fn dispatch_label_method(
     }
 }
 
+async fn console_member_peer_info(
+    handle: meerkat_mob::MobHandle,
+    member_alias: String,
+) -> Result<Value, String> {
+    let direct = crate::member_comms_id::mob_member_id(&member_alias);
+    let member_id = if handle
+        .get_member(&direct)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        direct
+    } else if let Some(identity) = handle
+        .list_members_including_retiring()
+        .await
+        .into_iter()
+        .find(|entry| {
+            crate::member_comms_id::durable_identity_label(&entry.labels)
+                .is_some_and(|identity| identity == member_alias)
+        })
+        .map(|entry| entry.agent_identity)
+    {
+        identity
+    } else {
+        direct
+    };
+    let entry = handle
+        .get_member(&member_id)
+        .await
+        .map_err(|error| format!("member lookup failed: {error}"))?
+        .ok_or_else(|| format!("member {member_alias:?} not found"))?;
+    let peer_id = entry
+        .peer_id()
+        .ok_or_else(|| format!("member {member_alias:?} has no comms runtime"))?;
+    let mob_id = handle.mob_id().to_string();
+    let comms_name = meerkat_core::MemberCommsName::new(
+        &mob_id,
+        entry.role.as_str(),
+        entry.agent_identity.as_str(),
+    )
+    .map_err(|error| format!("invalid member comms name: {error}"))?
+    .to_string();
+    let address = format!("inproc://{comms_name}");
+    Ok(serde_json::json!({
+        "member_id": member_alias,
+        "mob_id": mob_id,
+        "comms_name": comms_name,
+        "peer_id": peer_id,
+        "address": address,
+    }))
+}
+
 /// Shared body for `mobkit/cross_mob/wire_local` and `unwire_local` over
 /// the console transport. `wire = true` calls `MobHandle::wire`, `false`
 /// calls `MobHandle::unwire`. Both share param parsing and response shape.
@@ -8131,6 +8470,7 @@ async fn dispatch_label_method(
 /// does not consult — it only sees the explicit params).
 async fn handle_console_wire_local(
     runtime: &MobRuntime,
+    identity_runtime: Option<&Arc<crate::identity_first::IdentityRuntime>>,
     params: &Value,
     response_id: Value,
     wire: bool,
@@ -8198,22 +8538,64 @@ async fn handle_console_wire_local(
         }
     };
 
-    let result = if wire {
-        runtime
-            .handle()
-            .wire(
-                crate::member_comms_id::mob_member_id(local_id),
-                PeerTarget::External(spec),
-            )
+    let handle = runtime.handle();
+    let local_alias = crate::member_comms_id::runtime_alias_str(local_id).into_owned();
+    let authority_target = if let Some(identity_runtime) = identity_runtime {
+        identity_runtime
+            .member_alias_lifecycle_target(&local_alias)
             .await
     } else {
-        runtime
-            .handle()
-            .unwire(
-                crate::member_comms_id::mob_member_id(local_id),
-                PeerTarget::External(spec),
+        Ok(None)
+    };
+    let result = match authority_target {
+        Err(error) => Err(error.to_string()),
+        Ok(Some(target)) => {
+            let operation_alias = local_alias.clone();
+            crate::identity_first::IdentityRuntime::run_member_alias_targets_operation_tracked(
+                vec![target],
+                move || async move {
+                    let result = if wire {
+                        handle
+                            .wire(
+                                crate::member_comms_id::mob_member_id(&operation_alias),
+                                PeerTarget::External(spec),
+                            )
+                            .await
+                    } else {
+                        handle
+                            .unwire(
+                                crate::member_comms_id::mob_member_id(&operation_alias),
+                                PeerTarget::External(spec),
+                            )
+                            .await
+                    };
+                    result.map_err(|err| err.to_string())
+                },
             )
             .await
+            .map_err(|err| err.to_string())
+        }
+        Ok(None) if crate::member_comms_id::is_reserved_generated_alias(&local_alias) => Err(
+            format!("generated member alias requires current identity authority: {local_alias}"),
+        ),
+        Ok(None) => {
+            let result = if wire {
+                handle
+                    .wire(
+                        crate::member_comms_id::mob_member_id(&local_alias),
+                        PeerTarget::External(spec),
+                    )
+                    .await
+            } else {
+                handle
+                    .unwire(
+                        crate::member_comms_id::mob_member_id(&local_alias),
+                        PeerTarget::External(spec),
+                    )
+                    .await
+            };
+            result.map_err(|err| err.to_string())
+        }
     };
 
     let action = if wire { "wire_local" } else { "unwire_local" };
@@ -8519,11 +8901,8 @@ async fn reset_all_live_console_agents(
         if let Some(source_mob_id) = member.labels.get("source_mob_id").cloned() {
             delegate_members.insert((source_mob_id, member.agent_identity));
         } else {
-            let identity = member
-                .labels
-                .get("agent_identity")
-                .filter(|value| !value.trim().is_empty())
-                .cloned()
+            let identity = crate::member_comms_id::durable_identity_label(&member.labels)
+                .map(str::to_owned)
                 .or_else(|| {
                     identity_by_runtime_member_id
                         .get(&member.agent_identity)
@@ -8564,11 +8943,8 @@ async fn reset_all_live_console_agents(
         if member.state == MEMBER_STATE_RETIRING || member.labels.contains_key("source_mob_id") {
             continue;
         }
-        let identity = member
-            .labels
-            .get("agent_identity")
-            .filter(|value| !value.trim().is_empty())
-            .cloned()
+        let identity = crate::member_comms_id::durable_identity_label(&member.labels)
+            .map(str::to_owned)
             .or_else(|| {
                 identity_by_runtime_member_id
                     .get(&member.agent_identity)
@@ -8935,7 +9311,7 @@ async fn reset_all_live_console_agents(
                     }));
                     continue;
                 }
-                match identity_runtime.reset(&parsed_identity).await {
+                match identity_runtime.reset_tracked(&parsed_identity).await {
                     Ok(record) => {
                         let cleanup_warning = json!({
                             "identity": identity,
@@ -9084,66 +9460,63 @@ async fn reset_all_live_console_agents(
                         continue;
                     }
                 }
-                match identity_runtime.retire(&parsed_identity).await {
-                    Ok(token) => {
-                        let keep_runtime_member_id = registered_status
-                            .agent_runtime_id
-                            .as_ref()
-                            .filter(|_| identity_runtime.has_session_bridge())
-                            .map(crate::identity_first::AgentRuntimeId::as_str);
-                        match retire_stale_console_members_for_identity(
-                            &handle,
-                            visibility_policy,
-                            parsed_identity.as_str(),
-                            keep_runtime_member_id,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                retired_delegate_details.push(json!({ "identity": identity }));
-                                retired_delegates.push(json!({ "identity": identity }));
-                                if let Some(store) = console_events {
-                                    store
-                                        .record_lifecycle(
-                                            parsed_identity.as_str(),
-                                            "identity_retired",
-                                            json!({
-                                                "scope": "reset_all",
-                                                "dynamic": true,
-                                                "fencing_token": token.get(),
-                                            }),
-                                        )
-                                        .await;
-                                }
-                            }
-                            Err(err) => {
-                                warnings.push(json!({
-                                    "identity": identity,
-                                    "kind": "stale_member_cleanup_failed_after_identity_retire",
-                                    "message": err,
-                                }));
-                                retired_delegate_details.push(json!({
-                                    "identity": identity,
-                                    "cleanup_warning": warnings.last().cloned(),
-                                }));
-                                retired_delegates.push(json!({ "identity": identity }));
-                                if let Some(store) = console_events {
-                                    store
-                                        .record_lifecycle(
-                                            parsed_identity.as_str(),
-                                            "identity_retired",
-                                            json!({
-                                                "scope": "reset_all",
-                                                "dynamic": true,
-                                                "fencing_token": token.get(),
-                                                "cleanup_warning": warnings.last().cloned(),
-                                            }),
-                                        )
-                                        .await;
-                                }
+                let stale_member_ids = stale_console_member_ids_for_identity(
+                    &handle,
+                    visibility_policy,
+                    parsed_identity.as_str(),
+                    registered_status
+                        .agent_runtime_id
+                        .as_ref()
+                        .map(crate::identity_first::AgentRuntimeId::as_str),
+                    !identity_runtime.has_session_bridge(),
+                )
+                .await;
+                match identity_runtime.retire_tracked(&parsed_identity).await {
+                    Ok(token) => match retire_console_member_ids(&handle, stale_member_ids).await {
+                        Ok(()) => {
+                            retired_delegate_details.push(json!({ "identity": identity }));
+                            retired_delegates.push(json!({ "identity": identity }));
+                            if let Some(store) = console_events {
+                                store
+                                    .record_lifecycle(
+                                        parsed_identity.as_str(),
+                                        "identity_retired",
+                                        json!({
+                                            "scope": "reset_all",
+                                            "dynamic": true,
+                                            "fencing_token": token.get(),
+                                        }),
+                                    )
+                                    .await;
                             }
                         }
-                    }
+                        Err(err) => {
+                            warnings.push(json!({
+                                "identity": identity,
+                                "kind": "stale_member_cleanup_failed_after_identity_retire",
+                                "message": err,
+                            }));
+                            retired_delegate_details.push(json!({
+                                "identity": identity,
+                                "cleanup_warning": warnings.last().cloned(),
+                            }));
+                            retired_delegates.push(json!({ "identity": identity }));
+                            if let Some(store) = console_events {
+                                store
+                                    .record_lifecycle(
+                                        parsed_identity.as_str(),
+                                        "identity_retired",
+                                        json!({
+                                            "scope": "reset_all",
+                                            "dynamic": true,
+                                            "fencing_token": token.get(),
+                                            "cleanup_warning": warnings.last().cloned(),
+                                        }),
+                                    )
+                                    .await;
+                            }
+                        }
+                    },
                     Err(err) => failures.push(json!({
                         "identity": identity,
                         "error": err.to_string(),
@@ -9283,11 +9656,8 @@ fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
 }
 
 fn console_member_console_identity(member: &ConsoleMember) -> &str {
-    member
-        .labels
-        .get("agent_identity")
-        .filter(|value| !value.trim().is_empty())
-        .map_or(member.agent_identity.as_str(), String::as_str)
+    crate::member_comms_id::durable_identity_label(&member.labels)
+        .unwrap_or(member.agent_identity.as_str())
 }
 
 fn console_identity_record_from_console_member(member: &ConsoleMember) -> ConsoleIdentityRecord {
@@ -9405,11 +9775,7 @@ async fn prime_access_cache_from_handle_with_registry(
             crate::member_comms_id::runtime_alias_str(entry.agent_identity.as_str()).into_owned();
         // Console identity may be overridden by a label, mirroring
         // `console_member_console_identity`.
-        let console_identity = entry
-            .labels
-            .get("agent_identity")
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
+        let console_identity = crate::member_comms_id::durable_identity_label(&entry.labels)
             .map_or_else(|| member_identity.clone(), ToString::to_string);
         let mut labels = entry.labels.clone();
         // Roster labels are caller-controlled; only the spawn registry may
@@ -9466,12 +9832,8 @@ async fn project_console_members_from_handle(
         // except lineage, which only the spawn registry may assert (this
         // projection feeds the experience-path ABAC attribute rebuild).
         crate::console_spawn::sanitize_unverified_lineage_labels(&mut labels);
-        let console_identity_key = entry
-            .labels
-            .get("agent_identity")
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map_or(identity.as_str(), |value| value);
+        let console_identity_key = crate::member_comms_id::durable_identity_label(&entry.labels)
+            .unwrap_or(identity.as_str());
         if let Some(spawn_labels) = registered_labels.get(console_identity_key) {
             crate::console_spawn::merge_registered_labels(&mut labels, spawn_labels);
         }
@@ -9678,9 +10040,9 @@ mod tests {
         ConsoleSnapshotReadModel, ConsoleSnapshotReadModelState, MAX_MULTIPART_BODY_BYTES,
         MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, apply_console_visibility_policy,
         build_aggregator_live_snapshot, collect_console_snapshot_read_model,
-        console_send_identity_first, console_send_with_identity_first_fallback,
-        console_timeline_replay_unavailable_response, cursor_is_after,
-        dedupe_console_members_by_identity, externalize_image_upload_placeholders,
+        console_runtime_alias_generation, console_send_identity_first,
+        console_send_with_identity_first_fallback, console_timeline_replay_unavailable_response,
+        cursor_is_after, dedupe_console_members_by_identity, externalize_image_upload_placeholders,
         externalize_single_image_upload, handle_console_aggregator_rpc, handle_console_runtime_rpc,
         handle_console_runtime_rpc_with_visibility, member_id_matches_durable_identity,
         project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
@@ -10913,7 +11275,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn console_runtime_reset_live_only_alias_without_session_bridge_uses_live_fallback()
+    async fn console_runtime_reset_generated_alias_without_registration_fails_closed()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (_temp_dir, runtime) =
             build_empty_console_test_runtime("console-reset-live-only-no-bridge").await?;
@@ -10946,6 +11308,75 @@ comms = true
             default_timeout: None,
         }));
 
+        let member_id = crate::member_comms_id::mob_member_id("rt:review:singleton:0");
+        let session_before = runtime
+            .handle()
+            .resolve_bridge_session_id_observation(&member_id)
+            .await;
+        let response = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            Some(ConsoleEventStore::new()),
+            None,
+            Some(identity_runtime),
+            None,
+            None,
+            rpc_request_with_params("mobkit/reset", json!({ "identity": "review:singleton" })),
+            true,
+        ))
+        .await;
+        assert_ne!(
+            response["error"],
+            Value::Null,
+            "a generated alias must not become raw fallback after registration disappears: {response:#?}"
+        );
+        assert_eq!(
+            runtime
+                .handle()
+                .resolve_bridge_session_id_observation(&member_id)
+                .await,
+            session_before,
+            "failing closed must not respawn the orphaned generated member"
+        );
+
+        let _ = runtime.handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_runtime_reset_bare_live_member_without_session_bridge_uses_fallback()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-bare-live-no-bridge").await?;
+
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .handle()
+            .spawn_spec(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "legacy-review-singleton".to_string(),
+                    Some("You are the live Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await?;
+
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-reset-bare-live-no-bridge".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+
         let response = Box::pin(handle_console_runtime_rpc(
             &runtime,
             None,
@@ -10963,7 +11394,7 @@ comms = true
         assert_eq!(
             response["error"],
             Value::Null,
-            "live-only reset should use live fallback instead of requiring session bridge: {response:#?}"
+            "genuine bare live-only reset should retain compatibility fallback: {response:#?}"
         );
         assert_eq!(response["result"]["identity"], json!("review:singleton"));
 
@@ -14078,5 +14509,13 @@ comms = true
             "review:singleton:qa",
             "review:singleton"
         ));
+        assert_eq!(
+            console_runtime_alias_generation("rt:review:singleton:7", "review:singleton"),
+            Some(7)
+        );
+        assert_eq!(
+            console_runtime_alias_generation("rt:review:singleton:8", "review:other"),
+            None
+        );
     }
 }

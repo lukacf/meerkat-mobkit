@@ -1905,10 +1905,6 @@ async fn actuate(
     operation: &TopologyMutation,
 ) -> Result<(), TopologyControlError> {
     let (first_endpoint, second_endpoint) = endpoints_for_pair(&operation.edge, first, second)?;
-    let (first_half, second_half) = first
-        .bilateral_same_process_state(second, &first_endpoint.identity, &second_endpoint.identity)
-        .await
-        .map_err(|error| TopologyControlError::Actuator(error.to_string()))?;
     match operation.action {
         // Always call the idempotent bilateral primitive for Connect. Besides
         // the two trust halves it repairs process-local cross-namespace
@@ -1921,7 +1917,10 @@ async fn actuate(
             )
             .await
             .map_err(|error| TopologyControlError::Actuator(error.to_string())),
-        TopologyAction::Disconnect if first_half || second_half => first
+        // The locked primitive re-observes both concrete generations. An
+        // unlocked state preflight can race reset/reconcile and incorrectly
+        // skip a newly materialized edge.
+        TopologyAction::Disconnect => first
             .unwire_bilateral_same_process(
                 second,
                 &first_endpoint.identity,
@@ -1930,16 +1929,14 @@ async fn actuate(
             .await
             .map_err(|error| TopologyControlError::Actuator(error.to_string())),
         TopologyAction::Reconnect => {
-            if first_half || second_half {
-                first
-                    .unwire_bilateral_same_process(
-                        second,
-                        &first_endpoint.identity,
-                        &second_endpoint.identity,
-                    )
-                    .await
-                    .map_err(|error| TopologyControlError::Actuator(error.to_string()))?;
-            }
+            first
+                .unwire_bilateral_same_process(
+                    second,
+                    &first_endpoint.identity,
+                    &second_endpoint.identity,
+                )
+                .await
+                .map_err(|error| TopologyControlError::Actuator(error.to_string()))?;
             first
                 .wire_bilateral_same_process(
                     second,
@@ -1949,7 +1946,6 @@ async fn actuate(
                 .await
                 .map_err(|error| TopologyControlError::Actuator(error.to_string()))
         }
-        _ => Ok(()),
     }
 }
 

@@ -43,7 +43,8 @@ pub mod mob_ops;
 pub mod module_ops;
 pub mod types;
 
-pub use builder::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
+pub use crate::identity_first::IdentityBootstrapMode;
+pub use builder::UnifiedRuntimeBuilder;
 pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
@@ -139,12 +140,19 @@ pub struct UnifiedRuntime {
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Late-bound identity authority observed by the already-running idle
+    /// retirement sweeper. Gateways attach identity-first after base runtime
+    /// bootstrap, so capturing `identity_runtime()` when the task starts would
+    /// permanently capture `None`.
+    implicit_delegate_identity_runtime:
+        Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     identity_lease_renewal_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    identity_continuity_repair_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    identity_continuity_repair_task:
+        tokio::sync::Mutex<Option<crate::identity_first::runtime::TrackedContinuityRepairTask>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
-    peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, MobHandle>>,
+    peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, cross_mob::PeerMobAuthority>>,
     /// Long-lived Ed25519 signing identity for cross-process peering.
     /// `None` is the default for inproc-only deployments and tests;
     /// production gateways set this via
@@ -272,6 +280,7 @@ impl UnifiedRuntime {
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
+            implicit_delegate_identity_runtime: Arc::new(std::sync::RwLock::new(None)),
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
@@ -632,19 +641,40 @@ impl UnifiedRuntime {
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
     ) {
+        self.mob_runtime
+            .install_identity_runtime_authority(Arc::clone(&context.runtime));
+        *self
+            .implicit_delegate_identity_runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::clone(&context.runtime));
+        // Gateways attach identity-first after the base UnifiedRuntime has
+        // been built, so they do not pass through the builder's supervisor
+        // installation below. Active callback/local-provider leases need the
+        // same proactive renewal regardless of which construction path is
+        // used.
+        let lease_task = context.runtime.clone().spawn_lease_renewal_task();
+        if let Some(previous) = self
+            .identity_lease_renewal_task
+            .get_mut()
+            .replace(lease_task)
+        {
+            previous.abort();
+        }
         // Broken identities must self-heal: a rejected resume parks the
         // identity "pending reconcile retry", and this task is what runs
         // that retry in a live process (delivery and materialize both
         // refuse the Broken state by design).
         let repair_task = context
             .clone()
-            .spawn_broken_identity_repair_task(Default::default());
+            .spawn_tracked_broken_identity_repair_task(Default::default());
         if let Some(previous) = self
             .identity_continuity_repair_task
             .get_mut()
             .replace(repair_task)
         {
-            previous.abort();
+            previous.cancel();
+            tokio::spawn(previous.cancel_and_join());
         }
         self.identity_first_context = Some(context);
     }
@@ -670,7 +700,7 @@ impl UnifiedRuntime {
         crate::identity_first::IdentityRuntimeError,
     > {
         match self.identity_runtime() {
-            Some(runtime) => runtime.materialize_all_required().await,
+            Some(runtime) => runtime.materialize_all_required_tracked().await,
             None => Ok(Vec::new()),
         }
     }

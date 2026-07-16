@@ -8,6 +8,7 @@ import hmac
 import itertools
 import json
 import logging
+import math
 import mimetypes
 import uuid
 from pathlib import Path
@@ -39,6 +40,7 @@ from .errors import (
     WorkGraphUnavailableError,
 )
 from .events import AgentEvent, MobEvent
+from .identity_first_models import IdentityBootstrapStatus
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
@@ -102,6 +104,7 @@ from .types import (
 from ._client import _build_request as _rpc_request
 
 _request_counter = itertools.count(1)
+_IDENTITY_BOOTSTRAP_WAIT_TRANSPORT_HEADROOM_SECONDS = 5.0
 
 
 def _next_request_id(method: str) -> str:
@@ -237,6 +240,8 @@ class MobKitRuntime:
         self._running = False
         self._dispatcher = CallbackDispatcher()
         self._rust_http_base: str | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> MobKitRuntime:
         if not self._running:
@@ -254,9 +259,13 @@ class MobKitRuntime:
 
     async def connect(self) -> None:
         """Explicitly connect to the runtime. Idempotent."""
-        if self._running:
-            return
-        await self._bootstrap()
+        async with self._lifecycle_lock:
+            shutdown_task = self._shutdown_task
+            if shutdown_task is not None:
+                await asyncio.shield(shutdown_task)
+            if self._running:
+                return
+            await self._bootstrap()
 
     def on_schedule_fire(self, name: str, handler: Any) -> None:
         """Register the handler for a named host runnable.
@@ -373,6 +382,10 @@ class MobKitRuntime:
             runtime_options["implicit_delegate_idle_retire_secs"] = (
                 self._config.implicit_delegate_idle_retire_secs
             )
+        if self._config.identity_bootstrap_mode is not None:
+            runtime_options["identity_bootstrap_mode"] = (
+                self._config.identity_bootstrap_mode.to_dict()
+            )
         params["runtime_options"] = runtime_options
         if self._config.persistent_state:
             params["persistent_state"] = self._config.persistent_state
@@ -400,11 +413,24 @@ class MobKitRuntime:
             raise _rpc_error_from_payload(response["error"], request_id=rid, method=method)
         return response.get("result")
 
-    async def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+    async def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        transport_timeout: float | None = None,
+    ) -> Any:
         if self._transport is None:
             raise NotConnectedError("runtime not started — no transport available")
         rid = _next_request_id(method)
-        response = await self._transport.send_async(_rpc_request(rid, method, params))
+        request = _rpc_request(rid, method, params)
+        if transport_timeout is None:
+            response = await self._transport.send_async(request)
+        else:
+            response = await self._transport.send_async(
+                request,
+                timeout=transport_timeout,
+            )
         if "error" in response:
             raise _rpc_error_from_payload(response["error"], request_id=rid, method=method)
         return response.get("result")
@@ -540,6 +566,53 @@ class MobKitRuntime:
         """
         return await self._rpc("mobkit/reconcile_identity", {})
 
+    async def identity_bootstrap_status(self) -> IdentityBootstrapStatus:
+        """Return typed materialization status for the bootstrap roster."""
+        raw = await self._rpc("mobkit/status_identity_bootstrap", {})
+        return IdentityBootstrapStatus.from_dict(raw)
+
+    async def wait_identity_bootstrap(
+        self,
+        *,
+        timeout: float | None = None,
+        target: str = "materialized",
+    ) -> IdentityBootstrapStatus:
+        """Wait for identity bootstrap materialization or startup readiness.
+
+        ``target="materialized"`` waits for every roster identity to finish
+        warming. ``target="startup_ready"`` additionally waits for the active
+        members' startup-ready signals.
+        """
+        if target not in {"materialized", "startup_ready"}:
+            raise ValueError("target must be 'materialized' or 'startup_ready'")
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout < 0
+        ):
+            raise ValueError("timeout must be a non-negative finite number or None")
+        params: dict[str, Any] = {"target": target}
+        if self._transport is None:
+            raise NotConnectedError("runtime not started — no transport available")
+        server_wait_seconds = (
+            self._transport.request_timeout if timeout is None else timeout
+        )
+        # Always make the server-side deadline explicit. Otherwise ``None``
+        # inherits the gateway handler's shorter generic RPC timeout while the
+        # SDK waits against its transport default, silently truncating the
+        # readiness barrier.
+        params["timeout_ms"] = int(server_wait_seconds * 1000)
+        raw = await self._rpc(
+            "mobkit/wait_identity_bootstrap",
+            params,
+            transport_timeout=(
+                server_wait_seconds
+                + _IDENTITY_BOOTSTRAP_WAIT_TRANSPORT_HEADROOM_SECONDS
+            ),
+        )
+        return IdentityBootstrapStatus.from_dict(raw)
+
     async def delete_identity(self, identity: str) -> Any:
         """Remove continuity for an identity."""
         return await self._rpc("mobkit/delete_identity", {"identity": identity})
@@ -579,10 +652,30 @@ class MobKitRuntime:
             )
 
     async def shutdown(self) -> None:
-        self._running = False
-        if self._transport is not None:
-            self._transport.stop()
-            self._transport = None
+        async with self._lifecycle_lock:
+            self._running = False
+            shutdown_task = self._shutdown_task
+            if shutdown_task is None:
+                transport = self._transport
+                # Close RPC admission before the potentially long process
+                # drain. Every concurrent shutdown below observes and awaits
+                # the same task; connect waits for it before replacing the
+                # gateway.
+                self._transport = None
+                if transport is not None:
+                    shutdown_task = asyncio.create_task(
+                        asyncio.to_thread(transport.stop)
+                    )
+                    self._shutdown_task = shutdown_task
+
+                    def clear_shutdown_task(done: asyncio.Task[None]) -> None:
+                        if self._shutdown_task is done:
+                            self._shutdown_task = None
+
+                    shutdown_task.add_done_callback(clear_shutdown_task)
+        if shutdown_task is not None:
+            # A cancelled caller must not cancel the runtime-owned cleanup.
+            await asyncio.shield(shutdown_task)
 
     @property
     def is_running(self) -> bool:

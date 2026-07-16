@@ -42,7 +42,10 @@ fn parse_identity_restore_concurrency(raw: Option<&str>) -> usize {
 
 #[cfg(test)]
 mod restore_concurrency_tests {
-    use super::{IDENTITY_RESTORE_CONCURRENCY, parse_identity_restore_concurrency};
+    use super::{
+        IDENTITY_RESTORE_CONCURRENCY, RestoreSnapshotPolicy, parse_identity_restore_concurrency,
+        should_load_resume_snapshot,
+    };
 
     #[test]
     fn defaults_when_unset_or_invalid() {
@@ -66,6 +69,39 @@ mod restore_concurrency_tests {
         assert_eq!(parse_identity_restore_concurrency(Some(" 8 ")), 8);
         assert_eq!(parse_identity_restore_concurrency(Some("0")), 1);
         assert_eq!(parse_identity_restore_concurrency(Some("64")), 16);
+    }
+
+    #[test]
+    fn public_restore_always_preserves_snapshot_payload() {
+        assert!(should_load_resume_snapshot(
+            RestoreSnapshotPolicy::PreserveOutcomePayload,
+            Some(false),
+            false,
+        ));
+    }
+
+    #[test]
+    fn bootstrap_skips_only_for_opted_out_bridge_during_live_resume() {
+        assert!(!should_load_resume_snapshot(
+            RestoreSnapshotPolicy::BridgeRequirementOnly,
+            Some(false),
+            false,
+        ));
+        assert!(should_load_resume_snapshot(
+            RestoreSnapshotPolicy::BridgeRequirementOnly,
+            Some(true),
+            false,
+        ));
+        assert!(should_load_resume_snapshot(
+            RestoreSnapshotPolicy::BridgeRequirementOnly,
+            None,
+            false,
+        ));
+        assert!(should_load_resume_snapshot(
+            RestoreSnapshotPolicy::BridgeRequirementOnly,
+            Some(false),
+            true,
+        ));
     }
 }
 
@@ -251,6 +287,31 @@ fn append_cleanup_error(message: String, cleanup_error: Option<String>) -> Strin
 // Restore flow orchestration — REQ-12
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreSnapshotPolicy {
+    /// Preserve the historical `RestoreOutcome::Resumed.snapshot` payload.
+    PreserveOutcomePayload,
+    /// Bootstrap callers may omit the payload when the live bridge explicitly
+    /// declares that resume is session-id-based.
+    BridgeRequirementOnly,
+}
+
+fn should_load_resume_snapshot(
+    policy: RestoreSnapshotPolicy,
+    bridge_requires_snapshot: Option<bool>,
+    already_active: bool,
+) -> bool {
+    match policy {
+        RestoreSnapshotPolicy::PreserveOutcomePayload => true,
+        RestoreSnapshotPolicy::BridgeRequirementOnly => {
+            // Without a bridge there is no explicit opt-out. Already-active
+            // identities also skip the bridge call, so retain the snapshot for
+            // the legacy outcome classification and payload.
+            already_active || bridge_requires_snapshot.unwrap_or(true)
+        }
+    }
+}
+
 /// Execute the full restore flow per REQ-12 sequencing.
 ///
 /// Steps:
@@ -272,6 +333,46 @@ pub async fn restore_flow(
     roster: &[DurableAgentSpec],
     topology_provider: Option<&dyn TopologyProvider>,
     customizer: Option<&dyn AgentCustomizer>,
+) -> Result<RestoreFlowResult, IdentityRuntimeError> {
+    restore_flow_with_snapshot_policy(
+        runtime,
+        roster,
+        topology_provider,
+        customizer,
+        RestoreSnapshotPolicy::PreserveOutcomePayload,
+    )
+    .await
+}
+
+/// Execute restore for process bootstrap, avoiding an otherwise-unused
+/// continuity snapshot read when the configured bridge explicitly declares
+/// that it resumes by session id.
+///
+/// Unlike [`restore_flow`], a successful resumed outcome may carry an empty
+/// snapshot when the bridge opted out of the payload. Callers that consume
+/// `RestoreOutcome::Resumed.snapshot` must continue using [`restore_flow`].
+pub async fn restore_flow_for_bootstrap(
+    runtime: &IdentityRuntime,
+    roster: &[DurableAgentSpec],
+    topology_provider: Option<&dyn TopologyProvider>,
+    customizer: Option<&dyn AgentCustomizer>,
+) -> Result<RestoreFlowResult, IdentityRuntimeError> {
+    restore_flow_with_snapshot_policy(
+        runtime,
+        roster,
+        topology_provider,
+        customizer,
+        RestoreSnapshotPolicy::BridgeRequirementOnly,
+    )
+    .await
+}
+
+async fn restore_flow_with_snapshot_policy(
+    runtime: &IdentityRuntime,
+    roster: &[DurableAgentSpec],
+    topology_provider: Option<&dyn TopologyProvider>,
+    customizer: Option<&dyn AgentCustomizer>,
+    snapshot_policy: RestoreSnapshotPolicy,
 ) -> Result<RestoreFlowResult, IdentityRuntimeError> {
     // INV-06: validate roster uniqueness before any work
     IdentityRuntime::validate_roster_uniqueness(roster)?;
@@ -803,25 +904,38 @@ pub async fn restore_flow(
             ContinuityResolveState::Ready { record } => {
                 let mut record = record.clone();
                 let previous_record = record.clone();
-                // Step 7: load snapshot for resume injection
-                let snapshot = match runtime
-                    .continuity_store()
-                    .load_session_snapshot(&record.session_id)
-                    .await
-                {
-                    Ok(snapshot) => snapshot,
-                    Err(err) => {
-                        let cleanup_error = release_unactivated_restore_grants(
-                            runtime,
-                            &grants,
-                            &activated_identities,
-                        )
-                        .await;
-                        return Err(IdentityRuntimeError::Internal(append_cleanup_error(
-                            format!("load session snapshot before restore resume: {err}"),
-                            cleanup_error,
-                        )));
+                // Step 7: public restore preserves the authoritative payload.
+                // Bootstrap may skip the read only when a live bridge opts out
+                // and will therefore provide the authoritative resume verdict.
+                let bridge_requires_snapshot = runtime
+                    .bridge()
+                    .map(|bridge| bridge.requires_resume_snapshot());
+                let snapshot = if should_load_resume_snapshot(
+                    snapshot_policy,
+                    bridge_requires_snapshot,
+                    already_active,
+                ) {
+                    match runtime
+                        .continuity_store()
+                        .load_session_snapshot(&record.session_id)
+                        .await
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(err) => {
+                            let cleanup_error = release_unactivated_restore_grants(
+                                runtime,
+                                &grants,
+                                &activated_identities,
+                            )
+                            .await;
+                            return Err(IdentityRuntimeError::Internal(append_cleanup_error(
+                                format!("load session snapshot before restore resume: {err}"),
+                                cleanup_error,
+                            )));
+                        }
                     }
+                } else {
+                    None
                 };
                 let mut abandoned_session_registration = None;
                 // The bridge's authoritative resume verdict, when a bridge ran:

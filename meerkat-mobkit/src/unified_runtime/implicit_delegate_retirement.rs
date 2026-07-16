@@ -31,6 +31,7 @@ impl UnifiedRuntime {
                 .implicit_delegate_idle_retire_secs
                 .map(Duration::from_secs),
             sweep_interval,
+            Arc::clone(&self.implicit_delegate_identity_runtime),
         ));
         *self.implicit_delegate_retirement_task.lock().await = Some(task);
     }
@@ -42,6 +43,7 @@ async fn run_implicit_delegate_retirement(
     per_delegate_overrides: Option<ImplicitDelegateRetirementOverrides>,
     default_idle_after: Option<Duration>,
     sweep_interval: Duration,
+    identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
 ) {
     let primary_mob_id = runtime.handle().mob_id().to_string();
     let session_service = state.session_service();
@@ -117,7 +119,55 @@ async fn run_implicit_delegate_retirement(
                 if since.elapsed() < idle_after {
                     continue;
                 }
-                match handle.retire(AgentIdentity::from(identity.as_str())).await {
+                let public_alias =
+                    crate::member_comms_id::runtime_alias_str(&identity).into_owned();
+                let identity_runtime = identity_runtime
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let retire_result = if is_primary_mob {
+                    if let Some(identity_runtime) = identity_runtime.as_ref() {
+                        if let Some(durable_identity) = identity_runtime
+                            .identity_for_member_mutation(&public_alias)
+                            .await
+                        {
+                            identity_runtime
+                                .retire_member_alias_tracked(&durable_identity, &public_alias)
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        } else if crate::member_comms_id::is_reserved_generated_alias(&public_alias)
+                        {
+                            Err(format!(
+                                "generated alias is not owned by IdentityRuntime: {public_alias}"
+                            ))
+                        } else {
+                            handle
+                                .retire(AgentIdentity::from(identity.as_str()))
+                                .await
+                                .map_err(|error| error.to_string())
+                        }
+                    } else if crate::member_comms_id::is_reserved_generated_alias(&public_alias) {
+                        Err(format!(
+                            "generated alias requires IdentityRuntime authority: {public_alias}"
+                        ))
+                    } else {
+                        handle
+                            .retire(AgentIdentity::from(identity.as_str()))
+                            .await
+                            .map_err(|error| error.to_string())
+                    }
+                } else if crate::member_comms_id::is_reserved_generated_alias(&public_alias) {
+                    Err(format!(
+                        "generated alias cannot be raw-retired in an implicit mob: {public_alias}"
+                    ))
+                } else {
+                    handle
+                        .retire(AgentIdentity::from(identity.as_str()))
+                        .await
+                        .map_err(|error| error.to_string())
+                };
+                match retire_result {
                     Ok(()) => {
                         tracing::info!(
                             mob_id = %mob_id,
@@ -195,6 +245,7 @@ pub(crate) fn turn_phase_is_idle(phase: TurnPhase) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -311,5 +362,190 @@ mod tests {
             ),
             Some(Duration::from_mins(5))
         );
+    }
+
+    #[tokio::test]
+    async fn running_sweeper_observes_identity_authority_attached_after_runtime_bootstrap() {
+        use crate::identity_first::{
+            AgentAddressability, AgentIdentity as DurableIdentity, AgentRuntimeId,
+            CheckpointVersion, ContinuityGeneration, ContinuityRecord, ContinuityStore,
+            DurabilityPolicy, DurableAgentSpec, IdentityFirstRuntimeContext,
+            IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseAcquireResult,
+            LeaseProvider, LocalContinuityStore, LocalLeaseProvider, MobSessionBridge,
+            RosterContext, RosterError, RosterProvider,
+        };
+        use crate::{
+            DiscoverySpec, InMemoryMetadataStore, MobBootstrapOptions, MobBootstrapSpec,
+            MobKitConfig,
+        };
+
+        struct FixedRoster(Vec<DurableAgentSpec>);
+
+        #[async_trait::async_trait]
+        impl RosterProvider for FixedRoster {
+            async fn roster(
+                &self,
+                _context: &RosterContext,
+            ) -> Result<Vec<DurableAgentSpec>, RosterError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "late-bound-retirement"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .expect("mob definition");
+        let mob_spec = MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            temp.path().to_path_buf(),
+            4,
+            None,
+        )
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(meerkat_client::TestClient::default())),
+        });
+        let mut runtime = UnifiedRuntime::bootstrap_with_options(
+            mob_spec,
+            MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: "late-bound-retirement".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            },
+            Vec::new(),
+            Duration::from_secs(2),
+            RuntimeOptions {
+                implicit_delegate_idle_retire_secs: Some(300),
+                implicit_delegate_idle_sweep_interval_ms: 1_000,
+                ..RuntimeOptions::default()
+            },
+            Arc::new(InMemoryMetadataStore::new()),
+        )
+        .await
+        .expect("bootstrap runtime");
+        assert!(runtime.identity_runtime().is_none());
+        assert!(
+            runtime
+                .implicit_delegate_retirement_task
+                .lock()
+                .await
+                .is_some(),
+            "the sweeper must be running before identity authority attaches"
+        );
+
+        let identity = DurableIdentity::parse("domain:late-bound").expect("identity");
+        let alias = "rt:domain:late-bound:0";
+        let roster_member = crate::member_comms_id::mob_member_id(alias);
+        let handle = runtime.mob_handle();
+        handle
+            .ensure_member(
+                meerkat_mob::SpawnMemberSpec::new(
+                    meerkat_mob::ProfileName::from("worker"),
+                    roster_member.clone(),
+                )
+                .with_labels(BTreeMap::from([(
+                    DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+                    "0".to_string(),
+                )])),
+            )
+            .await
+            .expect("spawn pre-attached generated member");
+        let session_id = handle
+            .resolve_bridge_session_id_observation(&roster_member)
+            .await
+            .expect("member session id");
+
+        let continuity_store =
+            Arc::new(LocalContinuityStore::in_memory().expect("late-bound continuity store"));
+        let lease_provider = Arc::new(LocalLeaseProvider::new());
+        let leases = lease_provider
+            .acquire_leases(std::slice::from_ref(&identity), "late-bound-retirement")
+            .await
+            .expect("identity lease");
+        let lease = match leases.get(&identity) {
+            Some(LeaseAcquireResult::Acquired(lease)) => lease.clone(),
+            other => panic!("expected acquired lease, got {other:?}"),
+        };
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse(alias).expect("runtime alias"),
+            session_id,
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        continuity_store
+            .upsert_continuity_record(&record, lease.fencing_token)
+            .await
+            .expect("persist continuity");
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider,
+            runtime_instance_id: "late-bound-retirement".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(MobSessionBridge::new(handle))),
+            default_timeout: None,
+        }));
+        let spec = DurableAgentSpec {
+            identity: identity.clone(),
+            profile: meerkat_mob::ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: BTreeMap::new(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: None,
+            runtime_mode_override: None,
+            backend: None,
+            binding: None,
+        };
+        identity_runtime
+            .register(
+                spec.clone(),
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(lease),
+            )
+            .await;
+        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+            Arc::clone(&identity_runtime),
+            Arc::new(FixedRoster(vec![spec])),
+            None,
+            None,
+            Some(runtime.mob_handle().definition().clone()),
+        )));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if identity_runtime
+                    .status(&identity)
+                    .await
+                    .is_ok_and(|status| status.state == IdentityLifecycleState::Retiring)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("late-bound sweeper never retired through identity authority");
+
+        runtime.shutdown().await;
     }
 }

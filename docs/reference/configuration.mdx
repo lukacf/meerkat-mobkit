@@ -95,6 +95,7 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | Field | Type | Gateway behavior |
 |-------|------|------------------|
 | `memory_config` | Object | Supports `{ "backend": "local_json" }` with optional `health_check_endpoint`, deriving `state_path` as `<persistent_state>/memory-ledger-state.json` (an existing legacy state file is adopted automatically). The legacy `{ "backend": "elephant", "endpoint": "..." }` shape still works but is deprecated and logs a warning; it keeps `<persistent_state>/elephant-memory-state.json`. |
+| `identity_bootstrap_mode` | Object | Controls roster materialization for identity-first gateways. Omitted or `{ "mode": "eager_materialize" }` preserves synchronous eager startup. `{ "mode": "lazy_materialize" }` registers metadata and materializes on use. `{ "mode": "lazy_with_background_warm", "concurrency": 2 }` returns after metadata registration and warms in a tracked background task; concurrency must be `1..=16`. Lazy modes require a roster provider. |
 | `agent_memory` | Boolean or object | Enables identity-first agent memory injection for roster-backed agents. `true` uses contextual recall defaults with the bundled per-realm SQLite store under `<persistent_state>/agent-memory`; an object may set `realm`, `selection` (`"always"` or `"contextual"`), `max_entries`, `recall_timeout_ms`, `recall_failure_policy` (`"skip"` or `"fail"`), `instruction_header`, `per_turn_injection` (`"off"` — the default — or `"budgeted"`; `"budgeted"` requires `store: "sqlite"`, whose wiring hosts the compaction budget reset), `defang_inbound` (`true` by default: reserved memory-envelope markers in inbound non-steer sends are neutralized before delivery so peers and echoed web content cannot forge remembered context; set `false` to disable), `store` (`"sqlite"` — the default — or `"markdown"`; existing markdown files are imported into SQLite on first open and renamed `<file>.imported`), `llm_writes` (`"observed"` — the default — or `"quarantined"`: every first-pass LLM-authored write — agent and distiller — lands quarantined pending review; steward staged output is the review that posture defers to, so quarantine releases and operator-approved promotions commit normally), `recorder_tool` (`true` by default: registers the member-facing `memory` tool), `content_trust` (object with `trusted_mcp_servers`, `untrusted_tools`, `trusted_tools` feeding the session taint tracker), `selector` (`"off"` — the default — `"default"`, or `"profile:<path>"`: the LLM recall-selector stage; overrides the `MOBKIT_AGENT_MEMORY_SELECTOR` environment variable, which remains a fallback when the option is unset), `distiller` (boolean or `{enabled, runs_per_hour, min_interactions, model}`: off-turn extraction over completed interactions, compaction discards, and session rotations; default off), `steward` (boolean or `{enabled, cadence, model, per_mob, runs_per_day, min_signals}`: scheduled consolidation dreams over the realm's store; default off; `per_mob` requests per-mob dream granularity, and on the current single-mob gateway host it coincides with the default realm-level dream — setting it has no observable effect until multi-mob scope partitioning is implemented), `operator_scope` (`"off"` — the default — or `"provisional"`: activates the realm-confined operator memory scope under the PROVISIONAL console-auth-principal keying, which may change when the `OperatorId` open question settles; recall composition additionally requires an operator resolver, which only a library embedder can install — no shipped gateway installs one, so stock-gateway/SDK deployments get steward routing of operator-scope proposals only and the gateway logs a startup warning that operator-scope recall composition is inert), and `hygienist` (boolean or `{enabled, runs_per_day, model}`: LLM transcript curation applied through meerkat's audited, restorable transcript revisions at compaction boundaries and on demand — prunes dead tool-result payloads and collapses repeated scaffolding, never decisions; requires persistent sessions; default off, 2 runs/day). `llm_writes`, `content_trust`, a non-off `selector`, `per_turn_injection: "budgeted"`, `distiller`, `steward`, `operator_scope`, and `hygienist` require `store: "sqlite"`. |
 | `routing_config_path` | String | Loads JSON or TOML route config (`routes = [...]` / `[[routes]]`) and installs the routes into the unified runtime before serving RPCs. |
 | `scheduling_files` | String array | Loads JSON or TOML schedule definitions and uses them as the default schedules for `mobkit/scheduling/evaluate` and `mobkit/scheduling/dispatch` when the RPC request omits `schedules`. |
@@ -107,6 +108,69 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
+
+### Identity bootstrap
+
+<Tabs>
+  <Tab title="Rust">
+    ```rust
+    use meerkat_mobkit::{IdentityBootstrapMode, UnifiedRuntime};
+
+    let runtime = UnifiedRuntime::builder()
+        .definition(definition)
+        .continuity_store(continuity_store)
+        .lease_provider(lease_provider)
+        .scratch_dir("state/identity-scratch")
+        .roster_provider(roster_provider)
+        .identity_bootstrap_mode(
+            IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 2 },
+        )
+        .build()
+        .await?;
+
+    let status = runtime
+        .identity_runtime()
+        .expect("identity-first runtime")
+        .identity_bootstrap_status();
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from meerkat_mobkit import IdentityBootstrapMode, MobKit
+
+    runtime = await (
+        MobKit.builder()
+        .mob("config/mob.toml")
+        .roster(roster_provider)
+        .identity_bootstrap_mode(
+            IdentityBootstrapMode.lazy_with_background_warm(concurrency=2)
+        )
+        .build()
+    )
+
+    status = await runtime.wait_identity_bootstrap(
+        target="startup_ready",
+        timeout=120,
+    )
+    if not status.ready or status.startup_ready is not True:
+        raise RuntimeError(status)
+    ```
+  </Tab>
+</Tabs>
+
+`mobkit/status_identity_bootstrap` returns a non-blocking typed snapshot.
+`mobkit/wait_identity_bootstrap` accepts `target = "materialized"` or
+`"startup_ready"`; terminal broken identities return with `ready = false`
+rather than leaving the barrier pending indefinitely. Provider or restore
+failures that apply to the whole pass are reported in the snapshot's optional
+`error` field.
+
+Rust hosts that dispatch JSON-RPC from an `Arc<UnifiedRuntime>` should call
+`handle_unified_rpc_json_arc` (or the corresponding `with_live_arc` entrypoint).
+That transfers runtime ownership to supervised identity mutations, so a
+disconnected request cannot cancel a cross-mob operation between its commit
+and rollback points. The borrowed dispatcher fails identity-owned cross-mob
+mutations closed because it cannot provide that ownership guarantee.
 
 ## ConsoleUiConfig
 

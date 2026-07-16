@@ -53,6 +53,12 @@ impl UnifiedRuntime {
             Some(d) => d,
             None => return Ok(None),
         };
+        if self.identity_runtime().is_some() {
+            return Err(MobRuntimeError::InvalidConfig(
+                "rediscover resets the whole mob and is unavailable with identity-first authority; use refresh_desired_topology"
+                    .to_string(),
+            ));
+        }
 
         // 1. Reset the mob — retires all, clears state, returns to Running
         self.mob_runtime
@@ -156,13 +162,34 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        let identity_runtime = self.identity_runtime().cloned();
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            // Close request admission before any supervisor is drained. A
+            // caller may disappear while its lazy materialization owns an
+            // uninstalled lease; the runtime, not the caller, owns that task
+            // through its explicit commit/rollback boundary.
+            identity_runtime.close_foreground_operations();
+        }
+        // A continuity repair pass owns the same serialized bootstrap
+        // controller as explicit reconcile. Cancel it while idle, or join an
+        // in-flight pass to its explicit lease/bridge commit boundary, before
+        // waiting for background hydration.
+        if let Some(task) = self.identity_continuity_repair_task.lock().await.take() {
+            task.cancel_and_join().await;
+        }
+        if let Some(identity_runtime) = identity_runtime.as_ref() {
+            // Background hydration owns concrete member creation/resume work;
+            // stop and join it before quiescing the mob actor.
+            identity_runtime.cancel_identity_bootstrap().await;
+            // Foreground request tasks can share the same materialization and
+            // lifecycle locks. Join them after the warmer has stopped and
+            // before lease renewal or the mob actor is taken down.
+            identity_runtime.join_foreground_operations().await;
+        }
         if let Some(task) = self.implicit_delegate_retirement_task.lock().await.take() {
             task.abort();
         }
         if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
-            task.abort();
-        }
-        if let Some(task) = self.identity_continuity_repair_task.lock().await.take() {
             task.abort();
         }
 
@@ -352,12 +379,57 @@ impl UnifiedRuntime {
                 continue;
             };
 
-            let injection_result = send_message_on_mob(
-                &self.mob_handle(),
-                &runtime_injection.member_id,
-                runtime_injection.message.clone(),
-            )
-            .await;
+            let member_alias =
+                crate::member_comms_id::runtime_alias_str(runtime_injection.member_id.as_str())
+                    .into_owned();
+            let injection_result = if let Some(identity_runtime) = self.identity_runtime() {
+                if let Some(identity) = identity_runtime
+                    .identity_for_member_mutation(&member_alias)
+                    .await
+                {
+                    let input = crate::identity_first::DispatchInput::with_origin(
+                        runtime_injection.message.clone(),
+                        crate::identity_first::DispatchOrigin::Scheduler,
+                    );
+                    identity_runtime
+                        .dispatch_member_alias_with_session_tracked(
+                            &identity,
+                            &member_alias,
+                            &input,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|session_id| {
+                            session_id.map(|value| value.to_string()).ok_or_else(|| {
+                                "identity schedule dispatch returned no bridge session".to_string()
+                            })
+                        })
+                } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
+                    Err(format!(
+                        "generated member alias is not owned by the identity runtime: {member_alias}"
+                    ))
+                } else {
+                    send_message_on_mob(
+                        &self.mob_handle(),
+                        &member_alias,
+                        runtime_injection.message.clone(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                }
+            } else if crate::member_comms_id::is_reserved_generated_alias(&member_alias) {
+                Err(format!(
+                    "generated member alias requires identity runtime authority: {member_alias}"
+                ))
+            } else {
+                send_message_on_mob(
+                    &self.mob_handle(),
+                    &member_alias,
+                    runtime_injection.message.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())
+            };
 
             match injection_result {
                 Ok(session_id) => {

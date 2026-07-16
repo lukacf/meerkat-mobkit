@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
+from .identity_first_models import IdentityBootstrapMode
+
 
 @dataclass
 class MobKitBuilderConfig:
@@ -40,6 +42,7 @@ class MobKitBuilderConfig:
     roster_provider: Any | None = None
     topology_provider: Any | None = None
     agent_customizer: Any | None = None
+    identity_bootstrap_mode: IdentityBootstrapMode | None = None
 
 
 class MobKitBuilder:
@@ -464,6 +467,19 @@ class MobKitBuilder:
     def agent_customizer(self, customizer: Any) -> MobKitBuilder:
         """Set the agent customizer for identity-first continuity."""
         self._config.agent_customizer = customizer
+        return self
+
+    def identity_bootstrap_mode(
+        self, mode: IdentityBootstrapMode
+    ) -> MobKitBuilder:
+        """Set the identity materialization policy used during gateway init.
+
+        The option is omitted unless this method is called, preserving the
+        eager default and compatibility with older strict gateways.
+        """
+        if not isinstance(mode, IdentityBootstrapMode):
+            raise TypeError("mode must be an IdentityBootstrapMode")
+        self._config.identity_bootstrap_mode = mode
         return self
 
     async def build(self) -> MobKitRuntime:

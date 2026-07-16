@@ -494,17 +494,33 @@ comms = true
     let retire = rpc(
         &app,
         "mobkit/retire_member",
-        json!({"member_id": "builder"}),
+        json!({"member_id": "rt:builder:0"}),
     )
     .await;
     assert!(
         retire.get("error").is_none(),
         "identity retire_member of an idle member must succeed: {retire}"
     );
+    assert_eq!(
+        retire["result"]["identity_first"],
+        json!(true),
+        "a current runtime alias must route through the identity authority: {retire}"
+    );
+    let retired_status = rpc(
+        &app,
+        "mobkit/status_identity",
+        json!({"identity": "builder"}),
+    )
+    .await;
+    assert_eq!(
+        retired_status["result"]["state"],
+        json!("retiring"),
+        "runtime-alias retirement must advance durable lifecycle state: {retired_status}"
+    );
     let respawn = rpc(
         &app,
         "mobkit/respawn_member",
-        json!({"member_id": "reviewer"}),
+        json!({"member_id": "rt:reviewer:0"}),
     )
     .await;
     assert!(
@@ -514,6 +530,27 @@ comms = true
     assert!(
         respawn["result"]["session_id"].is_string(),
         "respawn must report the fresh session: {respawn}"
+    );
+    assert_eq!(
+        respawn["result"]["identity_first"],
+        json!(true),
+        "a current runtime alias must respawn through the identity authority: {respawn}"
+    );
+    assert_eq!(
+        respawn["result"]["generation"],
+        json!(1),
+        "identity respawn must advance continuity generation: {respawn}"
+    );
+    let respawned_status = rpc(
+        &app,
+        "mobkit/status_identity",
+        json!({"identity": "reviewer"}),
+    )
+    .await;
+    assert_eq!(
+        respawned_status["result"]["agent_runtime_id"],
+        json!("rt:reviewer:1"),
+        "status must bind the durable identity to the fresh runtime alias: {respawned_status}"
     );
 
     // retire_member also removed builder from the desired roster: another
@@ -552,6 +589,34 @@ comms = true
     assert!(
         worker["result"].get("identity_first").is_none(),
         "plane:worker must NOT create a durable identity: {worker}"
+    );
+    let worker_respawn = rpc(
+        &app,
+        "mobkit/respawn_member",
+        json!({"member_id": "scratch-helper"}),
+    )
+    .await;
+    assert!(
+        worker_respawn.get("error").is_none(),
+        "worker-plane respawn must keep the classic Mob path: {worker_respawn}"
+    );
+    assert!(
+        worker_respawn["result"].get("identity_first").is_none(),
+        "worker-plane respawn must not claim durable authority: {worker_respawn}"
+    );
+    let worker_retire = rpc(
+        &app,
+        "mobkit/retire_member",
+        json!({"member_id": "scratch-helper"}),
+    )
+    .await;
+    assert!(
+        worker_retire.get("error").is_none(),
+        "worker-plane retirement must keep the classic Mob path: {worker_retire}"
+    );
+    assert!(
+        worker_retire["result"].get("identity_first").is_none(),
+        "worker-plane retirement must not claim durable authority: {worker_retire}"
     );
 }
 

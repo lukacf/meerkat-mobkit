@@ -13,21 +13,23 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::StopReason;
 use meerkat_mobkit::identity_first::contracts::{
-    ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
+    AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentIdentity, CheckpointVersion, ContinuityGeneration, ContinuityRecord,
-    ContinuityResolveState, ContinuityStoreError, DurableAgentSpec, FencingToken,
-    IdentityLifecycleState, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    LocalContinuityStore, ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot,
-    TopologyContext, TopologyError,
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, BridgeError,
+    CheckpointVersion, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
+    ContinuityStoreError, CustomizerError, DurabilityPolicy, DurableAgentSpec, FencingToken,
+    IdentityBootstrapState, IdentityFirstRuntimeContext, IdentityLifecycleState, IdentityRuntime,
+    IdentityRuntimeConfig, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
+    LocalContinuityStore, ManagedPeerEdge, MemberInspection, RestoreOutcome, ResumeSessionOutcome,
+    RosterContext, RosterError, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
@@ -42,6 +44,33 @@ use serde_json::json;
 // ---------------------------------------------------------------------------
 
 struct StubContinuityStore;
+
+struct GatedCustomizer {
+    entered: AtomicUsize,
+    permits: Arc<tokio::sync::Semaphore>,
+    failing_identity: Option<AgentIdentity>,
+}
+
+#[async_trait]
+impl AgentCustomizer for GatedCustomizer {
+    async fn customize_build(
+        &self,
+        _context: &AgentBuildContext,
+        spec: &DurableAgentSpec,
+        _draft: &mut AgentBuildDraft,
+    ) -> Result<(), CustomizerError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.permits
+            .acquire()
+            .await
+            .expect("test semaphore remains open")
+            .forget();
+        if self.failing_identity.as_ref() == Some(&spec.identity) {
+            return Err(CustomizerError::BuildFailed("injected warm failure".into()));
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl ContinuityStore for StubContinuityStore {
@@ -89,6 +118,7 @@ impl ContinuityStore for StubContinuityStore {
 
 struct CountingReadyContinuityStore {
     records: BTreeMap<AgentIdentity, ContinuityRecord>,
+    snapshot: Option<SessionSnapshot>,
     load_snapshot_calls: AtomicUsize,
     upsert_calls: AtomicUsize,
 }
@@ -97,9 +127,15 @@ impl CountingReadyContinuityStore {
     fn new(records: BTreeMap<AgentIdentity, ContinuityRecord>) -> Self {
         Self {
             records,
+            snapshot: None,
             load_snapshot_calls: AtomicUsize::new(0),
             upsert_calls: AtomicUsize::new(0),
         }
+    }
+
+    fn with_snapshot(mut self, snapshot: SessionSnapshot) -> Self {
+        self.snapshot = Some(snapshot);
+        self
     }
 
     fn load_snapshot_calls(&self) -> usize {
@@ -136,7 +172,7 @@ impl ContinuityStore for CountingReadyContinuityStore {
         _sid: &meerkat_core::types::SessionId,
     ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
         self.load_snapshot_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
+        Ok(self.snapshot.clone())
     }
 
     async fn save_session_snapshot(
@@ -171,6 +207,22 @@ impl ContinuityStore for CountingReadyContinuityStore {
 
 struct StubLeaseProvider;
 
+#[derive(Default)]
+struct TrackingLeaseProvider {
+    acquired: AtomicUsize,
+    released: AtomicUsize,
+}
+
+impl TrackingLeaseProvider {
+    fn acquired(&self) -> usize {
+        self.acquired.load(Ordering::SeqCst)
+    }
+
+    fn released(&self) -> usize {
+        self.released.load(Ordering::SeqCst)
+    }
+}
+
 #[async_trait]
 impl LeaseProvider for StubLeaseProvider {
     async fn acquire_leases(
@@ -203,6 +255,191 @@ impl LeaseProvider for StubLeaseProvider {
     }
 }
 
+#[async_trait]
+impl LeaseProvider for TrackingLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        _instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        self.acquired.fetch_add(identities.len(), Ordering::SeqCst);
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                (
+                    identity.clone(),
+                    LeaseAcquireResult::Acquired(LeaseGrant {
+                        identity: identity.clone(),
+                        fencing_token: FencingToken::new(1),
+                        ttl: Duration::from_secs(30),
+                    }),
+                )
+            })
+            .collect())
+    }
+
+    async fn renew_leases(
+        &self,
+        _grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        Ok(BTreeMap::new())
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        self.released.fetch_add(grants.len(), Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct GatedUpsertContinuityStore {
+    record: tokio::sync::Mutex<Option<ContinuityRecord>>,
+    block_next_upsert: AtomicBool,
+    upsert_entered: AtomicUsize,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl GatedUpsertContinuityStore {
+    fn new(permits: Arc<tokio::sync::Semaphore>) -> Self {
+        Self {
+            record: tokio::sync::Mutex::new(None),
+            block_next_upsert: AtomicBool::new(true),
+            upsert_entered: AtomicUsize::new(0),
+            permits,
+        }
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for GatedUpsertContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        let record = self.record.lock().await.clone();
+        Ok(identities
+            .iter()
+            .map(|identity| {
+                let state = record
+                    .as_ref()
+                    .filter(|record| &record.identity == identity)
+                    .cloned()
+                    .map(|record| ContinuityResolveState::Ready { record })
+                    .unwrap_or(ContinuityResolveState::Uninitialized);
+                (identity.clone(), state)
+            })
+            .collect())
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        Ok(None)
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        _identity: &AgentIdentity,
+        _session_id: &meerkat_core::types::SessionId,
+        _generation: ContinuityGeneration,
+        _version: CheckpointVersion,
+        _fencing_token: FencingToken,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.upsert_entered.fetch_add(1, Ordering::SeqCst);
+        if self.block_next_upsert.swap(false, Ordering::SeqCst) {
+            self.permits
+                .acquire()
+                .await
+                .expect("test gate remains open")
+                .forget();
+        }
+        *self.record.lock().await = Some(record.clone());
+        Ok(())
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        _identity: &AgentIdentity,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        *self.record.lock().await = None;
+        Ok(())
+    }
+}
+
+struct SnapshotIgnoringBridge;
+
+#[async_trait]
+impl SessionBridge for SnapshotIgnoringBridge {
+    fn requires_resume_snapshot(&self) -> bool {
+        false
+    }
+
+    async fn create_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Ok(session_id.clone())
+    }
+
+    async fn resume_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<ResumeSessionOutcome, BridgeError> {
+        Ok(ResumeSessionOutcome::Resumed {
+            session_id: session_id.clone(),
+        })
+    }
+
+    async fn deliver(
+        &self,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+        _content: &meerkat_core::ContentInput,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Err(BridgeError::Mob("delivery not used in this test".into()))
+    }
+
+    async fn checkpoint_session(
+        &self,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<SessionSnapshot, BridgeError> {
+        Err(BridgeError::Mob("checkpoint not used in this test".into()))
+    }
+
+    async fn retire_member(
+        &self,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+    ) -> Result<(), BridgeError> {
+        Ok(())
+    }
+
+    async fn inspect_member(
+        &self,
+        _runtime_id: &meerkat_mobkit::identity_first::AgentRuntimeId,
+    ) -> Result<MemberInspection, BridgeError> {
+        Err(BridgeError::Mob("inspection not used in this test".into()))
+    }
+}
+
 #[derive(Clone)]
 struct StubRosterProvider {
     specs: Arc<tokio::sync::Mutex<Vec<DurableAgentSpec>>>,
@@ -224,6 +461,43 @@ impl StubRosterProvider {
 impl RosterProvider for StubRosterProvider {
     async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
         Ok(self.specs.lock().await.clone())
+    }
+}
+
+struct GatedRosterProvider {
+    specs: Vec<DurableAgentSpec>,
+    entered: AtomicUsize,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+struct FailAfterFirstRosterProvider {
+    specs: Vec<DurableAgentSpec>,
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl RosterProvider for FailAfterFirstRosterProvider {
+    async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(self.specs.clone())
+        } else {
+            Err(RosterError::ProviderUnavailable(
+                "injected reconcile failure".to_string(),
+            ))
+        }
+    }
+}
+
+#[async_trait]
+impl RosterProvider for GatedRosterProvider {
+    async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.permits
+            .acquire()
+            .await
+            .expect("test roster gate remains open")
+            .forget();
+        Ok(self.specs.clone())
     }
 }
 
@@ -265,6 +539,11 @@ impl RosterProvider for MobDefinitionRequiredRosterProvider {
 
 struct StubTopologyProvider {
     edges: Arc<tokio::sync::Mutex<Vec<ManagedPeerEdge>>>,
+}
+
+struct GatedTopologyProvider {
+    entered: AtomicUsize,
+    permits: Arc<tokio::sync::Semaphore>,
 }
 
 struct SlowTurnClient {
@@ -315,6 +594,23 @@ impl TopologyProvider for StubTopologyProvider {
         _context: &TopologyContext,
     ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
         Ok(self.edges.lock().await.clone())
+    }
+}
+
+#[async_trait]
+impl TopologyProvider for GatedTopologyProvider {
+    async fn compute_edges(
+        &self,
+        _target_identities: &[AgentIdentity],
+        _context: &TopologyContext,
+    ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.permits
+            .acquire()
+            .await
+            .expect("test topology gate remains open")
+            .forget();
+        Ok(Vec::new())
     }
 }
 
@@ -905,6 +1201,58 @@ async fn identity_first_builder_lazy_materialize_registers_large_ready_roster_wi
         .expect("dormant identity should be inspectable");
     assert_eq!(status.state, IdentityLifecycleState::Dormant);
     assert_eq!(status.profile.unwrap().as_str(), "default");
+    let bootstrap = identity_runtime.identity_bootstrap_status();
+    assert_eq!(bootstrap.mode, IdentityBootstrapMode::LazyMaterialize);
+    assert!(bootstrap.complete);
+    assert!(!bootstrap.ready);
+    assert_eq!(bootstrap.counts.dormant, 1_000);
+    assert_eq!(
+        bootstrap.identities[&AgentIdentity::parse("agent:42").unwrap()].state,
+        IdentityBootstrapState::Dormant
+    );
+}
+
+#[tokio::test]
+async fn identity_first_public_eager_refresh_preserves_snapshot_loading_contract() {
+    let specs = vec![durable_spec("agent:alpha")];
+    let identity = specs[0].identity.clone();
+    let records = BTreeMap::from([(identity.clone(), continuity_record("agent:alpha"))]);
+    let expected_snapshot = SessionSnapshot {
+        data: b"public-refresh-payload".to_vec(),
+    };
+    let continuity_store = Arc::new(
+        CountingReadyContinuityStore::new(records).with_snapshot(expected_snapshot.clone()),
+    );
+    let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: continuity_store.clone(),
+        lease_provider: Arc::new(StubLeaseProvider),
+        runtime_instance_id: "public-eager-refresh-snapshot-test".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(Arc::new(SnapshotIgnoringBridge)),
+        default_timeout: None,
+    }));
+    let context = IdentityFirstRuntimeContext::new(
+        identity_runtime,
+        Arc::new(StubRosterProvider::new(specs)),
+        None,
+        None,
+        None,
+    );
+
+    let result = context
+        .refresh_desired_topology()
+        .await
+        .expect("public eager refresh should succeed");
+    assert_eq!(
+        continuity_store.load_snapshot_calls(),
+        1,
+        "the existing public refresh API must still load its RestoreOutcome snapshot payload"
+    );
+    match &result.outcomes[&identity] {
+        RestoreOutcome::Resumed { snapshot, .. } => assert_eq!(snapshot, &expected_snapshot),
+        outcome => panic!("expected a payload-preserving resumed outcome, got {outcome:?}"),
+    }
 }
 
 #[tokio::test]
@@ -1000,6 +1348,510 @@ async fn identity_first_builder_rejects_zero_background_warm_concurrency() {
         .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
 
     Box::pin(assert_build_err_contains(builder, "concurrency")).await;
+}
+
+#[tokio::test]
+async fn identity_first_builder_rejects_excessive_background_warm_concurrency() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+            "agent:alpha",
+        )])))
+        .scratch_dir(tmp.path())
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 17 })
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
+
+    Box::pin(assert_build_err_contains(builder, "at most 16")).await;
+}
+
+#[tokio::test]
+async fn identity_first_builder_background_warm_is_tracked_to_active() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-background-warm-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 2,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("background-warm builder should return after metadata registration");
+
+    let identity_runtime = runtime.identity_runtime().expect("identity runtime");
+    let (status, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out, "background warm should reach a terminal state");
+    assert!(status.complete);
+    assert!(
+        status.ready,
+        "all warm identities should be active: {status:?}"
+    );
+    assert_eq!(status.counts.active, 2);
+    assert_eq!(status.counts.broken, 0);
+    assert!(
+        status
+            .identities
+            .values()
+            .all(|entry| entry.state == IdentityBootstrapState::Active)
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_background_warm_bounds_concurrency_and_reports_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![
+        durable_spec("agent:alpha"),
+        durable_spec("agent:beta"),
+        durable_spec("agent:gamma"),
+    ];
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+        failing_identity: Some(AgentIdentity::parse("agent:beta").unwrap()),
+    });
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .agent_customizer(customizer.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-background-warm-bounded-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 2,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("background-warm builder should return before customizers finish");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("two warm operations should start");
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        customizer.entered.load(Ordering::SeqCst),
+        2,
+        "configured concurrency must cap simultaneous warm operations"
+    );
+    let warming = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .identity_bootstrap_status();
+    assert_eq!(warming.counts.warming, 2);
+    assert_eq!(warming.counts.dormant, 1);
+    assert!(!warming.complete);
+
+    permits.add_permits(3);
+    let (terminal, timed_out) = runtime
+        .identity_runtime()
+        .unwrap()
+        .wait_identity_bootstrap_terminal(Duration::from_secs(5))
+        .await;
+    assert!(!timed_out);
+    assert!(terminal.complete);
+    assert!(!terminal.ready);
+    assert_eq!(terminal.counts.active, 2);
+    assert_eq!(terminal.counts.broken, 1);
+    let beta = &terminal.identities[&AgentIdentity::parse("agent:beta").unwrap()];
+    assert_eq!(beta.state, IdentityBootstrapState::Broken);
+    assert!(
+        beta.error
+            .as_deref()
+            .is_some_and(|error| error.contains("injected warm failure"))
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_shutdown_cancels_blocked_background_warm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let lease_provider = Arc::new(TrackingLeaseProvider::default());
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits,
+        failing_identity: None,
+    });
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(lease_provider.clone())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                "agent:alpha",
+            )])))
+            .agent_customizer(customizer.clone())
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-background-warm-shutdown-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                concurrency: 1,
+            })
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("background-warm builder should return while customization is blocked");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("warm task should enter the customizer");
+
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("shutdown must cancel and join blocked pre-session hydration");
+    assert_eq!(
+        lease_provider.acquired(),
+        1,
+        "single-embodiment ownership must precede host customization"
+    );
+    assert_eq!(
+        lease_provider.released(),
+        1,
+        "a warm cancelled inside customization must release its uninstalled lease"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_shutdown_joins_abandoned_foreground_materialization_cleanup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let lease_provider = Arc::new(TrackingLeaseProvider::default());
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+        failing_identity: Some(identity.clone()),
+    });
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(lease_provider.clone())
+                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                    "agent:alpha",
+                )])))
+                .agent_customizer(customizer.clone())
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-foreground-materialize-shutdown-test")
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("lazy builder should leave the identity dormant"),
+    );
+
+    let outer = tokio::spawn({
+        let identity_runtime = runtime.identity_runtime().unwrap().clone();
+        let identity = identity.clone();
+        async move { identity_runtime.materialize_tracked(&identity).await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("foreground materialization should acquire its lease and enter customization");
+    assert_eq!(lease_provider.acquired(), 1);
+
+    // Simulate an RPC handler being dropped after the lease boundary. The
+    // runtime-owned operation must outlive this result waiter.
+    outer.abort();
+    assert!(outer.await.unwrap_err().is_cancelled());
+
+    tokio::time::timeout(Duration::from_secs(2), runtime.shutdown())
+        .await
+        .expect("shutdown must cancel and join the abandoned pre-session transaction");
+    assert_eq!(
+        lease_provider.released(),
+        1,
+        "shutdown cancellation must release the abandoned caller's uninstalled lease"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_concurrent_reconcile_waits_for_post_lease_warm_transaction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let continuity_store = Arc::new(GatedUpsertContinuityStore::new(permits.clone()));
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(continuity_store.clone())
+                .lease_provider(Arc::new(TrackingLeaseProvider::default()))
+                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                    "agent:alpha",
+                )])))
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-background-warm-reconcile-test")
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                    concurrency: 1,
+                })
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("background warm should start behind the gated continuity write"),
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while continuity_store.upsert_entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("warm transaction should cross the lease boundary");
+
+    let first = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    let second = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !first.is_finished() && !second.is_finished(),
+        "reconciles must serialize behind, not abort, a post-lease materialization"
+    );
+
+    permits.add_permits(8);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        first
+            .await
+            .expect("first reconcile task should not panic")
+            .expect("first reconcile should succeed");
+        second
+            .await
+            .expect("second reconcile task should not panic")
+            .expect("second reconcile should succeed");
+    })
+    .await
+    .expect("serialized reconciles should complete after the transaction gate opens");
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_reconcile_publishes_nonterminal_status_before_provider_wait() {
+    let tmp = tempfile::tempdir().unwrap();
+    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let topology = Arc::new(GatedTopologyProvider {
+        entered: AtomicUsize::new(0),
+        permits: permits.clone(),
+    });
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(Arc::new(StubLeaseProvider))
+                .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+                    "agent:alpha",
+                )])))
+                .topology_provider(topology.clone())
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-reconcile-readiness-test")
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("initial eager bootstrap should consume the first topology permit"),
+    );
+    assert!(
+        runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .identity_bootstrap_status()
+            .ready
+    );
+
+    let reconcile = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while topology.entered.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reconcile should enter the gated topology provider");
+
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let in_flight = identity_runtime.identity_bootstrap_status();
+    assert!(!in_flight.complete);
+    assert!(
+        !in_flight.ready,
+        "an in-flight pass must not retain the previous ready snapshot"
+    );
+    let (_, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_millis(50))
+        .await;
+    assert!(timed_out, "the barrier must wait for the active reconcile");
+
+    permits.add_permits(1);
+    reconcile
+        .await
+        .expect("reconcile task should not panic")
+        .expect("reconcile should succeed after the topology gate opens");
+    let terminal = identity_runtime.identity_bootstrap_status();
+    assert!(terminal.complete);
+    assert!(terminal.ready);
+    assert!(terminal.error.is_none());
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_superseded_warm_task_cannot_complete_new_reconcile_barrier() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster_permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let roster = Arc::new(GatedRosterProvider {
+        specs: vec![durable_spec("agent:alpha")],
+        entered: AtomicUsize::new(0),
+        permits: roster_permits.clone(),
+    });
+    let customizer = Arc::new(GatedCustomizer {
+        entered: AtomicUsize::new(0),
+        permits: Arc::new(tokio::sync::Semaphore::new(0)),
+        failing_identity: None,
+    });
+    let runtime = Arc::new(
+        Box::pin(
+            UnifiedRuntimeBuilder::default()
+                .definition(test_definition())
+                .continuity_store(Arc::new(StubContinuityStore))
+                .lease_provider(Arc::new(TrackingLeaseProvider::default()))
+                .roster_provider(roster.clone())
+                .agent_customizer(customizer.clone())
+                .scratch_dir(tmp.path())
+                .identity_runtime_instance_id("builder-reconcile-generation-test")
+                .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm {
+                    concurrency: 1,
+                })
+                .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+                .build(),
+        )
+        .await
+        .expect("initial lazy bootstrap should start background warming"),
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while customizer.entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the original warm task should block inside customization");
+
+    let reconcile = tokio::spawn({
+        let runtime = Arc::clone(&runtime);
+        async move { runtime.refresh_desired_topology().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while roster.entered.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reconcile should cancel the old warmer and reach roster discovery");
+
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    let in_flight = identity_runtime.identity_bootstrap_status();
+    assert!(!in_flight.complete);
+    assert!(
+        !in_flight.ready,
+        "a superseded warm task must not complete the newer pass: {in_flight:?}"
+    );
+    let (_, timed_out) = identity_runtime
+        .wait_identity_bootstrap_terminal(Duration::from_millis(50))
+        .await;
+    assert!(
+        timed_out,
+        "the new pass must retain ownership of its barrier"
+    );
+
+    roster_permits.add_permits(1);
+    reconcile
+        .await
+        .expect("reconcile task should not panic")
+        .expect("reconcile should succeed after roster discovery resumes");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn identity_first_reconcile_provider_failure_is_terminal_and_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(Arc::new(StubContinuityStore))
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(FailAfterFirstRosterProvider {
+                specs: vec![durable_spec("agent:alpha")],
+                calls: AtomicUsize::new(0),
+            }))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-reconcile-failure-status-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("initial bootstrap should succeed");
+
+    let error = runtime
+        .refresh_desired_topology()
+        .await
+        .expect_err("the second roster call should fail");
+    assert!(error.to_string().contains("injected reconcile failure"));
+
+    let status = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .identity_bootstrap_status();
+    assert!(status.complete);
+    assert!(!status.ready);
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("injected reconcile failure")),
+        "pass-level failure should be observable: {status:?}"
+    );
+
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

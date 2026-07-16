@@ -4,12 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
 from typing import Any, Callable
 
 _log = logging.getLogger("meerkat_mobkit")
+
+# The gateway closes two outer request surfaces (5 seconds each), drains the
+# runtime event pipeline (30 seconds by default), and may spend up to 10 seconds
+# quiescing the mob actor before it has completed runtime-owned cleanup.  Keep
+# the host process alive beyond that 50-second budget so closing stdin remains
+# a graceful shutdown request rather than an almost-immediate SIGKILL.
+_GATEWAY_SHUTDOWN_GRACE_SECONDS = 60.0
+_PROCESS_TERMINATE_GRACE_SECONDS = 5.0
+_PROCESS_KILL_GRACE_SECONDS = 5.0
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -63,6 +73,11 @@ class PersistentTransport:
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
+
+    @property
+    def request_timeout(self) -> float:
+        """Default timeout, in seconds, for one outbound RPC request."""
+        return self._timeout
 
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
@@ -118,10 +133,18 @@ class PersistentTransport:
                 # Response to a pending request
                 msg_id = str(msg["id"])
                 with self._pending_lock:
-                    self._results[msg_id] = msg
                     event = self._pending.get(msg_id)
-                if event:
+                    if event is not None:
+                        self._results[msg_id] = msg
+                if event is not None:
                     event.set()
+                else:
+                    # The caller may already have timed out and removed its
+                    # pending entry. Do not retain an unclaimable late result.
+                    _log.debug(
+                        "transport: dropping response for non-pending id=%s",
+                        msg_id,
+                    )
             else:
                 _log.warning(
                     "transport: unrecognized message (no id or method): %s",
@@ -188,8 +211,23 @@ class PersistentTransport:
                 self._process.stdin.write(data.encode("utf-8"))
                 self._process.stdin.flush()
 
-    def send_sync(self, request: dict[str, Any]) -> Any:
+    def send_sync(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         self._ensure_running()
+        request_timeout = self._timeout if timeout is None else timeout
+        if (
+            isinstance(request_timeout, bool)
+            or not isinstance(request_timeout, (int, float))
+            or not math.isfinite(request_timeout)
+            or request_timeout <= 0
+        ):
+            raise ValueError(
+                "persistent transport: timeout must be a positive finite number"
+            )
         # Pre-fix, requests with no `id` (or two callers using the
         # same id) collided on `self._pending[""]`: the second
         # `_pending[msg_id] = event` clobbered the first caller's
@@ -215,12 +253,13 @@ class PersistentTransport:
         # Write request (lock only for write, release before wait)
         self._write_line(request)
         # Wait for response — no locks held
-        if not event.wait(timeout=self._timeout):
+        if not event.wait(timeout=request_timeout):
             with self._pending_lock:
                 self._pending.pop(msg_id, None)
                 self._results.pop(msg_id, None)
             raise RuntimeError(
-                f"persistent transport: timeout after {self._timeout}s waiting for response"
+                f"persistent transport: timeout after {request_timeout}s "
+                "waiting for response"
             )
         with self._pending_lock:
             self._pending.pop(msg_id, None)
@@ -229,22 +268,55 @@ class PersistentTransport:
             raise RuntimeError("persistent transport: subprocess closed stdout")
         return result
 
-    async def send_async(self, request: dict[str, Any]) -> Any:
-        return await asyncio.to_thread(self.send_sync, request)
+    async def send_async(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        return await asyncio.to_thread(self.send_sync, request, timeout=timeout)
 
     def stop(self) -> None:
-        if self._process is None:
+        process = getattr(self, "_process", None)
+        if process is None:
             return
         try:
-            if self._process.stdin:
-                self._process.stdin.close()
-            self._process.wait(timeout=5)
-        except Exception:
-            self._process.kill()
+            if process.stdin:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    # A gateway that already closed its pipe still needs to be
+                    # reaped below.
+                    pass
+            try:
+                process.wait(timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.terminate()
+                except OSError:
+                    # The child can exit between the timed wait and signal.
+                    pass
+                try:
+                    process.wait(timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    try:
+                        process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+                    except (OSError, subprocess.TimeoutExpired):
+                        # Signals are best effort; never make SDK teardown
+                        # unbounded if the OS cannot reap the child promptly.
+                        pass
+            except OSError:
+                # Already-reaped children need no further cleanup.
+                pass
         finally:
             self._process = None
-            if self._stderr_file is not None:
-                self._stderr_file.close()
+            stderr_file = getattr(self, "_stderr_file", None)
+            if stderr_file is not None:
+                stderr_file.close()
                 self._stderr_file = None
 
     def is_running(self) -> bool:

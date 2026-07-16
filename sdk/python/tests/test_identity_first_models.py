@@ -6,12 +6,167 @@ from meerkat_mobkit.identity_first_models import (
     ContinuityHealth,
     DispatchInput,
     DurableAgentSpec,
+    IdentityBootstrapCounts,
+    IdentityBootstrapEntry,
+    IdentityBootstrapMode,
+    IdentityBootstrapState,
+    IdentityBootstrapStatus,
     IdentityStatus,
     ImageBlock,
     LeaseInfo,
     ManagedPeerEdge,
     TextBlock,
 )
+
+
+class TestIdentityBootstrapModels:
+    @staticmethod
+    def _status_payload(**overrides):
+        payload = {
+            "mode": {"mode": "lazy_materialize"},
+            "complete": False,
+            "ready": False,
+            "counts": {},
+            "identities": {},
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_background_mode_round_trip(self):
+        mode = IdentityBootstrapMode.lazy_with_background_warm(concurrency=2)
+
+        assert IdentityBootstrapMode.from_dict(mode.to_dict()) == mode
+
+    def test_mode_parser_rejects_unknown_fields(self):
+        with pytest.raises(ValueError, match="unsupported field"):
+            IdentityBootstrapMode.from_dict(
+                {"mode": "lazy_materialize", "concurrency_hint": 2}
+            )
+
+    def test_status_parser_types_full_wait_response(self):
+        status = IdentityBootstrapStatus.from_dict(
+            {
+                "mode": {
+                    "mode": "lazy_with_background_warm",
+                    "concurrency": 2,
+                },
+                "complete": True,
+                "ready": False,
+                "error": "one or more identities failed to warm",
+                "counts": {
+                    "dormant": 0,
+                    "warming": 0,
+                    "active": 1,
+                    "broken": 1,
+                },
+                "identities": {
+                    "agent:active": {"state": "active"},
+                    "agent:broken": {
+                        "state": "broken",
+                        "error": "resume failed",
+                    },
+                },
+                "timed_out": True,
+                "target": "startup_ready",
+                "startup_ready": False,
+            }
+        )
+
+        assert status.mode == IdentityBootstrapMode.lazy_with_background_warm(
+            concurrency=2
+        )
+        assert status.counts == IdentityBootstrapCounts(active=1, broken=1)
+        assert status.identities["agent:active"] == (
+            IdentityBootstrapEntry(
+                identity="agent:active",
+                state=IdentityBootstrapState.ACTIVE,
+            )
+        )
+        assert status.identities["agent:broken"].error == "resume failed"
+        assert status.error == "one or more identities failed to warm"
+        assert status.timed_out is True
+        assert status.target == "startup_ready"
+        assert status.startup_ready is False
+        assert status.to_dict()["error"] == "one or more identities failed to warm"
+
+    def test_status_parser_preserves_unknown_state_as_typed_unknown(self):
+        status = IdentityBootstrapStatus.from_dict(
+            {
+                "mode": {"mode": "lazy_materialize"},
+                "complete": False,
+                "ready": False,
+                "counts": {},
+                "identities": {"agent:new": {"state": "future_state"}},
+            }
+        )
+
+        assert (
+            status.identities["agent:new"].state
+            is IdentityBootstrapState.UNKNOWN
+        )
+
+    @pytest.mark.parametrize("entry", [{}, {"state": None}, {"state": 1}])
+    def test_status_parser_rejects_missing_or_non_string_entry_state(self, entry):
+        payload = self._status_payload(identities={"agent:bad": entry})
+
+        with pytest.raises((TypeError, ValueError), match="state"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    def test_status_parser_rejects_non_string_entry_error(self):
+        payload = self._status_payload(
+            identities={"agent:bad": {"state": "broken", "error": 503}}
+        )
+
+        with pytest.raises(TypeError, match="error"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("complete", "false"),
+            ("ready", 0),
+            ("timed_out", "false"),
+            ("startup_ready", 1),
+        ],
+    )
+    def test_status_parser_rejects_non_boolean_flags(self, field, value):
+        payload = self._status_payload(**{field: value})
+
+        with pytest.raises(TypeError, match="boolean"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    @pytest.mark.parametrize("field", ["complete", "ready"])
+    def test_status_parser_requires_core_boolean_flags(self, field):
+        payload = self._status_payload()
+        del payload[field]
+
+        with pytest.raises(ValueError, match=field):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    @pytest.mark.parametrize("value", [True, "1", 1.5])
+    def test_status_parser_rejects_non_integer_counts(self, value):
+        payload = self._status_payload(counts={"active": value})
+
+        with pytest.raises(TypeError, match="integer"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    def test_status_parser_rejects_negative_counts(self):
+        payload = self._status_payload(counts={"broken": -1})
+
+        with pytest.raises(ValueError, match="non-negative"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    def test_status_parser_rejects_non_string_target(self):
+        payload = self._status_payload(target=42)
+
+        with pytest.raises(TypeError, match="target"):
+            IdentityBootstrapStatus.from_dict(payload)
+
+    def test_status_parser_rejects_non_string_pass_error(self):
+        payload = self._status_payload(error={"message": "failed"})
+
+        with pytest.raises(TypeError, match="error"):
+            IdentityBootstrapStatus.from_dict(payload)
 
 
 class TestDurableAgentSpec:
