@@ -2933,8 +2933,9 @@ async fn identity_first_superseded_warm_task_cannot_complete_new_reconcile_barri
 async fn identity_first_lazy_reconcile_serializes_with_foreground_materialization() {
     let tmp = tempfile::tempdir().unwrap();
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
-    let original = durable_spec(identity.as_str());
+    let original = durable_spec_with_profile(identity.as_str(), "domain");
     let mut replacement = original.clone();
+    replacement.profile = meerkat_mob::ProfileName::from("security");
     replacement
         .labels
         .insert("roster_revision".to_string(), "v2".to_string());
@@ -2948,7 +2949,7 @@ async fn identity_first_lazy_reconcile_serializes_with_foreground_materializatio
     let runtime = Arc::new(
         Box::pin(
             UnifiedRuntimeBuilder::default()
-                .definition(test_definition())
+                .definition(domain_security_definition())
                 .continuity_store(Arc::new(StubContinuityStore))
                 .lease_provider(Arc::new(StubLeaseProvider))
                 .roster_provider(roster.clone())

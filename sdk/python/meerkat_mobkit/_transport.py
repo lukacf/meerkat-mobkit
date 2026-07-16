@@ -8,7 +8,9 @@ import math
 import os
 import subprocess
 import threading
+import time
 from typing import Any, Callable
+from uuid import uuid4
 
 _log = logging.getLogger("meerkat_mobkit")
 
@@ -20,6 +22,7 @@ _log = logging.getLogger("meerkat_mobkit")
 _GATEWAY_SHUTDOWN_GRACE_SECONDS = 60.0
 _PROCESS_TERMINATE_GRACE_SECONDS = 5.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
+_GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown"
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -70,6 +73,7 @@ class PersistentTransport:
         self._callback_handler: Callable | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stderr_file = None
+        self._supports_shutdown_handshake = False
 
     def set_callback_handler(self, handler: Callable) -> None:
         self._callback_handler = handler
@@ -82,6 +86,9 @@ class PersistentTransport:
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
+        # Transport capabilities belong to one gateway process. A restarted
+        # child must negotiate them again through mobkit/init.
+        self._supports_shutdown_handshake = False
         # Capture event loop for async callback dispatch
         try:
             self._loop = asyncio.get_running_loop()
@@ -218,6 +225,22 @@ class PersistentTransport:
         timeout: float | None = None,
     ) -> Any:
         self._ensure_running()
+        response = self._send_sync_running(request, timeout=timeout)
+        if request.get("method") == "mobkit/init":
+            result = response.get("result") if isinstance(response, dict) else None
+            self._supports_shutdown_handshake = bool(
+                isinstance(result, dict)
+                and result.get("stdio_shutdown_handshake") is True
+            )
+        return response
+
+    def _send_sync_running(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        """Send on the current child without starting a replacement process."""
         request_timeout = self._timeout if timeout is None else timeout
         if (
             isinstance(request_timeout, bool)
@@ -268,6 +291,25 @@ class PersistentTransport:
             raise RuntimeError("persistent transport: subprocess closed stdout")
         return result
 
+    def _request_gateway_shutdown(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        timeout: float,
+    ) -> None:
+        """Wait for runtime cleanup while the current child's stdin stays open."""
+        if self._process is not process or process.poll() is not None:
+            return
+        self._send_sync_running(
+            {
+                "jsonrpc": "2.0",
+                "id": f"mobkit-shutdown-{uuid4()}",
+                "method": _GATEWAY_SHUTDOWN_METHOD,
+                "params": {},
+            },
+            timeout=timeout,
+        )
+
     async def send_async(
         self,
         request: dict[str, Any],
@@ -280,7 +322,23 @@ class PersistentTransport:
         process = getattr(self, "_process", None)
         if process is None:
             return
+        shutdown_started = time.monotonic()
         try:
+            # The gateway may need to round-trip lease/continuity provider
+            # callbacks while UnifiedRuntime shuts down. Keep stdin open until
+            # a capable gateway acknowledges that cleanup is complete. Older
+            # or custom gateways stay on the EOF protocol below.
+            if getattr(self, "_supports_shutdown_handshake", False):
+                try:
+                    self._request_gateway_shutdown(
+                        process,
+                        timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS,
+                    )
+                except Exception as exc:
+                    _log.debug("gateway shutdown handshake failed: %s", exc)
+
+            elapsed = time.monotonic() - shutdown_started
+            remaining_grace = max(0.0, _GATEWAY_SHUTDOWN_GRACE_SECONDS - elapsed)
             if process.stdin:
                 try:
                     process.stdin.close()
@@ -289,7 +347,7 @@ class PersistentTransport:
                     # reaped below.
                     pass
             try:
-                process.wait(timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS)
+                process.wait(timeout=remaining_grace)
             except subprocess.TimeoutExpired:
                 try:
                     process.terminate()

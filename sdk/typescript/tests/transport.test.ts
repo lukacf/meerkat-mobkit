@@ -69,6 +69,52 @@ describe("persistent transport shutdown", () => {
     );
   });
 
+  it("keeps stdin open until the gateway shutdown handshake answers", async () => {
+    const fake = fakeChild();
+    const transport = new PersistentTransport("unused-test-gateway");
+    (transport as any)._process = fake.child;
+    (transport as any)._supportsShutdownHandshake = true;
+
+    let handshakeObserved = false;
+    (transport as any)._sendAsyncWithTimeout = async (
+      request: Record<string, unknown>,
+      timeoutMs: number,
+      expectedChild: ChildProcess,
+    ) => {
+      assert.equal(fake.stdinEnded, 0);
+      assert.equal(request.method, "mobkit/shutdown");
+      assert.match(String(request.id), /^mobkit-shutdown-/);
+      assert.equal(timeoutMs, PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS);
+      assert.equal(expectedChild, fake.child);
+      handshakeObserved = true;
+      (fake.child as any).exitCode = 0;
+      return { jsonrpc: "2.0", id: request.id, result: { shutdown: true } };
+    };
+
+    await transport.stop();
+
+    assert.equal(handshakeObserved, true);
+    assert.equal(fake.stdinEnded, 1);
+    assert.equal((transport as any)._process, null);
+  });
+
+  it("keeps older gateways on the EOF shutdown protocol", async () => {
+    const fake = fakeChild();
+    const transport = new PersistentTransport("unused-test-gateway");
+    (transport as any)._process = fake.child;
+    (fake.child as any).exitCode = 0;
+
+    let handshakeAttempts = 0;
+    (transport as any)._sendAsyncWithTimeout = async () => {
+      handshakeAttempts += 1;
+    };
+
+    await transport.stop();
+
+    assert.equal(handshakeAttempts, 0);
+    assert.equal(fake.stdinEnded, 1);
+  });
+
   it("allows the gateway a 60-second graceful drain without signaling it", async () => {
     const fake = fakeChild();
     const waits: number[] = [];

@@ -17,7 +17,7 @@ import json
 import subprocess
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -156,8 +156,15 @@ def test_stop_gives_gateway_full_cleanup_budget_before_termination():
         0,
     ]
     transport._process = process
+    transport._request_gateway_shutdown = MagicMock(
+        side_effect=RuntimeError("old gateway")
+    )
 
-    transport.stop()
+    with patch(
+        "meerkat_mobkit._transport.time.monotonic",
+        side_effect=[100.0, 100.0],
+    ):
+        transport.stop()
 
     process.stdin.close.assert_called_once_with()
     assert process.wait.call_args_list == [
@@ -167,6 +174,34 @@ def test_stop_gives_gateway_full_cleanup_budget_before_termination():
     ]
     process.terminate.assert_called_once_with()
     process.kill.assert_called_once_with()
+    transport._request_gateway_shutdown.assert_not_called()
+    assert transport._process is None
+
+
+def test_stop_keeps_stdin_open_until_gateway_shutdown_handshake_answers():
+    transport = PersistentTransport("unused")
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.return_value = 0
+    transport._process = process
+    transport._supports_shutdown_handshake = True
+
+    def answer_shutdown(request, *, timeout):
+        process.stdin.close.assert_not_called()
+        assert request["method"] == "mobkit/shutdown"
+        assert request["id"].startswith("mobkit-shutdown-")
+        assert timeout == _GATEWAY_SHUTDOWN_GRACE_SECONDS
+        return {"jsonrpc": "2.0", "id": request["id"], "result": {"shutdown": True}}
+
+    transport._send_sync_running = MagicMock(side_effect=answer_shutdown)
+    with patch(
+        "meerkat_mobkit._transport.time.monotonic",
+        side_effect=[100.0, 100.0],
+    ):
+        transport.stop()
+
+    process.stdin.close.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=_GATEWAY_SHUTDOWN_GRACE_SECONDS)
     assert transport._process is None
 
 

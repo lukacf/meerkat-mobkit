@@ -6,6 +6,8 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
 
@@ -78,6 +80,7 @@ export const PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS = 60_000;
 
 const PERSISTENT_TRANSPORT_SIGTERM_GRACE_MS = 5_000;
 const PERSISTENT_TRANSPORT_SIGKILL_GRACE_MS = 5_000;
+const GATEWAY_SHUTDOWN_METHOD = "mobkit/shutdown";
 
 type ChildExitWaiter = (
   child: ChildProcess,
@@ -152,6 +155,7 @@ async function waitForChildExit(
 export async function stopChildProcess(
   child: ChildProcess,
   waitForExit: ChildExitWaiter = waitForChildExit,
+  shutdownGraceMs = PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS,
 ): Promise<void> {
   try {
     child.stdin?.end();
@@ -160,7 +164,7 @@ export async function stopChildProcess(
   }
 
   if (
-    await waitForExit(child, PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS)
+    await waitForExit(child, shutdownGraceMs)
   ) {
     return;
   }
@@ -199,6 +203,7 @@ export class PersistentTransport {
   private readonly _env: Record<string, string>;
   private readonly _timeout: number;
   private _callbackHandler: CallbackHandler | null = null;
+  private _supportsShutdownHandshake = false;
   private readonly _pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -224,6 +229,9 @@ export class PersistentTransport {
       return;
     }
 
+    // Capabilities are process-scoped and must be renegotiated on init after
+    // a child restart.
+    this._supportsShutdownHandshake = false;
     this._process = spawn(this.gatewayBin, ["--persistent"], {
       env: this._env,
       stdio: ["pipe", "pipe", "ignore"],
@@ -313,14 +321,37 @@ export class PersistentTransport {
   }
 
   async sendAsync(request: Record<string, unknown>): Promise<unknown> {
-    this._ensureRunning();
+    const response = await this._sendAsyncWithTimeout(request, this._timeout);
+    if (request.method === "mobkit/init") {
+      const result =
+        typeof response === "object" && response !== null
+          ? (response as Record<string, unknown>).result
+          : null;
+      this._supportsShutdownHandshake =
+        typeof result === "object" &&
+        result !== null &&
+        (result as Record<string, unknown>).stdio_shutdown_handshake === true;
+    }
+    return response;
+  }
+
+  private async _sendAsyncWithTimeout(
+    request: Record<string, unknown>,
+    timeoutMs: number,
+    expectedChild?: ChildProcess,
+  ): Promise<unknown> {
+    if (expectedChild === undefined) {
+      this._ensureRunning();
+    } else if (this._process !== expectedChild || childHasExited(expectedChild)) {
+      throw new Error("persistent transport: subprocess is not running");
+    }
     const msgId = String(request.id ?? "");
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(msgId);
-        reject(new Error(`persistent transport: timeout after ${this._timeout}ms`));
-      }, this._timeout);
+        reject(new Error(`persistent transport: timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
 
       this._pending.set(msgId, {
         resolve: (value) => {
@@ -333,7 +364,13 @@ export class PersistentTransport {
         },
       });
 
-      this._writeLine(request as Record<string, unknown>);
+      try {
+        this._writeLine(request as Record<string, unknown>);
+      } catch (error) {
+        clearTimeout(timer);
+        this._pending.delete(msgId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -343,7 +380,36 @@ export class PersistentTransport {
     const child = this._process;
     if (child === null) return;
 
-    const stopping = stopChildProcess(child).finally(() => {
+    const shutdownStarted = performance.now();
+    let stopping: Promise<void>;
+    stopping = (async () => {
+      try {
+        // Keep stdin open while the gateway shuts its runtime down: external
+        // lease/continuity providers may still need callback round-trips.
+        // Capability negotiation keeps older/custom gateways on their EOF
+        // protocol instead of assuming method-not-found behavior.
+        if (this._supportsShutdownHandshake) {
+          await this._sendAsyncWithTimeout(
+            {
+              jsonrpc: "2.0",
+              id: `mobkit-shutdown-${randomUUID()}`,
+              method: GATEWAY_SHUTDOWN_METHOD,
+              params: {},
+            },
+            PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS,
+            child,
+          );
+        }
+      } catch {
+        // Broken/older gateways still receive the bounded EOF/signal path.
+      }
+      const elapsedMs = performance.now() - shutdownStarted;
+      const remainingGraceMs = Math.max(
+        0,
+        PERSISTENT_TRANSPORT_SHUTDOWN_GRACE_MS - elapsedMs,
+      );
+      await stopChildProcess(child, waitForChildExit, remainingGraceMs);
+    })().finally(() => {
       if (this._process === child) this._process = null;
       if (this._stopping === stopping) this._stopping = null;
     });

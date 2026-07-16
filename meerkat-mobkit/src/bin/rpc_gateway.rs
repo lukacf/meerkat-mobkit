@@ -22,6 +22,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -3297,6 +3298,25 @@ struct StdioCallbackState {
     pending: HashMap<String, oneshot::Sender<Value>>,
 }
 
+const GATEWAY_SHUTDOWN_METHOD: &str = "mobkit/shutdown";
+
+#[derive(Debug)]
+struct GatewayShutdownRequest {
+    response_id: Value,
+}
+
+fn gateway_shutdown_request(message: &Value) -> Option<GatewayShutdownRequest> {
+    if message.get("method").and_then(Value::as_str) != Some(GATEWAY_SHUTDOWN_METHOD) {
+        return None;
+    }
+    // The private SDK handshake is deliberately request/response, not a
+    // notification: the host must keep stdin open until runtime cleanup
+    // (including provider callbacks) is complete.
+    Some(GatewayShutdownRequest {
+        response_id: message.get("id")?.clone(),
+    })
+}
+
 impl StdioCallbackBridge {
     fn new(stdout_tx: mpsc::Sender<String>) -> Self {
         Self {
@@ -4055,10 +4075,13 @@ external_addressable = true
     // spawn) are routed even while UnifiedRuntime::bootstrap is running.
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<String>(64);
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
 
     let stdin_reader = tokio::spawn({
         let bridge = bridge.clone();
         let rpc_tx = rpc_tx.clone();
+        let stdout_tx = stdout_tx.clone();
+        let shutdown_requested = shutdown_requested.clone();
         async move {
             let mut line = String::new();
             loop {
@@ -4085,9 +4108,51 @@ external_addressable = true
 
                 if is_callback_response {
                     bridge.route_callback_response(msg).await;
+                } else if gateway_shutdown_request(&msg).is_some() {
+                    // Stop new RPC admission as soon as the handshake enters
+                    // the reader, but keep routing callback responses. The
+                    // dispatch loop will retain the bridge through
+                    // `runtime.shutdown()` and answer this request only after
+                    // provider-backed cleanup has completed.
+                    if shutdown_requested.swap(true, Ordering::AcqRel) {
+                        if let Some(id) = msg.get("id") {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32098,
+                                    "message": "gateway shutdown already in progress"
+                                }
+                            });
+                            if let Ok(line) = serde_json::to_string(&response) {
+                                let _ = stdout_tx.send(line).await;
+                            }
+                        }
+                    } else if rpc_tx.send(trimmed.to_string()).await.is_err() {
+                        break;
+                    }
+                } else if shutdown_requested.load(Ordering::Acquire) {
+                    // Requests admitted after shutdown cannot be serviced and
+                    // must not be left pending in an SDK. Callback responses
+                    // were routed above and remain admitted.
+                    if let Some(id) = msg.get("id") {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32098,
+                                "message": "gateway shutdown in progress"
+                            }
+                        });
+                        if let Ok(line) = serde_json::to_string(&response) {
+                            let _ = stdout_tx.send(line).await;
+                        }
+                    }
                 } else {
                     // Queue RPC request for the dispatch loop
-                    let _ = rpc_tx.send(trimmed.to_string()).await;
+                    if rpc_tx.send(trimmed.to_string()).await.is_err() {
+                        break;
+                    }
                 }
             }
             bridge.close().await;
@@ -5505,6 +5570,10 @@ external_addressable = true
             "runtime_origin": runtime_origin,
             "runtime_fingerprint": runtime_fingerprint,
             "identity_bootstrap": identity_bootstrap,
+            // Private transport capability. SDKs use this to avoid sending
+            // the shutdown control method to older/custom gateways that may
+            // not implement normal JSON-RPC method-not-found semantics.
+            "stdio_shutdown_handshake": true,
         }
     });
     let _ = stdout_tx
@@ -5525,6 +5594,7 @@ external_addressable = true
     let identity_ctx = identity_ctx.map(Arc::new);
     let http_base_url_shared: Arc<str> = http_base_url.clone().into();
     let mut interrupted_with_open_stdin = false;
+    let mut gateway_shutdown = None;
     {
         let mut inflight = tokio::task::JoinSet::new();
         loop {
@@ -5538,6 +5608,12 @@ external_addressable = true
             let Some(request_line) = request_line else {
                 break; // stdin reader closed (EOF/error), or Ctrl-C won
             };
+            if let Ok(message) = serde_json::from_str::<Value>(&request_line)
+                && let Some(request) = gateway_shutdown_request(&message)
+            {
+                gateway_shutdown = Some(request);
+                break;
+            }
             let request_line = apply_gateway_runtime_config_to_request(
                 &request_line,
                 &gateway_options.schedules,
@@ -5565,9 +5641,13 @@ external_addressable = true
             // Reap completed handlers so the set does not grow unbounded.
             while inflight.try_join_next().is_some() {}
         }
-        // Ctrl-C can stop dispatch while stdin remains open. Close callback
-        // admission here too so handler/customizer waits wake immediately.
-        bridge.close().await;
+        // EOF/Ctrl-C makes further callback responses impossible (or asks us
+        // to stop immediately), so wake callback waiters. An explicit SDK
+        // shutdown handshake is different: stdin stays open and callback
+        // admission must survive until runtime-owned provider cleanup ends.
+        if gateway_shutdown.is_none() {
+            bridge.close().await;
+        }
         // EOF closes request admission. Give ordinary handlers a bounded
         // response grace, then abort their outer waiters so runtime shutdown
         // can begin promptly. Identity materialization/delivery transactions
@@ -5585,9 +5665,12 @@ external_addressable = true
     // 10. Graceful shutdown: stop HTTP admission, bound the outer-handler
     // drain, then let the runtime cancel/join identity-owned transactions.
     // Dispatch can also end on Ctrl-C while stdin is still open. Stop the
-    // reader now so its blocking read cannot outlive the runtime shutdown.
-    // Aborting an already-completed EOF reader is harmless.
-    stdin_reader.abort();
+    // reader now unless the SDK handshake must continue routing callback
+    // responses through runtime shutdown. Aborting an already-completed EOF
+    // reader is harmless.
+    if gateway_shutdown.is_none() {
+        stdin_reader.abort();
+    }
     let _ = shutdown_tx.send(true);
     if tokio::time::timeout(Duration::from_secs(5), &mut serve_task)
         .await
@@ -5598,6 +5681,21 @@ external_addressable = true
     }
     event_drain_task.abort();
     runtime.shutdown().await;
+    bridge.close().await;
+    if let Some(request) = gateway_shutdown {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": request.response_id,
+            "result": { "shutdown": true }
+        });
+        if let Ok(line) = serde_json::to_string(&response) {
+            let _ = stdout_tx.send(line).await;
+        }
+        // The SDK closes stdin after receiving the response. Abort our Tokio
+        // reader task now; that close also releases Tokio's blocking stdin
+        // helper before the runtime itself is dropped.
+        stdin_reader.abort();
+    }
     drop(stdout_tx);
     // Runtime and callback objects intentionally retain sender clones until
     // function exit. Signal the writer explicitly after all producers have
