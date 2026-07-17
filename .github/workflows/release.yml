@@ -376,5 +376,26 @@ jobs:
           if [[ "$DRY_RUN" == "true" ]]; then
             npm publish --access public --dry-run
           else
-            npm publish --access public
+            PACKAGE_NAME=$(node -p "require('./package.json').name")
+            PACKAGE_VERSION=$(node -p "require('./package.json').version")
+            PACKAGE_SPEC="${PACKAGE_NAME}@${PACKAGE_VERSION}"
+            VIEW_STDERR=$(mktemp)
+            trap 'rm -f "$VIEW_STDERR"' EXIT
+
+            if PUBLISHED_VERSION=$(npm view "$PACKAGE_SPEC" version --registry=https://registry.npmjs.org/ 2>"$VIEW_STDERR"); then
+              if [[ "$PUBLISHED_VERSION" != "$PACKAGE_VERSION" ]]; then
+                echo "::error::npm returned unexpected version '$PUBLISHED_VERSION' for exact package spec '$PACKAGE_SPEC'." >&2
+                exit 1
+              fi
+              echo "  $PACKAGE_SPEC: already published, skipping"
+            else
+              VIEW_STATUS=$?
+              if grep -Eq '(^|[[:space:]])E404([[:space:]]|$)' "$VIEW_STDERR"; then
+                echo "Publishing $PACKAGE_SPEC to npm"
+                npm publish --access public
+              else
+                cat "$VIEW_STDERR" >&2
+                exit "$VIEW_STATUS"
+              fi
+            fi
           fi
