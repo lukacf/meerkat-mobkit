@@ -40,12 +40,6 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
             '[package]\nname = "meerkat-mobkit"\nversion = "0.8.1"\nedition = "2024"\n'
         )
         (self.root / "src/lib.rs").write_text("")
-        (self.root / "tomli.py").write_text(
-            "import re\n"
-            "def loads(text):\n"
-            '    version = re.search(r\'^version = \\"([^\\"]+)\\"$\', text, re.M)\n'
-            "    return {'project': {'version': version.group(1)}}\n"
-        )
         (self.root / "sdk/python/pyproject.toml").write_text(
             '[project]\nname = "meerkat-mobkit"\nversion = "0.8.0"\n'
         )
@@ -124,6 +118,24 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "MODULE.bazel module version is missing or unparsable",
+            result.stdout,
+        )
+
+    def test_version_parity_rejects_nested_lockfile_root_drift(self):
+        self.run_command("scripts/bump-sdk-versions.sh", "0.8.1")
+        lock_path = self.root / "sdk/typescript/package-lock.json"
+        lock = json.loads(lock_path.read_text())
+        lock["packages"][""]["version"] = "0.8.0"
+        lock_path.write_text(json.dumps(lock, indent=2) + "\n")
+
+        result = self.run_command(
+            "scripts/verify-version-parity.sh",
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            'package-lock.json version mismatch (top-level=0.8.1, packages[""]=0.8.0, expected=0.8.1)',
             result.stdout,
         )
 

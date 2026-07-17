@@ -19,12 +19,13 @@ CARGO_VER=$("$CARGO" metadata --manifest-path "$ROOT/Cargo.toml" \
 
 PY_VER=$(python3 -c "
 import pathlib
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
-d = tomllib.loads(pathlib.Path('$ROOT/sdk/python/pyproject.toml').read_text())
-print(d['project']['version'])
+import re
+text = pathlib.Path('$ROOT/sdk/python/pyproject.toml').read_text()
+project = re.search(r'(?ms)^\[project\][ \t]*$\n(.*?)(?=^\[|\Z)', text)
+version = project and re.search(r'(?m)^[ \t]*version[ \t]*=[ \t]*\"([^\"]+)\"', project.group(1))
+if not version:
+    raise SystemExit('pyproject.toml [project].version is missing or unparsable')
+print(version.group(1))
 ")
 
 TS_VER=""
@@ -94,15 +95,21 @@ if [ -f "$BAZEL_FILE" ]; then
     fi
 fi
 
-# 3. TypeScript SDK lockfile root version parity.
+# 3. TypeScript SDK lockfile root version parity. npm lockfiles repeat the
+# package version at the document root and at packages[""]. Both fields are
+# release inputs and both are owned by bump-sdk-versions.sh.
 LOCK_FILE="$ROOT/sdk/typescript/package-lock.json"
 if [ -f "$LOCK_FILE" ]; then
     LOCK_VER=$(node -p "require('$LOCK_FILE').version" 2>/dev/null || echo "")
-    if [ -n "$LOCK_VER" ] && [ "$LOCK_VER" != "$CARGO_VER" ]; then
-        red "FAIL: package-lock.json version mismatch ($LOCK_VER != $CARGO_VER)"
+    LOCK_ROOT_PKG_VER=$(node -p "require('$LOCK_FILE').packages?.['']?.version" 2>/dev/null || echo "")
+    if [ -z "$LOCK_VER" ] || [ -z "$LOCK_ROOT_PKG_VER" ]; then
+        red "FAIL: package-lock.json root versions are missing or unparsable"
+        FAIL=1
+    elif [ "$LOCK_VER" != "$CARGO_VER" ] || [ "$LOCK_ROOT_PKG_VER" != "$CARGO_VER" ]; then
+        red "FAIL: package-lock.json version mismatch (top-level=$LOCK_VER, packages[\"\"]=$LOCK_ROOT_PKG_VER, expected=$CARGO_VER)"
         FAIL=1
     else
-        green "  package-lock.json version: OK"
+        green "  package-lock.json root versions: OK"
     fi
 fi
 
