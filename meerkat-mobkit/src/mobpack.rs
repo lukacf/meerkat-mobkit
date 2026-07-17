@@ -34373,9 +34373,30 @@ depends_on_mode = "all"
             mob_definition["editor_launch_view"]["launch_mode_labels"]["Fork"],
             json!("Fork — copy context from another step")
         );
-        assert_eq!(
-            mob_definition["editor_launch_view"]["fixed_budget_default_value"],
-            json!(4096)
+        assert!(
+            mob_definition["editor_launch_view"]
+                .get("budget_policy_label")
+                .is_none()
+        );
+        assert!(
+            mob_definition["editor_launch_view"]
+                .get("fixed_budget_label")
+                .is_none()
+        );
+        assert!(
+            mob_definition["editor_launch_view"]
+                .get("fixed_budget_default_value")
+                .is_none()
+        );
+        assert!(
+            mob_definition["editor_launch_view"]
+                .get("budget_split_policies_contract_label")
+                .is_none()
+        );
+        assert!(
+            mob_definition["editor_launch_view"]
+                .get("budget_split_policy_labels")
+                .is_none()
         );
         assert_eq!(
             mob_definition["editor_agent_view"]["add_agent_placeholder_label"],

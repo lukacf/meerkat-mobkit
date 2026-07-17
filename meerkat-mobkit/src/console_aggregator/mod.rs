@@ -5203,8 +5203,100 @@ mod tests {
             self.inner.start_turn(id, req).await
         }
 
+        async fn reconcile_runtime_compaction_projections(
+            &self,
+            id: &SessionId,
+            intents: Vec<meerkat_core::CompactionProjectionIntent>,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .reconcile_runtime_compaction_projections(id, intents)
+                .await
+        }
+
+        async fn abort_uncommitted_compaction_projections(
+            &self,
+            id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .abort_uncommitted_compaction_projections(id)
+                .await
+        }
+
+        async fn abort_rejected_runtime_run_projections(
+            &self,
+            id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner.abort_rejected_runtime_run_projections(id).await
+        }
+
         async fn interrupt(&self, id: &SessionId) -> Result<(), SessionError> {
             self.inner.interrupt(id).await
+        }
+
+        async fn cancel_after_boundary(&self, id: &SessionId) -> Result<(), SessionError> {
+            self.inner.cancel_after_boundary(id).await
+        }
+
+        async fn cancel_after_boundary_for_run(
+            &self,
+            id: &SessionId,
+            expected_run_id: &meerkat_core::RunId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .cancel_after_boundary_for_run(id, expected_run_id)
+                .await
+        }
+
+        async fn set_session_client(
+            &self,
+            id: &SessionId,
+            client: Arc<dyn meerkat_core::AgentLlmClient>,
+        ) -> Result<(), SessionError> {
+            self.inner.set_session_client(id, client).await
+        }
+
+        async fn hot_swap_session_llm_identity(
+            &self,
+            id: &SessionId,
+            client: Arc<dyn meerkat_core::AgentLlmClient>,
+            identity: meerkat_core::SessionLlmIdentity,
+            request_policy: meerkat_core::SessionLlmRequestPolicy,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .hot_swap_session_llm_identity(id, client, identity, request_policy)
+                .await
+        }
+
+        async fn set_session_tool_visibility_state(
+            &self,
+            id: &SessionId,
+            state: Option<meerkat_core::SessionToolVisibilityState>,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .set_session_tool_visibility_state(id, state)
+                .await
+        }
+
+        async fn update_session_mob_authority_context(
+            &self,
+            id: &SessionId,
+            authority_context: Option<meerkat_core::service::MobToolAuthorityContext>,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .update_session_mob_authority_context(id, authority_context)
+                .await
+        }
+
+        async fn has_live_session(&self, id: &SessionId) -> Result<bool, SessionError> {
+            self.inner.has_live_session(id).await
+        }
+
+        async fn set_session_tool_filter(
+            &self,
+            id: &SessionId,
+            filter: meerkat_core::ToolFilter,
+        ) -> Result<(), SessionError> {
+            self.inner.set_session_tool_filter(id, filter).await
         }
 
         async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
@@ -5225,12 +5317,44 @@ mod tests {
         ) -> Result<EventStream, StreamError> {
             SessionService::subscribe_session_events(self.inner.as_ref(), id).await
         }
+
+        async fn record_live_terminal_error(
+            &self,
+            id: &SessionId,
+            cause: meerkat_core::live_adapter::LiveAdapterErrorCode,
+        ) -> Result<(), SessionError> {
+            self.inner.record_live_terminal_error(id, cause).await
+        }
+
+        async fn record_live_output_audio_degraded(
+            &self,
+            id: &SessionId,
+            dropped: u64,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .record_live_output_audio_degraded(id, dropped)
+                .await
+        }
     }
 
     #[async_trait::async_trait]
     impl SessionServiceCommsExt for DelayedHistorySessionService {
         async fn comms_runtime(&self, session_id: &SessionId) -> Option<Arc<dyn CommsRuntime>> {
             self.inner.comms_runtime(session_id).await
+        }
+
+        async fn event_injector(
+            &self,
+            session_id: &SessionId,
+        ) -> Option<Arc<dyn meerkat_core::EventInjector>> {
+            self.inner.event_injector(session_id).await
+        }
+
+        async fn interaction_event_injector(
+            &self,
+            session_id: &SessionId,
+        ) -> Option<Arc<dyn meerkat_core::event_injector::SubscribableInjector>> {
+            self.inner.interaction_event_injector(session_id).await
         }
     }
 
@@ -5242,6 +5366,14 @@ mod tests {
             req: AppendSystemContextRequest,
         ) -> Result<AppendSystemContextResult, SessionControlError> {
             self.inner.append_system_context(id, req).await
+        }
+
+        async fn stage_tool_results(
+            &self,
+            id: &SessionId,
+            req: meerkat_core::service::StageToolResultsRequest,
+        ) -> Result<meerkat_core::service::StageToolResultsResult, SessionError> {
+            self.inner.stage_tool_results(id, req).await
         }
     }
 
@@ -5260,6 +5392,22 @@ mod tests {
             self.active_reads.fetch_sub(1, Ordering::SeqCst);
             result
         }
+
+        async fn read_transcript_revision(
+            &self,
+            id: &SessionId,
+            query: meerkat_core::service::SessionTranscriptRevisionQuery,
+        ) -> Result<meerkat_core::service::SessionTranscriptRevisionPage, SessionError> {
+            self.inner.read_transcript_revision(id, query).await
+        }
+
+        async fn list_transcript_revisions(
+            &self,
+            id: &SessionId,
+            query: meerkat_core::service::SessionTranscriptRevisionListQuery,
+        ) -> Result<meerkat_core::service::SessionTranscriptRevisionList, SessionError> {
+            self.inner.list_transcript_revisions(id, query).await
+        }
     }
 
     #[async_trait::async_trait]
@@ -5273,6 +5421,207 @@ mod tests {
                 .await
         }
 
+        async fn create_session_with_actor_witness_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+            actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.inner
+                .create_session_with_actor_witness_under_runtime_turn_boundary(
+                    req,
+                    actor_witness_slot,
+                )
+                .await
+        }
+
+        async fn create_session_with_machine_archived_resume_authority(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+            authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.inner
+                .create_session_with_machine_archived_resume_authority(req, authorization)
+                .await
+        }
+
+        async fn create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+            authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.inner
+                .create_session_with_machine_archived_resume_authority_under_runtime_turn_boundary(
+                    req,
+                    authorization,
+                )
+                .await
+        }
+
+        async fn create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+            authorization: meerkat_runtime::ArchivedSessionActorMaterializationAuthorization,
+            actor_witness_slot: &meerkat_session::LiveSessionActorWitnessSlot,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.inner
+                .create_session_with_machine_archived_resume_authority_and_actor_witness_under_runtime_turn_boundary(
+                    req,
+                    authorization,
+                    actor_witness_slot,
+                )
+                .await
+        }
+
+        async fn promote_revivable_retired_session(
+            &self,
+            session_id: &SessionId,
+            authority: meerkat_runtime::PreparedArchivedResumeCommitLease,
+        ) -> Result<meerkat_runtime::PromotedArchivedResumeCommitLease, SessionError> {
+            self.inner
+                .promote_revivable_retired_session(session_id, authority)
+                .await
+        }
+
+        async fn subscribe_session_events(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<EventStream, StreamError> {
+            meerkat_mob::MobSessionService::subscribe_session_events(
+                self.inner.as_ref(),
+                session_id,
+            )
+            .await
+        }
+
+        fn supports_persistent_sessions(&self) -> bool {
+            self.inner.supports_persistent_sessions()
+        }
+
+        async fn live_session_actor_registered(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<bool, SessionError> {
+            self.inner.live_session_actor_registered(session_id).await
+        }
+
+        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+            self.inner.runtime_adapter()
+        }
+
+        fn supports_runtime_turn_apply(&self) -> bool {
+            self.inner.supports_runtime_turn_apply()
+        }
+
+        async fn interrupt_with_machine_authority(
+            &self,
+            session_id: &SessionId,
+            authority: meerkat_runtime::MachineSessionControlAuthority,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .interrupt_with_machine_authority(session_id, authority)
+                .await
+        }
+
+        async fn cancel_after_boundary_with_machine_authority(
+            &self,
+            session_id: &SessionId,
+            expected_run_id: &meerkat_core::RunId,
+            authority: meerkat_runtime::MachineSessionControlAuthority,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .cancel_after_boundary_with_machine_authority(
+                    session_id,
+                    expected_run_id,
+                    authority,
+                )
+                .await
+        }
+
+        async fn cancel_current_after_boundary_with_machine_authority(
+            &self,
+            session_id: &SessionId,
+            authority: meerkat_runtime::MachineSessionControlAuthority,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .cancel_current_after_boundary_with_machine_authority(session_id, authority)
+                .await
+        }
+
+        async fn execution_snapshot(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::AgentExecutionSnapshot>, SessionError> {
+            self.inner.execution_snapshot(session_id).await
+        }
+
+        async fn tool_scope_snapshot(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::ToolScopeSnapshot>, SessionError> {
+            self.inner.tool_scope_snapshot(session_id).await
+        }
+
+        async fn external_tool_surface_snapshot(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::ExternalToolSurfaceSnapshot>, SessionError> {
+            self.inner.external_tool_surface_snapshot(session_id).await
+        }
+
+        async fn peer_ingress_runtime_snapshot(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::PeerIngressRuntimeSnapshot>, SessionError> {
+            self.inner.peer_ingress_runtime_snapshot(session_id).await
+        }
+
+        async fn session_known_to_archive_authority(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<bool, SessionError> {
+            self.inner
+                .session_known_to_archive_authority(session_id)
+                .await
+        }
+
+        async fn session_belongs_to_mob(
+            &self,
+            session_id: &SessionId,
+            mob_id: &meerkat_mob::MobId,
+        ) -> bool {
+            self.inner.session_belongs_to_mob(session_id, mob_id).await
+        }
+
+        async fn load_persisted_session(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::Session>, SessionError> {
+            self.inner.load_persisted_session(session_id).await
+        }
+
+        async fn load_revivable_retired_session(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::Session>, SessionError> {
+            self.inner.load_revivable_retired_session(session_id).await
+        }
+
+        async fn load_persisted_session_metadata(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<meerkat_core::PersistedSessionMetadataView>, SessionError> {
+            self.inner.load_persisted_session_metadata(session_id).await
+        }
+
+        async fn archive_with_mob_lifecycle_authority(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .archive_with_mob_lifecycle_authority(session_id)
+                .await
+        }
+
         async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
             &self,
             session_id: &SessionId,
@@ -5280,6 +5629,146 @@ mod tests {
             self.inner
                 .archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(session_id)
                 .await
+        }
+
+        async fn apply_runtime_turn(
+            &self,
+            session_id: &SessionId,
+            run_id: meerkat_core::RunId,
+            req: StartTurnRequest,
+            boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+            contributing_input_ids: Vec<meerkat_core::InputId>,
+        ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+            self.inner
+                .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
+                .await
+        }
+
+        async fn apply_runtime_context_appends(
+            &self,
+            session_id: &SessionId,
+            run_id: meerkat_core::RunId,
+            appends: Vec<meerkat_core::PendingSystemContextAppend>,
+            contributing_input_ids: Vec<meerkat_core::InputId>,
+        ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+            self.inner
+                .apply_runtime_context_appends(session_id, run_id, appends, contributing_input_ids)
+                .await
+        }
+
+        async fn apply_runtime_context_appends_with_boundary(
+            &self,
+            session_id: &SessionId,
+            run_id: meerkat_core::RunId,
+            appends: Vec<meerkat_core::PendingSystemContextAppend>,
+            boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+            contributing_input_ids: Vec<meerkat_core::InputId>,
+        ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+            self.inner
+                .apply_runtime_context_appends_with_boundary(
+                    session_id,
+                    run_id,
+                    appends,
+                    boundary,
+                    contributing_input_ids,
+                )
+                .await
+        }
+
+        async fn apply_runtime_system_context_for_turn(
+            &self,
+            session_id: &SessionId,
+            appends: Vec<meerkat_core::PendingSystemContextAppend>,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .apply_runtime_system_context_for_turn(session_id, appends)
+                .await
+        }
+
+        async fn prepare_runtime_system_context_for_active_turn(
+            &self,
+            session_id: &SessionId,
+            expected_run_id: &meerkat_core::RunId,
+            appends: Vec<meerkat_core::PendingSystemContextAppend>,
+        ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
+        {
+            self.inner
+                .prepare_runtime_system_context_for_active_turn(
+                    session_id,
+                    expected_run_id,
+                    appends,
+                )
+                .await
+        }
+
+        async fn checkpoint_committed_runtime_session_snapshot(
+            &self,
+            session_id: &SessionId,
+            session_snapshot: &[u8],
+        ) -> Result<(), SessionError> {
+            self.inner
+                .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
+                .await
+        }
+
+        async fn acquire_runtime_turn_finalization_guard(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Box<dyn meerkat_core::lifecycle::CoreExecutorTurnFinalizationGuard>, SessionError>
+        {
+            self.inner
+                .acquire_runtime_turn_finalization_guard(session_id)
+                .await
+        }
+
+        async fn checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
+            &self,
+            session_id: &SessionId,
+            session_snapshot: &[u8],
+        ) -> Result<(), SessionError> {
+            self.inner
+                .checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
+                    session_id,
+                    session_snapshot,
+                )
+                .await
+        }
+
+        async fn discard_live_session_after_runtime_stop_terminalized(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .discard_live_session_after_runtime_stop_terminalized(session_id)
+                .await
+        }
+
+        async fn discard_live_session_after_runtime_stop_terminalized_under_turn_finalization_boundary(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .discard_live_session_after_runtime_stop_terminalized_under_turn_finalization_boundary(
+                    session_id,
+                )
+                .await
+        }
+
+        async fn publish_interaction_terminals(
+            &self,
+            session_id: &SessionId,
+            events: &[meerkat_core::event::AgentEvent],
+        ) -> Result<
+            Vec<meerkat_core::lifecycle::core_executor::CoreInteractionTerminalPublicationReceipt>,
+            SessionError,
+        > {
+            self.inner
+                .publish_interaction_terminals(session_id, events)
+                .await
+        }
+
+        async fn discard_live_session(&self, session_id: &SessionId) -> Result<(), SessionError> {
+            self.inner.discard_live_session(session_id).await
         }
 
         async fn discard_live_session_under_runtime_turn_boundary(
@@ -5291,20 +5780,20 @@ mod tests {
                 .await
         }
 
-        fn supports_persistent_sessions(&self) -> bool {
-            self.inner.supports_persistent_sessions()
+        async fn discard_live_session_actor_under_runtime_turn_boundary(
+            &self,
+            witness: &meerkat_session::LiveSessionActorWitness,
+        ) -> Result<bool, SessionError> {
+            self.inner
+                .discard_live_session_actor_under_runtime_turn_boundary(witness)
+                .await
         }
 
-        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-            self.inner.runtime_adapter()
-        }
-
-        async fn session_belongs_to_mob(
+        async fn await_event_projection_drain(
             &self,
             session_id: &SessionId,
-            mob_id: &meerkat_mob::MobId,
-        ) -> bool {
-            self.inner.session_belongs_to_mob(session_id, mob_id).await
+        ) -> Result<bool, SessionError> {
+            self.inner.await_event_projection_drain(session_id).await
         }
 
         async fn cancel_all_checkpointers(&self) {

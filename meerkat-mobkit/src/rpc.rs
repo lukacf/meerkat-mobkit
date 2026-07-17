@@ -8830,13 +8830,20 @@ shell = true
         )
         .await?;
         runtime
-            .spawn(SpawnMemberSpec::from_wire(
-                "worker".to_string(),
-                "draco-base-001".to_string(),
-                None,
-                None,
-                None,
-            ))
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "draco-base-001".to_string(),
+                    None,
+                    None,
+                    None,
+                )
+                // This regression needs roster membership, not an autonomous
+                // kickoff. Keep the fixture quiescent so its deliberate retire
+                // is the sole teardown owner and the test exercises baseline
+                // dispatch precedence rather than kickoff/retire interleaving.
+                .with_runtime_mode(meerkat_mob::MobRuntimeMode::TurnDriven),
+            )
             .await?;
 
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {

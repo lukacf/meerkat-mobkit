@@ -1850,6 +1850,12 @@ macro_rules! delegate_mob_session_service {
                     .abort_uncommitted_compaction_projections(id)
                     .await
             }
+            async fn abort_rejected_runtime_run_projections(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner.abort_rejected_runtime_run_projections(id).await
+            }
             async fn interrupt(
                 &self,
                 id: &meerkat_core::types::SessionId,
@@ -2575,6 +2581,12 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         self.inner
             .abort_uncommitted_compaction_projections(id)
             .await
+    }
+    async fn abort_rejected_runtime_run_projections(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner.abort_rejected_runtime_run_projections(id).await
     }
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
         self.inner.interrupt(id).await
@@ -6228,6 +6240,14 @@ realm_profile = "worker-v2"
             Ok(())
         }
 
+        async fn abort_rejected_runtime_run_projections(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            self.record("abort_rejected_runtime_run_projections");
+            Ok(())
+        }
+
         async fn interrupt(
             &self,
             _id: &meerkat_core::types::SessionId,
@@ -6462,6 +6482,12 @@ realm_profile = "worker-v2"
         )
         .await
         .expect("runtime compaction abort should forward to inner service");
+        meerkat_core::service::SessionService::abort_rejected_runtime_run_projections(
+            &wrapped,
+            &session_id,
+        )
+        .await
+        .expect("rejected runtime-run cleanup should forward to inner service");
         meerkat_core::service::SessionService::record_live_terminal_error(
             &wrapped,
             &session_id,
@@ -6536,6 +6562,7 @@ realm_profile = "worker-v2"
                 "archive_with_mob_lifecycle_authority",
                 "reconcile_runtime_compaction_projections",
                 "abort_uncommitted_compaction_projections",
+                "abort_rejected_runtime_run_projections",
                 "record_live_terminal_error",
                 "record_live_output_audio_degraded",
                 "stage_tool_results",

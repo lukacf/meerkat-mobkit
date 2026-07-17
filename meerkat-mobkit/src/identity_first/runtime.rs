@@ -6509,6 +6509,22 @@ impl IdentityRuntime {
                 .await;
             return Err(err);
         }
+        // The durable fence now belongs to the retire transaction. Refresh
+        // the bridge adapter before retirement so Meerkat's terminal archive
+        // projection carries that same token. Leaving the live session on the
+        // prior token makes ArchiveSession fail closed with a stale fence and
+        // strands the member in Retiring.
+        if let Some(record) = registered_entry.continuity.as_ref()
+            && let Err(error) = self
+                .refresh_existing_session_runtime_state(identity, record, &grant)
+                .await
+        {
+            self.restore_broken_entry_with_fenced_store(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge refresh session authority before retire: {error}"
+            )));
+        }
 
         // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
         // member retires. Best-effort and bounded — retirement proceeds at
