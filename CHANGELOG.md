@@ -76,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   names in `index.json` and `checksums.sha256`, and keeps manual tagged builds,
   validation, and registry publication on the exact requested source tag. The
   registry job now retries public readback until the exact crate, Python wheel
-  and source distribution, and npm package are all independently visible.
+  and source distribution, and npm package are all independently visible,
+  non-yanked, downloadable, and checksum-valid.
 - Runtime-turn diagnostics are structural-only and opt in with an explicit
   truthy value; prompts, appended context, tool dispatch metadata, and full
   runtime semantics are never written to the diagnostic log.
