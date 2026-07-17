@@ -251,17 +251,17 @@ mod tests {
     }
 
     #[test]
-    fn explicit_repo_root_is_verified_without_a_machine_specific_default() {
-        let repo = tempfile::tempdir().expect("temporary Meerkat repository");
+    fn explicit_repo_root_is_verified_without_a_machine_specific_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repo = tempfile::tempdir()?;
         fs::write(
             repo.path().join("baseline-symbols.rs"),
             REQUIRED_MEERKAT_SYMBOLS.join("\n"),
-        )
-        .expect("write baseline symbols");
+        )?;
 
-        let report = verify_meerkat_baseline_symbols(Some(repo.path()))
-            .expect("configured repository should verify");
+        let report = verify_meerkat_baseline_symbols(Some(repo.path()))?;
         assert_eq!(report.repo_root, repo.path());
         assert!(report.missing_symbols.is_empty());
+        Ok(())
     }
 }

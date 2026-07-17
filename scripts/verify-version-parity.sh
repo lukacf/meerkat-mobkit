@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify version parity across Rust workspace, Python SDK, and TypeScript SDK.
+# Verify version parity across Rust, Bazel, Python, and TypeScript packages.
 # Exit 0 if everything is in sync, exit 1 with diagnostics on any mismatch.
 
 set -euo pipefail
@@ -32,11 +32,19 @@ if [ -f "$ROOT/sdk/typescript/package.json" ]; then
     TS_VER=$(node -p "require('$ROOT/sdk/typescript/package.json').version")
 fi
 
+MODULE_VER=""
+if [ -f "$ROOT/MODULE.bazel" ]; then
+    MODULE_VER=$(sed -n '/^module(/,/^)/s/.*version = "\([^"]*\)".*/\1/p' "$ROOT/MODULE.bazel")
+fi
+
 echo "Package versions:"
 echo "  Cargo (meerkat-mobkit):  $CARGO_VER"
 echo "  Python SDK:                   $PY_VER"
 if [ -n "$TS_VER" ]; then
     echo "  TypeScript SDK:               $TS_VER"
+fi
+if [ -n "$MODULE_VER" ]; then
+    echo "  Bazel module:                 $MODULE_VER"
 fi
 
 PKG_OK=true
@@ -47,6 +55,11 @@ if [ "$CARGO_VER" != "$PY_VER" ]; then
 fi
 if [ -n "$TS_VER" ] && [ "$CARGO_VER" != "$TS_VER" ]; then
     red "FAIL: TypeScript SDK version mismatch ($TS_VER != $CARGO_VER)"
+    PKG_OK=false
+    FAIL=1
+fi
+if [ -n "$MODULE_VER" ] && [ "$CARGO_VER" != "$MODULE_VER" ]; then
+    red "FAIL: Bazel module version mismatch ($MODULE_VER != $CARGO_VER)"
     PKG_OK=false
     FAIL=1
 fi
