@@ -428,10 +428,11 @@ def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
 
-    with patch(
-        "meerkat_mobkit._transport.time.monotonic",
-        side_effect=[100.0, 100.0],
-    ):
+    # Patch the transport module's `time` binding rather than the process-wide
+    # `time.monotonic` function. `threading.Barrier` also uses monotonic time on
+    # current Python versions and must remain real while this callback is gated.
+    with patch("meerkat_mobkit._transport.time") as transport_time:
+        transport_time.monotonic.side_effect = [100.0, 100.0]
         worker = threading.Thread(target=stop_transport)
         worker.start()
         gate.wait(timeout=2)
