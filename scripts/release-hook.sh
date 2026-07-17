@@ -27,7 +27,9 @@ git add \
   "$ROOT/sdk/typescript/package.json" \
   "$ROOT/sdk/typescript/package-lock.json" \
   "$ROOT/meerkat-mobkit/BUILD.bazel" \
-  "$ROOT/MODULE.bazel"
+  "$ROOT/MODULE.bazel" \
+  "$ROOT/docs/quickstart.mdx" \
+  "$ROOT/docs/sdks/rust.mdx"
 
 echo "$VERSION" > "$SENTINEL"
 echo "release-hook: done ($VERSION)"

@@ -21,6 +21,7 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         (self.root / "sdk/python").mkdir(parents=True)
         (self.root / "sdk/typescript").mkdir(parents=True)
         (self.root / "meerkat-mobkit").mkdir()
+        (self.root / "docs/sdks").mkdir(parents=True)
         (self.root / "src").mkdir()
 
         for name in (
@@ -64,6 +65,12 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         (self.root / "MODULE.bazel").write_text(
             'module(\n    name = "meerkat_mobkit",\n    version = "0.8.0",\n)\n'
         )
+        (self.root / "docs/quickstart.mdx").write_text(
+            'meerkat-mobkit = "0.8.0"\n'
+        )
+        (self.root / "docs/sdks/rust.mdx").write_text(
+            'meerkat-mobkit = "0.8.0"\n'
+        )
 
         self.run_command("git", "init", "-q")
         self.run_command("git", "config", "user.email", "test@example.com")
@@ -101,6 +108,12 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
             "git", "diff", "--cached", "--name-only"
         ).stdout.splitlines()
         self.assertIn("MODULE.bazel", staged)
+        self.assertIn("docs/quickstart.mdx", staged)
+        self.assertIn("docs/sdks/rust.mdx", staged)
+        self.assertIn(
+            'meerkat-mobkit = "0.8.1"',
+            (self.root / "docs/quickstart.mdx").read_text(),
+        )
 
         self.run_command("scripts/verify-version-parity.sh")
 
@@ -136,6 +149,23 @@ class ReleaseVersionScriptsTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             'package-lock.json version mismatch (top-level=0.8.1, packages[""]=0.8.0, expected=0.8.1)',
+            result.stdout,
+        )
+
+    def test_version_parity_rejects_stale_rust_install_docs(self):
+        self.run_command("scripts/bump-sdk-versions.sh", "0.8.1")
+        (self.root / "docs/sdks/rust.mdx").write_text(
+            'meerkat-mobkit = "0.7.39"\n'
+        )
+
+        result = self.run_command(
+            "scripts/verify-version-parity.sh",
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "docs/sdks/rust.mdx install version mismatch (0.7.39 != 0.8.1)",
             result.stdout,
         )
 

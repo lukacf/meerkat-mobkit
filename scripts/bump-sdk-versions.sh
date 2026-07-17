@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump Python SDK (and TypeScript SDK if present) version to match Cargo workspace.
+# Bump every published/install-facing version to match the Cargo workspace.
 # Usage: ./scripts/bump-sdk-versions.sh [VERSION]
 # If VERSION is omitted, reads from Cargo.toml workspace.package.version.
 
@@ -73,5 +73,15 @@ if [ -f "$ROOT/MODULE.bazel" ]; then
     sedi -E '/^module\(/,/^\)/ s/(version = ")[^"]*(",)/\1'"$VERSION"'\2/' "$ROOT/MODULE.bazel"
     echo "  Bazel MODULE.bazel version: $VERSION"
 fi
+
+# Installation docs are executable release inputs too: a stale 0.x Cargo
+# requirement never selects a newer minor line. Keep every canonical Rust
+# install snippet on the same version as the package surfaces above.
+for DOC in "$ROOT/docs/quickstart.mdx" "$ROOT/docs/sdks/rust.mdx"; do
+    if [ -f "$DOC" ]; then
+        sedi -E 's/(meerkat-mobkit = ")[^"]*(")/\1'"$VERSION"'\2/g' "$DOC"
+        echo "  Rust install docs ($(basename "$DOC")): $VERSION"
+    fi
+done
 
 echo "Done"

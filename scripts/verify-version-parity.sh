@@ -113,6 +113,23 @@ if [ -f "$LOCK_FILE" ]; then
     fi
 fi
 
+# 4. Canonical Rust installation docs. Cargo's 0.x caret semantics do not
+# cross minor versions, so an old snippet silently keeps users off the release.
+for DOC in "$ROOT/docs/quickstart.mdx" "$ROOT/docs/sdks/rust.mdx"; do
+    if [ -f "$DOC" ]; then
+        DOC_VERSIONS=$(sed -n 's/.*meerkat-mobkit = "\([^"]*\)".*/\1/p' "$DOC" | sort -u)
+        if [ -z "$DOC_VERSIONS" ]; then
+            red "FAIL: $DOC has no meerkat-mobkit installation version"
+            FAIL=1
+        elif [ "$DOC_VERSIONS" != "$CARGO_VER" ]; then
+            red "FAIL: $DOC install version mismatch ($DOC_VERSIONS != $CARGO_VER)"
+            FAIL=1
+        else
+            green "  $(basename "$DOC") Rust install version: OK"
+        fi
+    fi
+done
+
 echo ""
 if [ $FAIL -ne 0 ]; then
     red "Version parity check FAILED"
