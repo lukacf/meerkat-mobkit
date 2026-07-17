@@ -183,6 +183,23 @@ pub struct ReplaySanitizingLlmClient {
 
 type SharedDefaultLlmClientSlot = Arc<std::sync::RwLock<Option<Arc<dyn LlmClient>>>>;
 
+fn session_llm_reconfigure_blueprint(
+    builder: &FactoryAgentBuilder,
+    store_path: &Path,
+) -> (
+    meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureHostBlueprint,
+    SharedDefaultLlmClientSlot,
+) {
+    let default_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
+    let blueprint =
+        meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureHostBlueprint::new(
+            builder,
+            store_path.join("session-llm-reconfigure-config-state.json"),
+            Arc::clone(&default_client_slot),
+        );
+    (blueprint, default_client_slot)
+}
+
 impl ReplaySanitizingLlmClient {
     pub fn new(inner: Arc<dyn LlmClient>) -> Self {
         Self { inner }
@@ -1333,13 +1350,15 @@ fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime:
     }
 }
 
-/// RuntimeStore facade for external-authoritative identity-first apps.
+/// RuntimeStore forwarding facade for identity-first apps with an external
+/// compatibility projection.
 ///
 /// `PersistentSessionService` treats `RuntimeStore` as the authoritative
-/// session snapshot source whenever one is installed. External apps such as
-/// OB3 supply a durable `SessionStore` through `ContinuitySessionStoreAdapter`,
-/// so this bridge makes that store visible to the runtime snapshot path while
-/// delegating non-session runtime bookkeeping to the process-local store.
+/// session snapshot source whenever one is installed. The supplied
+/// `SessionStore` must therefore remain a compatibility projection rather than
+/// being read back through this facade as runtime authority. Store-only
+/// recovery remains owned by Meerkat's session-document machine;
+/// this facade must not reinterpret the projection as runtime authority.
 struct SessionStoreBackedRuntimeStore {
     inner: Arc<dyn meerkat_runtime::RuntimeStore>,
 }
@@ -3471,6 +3490,8 @@ impl MobBootstrapSpec {
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
         }
+        let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
+            session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         // Ephemeral specs carry a memory-backed workgraph so profiles with
         // `tools.workgraph = true` build (the factory fails closed on an
@@ -3480,9 +3501,19 @@ impl MobBootstrapSpec {
                 &builder,
                 definition.id.as_str(),
             );
-        let session_service: Arc<dyn MobSessionService> = Arc::new(
-            meerkat_session::EphemeralSessionService::new(builder, max_sessions),
-        );
+        let concrete_session_service = Arc::new(meerkat_session::EphemeralSessionService::new(
+            builder,
+            max_sessions,
+        ));
+        let effective_runtime_adapter = runtime_adapter.clone().unwrap_or_else(|| {
+            MobSessionService::runtime_adapter(concrete_session_service.as_ref())
+                .expect("Meerkat ephemeral session service must expose its runtime adapter")
+        });
+        let reconfigure_service: Arc<
+            dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
+        > = concrete_session_service.clone();
+        session_llm_reconfigure_blueprint.install(&effective_runtime_adapter, reconfigure_service);
+        let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let after_create_hook = if let Some(runtime_adapter) = runtime_adapter.clone() {
             let user_after_create_hook = after_create_hook.clone();
@@ -3530,7 +3561,7 @@ impl MobBootstrapSpec {
             mob_tools_slot,
             Arc::clone(&session_service),
             Some(workgraph_service.clone()),
-            None,
+            Some(session_llm_default_client_slot),
         );
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
@@ -3671,14 +3702,8 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
-        let session_llm_default_client_slot =
-            Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
-        let session_llm_reconfigure_blueprint =
-            meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureHostBlueprint::new(
-                &builder,
-                store_path.join("session-llm-reconfigure-config-state.json"),
-                Arc::clone(&session_llm_default_client_slot),
-            );
+        let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
+            session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         // Durable workgraph store beside runtime.sqlite (boot-without on
         // open failure, matching the schedule-tools posture).
@@ -3809,14 +3834,8 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
-        let session_llm_default_client_slot =
-            Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
-        let session_llm_reconfigure_blueprint =
-            meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureHostBlueprint::new(
-                &builder,
-                store_path.join("session-llm-reconfigure-config-state.json"),
-                Arc::clone(&session_llm_default_client_slot),
-            );
+        let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
+            session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         let (workgraph_service, workgraph_admission_slot) =
             crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
@@ -7001,6 +7020,29 @@ realm_profile = "worker-v2"
             .resolve_bridge_session_id(&mid)
             .await
             .unwrap_or_else(|| panic!("spawned worker has no bridge session id"));
+        // Dropping `MobRuntime` is not a process boundary: the actor and its
+        // checkpointer own independent handles and may still append to the
+        // custom store. Starting the replacement at that point creates two
+        // live writers, not a restart. The public shutdown boundary joins
+        // those volatile producers before the replacement reads durable state.
+        runtime
+            .handle
+            .shutdown()
+            .await
+            .unwrap_or_else(|e| panic!("failed to quiesce pre-restart runtime: {e}"));
+        let before_restart = custom_store
+            .load(&session_id)
+            .await
+            .unwrap_or_else(|e| panic!("failed to load pre-restart session: {e}"))
+            .unwrap_or_else(|| panic!("spawned worker was not projected before restart"));
+        let before_restart_revision =
+            meerkat_core::transcript_messages_digest(before_restart.messages())
+                .unwrap_or_else(|e| panic!("failed to digest pre-restart transcript: {e}"));
+        let before_restart_message_count = before_restart.messages().len();
+        assert!(
+            before_restart_message_count > 1,
+            "restart fixture must hold a nontrivial transcript before resume"
+        );
         drop(runtime);
 
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml(definition_toml) else {
@@ -7011,7 +7053,7 @@ realm_profile = "worker-v2"
             meerkat_mob::MobStorage::in_memory(),
             store_path,
             4,
-            Some(custom_store),
+            Some(custom_store.clone()),
             None,
             None,
             CapabilityFlags::default(),
@@ -7038,6 +7080,27 @@ realm_profile = "worker-v2"
             .await
             .unwrap_or_else(|| panic!("resumed worker has no bridge session id"));
         assert_eq!(resumed_session_id, session_id);
+        let after_restart = custom_store
+            .load(&session_id)
+            .await
+            .unwrap_or_else(|e| panic!("failed to load resumed session: {e}"))
+            .unwrap_or_else(|| panic!("resumed worker lost its durable projection"));
+        assert_eq!(
+            after_restart.messages().len(),
+            before_restart_message_count,
+            "turnless resume must not shrink the durable transcript"
+        );
+        assert_eq!(
+            meerkat_core::transcript_messages_digest(after_restart.messages())
+                .unwrap_or_else(|e| panic!("failed to digest resumed transcript: {e}")),
+            before_restart_revision,
+            "turnless resume must preserve the exact durable transcript"
+        );
+        restarted
+            .handle
+            .shutdown()
+            .await
+            .unwrap_or_else(|e| panic!("failed to quiesce resumed runtime: {e}"));
     }
 
     /// Regression: public ephemeral builds without image generation stay on the
