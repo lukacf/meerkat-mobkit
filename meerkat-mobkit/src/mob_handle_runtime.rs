@@ -309,14 +309,8 @@ impl LlmClient for ReplaySanitizingLlmClient {
         Box::pin(async_stream::stream! {
             let mut stream = inner.stream(&sanitized);
             while let Some(event) = stream.next().await {
-                if runtime_turn_diagnostics_enabled()
-                    && let Err(error) = &event
-                {
-                    tracing::error!(
-                        error = %error,
-                        error_debug = ?error,
-                        "mobkit llm client stream error"
-                    );
+                if runtime_turn_diagnostics_enabled() && event.is_err() {
+                    tracing::error!("mobkit llm client stream error");
                 }
                 yield event;
             }
@@ -1749,24 +1743,12 @@ pub(crate) fn take_runtime_turn_traces() -> Vec<RuntimeTurnTrace> {
 fn record_runtime_turn_trace(_trace: ()) {}
 
 fn runtime_turn_diagnostics_enabled() -> bool {
-    std::env::var_os("MOBKIT_TRACE_RUNTIME_TURNS").is_some()
-}
-
-fn summarize_runtime_prompt(prompt: &meerkat_core::ContentInput) -> String {
-    match prompt {
-        meerkat_core::ContentInput::Text(text) => {
-            text.lines().take(6).collect::<Vec<_>>().join(" ")
-        }
-        meerkat_core::ContentInput::Blocks(blocks) => blocks
-            .iter()
-            .map(|block| block.text_projection().to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .lines()
-            .take(6)
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
+    std::env::var("MOBKIT_TRACE_RUNTIME_TURNS").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Whether the session factory should wire the image-generation substrate for
@@ -2319,19 +2301,12 @@ macro_rules! delegate_mob_session_service {
                 #[cfg(test)]
                 let contributing_count = contributing_input_ids.len();
                 let run_id_for_log = run_id.to_string();
-                let prompt_summary = if runtime_turn_diagnostics_enabled() {
-                    Some(summarize_runtime_prompt(&req.prompt))
-                } else {
-                    None
-                };
-                if let Some(summary) = prompt_summary.as_ref() {
+                if runtime_turn_diagnostics_enabled() {
                     tracing::warn!(
                         session_id = %session_id,
                         run_id = %run_id_for_log,
                         boundary = ?boundary,
                         contributing_inputs = contributing_input_ids.len(),
-                        prompt = %summary,
-                        runtime = ?req.runtime,
                         "mobkit runtime turn start"
                     );
                 }
@@ -2362,11 +2337,9 @@ macro_rules! delegate_mob_session_service {
                             run_id = %run_id_for_log,
                             "mobkit runtime turn ok"
                         ),
-                        Err(error) => tracing::error!(
+                        Err(_) => tracing::error!(
                             session_id = %session_id,
                             run_id = %run_id_for_log,
-                            error = %error,
-                            error_debug = ?error,
                             "mobkit runtime turn error"
                         ),
                     }

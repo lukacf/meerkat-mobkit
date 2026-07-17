@@ -20,7 +20,7 @@ use super::UnifiedRuntime;
 /// for the Phase 2 plan that fills in real cross-process control RPC.
 enum LocalOrRemote {
     /// Same-process peer with its member plane and optional identity authority.
-    Local(PeerMobAuthority),
+    Local(Box<PeerMobAuthority>),
     /// Cross-process peer reachable via TCP/UDS.
     Remote(RemoteMobProxy),
 }
@@ -1816,7 +1816,7 @@ impl UnifiedRuntime {
             .get(&entry.mob_id)
             .cloned()
         {
-            return Ok(LocalOrRemote::Local(authority));
+            return Ok(LocalOrRemote::Local(Box::new(authority)));
         }
         match RemoteMobProxy::from_entry(entry)? {
             Some(proxy) => Ok(LocalOrRemote::Remote(proxy)),

@@ -11,9 +11,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  MEERKAT_DEV_BINDINGS: "1"
-  # Temporary until the model-aware member-turn API ships in Meerkat 0.8.0.
-  MEERKAT_CI_SOURCE: .ci/meerkat
 
 jobs:
   fmt-lint:
@@ -21,20 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Meerkat main
-        uses: actions/checkout@v4
-        with:
-          repository: lukacf/meerkat
-          ref: main
-          path: ${{ env.MEERKAT_CI_SOURCE }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Bind Meerkat source
-        run: scripts/dev-bindings configure --meerkat "$GITHUB_WORKSPACE/$MEERKAT_CI_SOURCE"
       - uses: Swatinem/rust-cache@v2
       - run: scripts/repo-cargo fmt --all -- --check
       - run: scripts/verify-version-parity.sh
+      - run: python3 scripts/test_verify_release_assets.py
       - run: scripts/check-memory-bright-line
       - run: scripts/memory-evals --check
       - run: node scripts/generate-bazel-rust-builds.mjs --check
@@ -68,15 +58,7 @@ jobs:
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
       - uses: actions/checkout@v4
-      - name: Checkout Meerkat main
-        uses: actions/checkout@v4
-        with:
-          repository: lukacf/meerkat
-          ref: main
-          path: ${{ env.MEERKAT_CI_SOURCE }}
       - uses: dtolnay/rust-toolchain@stable
-      - name: Bind Meerkat source
-        run: scripts/dev-bindings configure --meerkat "$GITHUB_WORKSPACE/$MEERKAT_CI_SOURCE"
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts)'
@@ -97,20 +79,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Meerkat main
-        uses: actions/checkout@v4
-        with:
-          repository: lukacf/meerkat
-          ref: main
-          path: ${{ env.MEERKAT_CI_SOURCE }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: console/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
-      - name: Bind Meerkat source
-        run: scripts/dev-bindings configure --meerkat "$GITHUB_WORKSPACE/$MEERKAT_CI_SOURCE"
       - uses: Swatinem/rust-cache@v2
       - run: npm --prefix console ci --silent --no-fund --no-audit
       - run: npm --prefix console run phase0:types --silent
@@ -146,20 +120,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Meerkat main
-        uses: actions/checkout@v4
-        with:
-          repository: lukacf/meerkat
-          ref: main
-          path: ${{ env.MEERKAT_CI_SOURCE }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: flow-editor/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
-      - name: Bind Meerkat source
-        run: scripts/dev-bindings configure --meerkat "$GITHUB_WORKSPACE/$MEERKAT_CI_SOURCE"
       - uses: Swatinem/rust-cache@v2
       - run: npm --prefix flow-editor ci --silent --no-fund --no-audit
       - run: npm --prefix flow-editor exec -- playwright install --with-deps chromium
@@ -174,14 +140,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Meerkat main
-        uses: actions/checkout@v4
-        with:
-          repository: lukacf/meerkat
-          ref: main
-          path: ${{ env.MEERKAT_CI_SOURCE }}
-      - name: Bind Meerkat source
-        run: scripts/dev-bindings configure --meerkat "$GITHUB_WORKSPACE/$MEERKAT_CI_SOURCE"
       # Pinned to the last-green revision: the floating v2 tag moved to a
       # broken entrypoint on 2026-07-13 ("error: unrecognized subcommand
       # 'warn'" before any check runs). Re-float once upstream fixes v2.

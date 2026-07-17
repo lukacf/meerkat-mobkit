@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-17
+
 ### Added
 
 - Exposed identity-first startup materialization through the SDK gateway and
@@ -20,9 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session, await the executor-applied model/provider/self-hosted route, stream
   live events, and separately await committed runtime completion without
   treating ingress admission as execution success.
+- The shared console docking contract now includes a first-class browser host
+  target, with collision-free grid placement and host-prop forwarding alongside
+  normal topology panels.
 
 ### Changed
 
+- The full Meerkat dependency family is now pinned exactly to the released
+  `0.8.0` crate set, including memory, live, and scheduling surfaces.
 - Explicit identity bootstrap modes now consistently declare identity-first
   intent and require a roster provider, including explicit eager mode; an
   omitted mode still preserves the classic gateway when no roster is present.
@@ -65,6 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Release publication now requires all ten gateway archives, emits flat asset
+  names in `index.json` and `checksums.sha256`, and keeps manual tagged builds,
+  validation, and registry publication on the exact requested source tag.
+- Runtime-turn diagnostics are structural-only and opt in with an explicit
+  truthy value; prompts, appended context, tool dispatch metadata, and full
+  runtime semantics are never written to the diagnostic log.
+- The optional source-baseline verifier no longer embeds a developer machine
+  path and fails closed with a typed error unless a checkout is supplied
+  explicitly or through `MEERKAT_REPO`.
 - Quiesced session persistence before lease rotation, retained exact committed
   grants across failed authority publication, reused live grants during eager
   reconcile, and drained identity-scoped orphan grants before direct lazy retry.

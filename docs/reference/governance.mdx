@@ -44,10 +44,15 @@ All provided statuses must be in the `STRICT_TRACEABILITY_STATUSES` set. Unknown
 
 ## Baseline verification
 
-Before MobKit can start, it verifies that the required Meerkat API symbols are available:
+The optional source-baseline check can verify that the required Meerkat API
+symbols are available in a local Meerkat checkout. Supply the checkout
+explicitly, or set `MEERKAT_REPO`; there is no machine-specific default:
 
 ```rust
-let report: BaselineVerificationReport = verify_meerkat_baseline_symbols()?;
+use std::path::Path;
+
+let report: BaselineVerificationReport =
+    verify_meerkat_baseline_symbols(Some(Path::new("/path/to/meerkat")))?;
 ```
 
 The baseline check ensures that:

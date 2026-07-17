@@ -24,9 +24,12 @@ use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::lifecycle::run_primitive::ModelId;
 use meerkat_core::types::{ContentInput, HandlingMode};
 use meerkat_core::{AgentEvent, Provider, StopReason};
-use meerkat_mob::{MobDefinition, MobError, SpawnMemberSpec};
+use meerkat_mob::{MobDefinition, MobError, MobSessionService, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
-use meerkat_mobkit::{MemberTurnOptions, UnifiedRuntime};
+use meerkat_mobkit::{
+    DiscoverySpec, MemberTurnOptions, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    UnifiedRuntime,
+};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -44,9 +47,17 @@ use incident_command_center::{
 #[derive(Clone, Default)]
 struct IncidentPackTestClient {
     requested_models: Arc<std::sync::Mutex<Vec<String>>>,
+    provider: Option<Provider>,
 }
 
 impl IncidentPackTestClient {
+    fn for_provider(provider: Provider) -> Self {
+        Self {
+            provider: Some(provider),
+            ..Self::default()
+        }
+    }
+
     fn requested_models(&self) -> Vec<String> {
         self.requested_models
             .lock()
@@ -86,7 +97,7 @@ impl meerkat_client::LlmClient for IncidentPackTestClient {
 
     // meerkat 0.7: LlmClient::provider returns the typed Provider.
     fn provider(&self) -> meerkat::Provider {
-        meerkat::Provider::OpenAI
+        self.provider.unwrap_or(meerkat::Provider::OpenAI)
     }
 
     fn health_check<'life0, 'async_trait>(
@@ -614,6 +625,210 @@ comms = true
             .iter()
             .any(|model| model == "gpt-5.6"),
         "the stock incident-console constructor must deliver the applied model to LlmRequest"
+    );
+
+    let _ = runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn unified_runtime_member_turn_preserves_exact_self_hosted_route_at_executor_boundary() {
+    const MODEL: &str = "mobkit-route-test-model";
+    const SERVER_ID: &str = "local-b";
+
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "member-turn-self-hosted-route-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse self-hosted route test definition");
+
+    let mut config = meerkat::Config::default();
+    config.self_hosted.servers.insert(
+        SERVER_ID.to_string(),
+        meerkat_core::SelfHostedServerConfig {
+            base_url: "http://127.0.0.1:11434".to_string(),
+            ..Default::default()
+        },
+    );
+    config.self_hosted.models.insert(
+        MODEL.to_string(),
+        meerkat_core::SelfHostedModelConfig {
+            server: SERVER_ID.to_string(),
+            remote_model: "route-test:latest".to_string(),
+            display_name: "MobKit route test".to_string(),
+            family: "route-test".to_string(),
+            ..Default::default()
+        },
+    );
+    config.self_hosted.default_model = Some(MODEL.to_string());
+
+    // Provider::Other is the explicit bring-your-own-client extension point:
+    // the factory binds this one deterministic transport to both the initial
+    // OpenAI identity and the requested self-hosted identity without making a
+    // real provider call.
+    let llm_client = Arc::new(IncidentPackTestClient::for_provider(Provider::Other));
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .meerkat_config(config)
+            .default_llm_client(llm_client.clone())
+            .timeout(Duration::from_secs(5))
+            .build(),
+    )
+    .await
+    .expect("build runtime with the stock installed LLM reconfiguration host");
+    runtime
+        .spawn(SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "route-worker".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .expect("spawn self-hosted route worker");
+
+    let mut admission = runtime
+        .start_member_turn(
+            "route-worker",
+            ContentInput::Text("use the exact local route".to_string()),
+            HandlingMode::Queue,
+            MemberTurnOptions::new()
+                .with_model(ModelId::new(MODEL))
+                .with_provider(Provider::SelfHosted)
+                .with_self_hosted_server_id(SERVER_ID),
+            None,
+        )
+        .await
+        .expect("admit exact self-hosted member turn");
+    let applied_identity = tokio::time::timeout(
+        Duration::from_secs(2),
+        admission.turn.wait_for_applied_llm_identity(),
+    )
+    .await
+    .expect("executor-boundary identity acknowledgement should resolve")
+    .expect("the installed runtime host should apply the requested identity")
+    .expect("the turn requested an explicit identity");
+    assert_eq!(applied_identity.model, MODEL);
+    assert_eq!(applied_identity.provider, Provider::SelfHosted);
+    assert_eq!(
+        applied_identity.self_hosted_server_id.as_deref(),
+        Some(SERVER_ID),
+        "the exact host route must survive UnifiedRuntime admission, member-turn metadata, and the serialized executor boundary"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), admission.turn.wait())
+        .await
+        .expect("self-hosted route turn completion should resolve")
+        .expect("self-hosted route turn should commit successfully");
+    assert!(
+        llm_client
+            .requested_models()
+            .iter()
+            .any(|model| model == MODEL),
+        "the executor must invoke the identity-bound test client with the requested model"
+    );
+
+    let _ = runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn unified_runtime_fails_closed_without_installed_session_llm_reconfigure_host() {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "member-turn-missing-llm-host-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse missing-host test definition");
+    let temp_dir = tempfile::tempdir().expect("missing-host test tempdir");
+    let factory = meerkat::AgentFactory::new(temp_dir.path().join("sessions")).comms(true);
+    let session_service = Arc::new(meerkat::build_ephemeral_service(
+        factory,
+        meerkat::Config::default(),
+        16,
+    ));
+    assert!(
+        MobSessionService::supports_runtime_turn_apply(session_service.as_ref()),
+        "the stock ephemeral service must support generic runtime-turn apply"
+    );
+    let runtime_adapter = MobSessionService::runtime_adapter(session_service.as_ref())
+        .expect("the stock ephemeral service exposes its runtime adapter");
+    assert!(
+        !runtime_adapter.has_session_llm_reconfigure_host(),
+        "this fixture deliberately leaves the session LLM reconfiguration host uninstalled"
+    );
+
+    let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(IncidentPackTestClient::default())),
+        });
+    let runtime = Box::pin(
+        UnifiedRuntime::builder()
+            .mob_spec(spec)
+            .module_config(MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: "missing-llm-host-test".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            })
+            .timeout(Duration::from_secs(5))
+            .build(),
+    )
+    .await
+    .expect("build custom runtime without an LLM reconfiguration host");
+    runtime
+        .spawn(SpawnMemberSpec::from_wire(
+            "worker".to_string(),
+            "no-host-worker".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .expect("spawn worker backed by generic runtime-turn apply");
+
+    let error = runtime
+        .start_member_turn(
+            "no-host-worker",
+            ContentInput::Text("must not run on an unapplied model".to_string()),
+            HandlingMode::Queue,
+            MemberTurnOptions::new().with_model(ModelId::new("gpt-5.6")),
+            None,
+        )
+        .await
+        .expect_err("runtime-turn support alone must not advertise LLM reconfiguration");
+    assert!(
+        matches!(
+            error,
+            MobRuntimeError::Mob(MobError::MissingMemberCapability {
+                capability: meerkat_mob::error::MobMemberCapability::SessionLlmReconfigure,
+                context: "member turn LLM identity override",
+                ..
+            })
+        ),
+        "missing installed LLM host must fail closed before turn admission, got {error}"
     );
 
     let _ = runtime.shutdown().await;

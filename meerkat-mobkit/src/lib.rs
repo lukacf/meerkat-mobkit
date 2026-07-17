@@ -51,7 +51,7 @@ pub use auth::{
     select_jwk_for_token, validate_jwt_locally,
 };
 pub use baseline::{
-    BaselineVerificationError, BaselineVerificationReport, DEFAULT_MEERKAT_REPO,
+    BaselineVerificationError, BaselineVerificationReport, MEERKAT_REPO_ENV,
     REQUIRED_MEERKAT_SYMBOLS, verify_meerkat_baseline_symbols,
 };
 pub use blob_store::{
