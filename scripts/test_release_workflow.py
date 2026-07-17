@@ -161,5 +161,18 @@ esac
         self.assertIn("publish failed", result.stderr)
 
 
+class RegistryReadbackWorkflowTests(unittest.TestCase):
+    def test_exact_registry_readback_runs_after_all_publish_steps(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        verification = "      - name: Verify exact packages are public on every registry"
+
+        self.assertIn(verification, workflow)
+        self.assertLess(workflow.index("      - name: Publish Rust crate"), workflow.index(verification))
+        self.assertLess(workflow.index("      - name: Publish Python SDK"), workflow.index(verification))
+        self.assertLess(workflow.index("      - name: Publish TypeScript SDK"), workflow.index(verification))
+        self.assertIn("python scripts/verify-published-registries.py --version", workflow)
+        self.assertIn("github.event.inputs.registry_dry_run != 'true'", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

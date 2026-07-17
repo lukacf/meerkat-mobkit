@@ -399,3 +399,10 @@ jobs:
               fi
             fi
           fi
+
+      - name: Verify exact packages are public on every registry
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.registry_dry_run != 'true'
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python scripts/verify-published-registries.py --version "$VERSION"
