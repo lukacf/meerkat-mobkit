@@ -3175,11 +3175,12 @@ pub struct MobBootstrapSpec {
     pub(crate) console_spawn_sink_slot: Option<SharedConsoleSpawnSinkSlot>,
     pub(crate) identity_runtime_slot: Option<SharedIdentityRuntimeSlot>,
     pub options: MobBootstrapOptions,
-    /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
+    /// Strong runtime authority shared by the session service and every
+    /// runtime host installed for it.
     ///
-    /// Used by `persistent()` to supply the adapter directly so the session
-    /// service's `runtime_store` can stay `None` (keeping the checkpointer
-    /// enabled). See meerkat-session#checkpointer-enabled-flag.
+    /// Keeping the adapter here is significant for ephemeral services: their
+    /// upstream adapter cache is weak, so an installed host would otherwise be
+    /// lost before bootstrap asks the service for its adapter again.
     pub runtime_adapter: Option<Arc<meerkat_runtime::MeerkatMachine>>,
     /// Pre-build customizer applied to every mob member spawn (classic-path
     /// agent memory rides here — see `crate::memory::spawn_customizer`).
@@ -3505,17 +3506,23 @@ impl MobBootstrapSpec {
             builder,
             max_sessions,
         ));
-        let effective_runtime_adapter = runtime_adapter.clone().unwrap_or_else(|| {
-            MobSessionService::runtime_adapter(concrete_session_service.as_ref())
-                .expect("Meerkat ephemeral session service must expose its runtime adapter")
-        });
+        let effective_runtime_adapter = runtime_adapter
+            .clone()
+            .or_else(|| MobSessionService::runtime_adapter(concrete_session_service.as_ref()));
         let reconfigure_service: Arc<
             dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
         > = concrete_session_service.clone();
-        session_llm_reconfigure_blueprint.install(&effective_runtime_adapter, reconfigure_service);
+        if let Some(effective_runtime_adapter) = effective_runtime_adapter.as_ref() {
+            session_llm_reconfigure_blueprint
+                .install(effective_runtime_adapter, reconfigure_service);
+        } else {
+            tracing::error!(
+                "ephemeral session service has no runtime adapter; runtime LLM reconfiguration is unavailable"
+            );
+        }
         let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
-        let after_create_hook = if let Some(runtime_adapter) = runtime_adapter.clone() {
+        let after_create_hook = if let Some(runtime_adapter) = runtime_adapter {
             let user_after_create_hook = after_create_hook.clone();
             Some(Arc::new(
                 move |session_id: meerkat_core::types::SessionId, ctx: SessionCreatedContext| {
@@ -3548,7 +3555,7 @@ impl MobBootstrapSpec {
             inner: session_service,
             hook,
             after_create_hook,
-            runtime_adapter_override: runtime_adapter.clone(),
+            runtime_adapter_override: effective_runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -3569,7 +3576,7 @@ impl MobBootstrapSpec {
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.console_spawn_sink_slot = Some(console_spawn_sink_slot);
         spec.identity_runtime_slot = Some(identity_runtime_slot);
-        spec.runtime_adapter = runtime_adapter;
+        spec.runtime_adapter = effective_runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = Some(workgraph_service);
         spec.workgraph_admission_slots
@@ -6044,8 +6051,14 @@ realm_profile = "worker-v2"
             },
         );
 
-        // Ephemeral specs don't have a runtime adapter.
-        assert!(spec.runtime_adapter.is_none());
+        let runtime_adapter = spec
+            .runtime_adapter
+            .as_ref()
+            .unwrap_or_else(|| panic!("ephemeral_with_hook must retain its runtime adapter"));
+        assert!(
+            runtime_adapter.has_session_llm_reconfigure_host(),
+            "ephemeral_with_hook must install the live LLM reconfiguration host"
+        );
 
         // Hook not yet called.
         assert!(
@@ -7103,10 +7116,10 @@ realm_profile = "worker-v2"
             .unwrap_or_else(|e| panic!("failed to quiesce resumed runtime: {e}"));
     }
 
-    /// Regression: public ephemeral builds without image generation stay on the
-    /// lighter direct session-service path.
+    /// Regression: public ephemeral builds without image generation retain the
+    /// exact runtime authority carrying their live LLM reconfiguration host.
     #[test]
-    fn ephemeral_bootstrap_without_image_generation_stays_direct() {
+    fn ephemeral_bootstrap_without_image_generation_retains_runtime_host() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
@@ -7125,9 +7138,21 @@ realm_profile = "worker-v2"
             None,
             None,
         );
+        let spec_adapter = spec
+            .runtime_adapter
+            .as_ref()
+            .unwrap_or_else(|| panic!("public ephemeral builds must retain their runtime adapter"));
+        let service_adapter = spec
+            .session_service
+            .runtime_adapter()
+            .unwrap_or_else(|| panic!("session service must expose the retained runtime adapter"));
         assert!(
-            spec.runtime_adapter.is_none(),
-            "public ephemeral builds only need a runtime adapter when the definition may use image generation"
+            Arc::ptr_eq(spec_adapter, &service_adapter),
+            "the spec and session service must share one exact runtime authority"
+        );
+        assert!(
+            spec_adapter.has_session_llm_reconfigure_host(),
+            "the retained runtime authority must carry the live LLM reconfiguration host"
         );
     }
 
