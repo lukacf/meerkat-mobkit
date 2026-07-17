@@ -26,7 +26,8 @@ git add \
   "$ROOT/sdk/python/pyproject.toml" \
   "$ROOT/sdk/typescript/package.json" \
   "$ROOT/sdk/typescript/package-lock.json" \
-  "$ROOT/meerkat-mobkit/BUILD.bazel"
+  "$ROOT/meerkat-mobkit/BUILD.bazel" \
+  "$ROOT/MODULE.bazel"
 
 echo "$VERSION" > "$SENTINEL"
 echo "release-hook: done ($VERSION)"

@@ -33,8 +33,9 @@ if [ -f "$ROOT/sdk/typescript/package.json" ]; then
 fi
 
 MODULE_VER=""
-if [ -f "$ROOT/MODULE.bazel" ]; then
-    MODULE_VER=$(sed -n '/^module(/,/^)/s/.*version = "\([^"]*\)".*/\1/p' "$ROOT/MODULE.bazel")
+MODULE_FILE="$ROOT/MODULE.bazel"
+if [ -f "$MODULE_FILE" ]; then
+    MODULE_VER=$(sed -n '/^module(/,/^)/s/.*version = "\([^"]*\)".*/\1/p' "$MODULE_FILE")
 fi
 
 echo "Package versions:"
@@ -43,8 +44,12 @@ echo "  Python SDK:                   $PY_VER"
 if [ -n "$TS_VER" ]; then
     echo "  TypeScript SDK:               $TS_VER"
 fi
-if [ -n "$MODULE_VER" ]; then
-    echo "  Bazel module:                 $MODULE_VER"
+if [ -f "$MODULE_FILE" ]; then
+    if [ -n "$MODULE_VER" ]; then
+        echo "  Bazel module:                 $MODULE_VER"
+    else
+        echo "  Bazel module:                 <missing or unparsable>"
+    fi
 fi
 
 PKG_OK=true
@@ -58,10 +63,16 @@ if [ -n "$TS_VER" ] && [ "$CARGO_VER" != "$TS_VER" ]; then
     PKG_OK=false
     FAIL=1
 fi
-if [ -n "$MODULE_VER" ] && [ "$CARGO_VER" != "$MODULE_VER" ]; then
-    red "FAIL: Bazel module version mismatch ($MODULE_VER != $CARGO_VER)"
-    PKG_OK=false
-    FAIL=1
+if [ -f "$MODULE_FILE" ]; then
+    if [ -z "$MODULE_VER" ]; then
+        red "FAIL: MODULE.bazel module version is missing or unparsable"
+        PKG_OK=false
+        FAIL=1
+    elif [ "$CARGO_VER" != "$MODULE_VER" ]; then
+        red "FAIL: Bazel module version mismatch ($MODULE_VER != $CARGO_VER)"
+        PKG_OK=false
+        FAIL=1
+    fi
 fi
 if $PKG_OK; then
     green "  Package versions: OK"

@@ -66,4 +66,12 @@ if [ -f "$ROOT/meerkat-mobkit/BUILD.bazel" ]; then
     echo "  Bazel BUILD.bazel CARGO_PKG_VERSION: $VERSION"
 fi
 
+# The root Bazel module is published as a first-class package surface and is
+# checked by verify-version-parity.sh. Keep its module() version in the same
+# canonical bump path as the SDK and rustc_env versions.
+if [ -f "$ROOT/MODULE.bazel" ]; then
+    sedi -E '/^module\(/,/^\)/ s/(version = ")[^"]*(",)/\1'"$VERSION"'\2/' "$ROOT/MODULE.bazel"
+    echo "  Bazel MODULE.bazel version: $VERSION"
+fi
+
 echo "Done"
