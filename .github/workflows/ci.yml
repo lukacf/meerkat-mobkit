@@ -27,6 +27,7 @@ jobs:
       - run: python3 scripts/test_release_version_scripts.py
       - run: python3 scripts/test_release_workflow.py
       - run: python3 scripts/test_verify_release_assets.py
+      - run: python3 scripts/test_memory_evals.py
       - run: scripts/check-memory-bright-line
       - run: scripts/memory-evals --check
       - run: node scripts/generate-bazel-rust-builds.mjs --check
