@@ -78,7 +78,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: python -m pip install 'sdk/python[dev]'
+      # Gateway-backed structural tests materialize OpenAI profiles but never
+      # issue provider requests. Meerkat resolves auth during construction, so
+      # give those tests an explicit non-secret bootstrap credential instead of
+      # depending on repository secrets or silently skipping the gateway lane.
       - run: make test-python
+        env:
+          OPENAI_API_KEY: mobkit-ci-bootstrap-only-not-a-secret
 
   console:
     name: console
