@@ -6633,71 +6633,18 @@ async fn handle_console_runtime_rpc_with_visibility(
                         return response_value(response_id, None, Some(error));
                     }
                 }
-                let live_handle = handle.clone();
-                let rollback_handle = handle.clone();
-                let cleanup_identity = parsed_identity.clone();
                 let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity)
                     .then_some(identity);
                 let respawn_result = identity_runtime
-                    .respawn_and_rebind_live_member_tracked(
-                        &parsed_identity,
-                        expected_alias,
-                        move |runtime_alias| {
-                            let live_handle = live_handle;
-                            let cleanup_identity = cleanup_identity;
-                            async move {
-                                let member_id = crate::member_comms_id::mob_member_id(
-                                    runtime_alias.as_str(),
-                                );
-                                let topology_restore_warning =
-                                    respawn_console_member(&live_handle, &member_id).await?;
-                                let live_session_id = live_handle
-                                    .resolve_bridge_session_id_observation(&member_id)
-                                    .await
-                                    .ok_or_else(|| {
-                                        format!(
-                                            "member respawn for {runtime_alias} returned no live session"
-                                        )
-                                    })?;
-                                let stale_member_ids =
-                                    stale_console_member_ids_for_identity_authoritative(
-                                        &live_handle,
-                                        cleanup_identity.as_str(),
-                                        runtime_alias.as_str(),
-                                        false,
-                                    )
-                                    .await;
-                                let cleanup_warning = retire_console_member_ids(
-                                    &live_handle,
-                                    stale_member_ids,
-                                )
-                                .await
-                                .err()
-                                .map(|error| {
-                                    json!({
-                                        "kind": "stale_member_cleanup_failed_after_identity_respawn",
-                                        "identity": cleanup_identity.as_str(),
-                                        "agent_runtime_id": runtime_alias.as_str(),
-                                        "message": error,
-                                    })
-                                });
-                                Ok((
-                                    live_session_id,
-                                    (topology_restore_warning, cleanup_warning),
-                                ))
-                            }
-                        },
-                        move |runtime_alias| async move {
-                            retire_console_member(
-                                &rollback_handle,
-                                &crate::member_comms_id::mob_member_id(runtime_alias.as_str()),
-                            )
-                            .await
-                        },
-                    )
+                    .respawn_identity_in_place_tracked(&parsed_identity, expected_alias)
                     .await;
                 match respawn_result {
-                    Ok((record, (live_respawn_warning, cleanup_warning))) => {
+                    Ok(record) => {
+                        // Durable identity respawn recovers the authoritative
+                        // session in place, so the legacy raw-member warning
+                        // fields remain null but present.
+                        let live_respawn_warning: Option<Value> = None;
+                        let cleanup_warning: Option<Value> = None;
                         if let Some(store) = &console_events {
                             store
                                 .record_lifecycle(

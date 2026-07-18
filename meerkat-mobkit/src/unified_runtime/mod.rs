@@ -51,6 +51,7 @@ pub use edge_types::{
 };
 pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
+pub use mob_ops::MemberTurnAdmission;
 pub use types::{
     ErrorEvent, IdentityAuthorityReleaseOutcome, RediscoverReport, ShutdownDrainReport,
     UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,

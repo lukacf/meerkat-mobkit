@@ -555,8 +555,10 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MemberSessionBindingRecovered(_) => "member_session_binding_recovered",
         MobEventKind::MemberRetirementStarted { .. } => "member_retirement_started",
         MobEventKind::MemberRetired { .. } => "member_retired",
+        MobEventKind::RespawnTopologyAbandoned { .. } => "respawn_topology_abandoned",
         MobEventKind::RemoteMemberRuntimeRetired { .. } => "remote_member_runtime_retired",
         MobEventKind::RemoteMemberSupervisorRevoked { .. } => "remote_member_supervisor_revoked",
+        MobEventKind::RemoteMemberReleaseConfirmed { .. } => "remote_member_release_confirmed",
         MobEventKind::MemberReset { .. } => "member_reset",
         MobEventKind::MemberKickoffUpdated { .. } => "member_kickoff_updated",
         MobEventKind::MembersWired { .. } => "members_wired",
@@ -571,6 +573,49 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::StepDispatched { .. } => "step_dispatched",
         MobEventKind::StepTargetCompleted { .. } => "step_target_completed",
         MobEventKind::StepTargetFailed { .. } => "step_target_failed",
+        MobEventKind::RemoteTurnObligationRecorded { .. } => "remote_turn_obligation_recorded",
+        MobEventKind::RemoteTurnOutcomeResolved { .. } => "remote_turn_outcome_resolved",
+        MobEventKind::RemoteTurnOutcomeAcknowledged { .. } => "remote_turn_outcome_acknowledged",
+        MobEventKind::RemoteTurnOutcomeDisposed { .. } => "remote_turn_outcome_disposed",
+        MobEventKind::PlacedCompletionLifecycleQuiesceStarted { .. } => {
+            "placed_completion_lifecycle_quiesce_started"
+        }
+        MobEventKind::MobStopped => "mob_stopped",
+        MobEventKind::PlacedCompletionLifecycleQuiesceEnded { .. } => {
+            "placed_completion_lifecycle_quiesce_ended"
+        }
+        MobEventKind::PlacedCompletionObligationRecorded { .. } => {
+            "placed_completion_obligation_recorded"
+        }
+        MobEventKind::PlacedCompletionCancellationRequested { .. } => {
+            "placed_completion_cancellation_requested"
+        }
+        MobEventKind::PlacedCompletionOutcomeResolved { .. } => {
+            "placed_completion_outcome_resolved"
+        }
+        MobEventKind::PlacedCompletionOutcomeClosed { .. } => "placed_completion_outcome_closed",
+        MobEventKind::PlacedCompletionOutcomeAcknowledged { .. } => {
+            "placed_completion_outcome_acknowledged"
+        }
+        MobEventKind::PlacedCompletionOutcomeDisposed { .. } => {
+            "placed_completion_outcome_disposed"
+        }
+        MobEventKind::PlacedKickoffObligationRecorded { .. } => {
+            "placed_kickoff_obligation_recorded"
+        }
+        MobEventKind::PlacedKickoffOutcomeResolved { .. } => "placed_kickoff_outcome_resolved",
+        MobEventKind::PlacedKickoffRejectedNoEffect { .. } => "placed_kickoff_rejected_no_effect",
+        MobEventKind::PlacedKickoffOutcomeAcknowledged { .. } => {
+            "placed_kickoff_outcome_acknowledged"
+        }
+        MobEventKind::PlacedKickoffOutcomeDisposed { .. } => "placed_kickoff_outcome_disposed",
+        MobEventKind::RemoteHostBindStarted { .. } => "remote_host_bind_started",
+        MobEventKind::RemoteHostBindConfirmed { .. } => "remote_host_bind_confirmed",
+        MobEventKind::RemoteHostBindCompleted { .. } => "remote_host_bind_completed",
+        MobEventKind::RemoteHostBindAbortedNoEffect { .. } => "remote_host_bind_aborted_no_effect",
+        MobEventKind::RemoteHostRevokeStarted { .. } => "remote_host_revoke_started",
+        MobEventKind::RemoteHostRevokeConfirmed { .. } => "remote_host_revoke_confirmed",
+        MobEventKind::RemoteHostRevokeCompleted { .. } => "remote_host_revoke_completed",
         MobEventKind::StepCompleted { .. } => "step_completed",
         MobEventKind::StepFailed { .. } => "step_failed",
         MobEventKind::StepSkipped { .. } => "step_skipped",
@@ -616,6 +661,7 @@ pub(crate) fn extract_structural_fields(
             run_id,
             step_id,
             target,
+            ..
         } => (
             Some(run_id.to_string()),
             Some(step_id.as_str().to_string()),
@@ -651,6 +697,33 @@ pub(crate) fn extract_structural_fields(
             Some(step_id.as_str().to_string()),
             Some(decode_member_id(escalated_to.as_str())),
         ),
+        MobEventKind::RemoteTurnObligationRecorded { obligation }
+        | MobEventKind::RemoteTurnOutcomeResolved { obligation }
+        | MobEventKind::RemoteTurnOutcomeAcknowledged { obligation }
+        | MobEventKind::RemoteTurnOutcomeDisposed { obligation } => (
+            Some(obligation.run_id.to_string()),
+            Some(obligation.step_id.as_str().to_string()),
+            Some(decode_member_id(obligation.agent_identity.as_str())),
+        ),
+        MobEventKind::PlacedCompletionObligationRecorded { obligation }
+        | MobEventKind::PlacedCompletionCancellationRequested { obligation }
+        | MobEventKind::PlacedCompletionOutcomeResolved { obligation, .. }
+        | MobEventKind::PlacedCompletionOutcomeClosed { obligation, .. }
+        | MobEventKind::PlacedCompletionOutcomeAcknowledged { obligation }
+        | MobEventKind::PlacedCompletionOutcomeDisposed { obligation } => (
+            None,
+            None,
+            Some(decode_member_id(obligation.agent_identity.as_str())),
+        ),
+        MobEventKind::PlacedKickoffObligationRecorded { obligation }
+        | MobEventKind::PlacedKickoffOutcomeResolved { obligation, .. }
+        | MobEventKind::PlacedKickoffRejectedNoEffect { obligation, .. }
+        | MobEventKind::PlacedKickoffOutcomeAcknowledged { obligation }
+        | MobEventKind::PlacedKickoffOutcomeDisposed { obligation } => (
+            None,
+            None,
+            Some(decode_member_id(obligation.agent_identity.as_str())),
+        ),
         MobEventKind::MemberSpawned(event) => (
             None,
             None,
@@ -665,9 +738,11 @@ pub(crate) fn extract_structural_fields(
         ),
         MobEventKind::MemberRetirementStarted { agent_identity, .. }
         | MobEventKind::MemberRetired { agent_identity, .. }
+        | MobEventKind::RespawnTopologyAbandoned { agent_identity, .. }
         | MobEventKind::MemberReset { agent_identity, .. }
         | MobEventKind::RemoteMemberRuntimeRetired { agent_identity, .. }
-        | MobEventKind::RemoteMemberSupervisorRevoked { agent_identity, .. } => {
+        | MobEventKind::RemoteMemberSupervisorRevoked { agent_identity, .. }
+        | MobEventKind::RemoteMemberReleaseConfirmed { agent_identity, .. } => {
             (None, None, Some(decode_member_id(agent_identity.as_str())))
         }
         MobEventKind::MemberKickoffUpdated { member, .. } => {
@@ -693,6 +768,16 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::MobDestroying
         | MobEventKind::MobDestroyStorageFinalizing
         | MobEventKind::MobReset
+        | MobEventKind::PlacedCompletionLifecycleQuiesceStarted { .. }
+        | MobEventKind::MobStopped
+        | MobEventKind::PlacedCompletionLifecycleQuiesceEnded { .. }
+        | MobEventKind::RemoteHostBindStarted { .. }
+        | MobEventKind::RemoteHostBindConfirmed { .. }
+        | MobEventKind::RemoteHostBindCompleted { .. }
+        | MobEventKind::RemoteHostBindAbortedNoEffect { .. }
+        | MobEventKind::RemoteHostRevokeStarted { .. }
+        | MobEventKind::RemoteHostRevokeConfirmed { .. }
+        | MobEventKind::RemoteHostRevokeCompleted { .. }
         | MobEventKind::MembersWired { .. }
         | MobEventKind::MembersWiredBatch { .. }
         | MobEventKind::MembersUnwired { .. }

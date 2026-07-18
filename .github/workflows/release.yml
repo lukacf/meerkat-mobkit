@@ -43,6 +43,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
 
       - name: Install Rust
@@ -83,6 +84,19 @@ jobs:
             exit 1
           fi
           echo "Version $version matches requested release tag"
+
+      - name: Validate manual publication inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PUBLISH_PACKAGES: ${{ github.event.inputs.publish_release_packages }}
+          REGISTRY_DRY_RUN: ${{ github.event.inputs.registry_dry_run }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_PACKAGES" == "true" && "$REGISTRY_DRY_RUN" != "true" && -z "$RELEASE_TAG" ]]; then
+            echo "::error::A non-dry-run registry publication requires release_tag so the complete binary matrix can be built and verified first." >&2
+            exit 1
+          fi
 
       - name: Check formatting
         run: make fmt-check
@@ -222,11 +236,8 @@ jobs:
 
   publish_github_release:
     name: Publish GitHub release assets
-    # always(): the build matrix is fail-fast:false, so publish whatever targets
-    # succeeded even if one (e.g. a flaky runner) failed — the checksum step
-    # still fails loudly if NOTHING built.
     if: >-
-      always() &&
+      success() &&
       (startsWith(github.ref, 'refs/tags/v') ||
        (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''))
     needs: [build_binaries]
@@ -235,6 +246,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
 
       - name: Download all artifacts
@@ -242,66 +254,55 @@ jobs:
         with:
           path: release-artifacts
 
-      - name: Build checksum manifest
-        working-directory: release-artifacts
+      - name: Prepare complete flat release asset set
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort > manifest_files.txt
-          if [[ ! -s manifest_files.txt ]]; then
-            echo "No release artifacts found" >&2
-            exit 1
-          fi
-          xargs sha256sum < manifest_files.txt > checksums.sha256
-          python3 - <<'PY'
-          import os
-          import json
-          from pathlib import Path
+          rm -rf release-assets
+          python3 scripts/verify-release-assets.py prepare \
+            --source-dir release-artifacts \
+            --output-dir release-assets \
+            --release-tag "$RELEASE_TAG"
 
-          paths = [
-              p.as_posix().lstrip("./")
-              for p in sorted(Path(".").rglob("*"))
-              if p.is_file() and (p.name.endswith(".tar.gz") or p.name.endswith(".zip"))
-          ]
-
-          tag = os.environ["RELEASE_TAG"]
-          manifest = {
-              "version": tag.lstrip("v"),
-              "tag": tag,
-              "artifacts": paths,
-              "checksums": "checksums.sha256",
-          }
-
-          with open("index.json", "w", encoding="utf-8") as f:
-              json.dump(manifest, f, indent=2)
-          PY
+      - name: Verify release manifest, checksums, and asset names
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-release-assets.py verify \
+            --assets-dir release-assets \
+            --release-tag "$RELEASE_TAG"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
           files: |
-            release-artifacts/**/*.tar.gz
-            release-artifacts/**/*.zip
-            release-artifacts/checksums.sha256
-            release-artifacts/index.json
+            release-assets/*.tar.gz
+            release-assets/*.zip
+            release-assets/checksums.sha256
+            release-assets/index.json
           draft: false
-          # false: a missing target class (e.g. no Windows zip if that leg
-          # failed) must not block shipping the binaries that did build.
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
 
   publish_registries:
     name: Publish crate + SDK packages
     if: >-
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true')
-    needs: [release_validate]
+      always() &&
+      needs.release_validate.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release_packages == 'true')) &&
+      ((github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true') ||
+       (needs.build_binaries.result == 'success' && needs.publish_github_release.result == 'success'))
+    needs: [release_validate, build_binaries, publish_github_release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -370,10 +371,38 @@ jobs:
           set -euo pipefail
           DRY_RUN="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.registry_dry_run == 'true' }}"
           npm install --ignore-scripts
-          npm config set //registry.npmjs.org/:_authToken ${NODE_AUTH_TOKEN}
+          npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
           npm run build
           if [[ "$DRY_RUN" == "true" ]]; then
             npm publish --access public --dry-run
           else
-            npm publish --access public
+            PACKAGE_NAME=$(node -p "require('./package.json').name")
+            PACKAGE_VERSION=$(node -p "require('./package.json').version")
+            PACKAGE_SPEC="${PACKAGE_NAME}@${PACKAGE_VERSION}"
+            VIEW_STDERR=$(mktemp)
+            trap 'rm -f "$VIEW_STDERR"' EXIT
+
+            if PUBLISHED_VERSION=$(npm view "$PACKAGE_SPEC" version --registry=https://registry.npmjs.org/ 2>"$VIEW_STDERR"); then
+              if [[ "$PUBLISHED_VERSION" != "$PACKAGE_VERSION" ]]; then
+                echo "::error::npm returned unexpected version '$PUBLISHED_VERSION' for exact package spec '$PACKAGE_SPEC'." >&2
+                exit 1
+              fi
+              echo "  $PACKAGE_SPEC: already published, skipping"
+            else
+              VIEW_STATUS=$?
+              if grep -Eq '(^|[[:space:]])E404([[:space:]]|$)' "$VIEW_STDERR"; then
+                echo "Publishing $PACKAGE_SPEC to npm"
+                npm publish --access public
+              else
+                cat "$VIEW_STDERR" >&2
+                exit "$VIEW_STATUS"
+              fi
+            fi
           fi
+
+      - name: Verify exact packages are public on every registry
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.registry_dry_run != 'true'
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python scripts/verify-published-registries.py --version "$VERSION"

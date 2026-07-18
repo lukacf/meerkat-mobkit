@@ -35,7 +35,7 @@ export type ConsoleDockController<TTarget extends ConsoleDockTarget = ConsoleDoc
   focusedPanelId: string | null;
   focusedTarget: TTarget | null;
   dispatch: (action: ConsoleDockAction<TTarget>) => void;
-  createTab: () => void;
+  createTab: (options?: { blank?: boolean }) => void;
   selectTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   focusPanel: (panelId: string) => void;
@@ -130,7 +130,7 @@ export function useConsoleDockController<TTarget extends ConsoleDockTarget = Con
     focusedPanelId: state.focusedPanelId,
     focusedTarget: focusedPanel?.target || null,
     dispatch,
-    createTab: () => dispatch({ type: "create_tab" }),
+    createTab: (options) => dispatch({ type: "create_tab", blank: options?.blank }),
     selectTab: (tabId) => dispatch({ type: "select_tab", tabId }),
     closeTab: (tabId) => dispatch({ type: "close_tab", tabId }),
     focusPanel: (panelId) => dispatch({ type: "focus_panel", panelId }),

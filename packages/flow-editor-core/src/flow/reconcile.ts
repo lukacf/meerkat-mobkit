@@ -109,13 +109,8 @@ export function clearDeletedLaunchSource(source, deletedId) {
   if (!mode || mode.kind !== "Fork" || String(mode.from || "").trim() !== deletedId) return source;
   return {
     ...source,
-    launchMode: freshLaunchModePreservingBudget(mode),
+    launchMode: { kind: "Fresh" },
   };
-}
-
-export function freshLaunchModePreservingBudget(mode) {
-  const budgetSplitPolicy = mode?.budgetSplitPolicy;
-  return budgetSplitPolicy ? { kind: "Fresh", budgetSplitPolicy } : { kind: "Fresh" };
 }
 
 export function clearDeletedStepCondition(cond, deletedId) {
@@ -879,7 +874,7 @@ export function reconcileLaunchSourceObject(source, allowedSources) {
   if (mode.kind !== "Fork" || !mode.from || allowedSources.has(mode.from)) return source;
   return {
     ...source,
-    launchMode: freshLaunchModePreservingBudget(mode),
+    launchMode: { kind: "Fresh" },
   };
 }
 

@@ -17,6 +17,7 @@ Components:
 - `ConsoleActivityRail`
 - `ConsoleComposer`
 - `ConsoleDock`
+- `BrowserDockTargetHost`
 - `ConsolePendingStack`
 - `PendingStack`
 - `ConsoleSidebar`
@@ -43,6 +44,7 @@ Types:
 - `ConsoleComposerProps`
 - `ConsoleDockController`
 - `ConsoleDockProps`
+- `BrowserDockTargetHostProps`
 - `ConsolePendingDropWhere`
 - `ConsolePendingItem`
 - `ConsolePendingStackProps`

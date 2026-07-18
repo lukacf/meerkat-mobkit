@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-18
+
 ### Added
 
 - Exposed identity-first startup materialization through the SDK gateway and
@@ -15,9 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   bounded background task. Typed status and wait RPCs report per-identity
   `dormant`, `warming`, `active`, and `broken` progress and support an exact
   startup-readiness barrier.
+- `UnifiedRuntime::start_member_turn` now exposes completion-bearing member
+  turns through `MemberTurnAdmission`. Callers can observe the exact bridge
+  session, await the executor-applied model/provider/self-hosted route, stream
+  live events, and separately await committed runtime completion without
+  treating ingress admission as execution success.
+- The shared console docking contract now includes a first-class browser host
+  target, with collision-free grid placement and host-prop forwarding alongside
+  normal topology panels.
 
 ### Changed
 
+- The full Meerkat dependency family is now pinned exactly to the released
+  `0.8.1` crate set, including memory, live, and scheduling surfaces.
 - Explicit identity bootstrap modes now consistently declare identity-first
   intent and require a roster provider, including explicit eager mode; an
   omitted mode still preserves the classic gateway when no roster is present.
@@ -53,9 +65,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   so identity-owned cross-mob mutations remain supervised if the requesting
   connection disappears. The borrowed dispatcher fails those mutations
   closed because it cannot transfer runtime ownership into the supervisor.
+- MobKit session-service wrappers now preserve Meerkat's runtime-turn-apply
+  capability, allowing optional per-turn model selection in stock console
+  integrations while unsupported autonomous, direct-session, and external
+  member paths fail closed before admission.
 
 ### Fixed
 
+- Release publication now requires all ten gateway archives, emits flat asset
+  names in `index.json` and `checksums.sha256`, and keeps manual tagged builds,
+  validation, and registry publication on the exact requested source tag. The
+  registry job now retries public readback until the exact crate, Python wheel
+  and source distribution, and npm package are all independently visible,
+  non-yanked, downloadable, and checksum-valid.
+- Runtime-turn diagnostics are structural-only and opt in with an explicit
+  truthy value; prompts, appended context, tool dispatch metadata, and full
+  runtime semantics are never written to the diagnostic log.
+- The optional source-baseline verifier no longer embeds a developer machine
+  path and fails closed with a typed error unless a checkout is supplied
+  explicitly or through `MEERKAT_REPO`.
 - Quiesced session persistence before lease rotation, retained exact committed
   grants across failed authority publication, reused live grants during eager
   reconcile, and drained identity-scoped orphan grants before direct lazy retry.

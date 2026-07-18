@@ -45,6 +45,8 @@ export interface TopologyPanelProps {
   onConnectionSourceChange?: (sourceId: string | null) => void;
   onRequestMutation?: (intent: TopologyMutationIntent) => void | Promise<void>;
   onRequestPairInspection?: (edge: TopologyEdgeRef) => void | Promise<void>;
+  interactionMode?: "explicit" | "direct";
+  resolvingPairKeys?: ReadonlySet<string>;
   onRetryOperation?: (receipt: TopologyOperationReceipt) => void | Promise<void>;
   bulkActions?: readonly TopologyBoundedAction[];
   onRequestBulkAction?: (action: TopologyBoundedAction) => void | Promise<void>;
@@ -77,6 +79,8 @@ export function TopologyPanel({
   onConnectionSourceChange,
   onRequestMutation,
   onRequestPairInspection,
+  interactionMode = "explicit",
+  resolvingPairKeys,
   onRetryOperation,
   bulkActions,
   onRequestBulkAction,
@@ -246,6 +250,8 @@ export function TopologyPanel({
             onSourceChange={onConnectionSourceChange}
             onRequestMutation={onRequestMutation}
             onRequestPairInspection={onRequestPairInspection}
+            interactionMode={interactionMode}
+            resolvingPairKeys={resolvingPairKeys}
             onRetryOperation={onRetryOperation}
             bulkActions={bulkActions}
             onRequestBulkAction={onRequestBulkAction}

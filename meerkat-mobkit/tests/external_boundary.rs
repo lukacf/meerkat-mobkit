@@ -15,14 +15,14 @@
     clippy::unwrap_in_result,
     clippy::useless_vec
 )]
-use std::{process::Command, time::Duration};
+use std::{fs, process::Command, time::Duration};
 
 use meerkat_mobkit::{
-    BaselineRuntimeError, DiscoverySpec, MobKitConfig, ModuleConfig, NormalizationError,
-    PreSpawnData, ProcessBoundaryError, ProtocolParseError, RestartPolicy, RpcRuntimeError,
-    RuntimeBoundaryError, UnifiedEvent, parse_module_event_line, run_discovered_module_once,
-    run_meerkat_baseline_verification_once, run_module_boundary_once,
-    run_rpc_capabilities_boundary_once,
+    BaselineRuntimeError, DiscoverySpec, MEERKAT_REPO_ENV, MobKitConfig, ModuleConfig,
+    NormalizationError, PreSpawnData, ProcessBoundaryError, ProtocolParseError,
+    REQUIRED_MEERKAT_SYMBOLS, RestartPolicy, RpcRuntimeError, RuntimeBoundaryError, UnifiedEvent,
+    parse_module_event_line, run_discovered_module_once, run_meerkat_baseline_verification_once,
+    run_module_boundary_once, run_rpc_capabilities_boundary_once,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -178,14 +178,16 @@ fn external_rpc_capabilities_requires_contract_version_from_process_response() {
 #[test]
 #[ignore = "external boundary subprocess check"]
 fn external_meerkat_baseline_symbols_check_against_repo_path() {
+    let repo_root = std::env::var(MEERKAT_REPO_ENV)
+        .expect("set MEERKAT_REPO to run the external Meerkat baseline check");
+    let payload = json!({ "repo_root": repo_root }).to_string();
     let report = run_meerkat_baseline_verification_once(
         "sh",
         &[
             "-c".to_string(),
-            "printf '%s\\n' \"{\\\"repo_root\\\":\\\"${MEERKAT_REPO:-/Users/luka/src/raik}\\\"}\""
-                .to_string(),
+            "printf '%s\\n' \"$BASELINE_REPO_PAYLOAD\"".to_string(),
         ],
-        &[],
+        &[("BASELINE_REPO_PAYLOAD".to_string(), payload)],
         Duration::from_secs(1),
     )
     .expect("baseline symbols should exist");
@@ -232,20 +234,46 @@ fn external_unexpected_payload_from_subprocess_is_rejected() {
 }
 
 #[test]
-#[ignore = "external baseline subprocess check"]
-fn external_phase0_baseline_check_binary_runs() {
+fn phase0_baseline_check_binary_requires_configuration() {
     let output = Command::new(env!("CARGO_BIN_EXE_baseline_check"))
-        .env("MEERKAT_REPO", "/Users/luka/src/raik")
+        .env_remove(MEERKAT_REPO_ENV)
+        .output()
+        .expect("phase0 baseline binary should run");
+
+    assert!(
+        !output.status.success(),
+        "unconfigured phase0_baseline_check unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not configured"));
+    assert!(stderr.contains("MEERKAT_REPO"));
+}
+
+#[test]
+fn phase0_baseline_check_binary_uses_configured_repo() {
+    let repo = tempfile::tempdir().expect("temporary Meerkat repository");
+    fs::write(
+        repo.path().join("baseline-symbols.rs"),
+        REQUIRED_MEERKAT_SYMBOLS.join("\n"),
+    )
+    .expect("write baseline symbols");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_baseline_check"))
+        .env(MEERKAT_REPO_ENV, repo.path())
         .output()
         .expect("phase0 baseline binary should run");
 
     assert!(
         output.status.success(),
-        "phase0_baseline_check failed\nstdout:\n{}\nstderr:\n{}",
+        "configured phase0_baseline_check failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("repo={}", repo.path().display())));
     assert!(stdout.contains("missing_symbols="));
 }

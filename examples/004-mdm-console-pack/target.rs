@@ -69,6 +69,7 @@ struct TargetRuntimeSurface {
 
 struct TargetCoreExecutor {
     service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    runtime_adapter: Arc<MeerkatMachine>,
     mob_state: Arc<MobMcpState>,
     session_id: SessionId,
 }
@@ -76,11 +77,13 @@ struct TargetCoreExecutor {
 impl TargetCoreExecutor {
     fn new(
         service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+        runtime_adapter: Arc<MeerkatMachine>,
         mob_state: Arc<MobMcpState>,
         session_id: SessionId,
     ) -> Self {
         Self {
             service,
+            runtime_adapter,
             mob_state,
             session_id,
         }
@@ -89,14 +92,23 @@ impl TargetCoreExecutor {
 
 struct TargetCoreBoundaryHandle {
     service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    runtime_adapter: Arc<MeerkatMachine>,
     session_id: SessionId,
 }
 
 #[async_trait::async_trait]
 impl CoreExecutorBoundaryHandle for TargetCoreBoundaryHandle {
-    async fn cancel_after_boundary(&self, _reason: String) -> Result<(), CoreExecutorError> {
+    async fn cancel_after_boundary(
+        &self,
+        expected_run_id: &RunId,
+        _reason: String,
+    ) -> Result<(), CoreExecutorError> {
         self.service
-            .cancel_after_boundary(&self.session_id)
+            .cancel_after_boundary_with_machine_authority(
+                &self.session_id,
+                expected_run_id,
+                self.runtime_adapter.session_control_authority(),
+            )
             .await
             .or_else(|error| match error {
                 SessionError::NotRunning { .. } => Ok(()),
@@ -130,6 +142,7 @@ impl CoreExecutor for TargetCoreExecutor {
     fn boundary_handle(&self) -> Option<Arc<dyn CoreExecutorBoundaryHandle>> {
         Some(Arc::new(TargetCoreBoundaryHandle {
             service: Arc::clone(&self.service),
+            runtime_adapter: Arc::clone(&self.runtime_adapter),
             session_id: self.session_id.clone(),
         }))
     }
@@ -196,13 +209,18 @@ impl CoreExecutor for TargetCoreExecutor {
             .map_err(CoreExecutorError::apply_failed_from_session_error)
     }
 
-    async fn cancel_after_boundary(&mut self, reason: String) -> Result<(), CoreExecutorError> {
-        TargetCoreBoundaryHandle {
-            service: Arc::clone(&self.service),
-            session_id: self.session_id.clone(),
-        }
-        .cancel_after_boundary(reason)
-        .await
+    async fn cancel_after_boundary(&mut self, _reason: String) -> Result<(), CoreExecutorError> {
+        self.service
+            .cancel_current_after_boundary_with_machine_authority(
+                &self.session_id,
+                self.runtime_adapter.session_control_authority(),
+            )
+            .await
+            .or_else(|error| match error {
+                SessionError::NotRunning { .. } => Ok(()),
+                error => Err(error),
+            })
+            .map_err(|error| CoreExecutorError::control_failed_runtime(error.to_string()))
     }
 
     async fn stop_runtime_executor(&mut self, _reason: String) -> Result<(), CoreExecutorError> {
@@ -358,6 +376,7 @@ async fn build_target_runtime_surface(
     let mob_state = Arc::new(MobMcpState::new_with_runtime_adapter(
         service.clone(),
         Some(runtime_adapter.clone()),
+        meerkat_mob::MobControlPrincipal::Owner,
     ));
     *mob_tools_slot
         .write()
@@ -456,6 +475,7 @@ async fn setup_session(
     let session_id = result.session_id;
     let executor = Box::new(TargetCoreExecutor::new(
         surface.service.clone(),
+        surface.runtime_adapter.clone(),
         surface.mob_state.clone(),
         session_id.clone(),
     ));

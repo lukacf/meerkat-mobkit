@@ -1506,6 +1506,27 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        async fn create_session_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            meerkat_core::SessionService::create_session(self, req).await
+        }
+
+        async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            meerkat_core::SessionService::archive(self, session_id).await
+        }
+
+        async fn discard_live_session_under_runtime_turn_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+
         async fn load_persisted_session(
             &self,
             session_id: &meerkat_core::types::SessionId,
@@ -1630,6 +1651,27 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        async fn create_session_under_runtime_turn_boundary(
+            &self,
+            req: meerkat_core::service::CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, meerkat_core::service::SessionError> {
+            meerkat_core::SessionService::create_session(self, req).await
+        }
+
+        async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            meerkat_core::SessionService::archive(self, session_id).await
+        }
+
+        async fn discard_live_session_under_runtime_turn_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            Ok(())
+        }
+
         async fn load_persisted_session(
             &self,
             session_id: &meerkat_core::types::SessionId,

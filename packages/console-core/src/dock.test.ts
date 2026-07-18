@@ -5,6 +5,7 @@ import {
   consoleDockSplitDirectionAxis,
   consoleDockSplitDirectionPrecedes,
   createConsoleDockState,
+  createConsoleDockTab,
   findConsoleDockFirstPanelId,
   normalizeConsoleDockViewState,
   openConsoleDockTarget,
@@ -172,6 +173,11 @@ describe("dock helpers", () => {
     let panelIdCounter = 0;
     let tabIdCounter = 0;
     let splitIdCounter = 0;
+    const suggestionCalls: Array<{
+      count: number;
+      preferredId: string | null;
+      excludedIds: string[];
+    }> = [];
 
     const alpha: TestTarget = {
       id: "thread:alpha",
@@ -205,6 +211,11 @@ describe("dock helpers", () => {
       preferred: TestTarget | null;
       excludedIds: string[];
     }) => {
+      suggestionCalls.push({
+        count,
+        preferredId: preferred?.id || null,
+        excludedIds: [...excludedIds],
+      });
       const pool = [preferred, alpha, beta, gamma].filter(Boolean) as TestTarget[];
       const results: Array<TestTarget | null> = [];
       for (const target of pool) {
@@ -268,7 +279,23 @@ describe("dock helpers", () => {
       suggestTargets,
     });
 
-    expect(collectConsoleDockPanelIds(state.tabs.find((tab) => tab.id === state.activeTabId)?.layout || null)).toHaveLength(4);
+    const gridPanelIds = collectConsoleDockPanelIds(
+      state.tabs.find((tab) => tab.id === state.activeTabId)?.layout || null,
+    );
+    expect(gridPanelIds).toHaveLength(4);
+    const gridPanels = gridPanelIds.map((panelId) => state.panels.find((panel) => panel.id === panelId)!);
+    expect(gridPanels.map((panel) => panel.target?.id || null)).toEqual([
+      "thread:gamma",
+      "thread:beta",
+      "thread:alpha",
+      null,
+    ]);
+    expect(gridPanels.filter((panel) => panel.target?.id === "thread:gamma")).toHaveLength(1);
+    expect(suggestionCalls.at(-1)).toEqual({
+      count: 3,
+      preferredId: null,
+      excludedIds: ["thread:gamma"],
+    });
   });
 
   test("splitting a focused panel clones its target when no alternate suggestion is available", () => {
@@ -310,6 +337,32 @@ describe("dock helpers", () => {
 
     expect(state.panels).toHaveLength(2);
     expect(state.panels.map((panel) => panel.target?.id)).toEqual(["thread:alpha", "thread:alpha"]);
+  });
+
+  test("can create an explicitly blank tab without changing the default clone behavior", () => {
+    type TestTarget = ConsoleDockTarget & { kind: "thread"; threadId: string };
+    const alpha: TestTarget = { id: "thread:alpha", kind: "thread", title: "Alpha", threadId: "alpha" };
+    let panelIdCounter = 0;
+    let tabIdCounter = 0;
+    const createPanelState = ({ target }: { target: TestTarget | null }): ConsoleDockPanelState<TestTarget> => ({
+      id: `panel-${++panelIdCounter}`,
+      target,
+      mode: "console",
+    });
+    const createTabId = () => `tab-${++tabIdCounter}`;
+    const createSplitId = () => "split-unused";
+    const initial = createConsoleDockState<TestTarget>({
+      initialTarget: alpha,
+      createPanelState,
+      createTabId,
+      createSplitId,
+    });
+
+    const cloned = createConsoleDockTab(initial, { createPanelState, createTabId, createSplitId });
+    expect(cloned.panels.find((panel) => panel.id === cloned.focusedPanelId)?.target?.id).toBe(alpha.id);
+
+    const blank = createConsoleDockTab(initial, { createPanelState, createTabId, createSplitId }, { blank: true });
+    expect(blank.panels.find((panel) => panel.id === blank.focusedPanelId)?.target).toBeNull();
   });
 
   test("presets do not create empty panels when there are no suggested targets", () => {

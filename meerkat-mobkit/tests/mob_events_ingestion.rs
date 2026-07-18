@@ -1,7 +1,8 @@
 //! Ingestion contract for the structural mob-events surface.
 //!
-//! Asserts every `MobEventKind` variant survives projection into
-//! `MobStructuralEventEnvelope` with structural fields intact.
+//! Asserts representative public `MobEventKind` variants survive projection
+//! into `MobStructuralEventEnvelope` with structural fields intact. The
+//! producer's exhaustive match remains the compile-time drift ratchet.
 
 #![allow(
     clippy::expect_used,
@@ -52,7 +53,7 @@ fn run() -> RunId {
 }
 
 #[test]
-fn all_mob_event_kinds_project_with_kind_label() {
+fn representative_mob_event_kinds_project_with_kind_label() {
     let identity = AgentIdentity::from("worker-1");
     let runtime_id = AgentRuntimeId::initial(identity.clone());
     let run_id = run();
@@ -206,6 +207,8 @@ fn all_mob_event_kinds_project_with_kind_label() {
         run_id: run_id.clone(),
         step_id: step_id.clone(),
         target: runtime_id.clone(),
+        output: None,
+        remote_turn_obligation: None,
     });
     assert_eq!(m.kind, "step_target_completed");
 
@@ -214,6 +217,7 @@ fn all_mob_event_kinds_project_with_kind_label() {
         step_id: step_id.clone(),
         target: runtime_id.clone(),
         reason: "fail".to_string(),
+        remote_turn_obligation: None,
         error_report: None,
         error: None,
     });

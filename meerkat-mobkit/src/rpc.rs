@@ -3662,88 +3662,20 @@ async fn handle_unified_rpc_json_inner(
                     serialize_response(&response)
                 };
             }
-            let live_handle = runtime.mob_handle();
-            let rollback_handle = live_handle.clone();
-            let cleanup_identity = identity.clone();
             let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
                 .then_some(identity_str);
             let respawn_result = identity_rt
-                .respawn_and_rebind_live_member_tracked(
-                    &identity,
-                    expected_alias,
-                    move |runtime_alias| {
-                        let live_handle = live_handle;
-                        let cleanup_identity = cleanup_identity;
-                        async move {
-                            let live_result = respawn_rpc_runtime_member_id_with_handle(
-                                &live_handle,
-                                runtime_alias.as_str(),
-                            )
-                            .await?;
-                            let topology_restore_warning = live_result
-                                .get("topology_restore_warning")
-                                .filter(|warning| !warning.is_null())
-                                .cloned();
-                            let live_session_id = live_result
-                                .get("session_id")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| {
-                                    format!(
-                                        "member respawn for {runtime_alias} returned no live session"
-                                    )
-                                })?;
-                            let live_session_id = meerkat_core::types::SessionId::parse(
-                                live_session_id,
-                            )
-                            .map_err(|error| {
-                                format!(
-                                    "member respawn for {runtime_alias} returned an invalid session: \
-                                    {error}"
-                                )
-                            })?;
-                            // Enumerate after the lifecycle lock has selected
-                            // the generation. A respawn waiting behind reset
-                            // must see the just-retired predecessor rather
-                            // than an earlier pre-lock snapshot.
-                            let stale_member_ids =
-                                stale_rpc_member_ids_for_identity_with_handle(
-                                    &live_handle,
-                                    cleanup_identity.as_str(),
-                                    Some(runtime_alias.as_str()),
-                                    false,
-                                )
-                                .await;
-                            let cleanup_warning = retire_rpc_member_ids_with_handle(
-                                &live_handle,
-                                stale_member_ids,
-                            )
-                            .await
-                            .err()
-                            .map(|error| {
-                                serde_json::json!({
-                                    "kind": "stale_member_cleanup_failed_after_identity_respawn",
-                                    "message": error,
-                                    "identity": cleanup_identity.as_str(),
-                                    "agent_runtime_id": runtime_alias.as_str(),
-                                })
-                            });
-                            Ok((
-                                live_session_id,
-                                (topology_restore_warning, cleanup_warning),
-                            ))
-                        }
-                    },
-                    move |runtime_alias| async move {
-                        retire_rpc_runtime_member_id_with_handle(
-                            &rollback_handle,
-                            runtime_alias.as_str(),
-                        )
-                        .await
-                    },
-                )
+                .respawn_identity_in_place_tracked(&identity, expected_alias)
                 .await;
             match respawn_result {
-                Ok((record, (live_respawn_warning, cleanup_warning))) => {
+                Ok(record) => {
+                    // A durable identity recovers its authoritative session
+                    // in place. Raw-member respawn remains available only to
+                    // unregistered/classic members because it rotates the
+                    // session. Keep the legacy warning fields for wire
+                    // compatibility.
+                    let live_respawn_warning: Option<Value> = None;
+                    let cleanup_warning: Option<Value> = None;
                     runtime
                         .record_console_lifecycle(
                             identity.as_str(),
@@ -8830,13 +8762,20 @@ shell = true
         )
         .await?;
         runtime
-            .spawn(SpawnMemberSpec::from_wire(
-                "worker".to_string(),
-                "draco-base-001".to_string(),
-                None,
-                None,
-                None,
-            ))
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "draco-base-001".to_string(),
+                    None,
+                    None,
+                    None,
+                )
+                // This regression needs roster membership, not an autonomous
+                // kickoff. Keep the fixture quiescent so its deliberate retire
+                // is the sole teardown owner and the test exercises baseline
+                // dispatch precedence rather than kickoff/retire interleaving.
+                .with_runtime_mode(meerkat_mob::MobRuntimeMode::TurnDriven),
+            )
             .await?;
 
         let identity_rt = IdentityRuntime::new(IdentityRuntimeConfig {

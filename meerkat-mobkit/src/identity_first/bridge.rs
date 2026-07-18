@@ -2,6 +2,7 @@
 //! session pipeline for real session creation, delivery, and retirement.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -57,14 +58,42 @@ fn is_member_already_exists_error(error: &meerkat_mob::MobError) -> bool {
     matches!(error, meerkat_mob::MobError::MemberAlreadyExists(_))
 }
 
-/// Strong proof that reset's first retire reached the archive boundary after
-/// quiescing the physical member and retained the exact Mob cleanup anchor.
-/// Broader lifecycle classifiers include ambiguous pre-disposal failures and
-/// are not sufficient authority for destructive snapshot abandonment.
-fn is_reset_superseded_archive_cleanup_anchor(error: &meerkat_mob::MobError) -> bool {
-    let error = error.to_string();
-    error.contains("disposal completed but ArchiveSession failed")
-        || error.contains("disposal aborted at ArchiveSession")
+/// Delete and tombstone reset's superseded session projection before asking
+/// Meerkat to retire the physical member.
+///
+/// The reset caller invokes this only after the replacement continuity head
+/// has committed and bounded memory capture has completed. The adapter's
+/// per-session lock drains every earlier save before the exact-CAS delete and
+/// makes every later terminal projection a no-op. This ordering is required
+/// with Meerkat 0.8: `MobHandle::retire` now returns the bare `ArchiveSession`
+/// store error, so a post-retire string classifier cannot prove that the
+/// archive boundary was reached. A failed abandon remains visible and the
+/// caller retains the exact reset cleanup debt for retry.
+async fn abandon_then_retire_reset_superseded<Abandon, AbandonFuture, Retire, RetireFuture>(
+    member_id: &MobAgentIdentity,
+    session_id: &meerkat_core::types::SessionId,
+    abandon: Abandon,
+    retire: Retire,
+) -> Result<(), BridgeError>
+where
+    Abandon: FnOnce() -> AbandonFuture,
+    AbandonFuture: Future<Output = Result<(), meerkat_store::SessionStoreError>>,
+    Retire: FnOnce() -> RetireFuture,
+    RetireFuture: Future<Output = Result<(), meerkat_mob::MobError>>,
+{
+    abandon().await.map_err(|error| {
+        BridgeError::Mob(format!(
+            "reset retire could not abandon superseded session {session_id}: {error}"
+        ))
+    })?;
+
+    match retire().await {
+        Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => Ok(()),
+        Err(error) => Err(BridgeError::Mob(format!(
+            "reset retire cleanup failed for {member_id} after superseded session \
+             {session_id} was abandoned: {error}"
+        ))),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1050,20 +1079,24 @@ impl MobSessionBridge {
 /// Project meerkat 0.7's tri-state peer connectivity into an inspect-level
 /// reachable count, when the tri-state resolves one.
 ///
-/// Only a resolved probe ([`WirePeerConnectivity::Known`]) contributes a
-/// live count. The not-applicable / probe-timed-out arms (and an uncomputed
-/// projection) return `None` so the caller falls back to the machine-owned
-/// wiring degree (`wired_to.len()`) instead of projecting 0 — a freshly
-/// wired member has peers regardless of whether a live probe resolved, and
-/// the sibling console alias surface computes the same wire field from
-/// `wired_to`; the two surfaces must agree.
+/// Only a fully resolved probe ([`WirePeerConnectivity::Known`] with no
+/// unknown peers) contributes a live count. A partially resolved Known probe,
+/// the not-applicable / probe-timed-out arms, and an uncomputed projection
+/// return `None` so the caller falls back to the machine-owned wiring degree
+/// (`wired_to.len()`) instead of projecting 0 — a freshly wired member has
+/// peers regardless of whether a live probe resolved, and the sibling console
+/// alias surface computes the same wire field from `wired_to`; the two
+/// surfaces must agree.
 fn peer_reachable_count_from_connectivity(
     connectivity: Option<&meerkat_contracts::WirePeerConnectivity>,
 ) -> Option<usize> {
     match connectivity {
-        Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot }) => {
+        Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot })
+            if snapshot.unknown_peer_count == 0 =>
+        {
             Some(snapshot.reachable_peer_count)
         }
+        Some(meerkat_contracts::WirePeerConnectivity::Known { .. }) => None,
         Some(
             meerkat_contracts::WirePeerConnectivity::NotApplicable
             | meerkat_contracts::WirePeerConnectivity::ProbeTimedOut,
@@ -1615,60 +1648,18 @@ impl SessionBridge for MobSessionBridge {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        let retained_archive_anchor = match self.handle.retire(mid.clone()).await {
-            // Both outcomes prove the physical member is quiesced. They do
-            // not prove that a terminal/superseded session projection is
-            // absent: a prior cleanup attempt can retire the member and be
-            // cancelled before deleting the identity-owned snapshot.
-            Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => None,
-            Err(initial_error) if is_reset_superseded_archive_cleanup_anchor(&initial_error) => {
-                Some(initial_error)
-            }
-            Err(error) => return Err(BridgeError::Mob(error.to_string())),
-        };
-
         let adapter = self.continuity_session_store.as_ref().ok_or_else(|| {
-            let prior = retained_archive_anchor
-                .as_ref()
-                .map_or_else(String::new, |error| format!(": {error}"));
             BridgeError::Mob(format!(
-                "reset retire quiesced superseded member {mid}, but the bridge has no continuity session-store authority{prior}"
+                "reset retire cannot abandon superseded member {mid}: the bridge has no continuity session-store authority"
             ))
         })?;
-        if let Some(initial_error) = retained_archive_anchor.as_ref() {
-            tracing::warn!(
-                member_id = %mid,
-                session_id = %session_id,
-                error = %initial_error,
-                "reset retire quiesced the superseded member but retained its archive cleanup anchor; abandoning the exact old snapshot before retry"
-            );
-        }
-        // This exact-CAS abandon is required even when retire returned Ok or
-        // MemberNotFound. Otherwise a cancellation after physical retirement
-        // but before this step lets a retry clear the cleanup debt while
-        // leaving the superseded snapshot durable forever.
-        adapter
-            .abandon_superseded_session(session_id)
-            .await
-            .map_err(|error| {
-                let prior = retained_archive_anchor
-                    .as_ref()
-                    .map_or_else(String::new, |error| format!(" after {error}"));
-                BridgeError::Mob(format!(
-                    "reset retire could not abandon superseded session {session_id}{prior}: {error}"
-                ))
-            })?;
-
-        if let Some(initial_error) = retained_archive_anchor {
-            match self.handle.retire(mid.clone()).await {
-                Ok(()) | Err(meerkat_mob::MobError::MemberNotFound(_)) => {}
-                Err(retry_error) => {
-                    return Err(BridgeError::Mob(format!(
-                        "reset retire cleanup retry failed for {mid}: initial: {initial_error}; retry: {retry_error}"
-                    )));
-                }
-            }
-        }
+        abandon_then_retire_reset_superseded(
+            &mid,
+            session_id,
+            || adapter.abandon_superseded_session(session_id),
+            || self.handle.retire(mid.clone()),
+        )
+        .await?;
 
         if self
             .handle
@@ -1903,6 +1894,18 @@ mod tests {
             peer_reachable_count_from_connectivity(Some(&known)),
             Some(3),
             "a resolved probe owns the count"
+        );
+        let structurally_wired_but_unresolved = WirePeerConnectivity::Known {
+            snapshot: WirePeerConnectivitySnapshot {
+                reachable_peer_count: 0,
+                unknown_peer_count: 3,
+                unreachable_peers: Vec::new(),
+            },
+        };
+        assert_eq!(
+            peer_reachable_count_from_connectivity(Some(&structurally_wired_but_unresolved)),
+            None,
+            "a partially resolved probe must defer to the machine-owned wiring degree"
         );
         assert_eq!(
             peer_reachable_count_from_connectivity(Some(&WirePeerConnectivity::NotApplicable)),
@@ -2275,24 +2278,76 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn reset_snapshot_abandon_requires_exact_archive_boundary_proof() {
-        let completed = meerkat_mob::MobError::Internal(
-            "member disposal completed but ArchiveSession failed: stale continuity fence"
-                .to_string(),
-        );
-        let aborted = meerkat_mob::MobError::Internal(
-            "member disposal aborted at ArchiveSession: store unavailable".to_string(),
-        );
-        let ambiguous = meerkat_mob::MobError::Internal(
-            "previous member cleanup ambiguous for member rt-agent-alpha-0".to_string(),
-        );
+    #[tokio::test]
+    async fn reset_snapshot_is_abandoned_before_meerkat_retire() {
+        let member_id = MobAgentIdentity::from("rt-agent-alpha-0");
+        let session_id = meerkat_core::types::SessionId::new();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        assert!(is_reset_superseded_archive_cleanup_anchor(&completed));
-        assert!(is_reset_superseded_archive_cleanup_anchor(&aborted));
+        abandon_then_retire_reset_superseded(
+            &member_id,
+            &session_id,
+            {
+                let order = Arc::clone(&order);
+                move || async move {
+                    order.lock().expect("order lock").push("abandon");
+                    Ok(())
+                }
+            },
+            {
+                let order = Arc::clone(&order);
+                move || async move {
+                    assert_eq!(
+                        order.lock().expect("order lock").as_slice(),
+                        ["abandon"],
+                        "Meerkat retirement must not start until the exact superseded projection is tombstoned"
+                    );
+                    order.lock().expect("order lock").push("retire");
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("pre-abandon then retire");
+
+        assert_eq!(
+            order.lock().expect("order lock").as_slice(),
+            ["abandon", "retire"]
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_snapshot_cas_failure_stays_visible_and_blocks_retire() {
+        let member_id = MobAgentIdentity::from("rt-agent-alpha-0");
+        let session_id = meerkat_core::types::SessionId::new();
+        let retire_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let error = abandon_then_retire_reset_superseded(
+            &member_id,
+            &session_id,
+            || async {
+                Err(meerkat_store::SessionStoreError::Internal(
+                    "exact snapshot CAS mismatch".to_string(),
+                ))
+            },
+            {
+                let retire_called = Arc::clone(&retire_called);
+                move || async move {
+                    retire_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect_err("CAS failure must retain reset cleanup debt");
+
         assert!(
-            !is_reset_superseded_archive_cleanup_anchor(&ambiguous),
-            "ambiguous pre-disposal failures must not authorize snapshot deletion"
+            error.to_string().contains("exact snapshot CAS mismatch"),
+            "the exact abandon failure must remain visible to the cleanup-debt owner: {error}"
+        );
+        assert!(
+            !retire_called.load(std::sync::atomic::Ordering::SeqCst),
+            "retirement must not acknowledge cleanup after the exact-CAS abandon failed"
         );
     }
 

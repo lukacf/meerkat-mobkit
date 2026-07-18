@@ -108,6 +108,7 @@ export {
 } from "./topology";
 
 export type {
+  BrowserDockTarget,
   ConsoleDockAction,
   ConsoleDockCreatePanelState,
   ConsoleDockCreatePanelStateArgs,

@@ -9,8 +9,8 @@
 //
 // Launch-mode control plane for the Flow Editor. Moved verbatim from the
 // controller.js launch-modes range: launchModeControlState and its patch
-// family, dispatch/collection/dependency policy options, budget-split
-// policy helpers, launchModesFromFlow, edge-condition normalization, and
+// family, dispatch/collection/dependency policy options,
+// launchModesFromFlow, edge-condition normalization, and
 // collectVisualSteps.
 //
 // SCC note: flow/launch-modes.ts and contract/options.ts form a
@@ -19,7 +19,7 @@
 // flow/step-tree.ts.
 import { contractDefaultValue, forkContextOptions } from "../contract/options";
 import { profileName } from "../domain/tool-skill-access";
-import { findMember, numberOrNull } from "../shared/normalize";
+import { findMember } from "../shared/normalize";
 import { launchViewForState, viewStringMapFromSchema } from "../views/view-config";
 import { childLanes } from "./step-tree";
 
@@ -43,16 +43,10 @@ export function normalizeLaunchMode(mode) {
   if (!mode || typeof mode !== "object") return null;
   const kind = canonicalLaunchModeKind(mode.kind);
   if (!kind) return null;
-  const rawBudgetSplitPolicy = mode.budgetSplitPolicy ?? mode.budget_split_policy ?? mode.budget;
-  const budgetSplitPolicy = rawBudgetSplitPolicy
-    ? normalizeBudgetSplitPolicy(rawBudgetSplitPolicy)
-    : null;
-  const budgetPatch = budgetSplitPolicy ? { budgetSplitPolicy } : {};
   if (kind === "Resume") {
     return {
       kind: "Resume",
       sessionId: String(mode.sessionId || mode.session_id || mode.bridgeSessionId || mode.bridge_session_id || "").trim(),
-      ...budgetPatch,
     };
   }
   if (kind === "Fork") {
@@ -60,10 +54,9 @@ export function normalizeLaunchMode(mode) {
       kind: "Fork",
       from: String(mode.from || mode.sourceMemberId || mode.source_member_id || "").trim(),
       context: normalizeForkContext(mode.context || mode.forkContext || mode.fork_context),
-      ...budgetPatch,
     };
   }
-  return { kind, ...budgetPatch };
+  return { kind };
 }
 
 export function launchModeControlState(source, contract, launchView = null) {
@@ -72,24 +65,12 @@ export function launchModeControlState(source, contract, launchView = null) {
     ? (source.launchMode ?? source.launch_mode)
     : null;
   const defaultLaunchMode = contractDefaultValue(contract, "launch_mode");
-  const launchMode = authoredLaunchMode && typeof authoredLaunchMode === "object"
-    ? authoredLaunchMode
-    : { kind: defaultLaunchMode };
+  const launchMode = normalizeLaunchMode(authoredLaunchMode) || { kind: defaultLaunchMode };
   const launchKind = canonicalLaunchModeKind(launchMode.kind || defaultLaunchMode);
-  const authoredBudgetSplitPolicy = normalizeBudgetSplitPolicy(
-    launchMode.budgetSplitPolicy || launchMode.budget_split_policy,
-  );
-  const defaultBudgetSplitKind = contractDefaultValue(contract, "budget_split_policy");
-  const budgetSplitPolicy = authoredBudgetSplitPolicy
-    || normalizeBudgetSplitPolicy(defaultBudgetSplitKind ? { kind: defaultBudgetSplitKind } : null)
-    || { kind: "" };
-  const budgetLaunchPatch = authoredBudgetSplitPolicy ? { budgetSplitPolicy: authoredBudgetSplitPolicy } : {};
   const launchOptions = launchModeOptions(contract, launchKind, view);
-  const budgetOptions = budgetSplitPolicyOptions(contract, budgetSplitPolicy.kind, view);
   const defaultForkContext = contractDefaultValue(contract, "fork_context");
   const forkContextValue = normalizeForkContext(launchMode.context || defaultForkContext);
   const forkOptions = forkContextOptions(contract, forkContextValue, view);
-  const fixedLimitValue = budgetSplitPolicy.limit || view.fixedBudgetDefaultValue;
   return {
     launchTitle: view.launchTitle,
     graphLaunchTitle: view.graphLaunchTitle,
@@ -98,19 +79,11 @@ export function launchModeControlState(source, contract, launchView = null) {
     forkSourceLabel: view.forkSourceLabel,
     forkContextLabel: view.forkContextLabel,
     graphForkContextLabel: view.graphForkContextLabel,
-    budgetPolicyLabel: view.budgetPolicyLabel,
-    fixedBudgetLabel: view.fixedBudgetLabel,
-    fixedBudgetValue: fixedLimitValue,
     launchMode,
     launchKind,
     defaultLaunchMode,
     launchOptions,
     selectedLaunchMode: launchOptions.find((option) => option.value === launchKind),
-    authoredBudgetSplitPolicy,
-    budgetSplitPolicy,
-    budgetLaunchPatch,
-    budgetOptions,
-    selectedBudgetPolicy: budgetOptions.find((option) => option.value === budgetSplitPolicy.kind),
     defaultForkContext,
     forkContextValue,
     forkContextOptions: forkOptions,
@@ -129,7 +102,6 @@ export function launchModeKindPatch(source, kind, contract, options = {}) {
         kind: "Fork",
         from: options.firstForkSourceId || state.launchMode.from || "",
         context: state.launchMode.context || state.defaultForkContext,
-        ...state.budgetLaunchPatch,
       },
     };
   }
@@ -139,16 +111,16 @@ export function launchModeKindPatch(source, kind, contract, options = {}) {
         ...state.launchMode,
         kind: "Resume",
         sessionId: state.launchMode.sessionId || "",
-        ...state.budgetLaunchPatch,
       },
     };
   }
-  return { launchMode: { kind: nextKind, ...state.budgetLaunchPatch } };
+  return { launchMode: { kind: nextKind } };
 }
 
 export function launchModeMergePatch(source, patch, contract) {
   const state = launchModeControlState(source, contract);
   const nextPatch = patch && typeof patch === "object" ? { ...patch } : {};
+  if (["budgetSplitPolicy", "budget_split_policy", "budget"].some((key) => key in nextPatch)) return {};
   if ("kind" in nextPatch) {
     const kind = canonicalLaunchModeKind(nextPatch.kind);
     if (!launchModeKindAllowed(contract, kind)) return {};
@@ -159,7 +131,8 @@ export function launchModeMergePatch(source, patch, contract) {
     if (!forkContextAllowed(contract, context)) return {};
     nextPatch.context = context;
   }
-  return { launchMode: { ...state.launchMode, ...nextPatch } };
+  const launchMode = normalizeLaunchMode({ ...state.launchMode, ...nextPatch });
+  return launchMode ? { launchMode } : {};
 }
 
 export function launchModeSessionPatch(source, sessionId, contract) {
@@ -181,30 +154,6 @@ export function launchModeForkSourcePatch(source, from, contract, options = {}) 
 
 export function launchModeForkContextPatch(source, context, contract) {
   return launchModeMergePatch(source, { context }, contract);
-}
-
-export function launchModeBudgetPatch(source, patch, contract) {
-  const state = launchModeControlState(source, contract);
-  if (patch && typeof patch === "object" && "kind" in patch) {
-    const requestedKind = canonicalBudgetSplitPolicyKind(patch.kind);
-    if (!budgetSplitPolicyAllowed(contract, requestedKind)) return {};
-  }
-  const nextPolicy = normalizeBudgetSplitPolicy({ ...state.budgetSplitPolicy, ...patch });
-  if (!nextPolicy || !budgetSplitPolicyAllowed(contract, nextPolicy.kind)) return {};
-  return {
-    launchMode: {
-      ...state.launchMode,
-      budgetSplitPolicy: nextPolicy,
-    },
-  };
-}
-
-export function launchBudgetKindPatch(source, kind, contract) {
-  return launchModeBudgetPatch(source, { kind: canonicalBudgetSplitPolicyKind(kind) }, contract);
-}
-
-export function launchBudgetFixedLimitPatch(source, limit, contract) {
-  return launchModeBudgetPatch(source, { kind: "Fixed", limit }, contract);
 }
 
 export function canonicalLaunchModeKind(value) {
@@ -380,65 +329,6 @@ export function collectionPolicyAllowed(contract, policy) {
   return contractPolicies.includes(value);
 }
 
-export function normalizeBudgetSplitPolicy(policy) {
-  if (!policy || typeof policy !== "object") return null;
-  const rawKind = String(policy.kind || policy.type || "").trim();
-  if (!rawKind) return null;
-  const kind = canonicalBudgetSplitPolicyKind(rawKind);
-  if (kind === "Fixed") {
-    const limit = numberOrNull(policy?.limit ?? policy?.value ?? policy?.tokens);
-    return { kind: "Fixed", limit: limit && limit > 0 ? limit : 4096 };
-  }
-  return { kind };
-}
-
-export function canonicalBudgetSplitPolicyKind(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const lower = raw.toLowerCase();
-  if (lower === "fixed") return "Fixed";
-  if (lower === "proportional") return "Proportional";
-  if (lower === "remaining") return "Remaining";
-  if (lower === "equal") return "Equal";
-  return raw;
-}
-
-export function budgetSplitPolicyAllowed(contract, kind) {
-  const canonicalKind = canonicalBudgetSplitPolicyKind(kind);
-  if (!canonicalKind) return false;
-  const policies = Array.isArray(contract?.mob_definition?.budget_split_policies)
-    ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
-    : [];
-  return policies.includes(canonicalKind);
-}
-
-export function budgetSplitPolicyOptions(contract, currentKind, launchView = null) {
-  const view = launchViewForState(launchView);
-  const contractPolicies = Array.isArray(contract?.mob_definition?.budget_split_policies) && contract.mob_definition.budget_split_policies.length
-    ? contract.mob_definition.budget_split_policies.map(canonicalBudgetSplitPolicyKind)
-    : [];
-  const policies = [...contractPolicies];
-  const currentSource = currentKind || contractDefaultValue(contract, "budget_split_policy");
-  const current = currentSource ? canonicalBudgetSplitPolicyKind(currentSource) : "";
-  if (current && !policies.includes(current)) policies.push(current);
-  return policies.map((policy) => {
-    const supported = contractPolicies.includes(policy);
-    return {
-      value: policy,
-      label: launchOptionLabel(view.budgetSplitPolicyLabels, policy, view, view.budgetSplitPoliciesContractLabel),
-      disabled: !supported,
-      reason: supported ? "" : launchUnsupportedReason(view, view.budgetSplitPoliciesContractLabel),
-    };
-  });
-}
-
-export function mobKitBudgetSplitPolicy(policy) {
-  const normalized = normalizeBudgetSplitPolicy(policy);
-  if (!normalized) return null;
-  if (normalized.kind === "Fixed") return { type: "fixed", value: normalized.limit || 4096 };
-  return { type: normalized.kind.replace(/[A-Z]/g, (ch, index) => `${index ? "_" : ""}${ch.toLowerCase()}`) };
-}
-
 export function launchModesFromFlow(flow, members) {
   const out = [];
   collectVisualSteps(flow?.steps || [], (step) => {
@@ -451,10 +341,6 @@ export function launchModesFromFlow(flow, members) {
       profile: profileName(member || { id: step.role }),
       launch_mode: launchMode,
     };
-    if (launchMode?.budgetSplitPolicy) {
-      const budgetSplitPolicy = mobKitBudgetSplitPolicy(launchMode.budgetSplitPolicy);
-      if (budgetSplitPolicy) row.budget_split_policy = budgetSplitPolicy;
-    }
     out.push(row);
   });
   return out;

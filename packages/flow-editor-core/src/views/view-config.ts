@@ -343,12 +343,6 @@ export function agentDetailViewFromSchema(schema) {
     applySkeletonLabel: String(view.apply_skeleton_label || "").trim(),
     applySkeletonTitle: String(view.apply_skeleton_title || "").trim(),
     systemPromptPlaceholder: String(view.system_prompt_placeholder || "").trim(),
-    budgetTitle: String(view.budget_title || "").trim(),
-    budgetDisabledReason: String(view.budget_disabled_reason || "").trim(),
-    budgetWeightLabel: String(view.budget_weight_label || "").trim(),
-    budgetTokenCapLabel: String(view.budget_token_cap_label || "").trim(),
-    budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
-    budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
     outputSchemaTitle: String(view.output_schema_title || "").trim(),
     schemaNoneLabel: String(view.schema_none_label || "").trim(),
     schemaRequiredLabel: String(view.schema_required_label || "").trim(),
@@ -376,8 +370,6 @@ export function agentDetailViewFromSchema(schema) {
     && out.providerParamsLabel && out.providerParamsPlaceholder && Number.isFinite(out.providerParamsRows) && out.providerParamsRows > 0
     && out.providerParamsInvalidJsonLabel && out.providerParamsObjectRequiredError
     && out.systemPromptTitle && out.applySkeletonLabel && out.applySkeletonTitle && out.systemPromptPlaceholder
-    && out.budgetTitle && out.budgetDisabledReason && out.budgetWeightLabel && out.budgetTokenCapLabel
-    && out.budgetSplitPoliciesContractLabel && Object.keys(out.budgetSplitPolicyLabels).length
     && out.outputSchemaTitle && out.schemaNoneLabel && out.schemaRequiredLabel && out.editSchemaLabel && out.emptySchemaHint
     && out.sourceTitle && out.sourceEmptyHint && out.sourceDefinitionLabel && out.sourceMobpackLabel
     && out.sourceOriginLabel && out.sourceDocumentPathLabel && out.sourceSchemaPathLabel
@@ -428,12 +420,6 @@ export function agentDetailViewForState(agentDetailView) {
     applySkeletonLabel: String(view?.applySkeletonLabel || ""),
     applySkeletonTitle: String(view?.applySkeletonTitle || ""),
     systemPromptPlaceholder: String(view?.systemPromptPlaceholder || ""),
-    budgetTitle: String(view?.budgetTitle || ""),
-    budgetDisabledReason: String(view?.budgetDisabledReason || ""),
-    budgetWeightLabel: String(view?.budgetWeightLabel || ""),
-    budgetTokenCapLabel: String(view?.budgetTokenCapLabel || ""),
-    budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
-    budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
     outputSchemaTitle: String(view?.outputSchemaTitle || ""),
     schemaNoneLabel: String(view?.schemaNoneLabel || ""),
     schemaRequiredLabel: String(view?.schemaRequiredLabel || ""),
@@ -1098,18 +1084,13 @@ export function launchViewFromSchema(schema) {
     forkSourceLabel: String(view.fork_source_label || "").trim(),
     forkContextLabel: String(view.fork_context_label || "").trim(),
     graphForkContextLabel: String(view.graph_fork_context_label || "").trim(),
-    budgetPolicyLabel: String(view.budget_policy_label || "").trim(),
-    fixedBudgetLabel: String(view.fixed_budget_label || "").trim(),
-    fixedBudgetDefaultValue: Number(view.fixed_budget_default_value),
     unsupportedLabelSeparator: String(view.unsupported_label_separator || ""),
     unsupportedReasonPrefix: String(view.unsupported_reason_prefix || ""),
     unsupportedReasonSuffix: String(view.unsupported_reason_suffix || ""),
     launchModesContractLabel: String(view.launch_modes_contract_label || "").trim(),
     forkContextsContractLabel: String(view.fork_contexts_contract_label || "").trim(),
-    budgetSplitPoliciesContractLabel: String(view.budget_split_policies_contract_label || "").trim(),
     launchModeLabels: viewStringMapFromSchema(view.launch_mode_labels),
     forkContextLabels: viewStringMapFromSchema(view.fork_context_labels),
-    budgetSplitPolicyLabels: viewStringMapFromSchema(view.budget_split_policy_labels),
   };
   const stringsOk = Object.entries(out).every(([key, value]) => {
     if (typeof value === "number") return Number.isFinite(value) && value > 0;
@@ -1129,18 +1110,13 @@ export function launchViewForState(launchView) {
     forkSourceLabel: String(view?.forkSourceLabel || ""),
     forkContextLabel: String(view?.forkContextLabel || ""),
     graphForkContextLabel: String(view?.graphForkContextLabel || ""),
-    budgetPolicyLabel: String(view?.budgetPolicyLabel || ""),
-    fixedBudgetLabel: String(view?.fixedBudgetLabel || ""),
-    fixedBudgetDefaultValue: Number(view?.fixedBudgetDefaultValue || 0),
     unsupportedLabelSeparator: String(view?.unsupportedLabelSeparator || ""),
     unsupportedReasonPrefix: String(view?.unsupportedReasonPrefix || ""),
     unsupportedReasonSuffix: String(view?.unsupportedReasonSuffix || ""),
     launchModesContractLabel: String(view?.launchModesContractLabel || ""),
     forkContextsContractLabel: String(view?.forkContextsContractLabel || ""),
-    budgetSplitPoliciesContractLabel: String(view?.budgetSplitPoliciesContractLabel || ""),
     launchModeLabels: view?.launchModeLabels && typeof view.launchModeLabels === "object" ? view.launchModeLabels : {},
     forkContextLabels: view?.forkContextLabels && typeof view.forkContextLabels === "object" ? view.forkContextLabels : {},
-    budgetSplitPolicyLabels: view?.budgetSplitPolicyLabels && typeof view.budgetSplitPolicyLabels === "object" ? view.budgetSplitPolicyLabels : {},
   };
 }
 

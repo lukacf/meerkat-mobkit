@@ -6,6 +6,7 @@ import type {
   TopologyEndpoint,
   TopologyManagementState,
 } from "@console-core";
+import { topologyEdgeKey } from "@console-core";
 
 import { ConnectionPicker } from "./connection-picker";
 
@@ -192,6 +193,130 @@ describe("ConnectionPicker", () => {
     }));
     expect(onRequestPairInspection).toHaveBeenCalledWith({ from: "commander", to: "triage" });
     expect(onRequestMutation).not.toHaveBeenCalled();
+  });
+
+  test("shows honest automatic resolution state without exposing Check", () => {
+    const pairKey = topologyEdgeKey({ from: "commander", to: "triage" });
+    const { rerender } = render(
+      <ConnectionPicker
+        endpoints={endpoints.slice(0, 2)}
+        edges={[]}
+        management={{ ...editable, affordances: [] }}
+        sourceId="commander"
+        interactionMode="direct"
+        resolvingPairKeys={new Set([pairKey])}
+        onRequestPairInspection={vi.fn()}
+        onRequestMutation={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.getByText("Loading current connection status from MobKit.")).toBeInTheDocument();
+    expect(screen.queryByText("Not inspected")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check .* connection availability/u })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Connect Triage to Commander/u })).toBeNull();
+
+    rerender(
+      <ConnectionPicker
+        endpoints={endpoints.slice(0, 2)}
+        edges={[]}
+        management={{ ...editable, affordances: [] }}
+        sourceId="commander"
+        interactionMode="direct"
+        resolvingPairKeys={new Set()}
+        onRequestMutation={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Current connection status is unavailable.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Connect Triage to Commander/u })).toBeNull();
+  });
+
+  test("uses connection language before a direct-mode source is selected", () => {
+    render(
+      <ConnectionPicker
+        endpoints={endpoints.slice(0, 2)}
+        edges={[]}
+        management={{ ...editable, affordances: [] }}
+        interactionMode="direct"
+      />,
+    );
+
+    expect(screen.getByText("Pick an endpoint below to see its connections.")).toBeInTheDocument();
+    expect(screen.queryByText(/inspect/iu)).toBeNull();
+  });
+
+  test("keeps reconnect semantics behind direct Connect and Disconnect controls", () => {
+    const onRequestMutation = vi.fn();
+    render(
+      <ConnectionPicker
+        endpoints={endpoints}
+        edges={[{ from: "commander", to: "triage" }, { from: "commander", to: "comms" }]}
+        management={{
+          ...editable,
+          affordances: editable.affordances.map((affordance) => (
+            affordance.edge.to === "comms"
+              ? {
+                  ...affordance,
+                  message: "Disconnected by operator. Reconnection restores the declared relationship after inspection.",
+                }
+              : affordance
+          )),
+        }}
+        sourceId="commander"
+        interactionMode="direct"
+        onRequestMutation={onRequestMutation}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Triage from Commander" }));
+    expect(onRequestMutation).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: "disconnect",
+      edge: { from: "commander", to: "triage" },
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect Communications to Commander" }));
+    expect(onRequestMutation).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: "reconnect",
+      edge: { from: "commander", to: "comms" },
+    }));
+    expect(screen.queryByRole("button", { name: /Reconnect/u })).toBeNull();
+    expect(screen.queryByText(/reconnect/iu)).toBeNull();
+    expect(screen.queryByText(/inspection/iu)).toBeNull();
+    expect(screen.getByText("This connection needs repair.")).toBeInTheDocument();
+  });
+
+  test("does not expose raw inspection or reconnection failures in direct mode", () => {
+    render(
+      <ConnectionPicker
+        endpoints={endpoints.slice(0, 2)}
+        edges={[]}
+        management={{
+          ...editable,
+          affordances: [{
+            edge: { from: "commander", to: "triage" },
+            state: "disconnected",
+            actions: {
+              connect: {
+                state: "denied",
+                reason: "Pair inspection denied; reconnection requires MobKit policy approval.",
+              },
+            },
+            message: "Inspection denied during reconnection preparation.",
+          }],
+        }}
+        sourceId="commander"
+        interactionMode="direct"
+        onRequestMutation={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Not connected")).toBeInTheDocument();
+    expect(screen.getByText("This connection cannot be changed right now.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Triage to Commander" })).toBeDisabled();
+    expect(screen.queryByText(/inspect|reconnect/iu)).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect Triage to Commander" }))
+      .toHaveAttribute("title", "This connection cannot be changed right now.");
   });
 
   test("shows pending approval and blocks duplicate requests", () => {

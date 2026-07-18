@@ -62,6 +62,13 @@ import os
 import random
 import re
 import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import tomllib as _tomllib
+except ModuleNotFoundError:  # Python 3.9/3.10 (tomllib was added in 3.11).
+    _tomllib = None
 
 
 def _eval_env():
@@ -73,9 +80,129 @@ def _eval_env():
     env = dict(os.environ)
     env["CARGO_INCREMENTAL"] = "0"
     return env
-import sys
-import tomllib
-from pathlib import Path
+
+
+class ProfileTomlDecodeError(ValueError):
+    """A calibration profile could not be decoded as supported TOML."""
+
+
+def _profile_toml_error(line_number, message):
+    raise ProfileTomlDecodeError(f"line {line_number}: {message}")
+
+
+def _strip_toml_comment(line):
+    """Strip a TOML comment without treating `#` inside a string as syntax."""
+    quote = None
+    escaped = False
+    for index, char in enumerate(line):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif quote == "'":
+            if char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
+_TOML_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+_TOML_DECIMAL_INTEGER = re.compile(r"^[+-]?(?:0|[1-9](?:_?[0-9])*)$")
+_TOML_FLOAT = re.compile(
+    r"^[+-]?(?:0|[1-9](?:_?[0-9])*)"
+    r"(?:\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?"
+    r"|[eE][+-]?[0-9](?:_?[0-9])*)$"
+)
+
+
+def _decode_profile_toml_scalar(raw, line_number):
+    if not raw:
+        _profile_toml_error(line_number, "missing value")
+    if raw.startswith('"'):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            _profile_toml_error(line_number, f"invalid string: {exc.msg}")
+        if not isinstance(value, str):
+            _profile_toml_error(line_number, "invalid string")
+        return value
+    if raw.startswith("'"):
+        if len(raw) < 2 or not raw.endswith("'"):
+            _profile_toml_error(line_number, "unterminated literal string")
+        if "'" in raw[1:-1]:
+            _profile_toml_error(line_number, "invalid literal string")
+        return raw[1:-1]
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    if _TOML_DECIMAL_INTEGER.fullmatch(raw):
+        return int(raw.replace("_", ""))
+    if _TOML_FLOAT.fullmatch(raw):
+        return float(raw.replace("_", ""))
+    _profile_toml_error(
+        line_number,
+        "unsupported value; profile values must be strings, booleans, or numbers",
+    )
+
+
+def _parse_profile_toml_fallback(text):
+    """Parse the deliberately small calibration-profile TOML contract.
+
+    The checked-in contract is top-level scalar metadata plus a scalar
+    `[params]` table. Keeping the fallback that narrow makes Python 3.9/3.10
+    support dependency-free without pretending to implement general TOML.
+    """
+    document = {}
+    current_table = document
+    params_declared = False
+
+    for line_number, source_line in enumerate(text.splitlines(), 1):
+        line = _strip_toml_comment(source_line).strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if line != "[params]":
+                _profile_toml_error(line_number, "only the `[params]` table is supported")
+            if params_declared or "params" in document:
+                _profile_toml_error(line_number, "duplicate table `params`")
+            current_table = {}
+            document["params"] = current_table
+            params_declared = True
+            continue
+
+        key, separator, raw_value = line.partition("=")
+        if not separator:
+            _profile_toml_error(line_number, "expected a key/value assignment")
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if not _TOML_BARE_KEY.fullmatch(key):
+            _profile_toml_error(line_number, "keys must be bare keys")
+        if key in current_table:
+            _profile_toml_error(line_number, f"duplicate key `{key}`")
+        current_table[key] = _decode_profile_toml_scalar(raw_value, line_number)
+
+    return document
+
+
+def parse_profile_toml(text, force_fallback=False):
+    """Decode a calibration profile with stdlib tomllib or the 3.9 fallback."""
+    if _tomllib is not None and not force_fallback:
+        try:
+            return _tomllib.loads(text)
+        except _tomllib.TOMLDecodeError as exc:
+            raise ProfileTomlDecodeError(str(exc)) from exc
+    return _parse_profile_toml_fallback(text)
+
+
+def load_profile(path):
+    return parse_profile_toml(path.read_text())
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = REPO_ROOT / "memory-evals"
@@ -229,8 +356,8 @@ def check_string(data, key, where, violations, required=True):
 def validate_profile(path, violations):
     where = str(rel(path))
     try:
-        profile = tomllib.loads(path.read_text())
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        profile = load_profile(path)
+    except (OSError, ProfileTomlDecodeError) as exc:
         violations.append(f"{where}: not valid TOML: {exc}")
         return
 
@@ -1136,8 +1263,8 @@ def selector_profile_path():
     """The selector-stage calibration profile the live run scores against."""
     for path in sorted(PROFILES_DIR.glob("*.toml")):
         try:
-            profile = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError:
+            profile = load_profile(path)
+        except (OSError, ProfileTomlDecodeError):
             continue
         if profile.get("stage") == "selector":
             return path
@@ -1283,8 +1410,8 @@ def distiller_eval_cmd():
 def distiller_profile_path():
     for path in sorted(PROFILES_DIR.glob("*.toml")):
         try:
-            profile = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError:
+            profile = load_profile(path)
+        except (OSError, ProfileTomlDecodeError):
             continue
         if profile.get("stage") == "distiller":
             return path
@@ -1453,8 +1580,8 @@ def steward_eval_cmd():
 def steward_profile_path():
     for path in sorted(PROFILES_DIR.glob("*.toml")):
         try:
-            profile = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError:
+            profile = load_profile(path)
+        except (OSError, ProfileTomlDecodeError):
             continue
         if profile.get("stage") == "steward":
             return path
@@ -1657,8 +1784,8 @@ def hygienist_eval_cmd():
 def hygienist_profile_path():
     for path in sorted(PROFILES_DIR.glob("*.toml")):
         try:
-            profile = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError:
+            profile = load_profile(path)
+        except (OSError, ProfileTomlDecodeError):
             continue
         if profile.get("stage") == "hygienist":
             return path

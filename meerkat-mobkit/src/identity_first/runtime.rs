@@ -3447,94 +3447,26 @@ impl IdentityRuntime {
         .await
     }
 
-    /// Run the identity refresh, lower-level member respawn, and continuity
-    /// rebind as one per-identity lifecycle transaction.
+    /// Cancellation-safe identity-first respawn for RPC and console boundaries.
     ///
-    /// The lower member plane historically ran after `respawn_tracked`
-    /// released this lock, allowing a concurrent reset to publish generation
-    /// N+1 before the member fallback recreated generation N. Keeping the
-    /// caller-supplied lower-plane operation inside the same authority window
-    /// makes stale-generation resurrection impossible. If the lower-plane
-    /// operation or continuity rebind fails, its exact member alias is retired
-    /// before the transaction releases ownership.
-    pub(crate) async fn respawn_and_rebind_live_member_tracked<T, F, Fut, R, RollbackFut>(
+    /// A durable identity already owns an authoritative Meerkat session. Its
+    /// respawn operation therefore fences the old owner, refreshes the persisted
+    /// runtime state, and reactivates that exact continuity record in place. It
+    /// must not call the raw member-plane respawn convenience: that operation
+    /// creates a new session and would silently turn a non-destructive identity
+    /// recovery into a destructive reset.
+    pub(crate) async fn respawn_identity_in_place_tracked(
         self: &Arc<Self>,
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
-        live_respawn: F,
-        rollback_live_member: R,
-    ) -> Result<(ContinuityRecord, T), IdentityRuntimeError>
-    where
-        T: Send + 'static,
-        F: FnOnce(AgentRuntimeId) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(SessionId, T), String>> + Send + 'static,
-        R: FnOnce(AgentRuntimeId) -> RollbackFut + Send + 'static,
-        RollbackFut: Future<Output = Result<(), String>> + Send + 'static,
-    {
-        let runtime = Arc::clone(self);
-        let identity = identity.clone();
-        let expected_alias = expected_alias.map(str::to_owned);
-        self.run_tracked_foreground(async move {
-            let lifecycle_lock = runtime.lifecycle_lock_for(&identity).await;
-            let _lifecycle_guard = lifecycle_lock.lock().await;
-            if let Some(expected_alias) = expected_alias.as_deref() {
-                runtime
-                    .ensure_expected_member_alias_current(&identity, expected_alias)
-                    .await?;
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        match expected_alias {
+            Some(expected_alias) => {
+                self.respawn_member_alias_tracked(identity, expected_alias)
+                    .await
             }
-
-            let refreshed_record = runtime.respawn_locked(&identity).await?;
-            let respawned_alias = refreshed_record.agent_runtime_id.clone();
-            let (live_session_id, metadata) = match live_respawn(respawned_alias.clone()).await {
-                Ok(result) => result,
-                Err(error) => {
-                    let rollback_error = rollback_live_member(respawned_alias.clone()).await.err();
-                    let state_cleanup_error = runtime
-                        .mark_live_member_respawn_failure_broken(&identity, &respawned_alias)
-                        .await;
-                    let mut message = format!("live member respawn for {respawned_alias}: {error}");
-                    if let Some(rollback_error) = rollback_error {
-                        message.push_str(&format!("; rollback retire failed: {rollback_error}"));
-                    }
-                    if let Some(state_cleanup_error) = state_cleanup_error {
-                        message.push_str(&format!(
-                            "; identity failure fencing failed: {state_cleanup_error}"
-                        ));
-                    }
-                    return Err(IdentityRuntimeError::Internal(message));
-                }
-            };
-
-            match runtime
-                .rebind_session_after_live_respawn_locked(&identity, live_session_id)
-                .await
-            {
-                Ok(record) => Ok((record, metadata)),
-                Err(error) => {
-                    let rollback_error = rollback_live_member(respawned_alias.clone()).await.err();
-                    let state_cleanup_error = runtime
-                        .mark_live_member_respawn_failure_broken(&identity, &respawned_alias)
-                        .await;
-                    if rollback_error.is_none() && state_cleanup_error.is_none() {
-                        return Err(error);
-                    }
-                    let mut message = error.to_string();
-                    if let Some(rollback_error) = rollback_error {
-                        message.push_str(&format!(
-                            "; live member rollback retire for {respawned_alias} failed: \
-                             {rollback_error}"
-                        ));
-                    }
-                    if let Some(state_cleanup_error) = state_cleanup_error {
-                        message.push_str(&format!(
-                            "; identity failure fencing failed: {state_cleanup_error}"
-                        ));
-                    }
-                    Err(IdentityRuntimeError::Internal(message))
-                }
-            }
-        })
-        .await
+            None => self.respawn_tracked(identity).await,
+        }
     }
 
     /// Cancellation-safe live-session rebind for RPC/host boundaries.
@@ -5492,76 +5424,6 @@ impl IdentityRuntime {
         self.mark_bootstrap_from_lifecycle(identity, state, None);
     }
 
-    /// Fail closed after the lower member plane could not complete a compound
-    /// respawn. The exact alias has already been (or is being) retired, so an
-    /// Active projection would advertise a member that cannot receive work.
-    /// Broken + no lease makes the existing continuity repair loop the sole
-    /// authority that can restore it.
-    async fn mark_live_member_respawn_failure_broken(
-        &self,
-        identity: &AgentIdentity,
-        respawned_alias: &AgentRuntimeId,
-    ) -> Option<String> {
-        let grant = {
-            let mut entries = self.entries.write().await;
-            let Some(entry) = entries.get_mut(identity) else {
-                return Some(format!(
-                    "identity {identity} disappeared during respawn rollback"
-                ));
-            };
-            let current_alias = entry
-                .continuity
-                .as_ref()
-                .map(|record| &record.agent_runtime_id);
-            if current_alias != Some(respawned_alias) {
-                return Some(format!(
-                    "identity {identity} advanced from failed alias {respawned_alias}"
-                ));
-            }
-            entry.state = IdentityLifecycleState::Broken;
-            let grant = entry.lease.take().map(|lease| LeaseGrant {
-                identity: identity.clone(),
-                fencing_token: lease.fencing_token,
-                ttl: lease.ttl,
-            });
-            entry.pending_lease_release = grant.clone();
-            grant
-        };
-        self.mark_bootstrap_from_lifecycle(
-            identity,
-            IdentityLifecycleState::Broken,
-            Some(format!("live member respawn failed for {respawned_alias}")),
-        );
-        self.emit_event(
-            identity,
-            IdentityEvent::StateChanged {
-                identity: identity.clone(),
-                new_state: IdentityLifecycleState::Broken,
-            },
-        )
-        .await;
-        let grant = grant?;
-        match self
-            .lease_provider
-            .release_leases(std::slice::from_ref(&grant))
-            .await
-        {
-            Ok(()) => {
-                let mut entries = self.entries.write().await;
-                if let Some(entry) = entries.get_mut(identity)
-                    && entry
-                        .pending_lease_release
-                        .as_ref()
-                        .is_some_and(|pending| pending.fencing_token == grant.fencing_token)
-                {
-                    entry.pending_lease_release = None;
-                }
-                None
-            }
-            Err(error) => Some(error.to_string()),
-        }
-    }
-
     async fn restore_entry_with_grant(
         &self,
         identity: &AgentIdentity,
@@ -6508,6 +6370,22 @@ impl IdentityRuntime {
             self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
                 .await;
             return Err(err);
+        }
+        // The durable fence now belongs to the retire transaction. Refresh
+        // the bridge adapter before retirement so Meerkat's terminal archive
+        // projection carries that same token. Leaving the live session on the
+        // prior token makes ArchiveSession fail closed with a stale fence and
+        // strands the member in Retiring.
+        if let Some(record) = registered_entry.continuity.as_ref()
+            && let Err(error) = self
+                .refresh_existing_session_runtime_state(identity, record, &grant)
+                .await
+        {
+            self.restore_broken_entry_with_fenced_store(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge refresh session authority before retire: {error}"
+            )));
         }
 
         // §8.4 trigger (b): distill the outgoing session's tail BEFORE the
@@ -9892,145 +9770,15 @@ mod reset_reprofile_tests {
     }
 
     #[tokio::test]
-    async fn compound_live_respawn_serializes_concurrent_reset()
+    async fn tracked_identity_respawn_preserves_authoritative_continuity()
     -> Result<(), Box<dyn std::error::Error>> {
-        let identity = AgentIdentity::parse("domain:compound-respawn")?;
+        let identity = AgentIdentity::parse("domain:durable-respawn")?;
         let spec = durable_spec(identity.clone(), "domain");
         let bridge = Arc::new(RecordingBridge::default());
         let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
             lease_provider: Arc::new(LocalLeaseProvider::new()),
-            runtime_instance_id: "compound-respawn-reset-race".to_string(),
-            has_runtime_store: true,
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(bridge),
-            default_timeout: None,
-        }));
-        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
-            .await?;
-
-        let lower_plane_entered = Arc::new(tokio::sync::Semaphore::new(0));
-        let release_lower_plane = Arc::new(tokio::sync::Semaphore::new(0));
-        let live_session_id = SessionId::new();
-        let respawn = tokio::spawn({
-            let runtime = Arc::clone(&runtime);
-            let identity = identity.clone();
-            let lower_plane_entered = Arc::clone(&lower_plane_entered);
-            let release_lower_plane = Arc::clone(&release_lower_plane);
-            let live_session_id = live_session_id.clone();
-            async move {
-                runtime
-                    .respawn_and_rebind_live_member_tracked(
-                        &identity,
-                        None,
-                        move |_runtime_alias| async move {
-                            lower_plane_entered.add_permits(1);
-                            release_lower_plane
-                                .acquire()
-                                .await
-                                .map_err(|error| error.to_string())?
-                                .forget();
-                            Ok((live_session_id, ()))
-                        },
-                        |_runtime_alias| async { Ok(()) },
-                    )
-                    .await
-            }
-        });
-        lower_plane_entered.acquire().await?.forget();
-
-        let mut reset = tokio::spawn({
-            let runtime = Arc::clone(&runtime);
-            let identity = identity.clone();
-            async move { runtime.reset_tracked(&identity).await }
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut reset)
-                .await
-                .is_err(),
-            "reset must wait while the compound lower-plane respawn holds lifecycle authority"
-        );
-
-        release_lower_plane.add_permits(1);
-        let (respawned, ()) = tokio::time::timeout(Duration::from_secs(2), respawn).await???;
-        assert_eq!(respawned.generation, ContinuityGeneration::new(0));
-        assert_eq!(respawned.session_id, live_session_id);
-        let reset_record = tokio::time::timeout(Duration::from_secs(2), &mut reset).await???;
-        assert_eq!(reset_record.generation, ContinuityGeneration::new(1));
-        let status = runtime.status(&identity).await?;
-        assert_eq!(status.state, IdentityLifecycleState::Active);
-        assert_eq!(status.generation, Some(ContinuityGeneration::new(1)));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn failed_lower_plane_respawn_is_broken_and_releases_lease()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let identity = AgentIdentity::parse("domain:failed-live-respawn")?;
-        let spec = durable_spec(identity.clone(), "domain");
-        let lease_provider = Arc::new(LocalLeaseProvider::new());
-        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
-            lease_provider: lease_provider.clone(),
-            runtime_instance_id: "failed-live-respawn".to_string(),
-            has_runtime_store: true,
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(Arc::new(RecordingBridge::default())),
-            default_timeout: None,
-        }));
-        super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
-            .await?;
-
-        let rolled_back_alias = Arc::new(AsyncMutex::new(None));
-        let error = match runtime
-            .respawn_and_rebind_live_member_tracked(
-                &identity,
-                None,
-                |_runtime_alias| async {
-                    Err::<(SessionId, ()), String>("synthetic lower-plane failure".to_string())
-                },
-                {
-                    let rolled_back_alias = Arc::clone(&rolled_back_alias);
-                    move |runtime_alias| async move {
-                        *rolled_back_alias.lock().await = Some(runtime_alias);
-                        Ok(())
-                    }
-                },
-            )
-            .await
-        {
-            Err(error) => error,
-            Ok(_) => return Err("lower-plane failure must fail the compound respawn".into()),
-        };
-        assert!(error.to_string().contains("synthetic lower-plane failure"));
-        assert!(rolled_back_alias.lock().await.is_some());
-        let status = runtime.status(&identity).await?;
-        assert_eq!(status.state, IdentityLifecycleState::Broken);
-        assert!(status.lease.is_none());
-        let failover = lease_provider
-            .acquire_leases(
-                std::slice::from_ref(&identity),
-                "failed-live-respawn-failover",
-            )
-            .await?;
-        assert!(matches!(
-            failover.get(&identity),
-            Some(super::super::types::LeaseAcquireResult::Acquired(_))
-        ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn failed_live_session_rebind_is_broken_and_releases_lease()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let identity = AgentIdentity::parse("domain:failed-live-rebind")?;
-        let spec = durable_spec(identity.clone(), "domain");
-        let lease_provider = Arc::new(LocalLeaseProvider::new());
-        let bridge = Arc::new(RecordingBridge::default());
-        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
-            lease_provider: lease_provider.clone(),
-            runtime_instance_id: "failed-live-rebind".to_string(),
+            runtime_instance_id: "durable-respawn".to_string(),
             has_runtime_store: true,
             durability_policy: DurabilityPolicy::SyncWriteThrough,
             bridge: Some(bridge.clone()),
@@ -10039,55 +9787,25 @@ mod reset_reprofile_tests {
         super::super::orchestrator::restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
             .await?;
 
-        let rebound_session_id = SessionId::new();
-        bridge.fail_register_for(&rebound_session_id).await;
-        let rolled_back_alias = Arc::new(AsyncMutex::new(None));
-        let error = match runtime
-            .respawn_and_rebind_live_member_tracked(
-                &identity,
-                None,
-                {
-                    let rebound_session_id = rebound_session_id.clone();
-                    move |_runtime_alias| async move { Ok((rebound_session_id, ())) }
-                },
-                {
-                    let rolled_back_alias = Arc::clone(&rolled_back_alias);
-                    move |runtime_alias| async move {
-                        *rolled_back_alias.lock().await = Some(runtime_alias);
-                        Ok(())
-                    }
-                },
-            )
-            .await
-        {
-            Err(error) => error,
-            Ok(_) => return Err("bridge rebind failure must fail the compound respawn".into()),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("synthetic live-session rebind failure")
-        );
-        assert!(
-            rolled_back_alias.lock().await.is_some(),
-            "the lower-plane member must be retired after rebind failure"
-        );
-
-        let status = runtime.status(&identity).await?;
-        assert_eq!(status.state, IdentityLifecycleState::Broken);
-        assert!(status.lease.is_none());
-        let failover = lease_provider
-            .acquire_leases(
-                std::slice::from_ref(&identity),
-                "failed-live-rebind-failover",
-            )
+        let before = runtime.status(&identity).await?;
+        let runtime_alias = before
+            .agent_runtime_id
+            .clone()
+            .ok_or("missing durable runtime id")?;
+        let respawned = runtime
+            .respawn_identity_in_place_tracked(&identity, Some(runtime_alias.as_str()))
             .await?;
+
+        assert_eq!(Some(respawned.session_id), before.session_id);
+        assert_eq!(Some(respawned.agent_runtime_id), before.agent_runtime_id);
+        assert_eq!(Some(respawned.generation), before.generation);
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Active
+        );
         assert!(
-            matches!(
-                failover.get(&identity),
-                Some(super::super::types::LeaseAcquireResult::Acquired(_))
-            ),
-            "rebind rollback must release the external lease: {failover:?}"
+            bridge.retired_runtime_ids().await.is_empty(),
+            "identity respawn must not retire and recreate the authoritative session"
         );
         Ok(())
     }

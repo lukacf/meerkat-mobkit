@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify version parity across Rust workspace, Python SDK, and TypeScript SDK.
+# Verify version parity across Rust, Bazel, Python, and TypeScript packages.
 # Exit 0 if everything is in sync, exit 1 with diagnostics on any mismatch.
 
 set -euo pipefail
@@ -19,12 +19,13 @@ CARGO_VER=$("$CARGO" metadata --manifest-path "$ROOT/Cargo.toml" \
 
 PY_VER=$(python3 -c "
 import pathlib
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
-d = tomllib.loads(pathlib.Path('$ROOT/sdk/python/pyproject.toml').read_text())
-print(d['project']['version'])
+import re
+text = pathlib.Path('$ROOT/sdk/python/pyproject.toml').read_text()
+project = re.search(r'(?ms)^\[project\][ \t]*$\n(.*?)(?=^\[|\Z)', text)
+version = project and re.search(r'(?m)^[ \t]*version[ \t]*=[ \t]*\"([^\"]+)\"', project.group(1))
+if not version:
+    raise SystemExit('pyproject.toml [project].version is missing or unparsable')
+print(version.group(1))
 ")
 
 TS_VER=""
@@ -32,11 +33,24 @@ if [ -f "$ROOT/sdk/typescript/package.json" ]; then
     TS_VER=$(node -p "require('$ROOT/sdk/typescript/package.json').version")
 fi
 
+MODULE_VER=""
+MODULE_FILE="$ROOT/MODULE.bazel"
+if [ -f "$MODULE_FILE" ]; then
+    MODULE_VER=$(sed -n '/^module(/,/^)/s/.*version = "\([^"]*\)".*/\1/p' "$MODULE_FILE")
+fi
+
 echo "Package versions:"
 echo "  Cargo (meerkat-mobkit):  $CARGO_VER"
 echo "  Python SDK:                   $PY_VER"
 if [ -n "$TS_VER" ]; then
     echo "  TypeScript SDK:               $TS_VER"
+fi
+if [ -f "$MODULE_FILE" ]; then
+    if [ -n "$MODULE_VER" ]; then
+        echo "  Bazel module:                 $MODULE_VER"
+    else
+        echo "  Bazel module:                 <missing or unparsable>"
+    fi
 fi
 
 PKG_OK=true
@@ -49,6 +63,17 @@ if [ -n "$TS_VER" ] && [ "$CARGO_VER" != "$TS_VER" ]; then
     red "FAIL: TypeScript SDK version mismatch ($TS_VER != $CARGO_VER)"
     PKG_OK=false
     FAIL=1
+fi
+if [ -f "$MODULE_FILE" ]; then
+    if [ -z "$MODULE_VER" ]; then
+        red "FAIL: MODULE.bazel module version is missing or unparsable"
+        PKG_OK=false
+        FAIL=1
+    elif [ "$CARGO_VER" != "$MODULE_VER" ]; then
+        red "FAIL: Bazel module version mismatch ($MODULE_VER != $CARGO_VER)"
+        PKG_OK=false
+        FAIL=1
+    fi
 fi
 if $PKG_OK; then
     green "  Package versions: OK"
@@ -70,17 +95,40 @@ if [ -f "$BAZEL_FILE" ]; then
     fi
 fi
 
-# 3. TypeScript SDK lockfile root version parity.
+# 3. TypeScript SDK lockfile root version parity. npm lockfiles repeat the
+# package version at the document root and at packages[""]. Both fields are
+# release inputs and both are owned by bump-sdk-versions.sh.
 LOCK_FILE="$ROOT/sdk/typescript/package-lock.json"
 if [ -f "$LOCK_FILE" ]; then
     LOCK_VER=$(node -p "require('$LOCK_FILE').version" 2>/dev/null || echo "")
-    if [ -n "$LOCK_VER" ] && [ "$LOCK_VER" != "$CARGO_VER" ]; then
-        red "FAIL: package-lock.json version mismatch ($LOCK_VER != $CARGO_VER)"
+    LOCK_ROOT_PKG_VER=$(node -p "require('$LOCK_FILE').packages?.['']?.version" 2>/dev/null || echo "")
+    if [ -z "$LOCK_VER" ] || [ -z "$LOCK_ROOT_PKG_VER" ]; then
+        red "FAIL: package-lock.json root versions are missing or unparsable"
+        FAIL=1
+    elif [ "$LOCK_VER" != "$CARGO_VER" ] || [ "$LOCK_ROOT_PKG_VER" != "$CARGO_VER" ]; then
+        red "FAIL: package-lock.json version mismatch (top-level=$LOCK_VER, packages[\"\"]=$LOCK_ROOT_PKG_VER, expected=$CARGO_VER)"
         FAIL=1
     else
-        green "  package-lock.json version: OK"
+        green "  package-lock.json root versions: OK"
     fi
 fi
+
+# 4. Canonical Rust installation docs. Cargo's 0.x caret semantics do not
+# cross minor versions, so an old snippet silently keeps users off the release.
+for DOC in "$ROOT/docs/quickstart.mdx" "$ROOT/docs/sdks/rust.mdx"; do
+    if [ -f "$DOC" ]; then
+        DOC_VERSIONS=$(sed -n 's/.*meerkat-mobkit = "\([^"]*\)".*/\1/p' "$DOC" | sort -u)
+        if [ -z "$DOC_VERSIONS" ]; then
+            red "FAIL: $DOC has no meerkat-mobkit installation version"
+            FAIL=1
+        elif [ "$DOC_VERSIONS" != "$CARGO_VER" ]; then
+            red "FAIL: $DOC install version mismatch ($DOC_VERSIONS != $CARGO_VER)"
+            FAIL=1
+        else
+            green "  $(basename "$DOC") Rust install version: OK"
+        fi
+    fi
+done
 
 echo ""
 if [ $FAIL -ne 0 ]; then

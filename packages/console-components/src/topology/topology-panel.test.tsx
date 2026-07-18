@@ -2,7 +2,7 @@ import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { TopologyManagementState } from "@console-core";
+import { topologyEdgeKey, type TopologyManagementState } from "@console-core";
 
 import { TopologyPanel } from "./topology-panel";
 import type { ConsoleTopologyNode } from "./types";
@@ -152,6 +152,25 @@ describe("TopologyPanel", () => {
     expect(screen.getByTestId("connection-picker")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Search endpoints" })).toBeInTheDocument();
     expect(screen.queryByTestId("connection-picker-bulk-actions")).toBeNull();
+  });
+
+  test("forwards direct automatic resolution state to the connection roster", () => {
+    render(
+      <TopologyPanel
+        activity={[]}
+        agents={[]}
+        nodes={NODES}
+        management={{ ...management, affordances: management.affordances.slice(0, 1) }}
+        view="connections"
+        connectionSourceId="commander"
+        interactionMode="direct"
+        resolvingPairKeys={new Set([topologyEdgeKey({ from: "commander", to: "responder" })])}
+      />,
+    );
+
+    expect(screen.queryByText("Not inspected")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check .* connection availability/u })).toBeNull();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
   });
 
   test("renders read-only pair reasons but never emits a mutation", () => {

@@ -9,6 +9,7 @@ export type { FlowRunRestoreHandler } from "./conversation/flow-run-card";
 export { WorkGraphCard, __workGraphCardUiState } from "./conversation/work-graph-card";
 export type { WorkGraphCardActions } from "./conversation/work-graph-card";
 export { ConsoleDock } from "./dock/console-dock";
+export { BrowserDockTargetHost } from "./dock/browser-dock-target-host";
 export { ConsolePendingStack } from "./pending/console-pending-stack";
 export { useConsoleDockController } from "./dock/use-console-dock-controller";
 export { ConsoleSidebar } from "./sidebar/console-sidebar";
@@ -27,6 +28,7 @@ export type {
 export type { ConversationPaneProps } from "./conversation/conversation-pane";
 export type { ConversationTranscriptProps } from "./conversation/conversation-transcript";
 export type { ConsoleDockProps } from "./dock/console-dock";
+export type { BrowserDockTargetHostProps } from "./dock/browser-dock-target-host";
 export type {
   ConsolePendingDropWhere,
   ConsolePendingItem,

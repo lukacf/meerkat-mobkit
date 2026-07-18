@@ -13,6 +13,13 @@ export interface ConsoleDockTarget {
   badgeLabel?: string | null;
 }
 
+export type BrowserDockTarget = ConsoleDockTarget & {
+  id: `browser-panel:${string}`;
+  kind: "browser";
+  title: "Browser";
+  browserPanelId: string;
+};
+
 export interface ConsoleDockPanelState<TTarget extends ConsoleDockTarget = ConsoleDockTarget> {
   id: string;
   target: TTarget | null;
@@ -167,6 +174,8 @@ export interface ConsoleDockAction<TTarget extends ConsoleDockTarget = ConsoleDo
   intent?: ConsoleDockOpenIntent;
   direction?: ConsoleDockPanelSplitDirection;
   presetId?: ConsoleDockPresetId;
+  /** Start a genuinely empty tab instead of cloning the focused panel. */
+  blank?: boolean;
 }
 
 export interface ConsoleDockResolvePanelViewArgs<TTarget extends ConsoleDockTarget = ConsoleDockTarget> {
@@ -529,19 +538,24 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   suggestTargets,
 }: BuildConsoleDockPresetStateOptions<TTarget>): ConsoleDockPresetState<TTarget> {
   const requestedCount = presetId === "grid" ? 4 : presetId === "single" ? 1 : 2;
-  const [firstTarget, ...remainingTargets] = suggestDockTargets({
-    count: requestedCount,
-    preferred: preferredTarget,
-    excludedIds: [],
-    suggestTargets,
-  });
+  const reservedPrimaryTarget = preferredTarget ?? preferredPanel?.target ?? null;
+  const suggestionCount = requestedCount - (reservedPrimaryTarget ? 1 : 0);
+  const suggestedTargets = suggestionCount > 0
+    ? suggestDockTargets({
+      count: suggestionCount,
+      preferred: reservedPrimaryTarget ? null : preferredTarget,
+      excludedIds: reservedPrimaryTarget ? [reservedPrimaryTarget.id] : [],
+      suggestTargets,
+    })
+    : [];
+  const [firstTarget, ...remainingTargets] = reservedPrimaryTarget
+    ? [reservedPrimaryTarget, ...suggestedTargets]
+    : suggestedTargets;
   const [secondTarget, thirdTarget, suggestedFourthTarget] = remainingTargets.filter(
     (target): target is TTarget => Boolean(target),
   );
-  const fourthTarget = suggestedFourthTarget
-    || (presetId === "grid" && thirdTarget && preferredTarget && thirdTarget.id !== preferredTarget.id
-      ? preferredTarget
-      : null);
+  const fourthTarget = suggestedFourthTarget || null;
+  const createEmptyFourthSlot = presetId === "grid" && Boolean(thirdTarget) && !fourthTarget;
 
   const primary = createPanelState({
     target: preferredPanel ? (preferredTarget ?? preferredPanel.target) : (firstTarget || null),
@@ -617,7 +631,7 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   }
 
   const leftBottom = createPanelState({ target: thirdTarget, sourcePanel: preferredPanel || primary });
-  if (!fourthTarget) {
+  if (!fourthTarget && !createEmptyFourthSlot) {
     return {
       presetId,
       layout: {
@@ -640,7 +654,10 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
     };
   }
 
-  const rightBottom = createPanelState({ target: fourthTarget, sourcePanel: preferredPanel || primary });
+  const rightBottom = createPanelState({
+    target: fourthTarget,
+    sourcePanel: preferredPanel || primary,
+  });
 
   return {
     presetId,
@@ -768,9 +785,10 @@ export function setConsoleDockPanelMode<TTarget extends ConsoleDockTarget>(
 export function createConsoleDockTab<TTarget extends ConsoleDockTarget>(
   state: ConsoleDockState<TTarget>,
   options: Omit<CreateConsoleDockStateOptions<TTarget>, "initialPresetId" | "initialTarget">,
+  behavior: { blank?: boolean } = {},
 ): ConsoleDockState<TTarget> {
   const normalized = normalizeConsoleDockState<TTarget>(state);
-  const preferredPanel = normalized.focusedPanelId
+  const preferredPanel = !behavior.blank && normalized.focusedPanelId
     ? normalized.panels.find((panel) => panel.id === normalized.focusedPanelId) || null
     : null;
   const presetState = buildConsoleDockPresetState({
@@ -779,7 +797,10 @@ export function createConsoleDockTab<TTarget extends ConsoleDockTarget>(
     preferredPanel,
     createPanelState: options.createPanelState,
     createSplitId: options.createSplitId,
-    suggestTargets: options.suggestTargets,
+    // An explicitly blank tab is a drafting surface. Target suggestions are
+    // useful for layout presets, but must not silently turn New tab into a
+    // duplicate or arbitrary conversation.
+    suggestTargets: behavior.blank ? undefined : options.suggestTargets,
   });
   const tabId = options.createTabId();
 
@@ -1089,7 +1110,7 @@ export function applyConsoleDockAction<TTarget extends ConsoleDockTarget>(
 ): ConsoleDockState<TTarget> {
   switch (action.type) {
     case "create_tab":
-      return createConsoleDockTab(state, options);
+      return createConsoleDockTab(state, options, { blank: action.blank });
     case "select_tab":
       return action.tabId ? selectConsoleDockTab(state, action.tabId) : state;
     case "close_tab":
