@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-07-17
+## [0.8.0] - 2026-07-18
 
 ### Added
 
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - The full Meerkat dependency family is now pinned exactly to the released
-  `0.8.0` crate set, including memory, live, and scheduling surfaces.
+  `0.8.1` crate set, including memory, live, and scheduling surfaces.
 - Explicit identity bootstrap modes now consistently declare identity-first
   intent and require a roster provider, including explicit eager mode; an
   omitted mode still preserves the classic gateway when no roster is present.
