@@ -1934,6 +1934,26 @@ actions = ["agent.view"]
         assert!(bridge.state.lock().await.pending.is_empty());
     }
 
+    #[tokio::test]
+    async fn callback_builder_delegates_absent_session_compaction_reconciliation() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inner = FactoryAgentBuilder::new(AgentFactory::new(tmp.path()), Config::default());
+        let (stdout_tx, _stdout_rx) = mpsc::channel(1);
+        let builder = StdioCallbackAgentBuilder {
+            inner,
+            bridge: StdioCallbackBridge::new(stdout_tx),
+            has_session_builder: false,
+            session_store: None,
+        };
+        let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f532")
+            .expect("valid session id");
+
+        builder
+            .abort_absent_session_compaction_stages(&session_id)
+            .await
+            .expect("callback wrapper must preserve the inner factory's durable-memory seam");
+    }
+
     #[test]
     fn advertised_shutdown_horizon_covers_every_bounded_gateway_phase() {
         fn completed_report() -> UnifiedRuntimeShutdownReport {
@@ -3765,6 +3785,20 @@ fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> V
 #[async_trait]
 impl SessionAgentBuilder for StdioCallbackAgentBuilder {
     type Agent = FactoryAgent;
+
+    async fn abort_absent_session_compaction_stages(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<(), SessionError> {
+        // This wrapper only adds SDK callbacks around agent construction. The
+        // inner factory still owns the canonical durable-memory backend and
+        // therefore the pre-materialization compaction reconciliation seam.
+        // Falling back to the trait default here fails every retire/respawn of
+        // an already disposed session even though the factory can reconcile it.
+        self.inner
+            .abort_absent_session_compaction_stages(session_id)
+            .await
+    }
 
     async fn build_agent(
         &self,

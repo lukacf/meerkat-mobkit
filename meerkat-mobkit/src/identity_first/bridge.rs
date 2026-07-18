@@ -1079,20 +1079,24 @@ impl MobSessionBridge {
 /// Project meerkat 0.7's tri-state peer connectivity into an inspect-level
 /// reachable count, when the tri-state resolves one.
 ///
-/// Only a resolved probe ([`WirePeerConnectivity::Known`]) contributes a
-/// live count. The not-applicable / probe-timed-out arms (and an uncomputed
-/// projection) return `None` so the caller falls back to the machine-owned
-/// wiring degree (`wired_to.len()`) instead of projecting 0 — a freshly
-/// wired member has peers regardless of whether a live probe resolved, and
-/// the sibling console alias surface computes the same wire field from
-/// `wired_to`; the two surfaces must agree.
+/// Only a fully resolved probe ([`WirePeerConnectivity::Known`] with no
+/// unknown peers) contributes a live count. A partially resolved Known probe,
+/// the not-applicable / probe-timed-out arms, and an uncomputed projection
+/// return `None` so the caller falls back to the machine-owned wiring degree
+/// (`wired_to.len()`) instead of projecting 0 — a freshly wired member has
+/// peers regardless of whether a live probe resolved, and the sibling console
+/// alias surface computes the same wire field from `wired_to`; the two
+/// surfaces must agree.
 fn peer_reachable_count_from_connectivity(
     connectivity: Option<&meerkat_contracts::WirePeerConnectivity>,
 ) -> Option<usize> {
     match connectivity {
-        Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot }) => {
+        Some(meerkat_contracts::WirePeerConnectivity::Known { snapshot })
+            if snapshot.unknown_peer_count == 0 =>
+        {
             Some(snapshot.reachable_peer_count)
         }
+        Some(meerkat_contracts::WirePeerConnectivity::Known { .. }) => None,
         Some(
             meerkat_contracts::WirePeerConnectivity::NotApplicable
             | meerkat_contracts::WirePeerConnectivity::ProbeTimedOut,
@@ -1890,6 +1894,18 @@ mod tests {
             peer_reachable_count_from_connectivity(Some(&known)),
             Some(3),
             "a resolved probe owns the count"
+        );
+        let structurally_wired_but_unresolved = WirePeerConnectivity::Known {
+            snapshot: WirePeerConnectivitySnapshot {
+                reachable_peer_count: 0,
+                unknown_peer_count: 3,
+                unreachable_peers: Vec::new(),
+            },
+        };
+        assert_eq!(
+            peer_reachable_count_from_connectivity(Some(&structurally_wired_but_unresolved)),
+            None,
+            "a partially resolved probe must defer to the machine-owned wiring degree"
         );
         assert_eq!(
             peer_reachable_count_from_connectivity(Some(&WirePeerConnectivity::NotApplicable)),

@@ -40,7 +40,11 @@ test: ## Run Rust tests via cargo-nextest
 
 test-python: ## Run Python SDK tests
 	@echo "$(YELLOW)Running Python SDK tests…$(NC)"
-	PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
+	CARGO_INCREMENTAL=0 $(CARGO) build -p meerkat-mobkit --bin rpc_gateway --locked
+	@gateway_target_dir="$$($(CARGO) --print-env | awk -F= '$$1 == "CARGO_TARGET_DIR" { print substr($$0, index($$0, "=") + 1) }')"; \
+		gateway_bin="$$gateway_target_dir/debug/rpc_gateway"; \
+		test -x "$$gateway_bin" || { echo "missing freshly built rpc_gateway at $$gateway_bin" >&2; exit 1; }; \
+		MOBKIT_GATEWAY_BIN="$$gateway_bin" PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 	@echo "$(GREEN)Python SDK tests passed.$(NC)"
 
 test-flow-editor: ## Run Flow Editor source, projection, visual, browser, and embedded freshness contracts
