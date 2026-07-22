@@ -4986,6 +4986,53 @@ impl IdentityRuntime {
         Ok(())
     }
 
+    /// Fail the exact active embodiment when its live session has been torn
+    /// down underneath the identity layer. A stale close notification from a
+    /// replaced generation is ignored, while the current embodiment becomes
+    /// `Broken` so the existing continuity repair supervisor can rebuild it.
+    pub(crate) async fn mark_active_runtime_broken(
+        &self,
+        identity: &AgentIdentity,
+        expected_runtime_id: &str,
+        detail: &str,
+    ) -> Result<bool, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let changed = {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            let is_current_active = entry.state == IdentityLifecycleState::Active
+                && entry
+                    .continuity
+                    .as_ref()
+                    .is_some_and(|record| record.agent_runtime_id.as_str() == expected_runtime_id);
+            if is_current_active {
+                // Retain the exact live lease. Broken repair owns lower-plane
+                // cleanup and releases that grant before rematerializing.
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            is_current_active
+        };
+        if changed {
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(detail.to_string()),
+            );
+            self.emit_event(
+                identity,
+                IdentityEvent::StateChanged {
+                    identity: identity.clone(),
+                    new_state: IdentityLifecycleState::Broken,
+                },
+            )
+            .await;
+        }
+        Ok(changed)
+    }
+
     // -----------------------------------------------------------------------
     // Lease checking (INV-01, INV-02)
     // -----------------------------------------------------------------------
@@ -9191,6 +9238,67 @@ mod reset_reprofile_tests {
             .ok_or_else(|| {
                 format!("generated alias did not resolve to lifecycle target: {alias}").into()
             })
+    }
+
+    #[tokio::test]
+    async fn permanent_stream_loss_breaks_only_the_current_active_embodiment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:stream-loss")?;
+        let (runtime, alias) =
+            active_alias_runtime("stream-loss-runtime", identity.as_str()).await?;
+        runtime
+            .update_lease(
+                &identity,
+                LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_secs(60),
+                },
+            )
+            .await?;
+
+        assert!(
+            runtime
+                .mark_active_runtime_broken(&identity, &alias, "event stream closed")
+                .await?
+        );
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Broken
+        );
+        assert!(
+            runtime
+                .entries
+                .read()
+                .await
+                .get(&identity)
+                .and_then(|entry| entry.lease.as_ref())
+                .is_some(),
+            "repair must retain the exact live lease for fenced cleanup"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_stream_loss_does_not_break_replacement_embodiment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:replacement")?;
+        let (runtime, _) = active_alias_runtime("replacement-runtime", identity.as_str()).await?;
+
+        assert!(
+            !runtime
+                .mark_active_runtime_broken(
+                    &identity,
+                    "rt:domain:replacement:stale",
+                    "stale event stream closed",
+                )
+                .await?
+        );
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Active
+        );
+        Ok(())
     }
 
     #[tokio::test]

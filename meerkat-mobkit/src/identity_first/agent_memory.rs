@@ -875,6 +875,24 @@ impl AgentMemoryCustomizer {
     }
 }
 
+fn profile_enables_agent_memory(context: &AgentBuildContext, spec: &DurableAgentSpec) -> bool {
+    let Some(handle) = context.runtime_services.mob_handle() else {
+        return true;
+    };
+    definition_profile_enables_agent_memory(handle.definition(), &spec.profile)
+}
+
+fn definition_profile_enables_agent_memory(
+    definition: &meerkat_mob::MobDefinition,
+    profile: &meerkat_mob::ProfileName,
+) -> bool {
+    definition
+        .profiles
+        .get(profile)
+        .and_then(|binding| binding.as_inline())
+        .is_none_or(|profile| profile.tools.memory)
+}
+
 #[async_trait]
 impl AgentCustomizer for AgentMemoryCustomizer {
     async fn customize_build(
@@ -885,6 +903,14 @@ impl AgentCustomizer for AgentMemoryCustomizer {
     ) -> Result<(), CustomizerError> {
         if let Some(inner) = self.inner.as_ref() {
             inner.customize_build(context, spec, draft).await?;
+        }
+
+        // The provider capability is global, but tool policy is profile-owned.
+        // Respect the same `profiles.<name>.tools.memory` declaration used by
+        // Meerkat's native memory surface so a memory-disabled member receives
+        // neither the MobKit recorder nor its behavioral/injection prompt.
+        if !profile_enables_agent_memory(context, spec) {
+            return Ok(());
         }
 
         let injection = self
@@ -3307,6 +3333,36 @@ mod tests {
             managed_edges: Vec::new(),
             runtime_services: Default::default(),
         })
+    }
+
+    #[test]
+    fn profile_memory_policy_is_resolved_per_member_profile() -> Result<(), Box<dyn Error>> {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "profile-memory-policy"
+
+[profiles.enabled]
+model = "gpt-5.5"
+[profiles.enabled.tools]
+memory = true
+
+[profiles.disabled]
+model = "gpt-5.5"
+[profiles.disabled.tools]
+memory = false
+"#,
+        )?;
+
+        assert!(definition_profile_enables_agent_memory(
+            &definition,
+            &meerkat_mob::ProfileName::from("enabled")
+        ));
+        assert!(!definition_profile_enables_agent_memory(
+            &definition,
+            &meerkat_mob::ProfileName::from("disabled")
+        ));
+        Ok(())
     }
 
     async fn recorder_dispatcher(

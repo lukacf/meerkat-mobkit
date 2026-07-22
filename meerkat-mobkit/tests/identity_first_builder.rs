@@ -3420,41 +3420,39 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
         "lazy build must still start without concrete members"
     );
 
-    let response: JsonRpcResponse = serde_json::from_str(
-        &handle_unified_rpc_json(
-            &runtime,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": "review-flow",
-                "method": "mobkit/run_flow",
-                "params": {
-                    "flow_id": "review_cycle",
-                    "params": { "source": "ob3" }
-                }
-            })
-            .to_string(),
-            Duration::from_secs(2),
-            None,
-            None,
+    // Embedded applications such as OB3 hold the raw MobHandle. The
+    // identity-first barrier must therefore be installed on that handle,
+    // rather than living only in MobKit's JSON-RPC wrapper.
+    let run_id = runtime
+        .mob_handle()
+        .run_flow(
+            meerkat_mob::FlowId::from("review_cycle"),
+            json!({ "source": "ob3" }),
         )
-        .await,
-    )
-    .expect("json-rpc response");
+        .await
+        .expect("direct MobHandle flow should hydrate lazy identities");
 
-    assert!(
-        response.error.is_none(),
-        "run_flow should hydrate lazy identities before concrete flow execution: {:?}",
-        response.error
-    );
-    assert!(
-        response
-            .result
-            .as_ref()
-            .and_then(|result| result.get("run_id"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|run_id| !run_id.is_empty()),
-        "run_flow should return a concrete run id"
-    );
+    // Returning a run id is not sufficient: the production failure returned
+    // one and then remained Running forever with no admitted turn. Require the
+    // flow kernel to actually record its first step transition.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let run = runtime
+            .mob_handle()
+            .flow_status(run_id.clone())
+            .await
+            .expect("flow status query")
+            .expect("flow run should exist");
+        if !run.step_ledger.is_empty() || !run.failure_ledger.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "flow {run_id} started but never admitted a turn: status={:?}",
+            run.status
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     let members = runtime.mob_handle().list_members_including_retiring().await;
     // meerkat 0.7: roster member ids are comms-safe encodings of the public

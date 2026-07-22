@@ -883,7 +883,7 @@ impl UnifiedRuntimeBuilder {
             (None, None)
         };
         // Set immutable outer fields by rebuilding the struct
-        let runtime = UnifiedRuntime {
+        let mut runtime = UnifiedRuntime {
             access_controller: self.access_controller,
             topology_controller,
             post_spawn_hook: self.post_spawn_hook,
@@ -1005,17 +1005,10 @@ impl UnifiedRuntimeBuilder {
         // memory-stack errors can return by ordinary drop without retaining
         // the runtime and its persistent controller locks.
         if let (Some(context), Some(roster_specs)) = (
-            runtime.identity_first_context.as_ref(),
+            runtime.identity_first_context.clone(),
             identity_roster_specs.as_ref(),
         ) {
-            runtime
-                .mob_runtime
-                .install_identity_runtime_authority(Arc::clone(&context.runtime));
-            *runtime
-                .implicit_delegate_identity_runtime
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(Arc::clone(&context.runtime));
+            runtime.install_identity_first_context_authority(Arc::clone(&context));
 
             // Identity bootstrap may now launch background warming; if it
             // fails, drive the fully assembled runtime through the same

@@ -2591,18 +2591,6 @@ pub(super) async fn handle_run_flow(
     match flow_id_str {
         Some(fid) if !fid.is_empty() => {
             let flow_id = meerkat_mob::FlowId::from(fid);
-            if let Err(err) = runtime.materialize_identity_first_for_flow().await {
-                return JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32000,
-                        message: format!("identity-first flow materialization failed: {err}"),
-                        data: None,
-                    }),
-                };
-            }
             match Box::pin(runtime.mob_handle().run_flow(flow_id, flow_params)).await {
                 Ok(run_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),

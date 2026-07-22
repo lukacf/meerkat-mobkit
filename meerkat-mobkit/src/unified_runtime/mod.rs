@@ -236,10 +236,12 @@ impl UnifiedRuntime {
         // matching mob/run labels at projection time.
         let metadata_table = Arc::new(RuntimeMetadataTable::new());
         let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
+        let identity_runtime_authority = Arc::new(std::sync::RwLock::new(None));
         let mob_event_ingress = Some(Self::create_event_ingress(
             mob_runtime.handle(),
             mob_runtime.agent_mob_mcp_state(),
             mob_events_store.clone(),
+            Arc::clone(&identity_runtime_authority),
         ));
         let mob_events_task = Self::spawn_mob_events_subscriber(
             mob_runtime.handle(),
@@ -285,7 +287,7 @@ impl UnifiedRuntime {
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
-            implicit_delegate_identity_runtime: Arc::new(std::sync::RwLock::new(None)),
+            implicit_delegate_identity_runtime: identity_runtime_authority,
             identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             identity_continuity_repair_task: tokio::sync::Mutex::new(None),
             agent_memory_observer_task: tokio::sync::Mutex::new(None),
@@ -683,6 +685,7 @@ impl UnifiedRuntime {
         &mut self,
         context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
     ) {
+        self.install_identity_first_flow_target_provisioner(&context.runtime);
         self.mob_runtime
             .install_identity_runtime_authority(Arc::clone(&context.runtime));
         *self
@@ -691,6 +694,34 @@ impl UnifiedRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(Arc::clone(&context.runtime));
         self.identity_first_context = Some(context);
+    }
+
+    pub(crate) fn install_identity_first_flow_target_provisioner(
+        &self,
+        runtime: &Arc<crate::identity_first::IdentityRuntime>,
+    ) {
+        let identity_runtime = Arc::downgrade(runtime);
+        self.mob_runtime
+            .handle()
+            .install_flow_target_provisioner(Arc::new(move || {
+                let identity_runtime = identity_runtime.clone();
+                Box::pin(async move {
+                    let runtime = identity_runtime.upgrade().ok_or_else(|| {
+                        MobError::Internal(
+                            "identity-first flow provisioner is no longer available".to_string(),
+                        )
+                    })?;
+                    runtime
+                        .materialize_all_required_tracked()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| {
+                            MobError::Internal(format!(
+                                "identity-first flow materialization failed: {error}"
+                            ))
+                        })
+                })
+            }));
     }
 
     fn start_identity_first_supervisors(&mut self) {
@@ -1047,6 +1078,9 @@ impl UnifiedRuntime {
         mob_handle: MobHandle,
         agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
         mob_events: MobEventsStore,
+        identity_runtime: Arc<
+            std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>,
+        >,
     ) -> MobEventIngress {
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
@@ -1055,6 +1089,7 @@ impl UnifiedRuntime {
             agent_mob_mcp_state,
             event_tx,
             mob_events,
+            identity_runtime,
         ));
         MobEventIngress::Forwarder(MobEventForwarder { event_rx, task })
     }
@@ -1092,8 +1127,9 @@ type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 /// forwarder. The forwarder reconciles every 250ms; without backoff a
 /// member that keeps failing `subscribe_agent_events` is retried 4×/s
 /// indefinitely and floods the log (observed: ~49k "failed to subscribe"
-/// warnings over 3.4h on a single wedged-retiring alias). We retry with
-/// exponential backoff and warn only on the first failure.
+/// warnings over 3.4h on a single wedged-retiring alias). We retry transient
+/// failures with exponential backoff and hand persistent loss to identity
+/// repair instead of suppressing the same dead session forever.
 struct SubscribeBackoff {
     next_attempt: tokio::time::Instant,
     consecutive_failures: u32,
@@ -1104,6 +1140,7 @@ struct SubscribeBackoff {
 /// `SUBSCRIBE_BACKOFF_MAX` instead of one per tick.
 const SUBSCRIBE_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const SUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);
+const PERMANENT_STREAM_FAILURE_THRESHOLD: u32 = 4;
 
 fn subscribe_backoff_delay(consecutive_failures: u32) -> Duration {
     SUBSCRIBE_BACKOFF_BASE
@@ -1119,11 +1156,55 @@ fn forwarder_should_subscribe(status: MobMemberStatus) -> bool {
     matches!(status, MobMemberStatus::Active)
 }
 
+async fn trigger_identity_stream_repair(
+    primary_mob_id: &str,
+    tracked_key: &TrackedAgentEventStream,
+    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    detail: &str,
+) {
+    let (mob_id, identity, runtime_id, _) = tracked_key;
+    if mob_id != primary_mob_id {
+        return;
+    }
+    let runtime_alias =
+        crate::member_comms_id::runtime_alias_str(runtime_id.identity.as_str()).into_owned();
+    let authority = identity_runtime
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(authority) = authority else {
+        return;
+    };
+    let identity = match crate::identity_first::AgentIdentity::parse(identity.as_str()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            tracing::warn!(
+                identity = %identity,
+                error = %error,
+                "mobkit agent event forwarder: roster identity cannot be mapped to identity authority"
+            );
+            return;
+        }
+    };
+    if let Err(error) = authority
+        .mark_active_runtime_broken(&identity, &runtime_alias, detail)
+        .await
+    {
+        tracing::warn!(
+            identity = %identity,
+            runtime_id = %runtime_id,
+            error = %error,
+            "mobkit agent event forwarder: failed to trigger identity repair after permanent stream loss"
+        );
+    }
+}
+
 async fn run_resilient_mob_agent_event_forwarder(
     handle: MobHandle,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     event_tx: Sender<EventEnvelope<UnifiedEvent>>,
     mob_events: MobEventsStore,
+    identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
@@ -1138,6 +1219,7 @@ async fn run_resilient_mob_agent_event_forwarder(
         &mut tracked,
         &mut subscribe_failures,
         &mut streams,
+        &identity_runtime,
     ))
     .await;
 
@@ -1169,11 +1251,18 @@ async fn run_resilient_mob_agent_event_forwarder(
                     }
                     ForwardedAgentEvent::Closed(tracked_key) => {
                         tracked.remove(&tracked_key);
+                        subscribe_failures.remove(&tracked_key);
+                        trigger_identity_stream_repair(
+                            handle.mob_id().as_str(),
+                            &tracked_key,
+                            &identity_runtime,
+                            "live agent event stream closed permanently",
+                        ).await;
                     }
                 }
             }
             _ = reconcile_interval.tick() => {
-                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams)).await;
+                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, &identity_runtime)).await;
             }
         }
     }
@@ -1185,10 +1274,11 @@ async fn reconcile_agent_event_streams(
     tracked: &mut HashSet<TrackedAgentEventStream>,
     subscribe_failures: &mut HashMap<TrackedAgentEventStream, SubscribeBackoff>,
     streams: &mut SelectAll<TaggedAgentEventStream>,
+    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
 ) {
+    let primary_mob_id = handle.mob_id().to_string();
     let mut handles = vec![handle.clone()];
     if let Some(state) = agent_mob_mcp_state {
-        let primary_mob_id = handle.mob_id().to_string();
         handles.extend(
             Box::pin(state.mob_handles_snapshot())
                 .await
@@ -1293,7 +1383,10 @@ async fn reconcile_agent_event_streams(
                     // Usually a short-lived spawn/resume race while Meerkat
                     // finishes installing the session event injector. Retry
                     // with exponential backoff and warn only on the first
-                    // failure so a persistent failure can't flood the log.
+                    // failure. A bounded number of misses remains a spawn
+                    // race; persistent loss breaks the exact identity binding
+                    // and lets the continuity supervisor rebuild it.
+                    let repair_key = tracked_key.clone();
                     let backoff =
                         subscribe_failures
                             .entry(tracked_key)
@@ -1320,6 +1413,17 @@ async fn reconcile_agent_event_streams(
                     backoff.next_attempt =
                         now + subscribe_backoff_delay(backoff.consecutive_failures);
                     backoff.consecutive_failures = backoff.consecutive_failures.saturating_add(1);
+                    let stream_is_permanently_lost =
+                        backoff.consecutive_failures >= PERMANENT_STREAM_FAILURE_THRESHOLD;
+                    if stream_is_permanently_lost {
+                        trigger_identity_stream_repair(
+                            &primary_mob_id,
+                            &repair_key,
+                            identity_runtime,
+                            "live agent event stream remained unavailable after bounded retries",
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -1553,6 +1657,7 @@ mod tests {
     /// most ~once per cap instead of 4×/s.
     #[test]
     fn subscribe_backoff_grows_and_caps() {
+        assert!(PERMANENT_STREAM_FAILURE_THRESHOLD > 1);
         assert_eq!(subscribe_backoff_delay(0), SUBSCRIBE_BACKOFF_BASE);
         assert_eq!(subscribe_backoff_delay(1), SUBSCRIBE_BACKOFF_BASE * 2);
         assert_eq!(subscribe_backoff_delay(3), SUBSCRIBE_BACKOFF_BASE * 8);
