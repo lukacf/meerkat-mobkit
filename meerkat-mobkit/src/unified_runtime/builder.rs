@@ -24,6 +24,7 @@ use crate::mob_handle_runtime::{
 use crate::runtime::{
     InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
 };
+use crate::storage_layout::MobKitStorageLayout;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -231,8 +232,10 @@ impl UnifiedRuntimeBuilder {
     /// Enable the FULL agent-memory stack (bundled SQLite store + the taint
     /// firewall + the enabled judgment-plane engines) — the same stack the
     /// rpc gateway assembles, reachable from the Rust builder (the OB3
-    /// deployment shape). Requires `persistent_state()`; the store lives at
-    /// `<persistent_state>/agent-memory-sqlite`.
+    /// deployment shape). Requires `persistent_state()`; the store lives
+    /// under the layout's agent-memory root (canonical
+    /// `<persistent_state>/agent-memory`, with a legacy
+    /// `agent-memory-sqlite/` corpus honored where it lies).
     ///
     /// v1 boundaries (documented in `memory_wiring`): the Hygienist stays
     /// gateway-only; engines are driven by the member-event observe stream
@@ -632,14 +635,21 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
         }
+        // The path authority for every state-dir file name below:
+        // canonical-name-first probing keeps legacy spellings working where
+        // they lie; twin spellings refuse loudly instead of forking history.
+        let storage_layout = self
+            .persistent_state_path
+            .as_ref()
+            .map(|path| MobKitStorageLayout::with_injected_roots(path.clone(), None));
         let persistent_agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>> =
             if self.agent_memory_from_persistent_state {
-                let Some(state_path) = self.persistent_state_path.as_ref() else {
+                let Some(layout) = storage_layout.as_ref() else {
                     return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                         "persistent_agent_memory() requires persistent_state()".to_string(),
                     ));
                 };
-                let memory_path = state_path.join("agent-memory");
+                let memory_path = layout.agent_memory_root()?.path;
                 Some(Arc::new(
                     MarkdownAgentMemoryStore::open(&memory_path).map_err(|e| {
                         UnifiedRuntimeBuilderError::Io(format!(
@@ -656,12 +666,15 @@ impl UnifiedRuntimeBuilder {
         // spawn; the firewall + engines attach post-construction, when the
         // memory event sink and mob handle exist.
         let stack_sqlite_store = if self.agent_memory_engines.is_some() {
-            let Some(state_path) = self.persistent_state_path.as_ref() else {
+            let Some(layout) = storage_layout.as_ref() else {
                 return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                     "persistent_agent_memory_stack() requires persistent_state()".to_string(),
                 ));
             };
-            let memory_path = state_path.join("agent-memory-sqlite");
+            // One slot for both store kinds: a legacy `agent-memory-sqlite/`
+            // corpus keeps being used where it lies; fresh deployments get
+            // the canonical `agent-memory/` root.
+            let memory_path = layout.agent_memory_root()?.path;
             Some(
                 crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path).map_err(
                     |e| {
@@ -722,11 +735,11 @@ impl UnifiedRuntimeBuilder {
         let persistent_metadata: Arc<dyn PersistentMetadataStore> =
             if let Some(store) = self.persistent_metadata.clone() {
                 store
-            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let metadata_path = state_path.join("mobkit_metadata.sqlite");
+            } else if let Some(layout) = storage_layout.as_ref() {
+                let metadata_path = layout.metadata_db()?.path;
                 Arc::new(SqliteMetadataStore::open(&metadata_path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open mobkit_metadata.sqlite at {}: {e}",
+                        "failed to open the mobkit metadata store at {}: {e}",
                         metadata_path.display()
                     ))
                 })?)
@@ -736,11 +749,11 @@ impl UnifiedRuntimeBuilder {
         let console_log_store: Arc<dyn ConsoleLogStore> =
             if let Some(store) = self.console_log_store.clone() {
                 store
-            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let console_log_path = state_path.join("mobkit_console.sqlite");
+            } else if let Some(layout) = storage_layout.as_ref() {
+                let console_log_path = layout.console_db()?.path;
                 Arc::new(SqliteConsoleLogStore::open(&console_log_path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open mobkit_console.sqlite at {}: {e}",
+                        "failed to open the mobkit console store at {}: {e}",
                         console_log_path.display()
                     ))
                 })?)
@@ -823,14 +836,14 @@ impl UnifiedRuntimeBuilder {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
-            ) = if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let continuity_path = state_path.join("identity_continuity.sqlite");
+            ) = if let Some(layout) = storage_layout.as_ref() {
+                let continuity_path = layout.continuity_db()?.path;
                 let (local_store, high_water) =
                     LocalContinuityStore::open_with_fencing_floor(continuity_path.clone())
                         .await
                         .map_err(|e| {
                             UnifiedRuntimeBuilderError::Io(format!(
-                                "failed to open identity_continuity.sqlite and read its fencing high-water at {}: {e}",
+                                "failed to open the identity continuity store and read its fencing high-water at {}: {e}",
                                 continuity_path.display()
                             ))
                         })?;
@@ -987,13 +1000,13 @@ impl UnifiedRuntimeBuilder {
             let persistent_state = self.persistent_state_path.clone();
             let transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
                 if engines.distiller.enabled || engines.steward.enabled {
-                    let state = persistent_state.as_ref().ok_or_else(|| {
+                    let layout = storage_layout.as_ref().ok_or_else(|| {
                         UnifiedRuntimeBuilderError::ConflictingConfiguration(
                             "agent memory engines require persistent_state()".to_string(),
                         )
                     })?;
                     Some(Arc::new(
-                        meerkat_store::SqliteSessionStore::open(state.join("sessions.db"))
+                        meerkat_store::SqliteSessionStore::open(layout.session_db()?.path)
                             .map_err(|e| {
                                 UnifiedRuntimeBuilderError::Io(format!(
                                     "agent memory session store: {e}"
@@ -1194,7 +1207,10 @@ impl UnifiedRuntimeBuilder {
                 if let Some(ref store) = self.custom_session_store {
                     store.clone()
                 } else {
-                    let sqlite_path = state_path.join("sessions.db");
+                    let sqlite_path =
+                        MobKitStorageLayout::with_injected_roots(state_path.clone(), None)
+                            .session_db()?
+                            .path;
                     Arc::new(
                         meerkat_store::SqliteSessionStore::open(sqlite_path).map_err(|e| {
                             UnifiedRuntimeBuilderError::Io(format!(

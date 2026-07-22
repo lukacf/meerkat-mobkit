@@ -13,9 +13,9 @@ use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata,
-    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    load_console_ui_config_from_path_for_realm,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore,
+    ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
@@ -100,24 +100,6 @@ fn current_time_ms() -> u64 {
 
 fn short_hash(value: &str) -> String {
     value.chars().take(8).collect()
-}
-
-fn state_dir() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("XDG_STATE_HOME")
-        && !path.trim().is_empty()
-    {
-        return Ok(PathBuf::from(path).join("meerkat-mobkit"));
-    }
-
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("state")
-        .join("meerkat-mobkit"))
-}
-
-fn registry_path() -> anyhow::Result<PathBuf> {
-    Ok(state_dir()?.join("tux-runtimes.json"))
 }
 
 fn load_registry(path: &Path) -> RuntimeRegistry {
@@ -377,22 +359,6 @@ fn load_definition(
     Ok((minimal_definition(&runtime_id)?, false))
 }
 
-fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
-    let store_dir = if store_path.extension().is_some() {
-        store_path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-    } else {
-        store_path.to_path_buf()
-    };
-    let sqlite_path = if store_path.extension().is_some() {
-        store_path.to_path_buf()
-    } else {
-        store_dir.join("sessions.sqlite")
-    };
-    (store_dir, sqlite_path)
-}
-
 /// Returns (session_service, runtime_adapter, binary_blob_store).
 ///
 /// The runtime adapter is supplied separately from the session service so
@@ -400,16 +366,17 @@ fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
 /// StoreCheckpointer enabled.  The adapter is wired into MobBuilder
 /// directly via `with_runtime_adapter()`.
 fn build_persistent_session_service(
-    store_path: &Path,
+    layout: &MobKitStorageLayout,
     runtime_root: PathBuf,
     project_root: PathBuf,
     context_root: Option<PathBuf>,
     image_generation: bool,
     realm_id: &str,
 ) -> anyhow::Result<PersistentSessionServiceParts> {
-    let (store_dir, sqlite_path) = resolve_store_dir(store_path);
+    let store_dir = layout.state_dir().to_path_buf();
     fs::create_dir_all(&store_dir)
         .with_context(|| format!("failed to create {}", store_dir.display()))?;
+    let sqlite_path = layout.session_db().map_err(|e| anyhow!("{e}"))?.path;
     let session_store = Arc::new(
         SqliteSessionStore::open(sqlite_path.clone())
             .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
@@ -423,16 +390,13 @@ fn build_persistent_session_service(
     );
 
     let binary_blob_store: Arc<dyn BinaryBlobStore> =
-        Arc::new(ObjectStoreBlobStore::local(store_dir.join("blobs"))?);
+        Arc::new(ObjectStoreBlobStore::local(layout.blob_root())?);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-    // Persistent runtime store at <store_dir>/runtime.sqlite — same path
-    // chosen by `MobBootstrapSpec::persistent_inner`, so a gateway and a
-    // library-mode runtime pointed at the same dir share state.
-    let runtime_db_path = sqlite_path
-        .parent()
-        .map(|p| p.join("runtime.sqlite"))
-        .unwrap_or_else(|| std::path::PathBuf::from("runtime.sqlite"));
+    // Persistent runtime store — same path chosen by
+    // `MobBootstrapSpec::persistent_inner`, so a gateway and a library-mode
+    // runtime pointed at the same dir share state.
+    let runtime_db_path = layout.runtime_db();
     let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
         match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
             Ok(store) => Arc::new(store),
@@ -475,18 +439,13 @@ fn build_persistent_session_service(
     let schedule_tools =
         meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
             &builder,
-            runtime_db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
+            layout.state_dir(),
         );
     // WorkGraph: durable store beside the schedule store, realm scoped to
     // the mob definition id (member tools + overlays + console RPCs). The
     // state dir travels along so the bootstrap spec can place the
     // cross-process admission sidecar beside the store.
-    let workgraph_state_dir = runtime_db_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
+    let workgraph_state_dir = layout.state_dir().to_path_buf();
     let workgraph = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
         &builder,
         &workgraph_state_dir,
@@ -500,16 +459,12 @@ fn build_persistent_session_service(
         Arc::clone(&runtime_store),
         blob_store,
     ));
-    let schedule_store_dir = runtime_db_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
     let schedule_host_inputs = schedule_tools.map(|tools| {
         (
             tools.service,
             tools.mob_target_registry,
             Arc::clone(&service),
-            schedule_store_dir.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
+            layout.schedule_db(),
         )
     });
     Ok((
@@ -709,6 +664,12 @@ async fn run() -> anyhow::Result<()> {
         .store_path
         .unwrap_or_else(|| runtime_root.join("state"));
     let store_path = store_path.canonicalize().unwrap_or(store_path);
+    // The path authority for this boot: the state dir (a `store_path` with a
+    // file extension is the explicit session-DB override escape hatch) plus
+    // the XDG gateway home (runtime registry + peer key).
+    let gateway_home = meerkat_mobkit::storage_layout::default_gateway_home()
+        .context("resolve gateway state directory")?;
+    let layout = MobKitStorageLayout::standalone_from_store_path(&store_path, gateway_home.clone());
     let persistent_sessions = params.persistent_sessions.unwrap_or(false);
     // Doctrine default: the identity substrate is ON. `identity_first: false`
     // remains as a one-release opt-out for deployments that need the pure
@@ -740,7 +701,9 @@ async fn run() -> anyhow::Result<()> {
         context_root.as_deref(),
         &paths,
     )?;
-    let registry_file = registry_path()?;
+    let registry_file = layout
+        .registry_file()
+        .ok_or_else(|| anyhow!("gateway storage layout carries no gateway home"))?;
     let mut registry = load_registry(&registry_file);
 
     let mut live_entries = Vec::new();
@@ -785,7 +748,7 @@ async fn run() -> anyhow::Result<()> {
             workgraph,
             resolved_storage,
         ) = build_persistent_session_service(
-            &store_path,
+            &layout,
             runtime_root.clone(),
             project_root.clone(),
             context_root.clone(),
@@ -926,11 +889,10 @@ async fn run() -> anyhow::Result<()> {
     // already survives across runs. Cross-process peers fetch the
     // resulting pubkey via `mobkit/peer_pubkey`; inproc-only deployments
     // never use it but it's cheap to keep one ready.
-    let gateway_state_dir = state_dir().context("resolve gateway state directory")?;
-    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_state_dir).with_context(|| {
+    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_home).with_context(|| {
         format!(
             "failed to load or mint gateway peer key under {}",
-            gateway_state_dir.display()
+            gateway_home.display()
         )
     })?;
     runtime.set_gateway_peer_keys(peer_keys);
@@ -966,10 +928,10 @@ async fn run() -> anyhow::Result<()> {
             IdentityRuntimeConfig, MobSessionBridge, MutableRosterProvider, restore_flow,
         };
 
-        let (store_dir, _) = resolve_store_dir(&store_path);
-        fs::create_dir_all(&store_dir)
+        let store_dir = layout.state_dir();
+        fs::create_dir_all(store_dir)
             .with_context(|| format!("failed to create {}", store_dir.display()))?;
-        let continuity_db = store_dir.join("continuity.db");
+        let continuity_db = layout.continuity_db().map_err(|e| anyhow!("{e}"))?.path;
         let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
             .await
             .map_err(|e| anyhow!("{e}"))?;

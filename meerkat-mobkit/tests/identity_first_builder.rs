@@ -1400,7 +1400,9 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
         .expect("identity should be active");
 
     assert_eq!(status.profile.unwrap().as_str(), "default");
-    assert!(state_path.join("identity_continuity.sqlite").exists());
+    // M2 canonical spelling on a fresh state dir (a pre-existing legacy
+    // `identity_continuity.sqlite` would keep being used where it lies).
+    assert!(state_path.join("continuity.sqlite3").exists());
     assert!(state_path.join("agent-memory").exists());
 
     let identity = AgentIdentity::parse("agent:alpha").unwrap();

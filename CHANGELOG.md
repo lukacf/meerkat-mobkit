@@ -33,6 +33,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`MobKitStorageLayout` path authority + canonical-name-first probing
+  (storage-unification Phase M2).** One module,
+  `meerkat_mobkit::storage_layout`, now owns every storage root and
+  canonical top-level database locator; `UnifiedRuntimeBuilder`,
+  `mobkit_gateway`, and `rpc_gateway` all consume the layout instead of
+  deriving file names inline (the three-way derivation duplication is
+  deleted). Canonical spellings, decided once: stores shared with Meerkat
+  keep Meerkat's names — sessions `sessions.sqlite3`, runtime
+  `runtime.sqlite`, schedule `schedule.sqlite`, workgraph
+  `workgraph.sqlite3` — and MobKit-owned files converge on `*.sqlite3`:
+  continuity `continuity.sqlite3` (was `continuity.db` on the gateways,
+  `identity_continuity.sqlite` in the builder), metadata
+  `mobkit_metadata.sqlite3`, console `mobkit_console.sqlite3`, agent-memory
+  root `agent-memory/` (was `agent-memory-sqlite/` for the builder's SQLite
+  stack), blob root `blobs/`, and gateway-home files `peer_key.ed25519` /
+  `tux-runtimes.json`.
+  **Existing deployments keep working unchanged:** every locator resolves
+  canonical-name-first and then probes the known legacy spellings in the
+  same directory — exactly one spelling present means it is used *where it
+  lies* (no rename at open; physical renames to canonical names arrive only
+  with the Phase M6 migration verb, under the maintenance fence). Only
+  *fresh* directories get the canonical names. When both the canonical and
+  a legacy spelling (or two legacy spellings) of the same store exist, boot
+  refuses with the typed `StorageLayoutError::FileNameTwins` pointing at
+  the storage doctor — previously the surfaces would silently open one of
+  the two and fork history. A gateway `store_path` with a file extension
+  remains an explicit session-database override (now an explicit layout
+  input instead of call-site extension sniffing). This also heals the
+  cross-surface agent-memory hazard: `rpc_gateway` now finds and reuses a
+  builder-created `agent-memory-sqlite/` corpus instead of silently
+  starting an empty `agent-memory/` beside it.
+- **Declared-ephemeral scratch layout for `rpc_gateway`.** With no
+  `persistent_state`, the locally hosted identity substrate no longer lands
+  on a silent pid-suffixed `$TMPDIR/mobkit-continuity-<pid>.db` at the call
+  site; the gateway constructs the layout in explicit scratch mode rooted
+  at `$TMPDIR/mobkit-scratch-<pid>/` and the choice is recorded in the
+  serializable `layout_summary()` (`durability: declared_ephemeral`), which
+  the Phase M1 storage doctor consumes.
 - **Storage durability health surface (H1/H2).** `mobkit/status` (unified
   and console shapes) and the unified `mobkit/capabilities` now carry a
   `storage` object: `blob_durability`

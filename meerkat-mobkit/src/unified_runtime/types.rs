@@ -100,6 +100,14 @@ pub enum UnifiedRuntimeBuilderError {
     DefinitionLoad(String),
     /// Conflicting builder configuration (e.g., persistent_state + continuity_store).
     ConflictingConfiguration(String),
+    /// Storage layout refusal (file-name twins in the state directory).
+    StorageLayout(crate::storage_layout::StorageLayoutError),
+}
+
+impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
+    fn from(error: crate::storage_layout::StorageLayoutError) -> Self {
+        Self::StorageLayout(error)
+    }
 }
 
 impl Display for UnifiedRuntimeBuilderError {
@@ -118,6 +126,7 @@ impl Display for UnifiedRuntimeBuilderError {
             Self::Io(msg) => write!(f, "{msg}"),
             Self::DefinitionLoad(msg) => write!(f, "{msg}"),
             Self::ConflictingConfiguration(msg) => write!(f, "conflicting configuration: {msg}"),
+            Self::StorageLayout(err) => write!(f, "{err}"),
         }
     }
 }

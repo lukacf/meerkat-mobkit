@@ -2803,6 +2803,18 @@ fn parse_gateway_memory_config(
     }
 }
 
+/// Resolve the agent-memory root through the storage layout: canonical
+/// `agent-memory/`, with a legacy `agent-memory-sqlite/` corpus honored
+/// where it lies (both dirs present is a twins refusal).
+fn resolve_agent_memory_root(
+    persistent_state: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    meerkat_mobkit::MobKitStorageLayout::with_injected_roots(persistent_state.to_path_buf(), None)
+        .agent_memory_root()
+        .map(|resolved| resolved.path)
+        .map_err(|e| e.to_string())
+}
+
 fn parse_gateway_agent_memory_config(
     agent_memory: &Value,
     persistent_state: Option<&std::path::Path>,
@@ -2811,11 +2823,9 @@ fn parse_gateway_agent_memory_config(
         if !enabled {
             return Ok(None);
         }
-        let path = persistent_state
-            .ok_or_else(|| {
-                "runtime_options.agent_memory=true requires persistent_state".to_string()
-            })?
-            .join("agent-memory");
+        let path = resolve_agent_memory_root(persistent_state.ok_or_else(|| {
+            "runtime_options.agent_memory=true requires persistent_state".to_string()
+        })?)?;
         return Ok(Some(GatewayAgentMemoryOptions {
             config: meerkat_mobkit::AgentMemoryConfig::default(),
             path,
@@ -3132,9 +3142,10 @@ fn parse_gateway_agent_memory_config(
                 .to_string(),
         );
     }
-    let path = persistent_state
-        .ok_or_else(|| "runtime_options.agent_memory requires persistent_state".to_string())?
-        .join("agent-memory");
+    let path =
+        resolve_agent_memory_root(persistent_state.ok_or_else(|| {
+            "runtime_options.agent_memory requires persistent_state".to_string()
+        })?)?;
 
     Ok(Some(GatewayAgentMemoryOptions {
         config: meerkat_mobkit::AgentMemoryConfig {
@@ -4256,6 +4267,19 @@ external_addressable = true
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from);
 
+    // The path authority for this boot. Without persistent_state the layout
+    // is an explicitly declared-ephemeral scratch root (per-process, under
+    // the OS temp dir) — recorded in the layout summary, never a silent
+    // call-site fallback.
+    let storage_layout = match persistent_state {
+        Some(ref state_path) => {
+            meerkat_mobkit::MobKitStorageLayout::with_injected_roots(state_path.clone(), None)
+        }
+        None => meerkat_mobkit::MobKitStorageLayout::declared_ephemeral(
+            meerkat_mobkit::storage_layout::default_ephemeral_scratch_root(),
+        ),
+    };
+
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
     let (stdout_shutdown_tx, mut stdout_shutdown_rx) = oneshot::channel::<()>();
@@ -4459,11 +4483,19 @@ external_addressable = true
                 bridge.clone(),
             ))
         } else {
-            let db_path = if let Some(ref state_path) = persistent_state {
-                state_path.join("continuity.db")
-            } else {
-                std::env::temp_dir().join(format!("mobkit-continuity-{}.db", std::process::id()))
+            let db_path = match storage_layout.continuity_db() {
+                Ok(resolved) => resolved.path,
+                Err(e) => fail_init(&request_id, -32603, e.to_string()),
             };
+            if storage_layout.is_declared_ephemeral()
+                && let Err(e) = std::fs::create_dir_all(storage_layout.state_dir())
+            {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to create the declared-ephemeral scratch root: {e}"),
+                );
+            }
             let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&db_path)
                 .await
                 .unwrap_or_else(|e| fail_init(&request_id, -32603, e));
@@ -4513,7 +4545,10 @@ external_addressable = true
                 format!("failed to create persistent state directory: {e}"),
             );
         }
-        let sqlite_path = state_path.join("sessions.db");
+        let sqlite_path = match storage_layout.session_db() {
+            Ok(resolved) => resolved.path,
+            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+        };
         let session_store_kind = if identity_session_store_adapter.is_some() {
             "ContinuitySessionStoreAdapter"
         } else {
@@ -4542,7 +4577,7 @@ external_addressable = true
             );
         let mob_storage = MobStorage::in_memory();
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
-            match ObjectStoreBlobStore::local(state_path.join("blobs")) {
+            match ObjectStoreBlobStore::local(storage_layout.blob_root()) {
                 Ok(store) => Arc::new(store),
                 Err(e) => fail_init(
                     &request_id,
@@ -4552,11 +4587,10 @@ external_addressable = true
             };
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        // Persistent runtime store at <state_path>/runtime.sqlite — must
-        // be Some() on the session service so archive/retire can mutate
-        // the authoritative session, and must be persistent so resume
-        // works across gateway restart.
-        let runtime_db_path = state_path.join("runtime.sqlite");
+        // Persistent runtime store — must be Some() on the session service
+        // so archive/retire can mutate the authoritative session, and must
+        // be persistent so resume works across gateway restart.
+        let runtime_db_path = storage_layout.runtime_db();
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
                 Ok(store) => Arc::new(store),
@@ -4605,7 +4639,7 @@ external_addressable = true
         let schedule_tools =
             meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
                 &inner_builder,
-                state_path,
+                storage_layout.state_dir(),
             );
         // WorkGraph: durable store beside the schedule store (or in the
         // explicitly configured directory), realm scoped to the mob
@@ -4619,10 +4653,10 @@ external_addressable = true
             GatewayWorkgraphOption::Enabled => {
                 meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
                     &inner_builder,
-                    state_path,
+                    storage_layout.state_dir(),
                     &schedule_owner_id,
                 )
-                .map(|(service, slot)| (service, slot, state_path.clone()))
+                .map(|(service, slot)| (service, slot, storage_layout.state_dir().to_path_buf()))
             }
             GatewayWorkgraphOption::DurableDir(dir) => {
                 // An explicit directory overrides the state-dir default.
@@ -4661,7 +4695,7 @@ external_addressable = true
                 tools.mob_target_registry,
                 Arc::clone(&concrete_service),
                 adapter.clone(),
-                state_path.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
+                storage_layout.schedule_db(),
             )
         });
         // §8.6 Hygienist apply seam: the CONCRETE service implements
@@ -4935,21 +4969,26 @@ external_addressable = true
     };
 
     let timeout = GATEWAY_RUNTIME_EVENT_DRAIN_TIMEOUT;
-    let persistent_metadata: Arc<dyn PersistentMetadataStore> =
-        if let Some(state_path) = persistent_state.as_ref() {
-            let metadata_path = state_path.join("mobkit_metadata.sqlite");
-            Arc::new(
-                SqliteMetadataStore::open(&metadata_path).unwrap_or_else(|e| {
-                    fail_init(
-                        &request_id,
-                        -32603,
-                        format!("failed to open mobkit_metadata.sqlite: {e}"),
-                    );
-                }),
-            )
-        } else {
-            Arc::new(InMemoryMetadataStore::new())
+    let persistent_metadata: Arc<dyn PersistentMetadataStore> = if persistent_state.is_some() {
+        let metadata_path = match storage_layout.metadata_db() {
+            Ok(resolved) => resolved.path,
+            Err(e) => fail_init(&request_id, -32603, e.to_string()),
         };
+        Arc::new(
+            SqliteMetadataStore::open(&metadata_path).unwrap_or_else(|e| {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!(
+                        "failed to open the mobkit metadata store at {}: {e}",
+                        metadata_path.display()
+                    ),
+                );
+            }),
+        )
+    } else {
+        Arc::new(InMemoryMetadataStore::new())
+    };
     let mut runtime = Box::pin(UnifiedRuntime::bootstrap_with_options(
         mob_spec,
         module_config,
@@ -4976,15 +5015,18 @@ external_addressable = true
         std::process::exit(1);
     });
 
-    if let Some(state_path) = persistent_state.as_ref() {
-        let console_log_path = state_path.join("mobkit_console.sqlite");
+    if persistent_state.is_some() {
+        let console_log_path = match storage_layout.console_db() {
+            Ok(resolved) => resolved.path,
+            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+        };
         let console_log_store = Arc::new(
             SqliteConsoleLogStore::open(&console_log_path).unwrap_or_else(|e| {
                 fail_init(
                     &request_id,
                     -32603,
                     format!(
-                        "failed to open mobkit_console.sqlite at {}: {e}",
+                        "failed to open the mobkit console store at {}: {e}",
                         console_log_path.display()
                     ),
                 );
@@ -5137,7 +5179,7 @@ external_addressable = true
                             format!("agent memory selector store: {e}"),
                         );
                     });
-                let factory_state = persistent_state.clone().unwrap_or_else(std::env::temp_dir);
+                let factory_state = storage_layout.state_dir().to_path_buf();
                 let handle = memory_selector::FactorySelectorHandle::new(
                     factory_state,
                     meerkat::Config::default(),
@@ -5207,14 +5249,14 @@ external_addressable = true
                         // steward's gather/usage/resolvability reads.
                         let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
                             if agent_memory.distiller.enabled || agent_memory.steward.enabled {
-                                let Some(state) = persistent_state.clone() else {
+                                if persistent_state.is_none() {
                                     fail_init(
                                         &request_id,
                                         -32602,
                                         "agent memory distiller/steward require persistent_state"
                                             .to_string(),
                                     );
-                                };
+                                }
                                 Some(
                                     if let Some(adapter) = identity_session_store_adapter.clone() {
                                         adapter
@@ -5222,9 +5264,11 @@ external_addressable = true
                                         // Second handle on the same session
                                         // database the mob bridge persists to;
                                         // WAL keeps the read-side safe.
-                                        match meerkat_store::SqliteSessionStore::open(
-                                            state.join("sessions.db"),
-                                        ) {
+                                        let session_db = match storage_layout.session_db() {
+                                            Ok(resolved) => resolved.path,
+                                            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+                                        };
+                                        match meerkat_store::SqliteSessionStore::open(session_db) {
                                             Ok(store) => Arc::new(store),
                                             Err(e) => fail_init(
                                                 &request_id,

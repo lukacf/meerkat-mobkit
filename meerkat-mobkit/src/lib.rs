@@ -32,6 +32,7 @@ pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
 pub mod storage_health;
+pub mod storage_layout;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -189,6 +190,11 @@ pub use runtime::{
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary,
     probe_session_store_incremental,
+};
+pub use storage_layout::{
+    DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,
+    ResolvedDatabase, StateDirDurability, StorageLayoutError, StorageLayoutSummary,
+    default_ephemeral_scratch_root, default_gateway_home,
 };
 pub use topology_control::{
     SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,

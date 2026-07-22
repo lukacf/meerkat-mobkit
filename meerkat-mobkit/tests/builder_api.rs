@@ -94,13 +94,14 @@ async fn test_builder_persistent_default() {
         MobState::Running
     );
 
-    // Verify persistent artifacts were created.
+    // Verify persistent artifacts were created (M2 canonical spellings on a
+    // fresh state dir).
     assert!(
-        state_path.join("sessions.db").exists(),
+        state_path.join("sessions.sqlite3").exists(),
         "SQLite session store must be created"
     );
     assert!(
-        state_path.join("mobkit_console.sqlite").exists(),
+        state_path.join("mobkit_console.sqlite3").exists(),
         "durable MobKit console log must be created"
     );
 

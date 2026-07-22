@@ -1339,7 +1339,7 @@ fn sanitize_message_for_stateless_replay(message: Message) -> Message {
 /// degraded mode resume across restart and archive operations will
 /// fail; the warning makes the cause visible in operator logs.
 fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime::RuntimeStore> {
-    let runtime_db = store_path.join("runtime.sqlite");
+    let runtime_db = store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME);
     match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db) {
         Ok(store) => Arc::new(store),
         Err(err) => {
@@ -3794,7 +3794,7 @@ impl MobBootstrapSpec {
                 BlobDurability::DeclaredEphemeral,
             )
         } else {
-            let blob_path = store_path.join("blobs");
+            let blob_path = store_path.join(crate::storage_layout::BLOB_ROOT_DIR_NAME);
             let binary_blob_store: Arc<dyn BinaryBlobStore> =
                 match ObjectStoreBlobStore::local(blob_path.clone()) {
                     Ok(store) => Arc::new(store),
