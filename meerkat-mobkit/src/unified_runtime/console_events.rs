@@ -351,6 +351,47 @@ impl ConsoleEventStore {
         self.append(identity, None, event_type, data).await;
     }
 
+    /// Terminalize one exact pending interaction without classifying the
+    /// failure itself as an identity lifecycle mutation.
+    pub(crate) async fn record_interaction_failure(
+        &self,
+        identity: &str,
+        interaction_id: &str,
+        data: Value,
+    ) {
+        {
+            let mut state = self.state.write().await;
+            if let Some(queue) = state.pending_by_identity.get_mut(identity) {
+                if let Some(position) = queue
+                    .iter()
+                    .position(|pending| pending.interaction_id == interaction_id)
+                {
+                    queue.remove(position);
+                }
+                if queue.is_empty() {
+                    state.pending_by_identity.remove(identity);
+                }
+            }
+            if state
+                .active_interaction_by_identity
+                .get(identity)
+                .is_some_and(|active| active == interaction_id)
+            {
+                state.active_interaction_by_identity.remove(identity);
+            }
+            state
+                .response_phase_by_identity
+                .insert(identity.to_string(), None);
+        }
+        self.append(
+            identity,
+            Some(interaction_id.to_string()),
+            "interaction_failed",
+            data,
+        )
+        .await;
+    }
+
     pub(crate) async fn project_unified_event(&self, event: &EventEnvelope<UnifiedEvent>) {
         let UnifiedEvent::Agent {
             agent_id,
@@ -864,6 +905,54 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn exact_delivery_failure_preserves_error_and_other_pending_interactions() {
+        let store = ConsoleEventStore::new();
+        for interaction_id in ["turn-1", "turn-2"] {
+            store
+                .reserve_interaction_value(
+                    "worker",
+                    Some("rt:worker:1"),
+                    interaction_id,
+                    "console",
+                    json!({ "interaction": interaction_id }),
+                )
+                .await
+                .expect("reserve interaction");
+        }
+
+        store
+            .record_interaction_failure(
+                "worker",
+                "turn-1",
+                json!({ "error": "typed delivery failure" }),
+            )
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let failure = replay
+            .iter()
+            .find(|event| event.interaction_id.as_deref() == Some("turn-1"))
+            .expect("failed interaction should be projected");
+        assert_eq!(failure.event_type, "interaction_failed");
+        assert_eq!(failure.data["error"], "typed delivery failure");
+        assert!(
+            store
+                .state
+                .read()
+                .await
+                .pending_by_identity
+                .get("worker")
+                .is_some_and(|pending| pending
+                    .iter()
+                    .any(|entry| entry.interaction_id == "turn-2")),
+            "an unrelated queued interaction must remain pending"
+        );
     }
 
     #[tokio::test]

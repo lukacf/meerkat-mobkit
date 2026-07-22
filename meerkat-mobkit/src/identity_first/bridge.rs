@@ -1702,11 +1702,28 @@ impl SessionBridge for MobSessionBridge {
                 meerkat_mob::AgentIdentity::from(member_b.as_str()),
             ));
         }
-        self.handle
-            .wire_members_batch(member_edges)
-            .await
-            .map(|_| ())
-            .map_err(|e| BridgeError::Mob(e.to_string()))
+        match self.handle.wire_members_batch(member_edges.clone()).await {
+            Ok(_) => Ok(()),
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("does not support legacy external (peer-only) members") =>
+            {
+                // Meerkat's dense batch operation is intentionally local-only.
+                // Its ordinary wire command is the generated reciprocal-trust
+                // authority for local↔peer-only edges, so retry the normalized
+                // edge set through that existing operation instead of
+                // fabricating an external-peer side channel.
+                for (member_a, member_b) in member_edges {
+                    self.handle
+                        .wire(member_a, member_b)
+                        .await
+                        .map_err(|error| BridgeError::Mob(error.to_string()))?;
+                }
+                Ok(())
+            }
+            Err(error) => Err(BridgeError::Mob(error.to_string())),
+        }
     }
 
     async fn current_member_wires(

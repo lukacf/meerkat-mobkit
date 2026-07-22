@@ -82,6 +82,9 @@ struct GatewayRuntimeOptions {
     console_fetch_timeout_ms: Option<u64>,
     access: Option<meerkat_mobkit::AccessController>,
     demo_llm: bool,
+    /// Bind each locally hosted member to a signed loopback TCP endpoint so
+    /// peer-only external members in another process can return traffic.
+    member_comms_address: Option<String>,
     agent_memory: Option<GatewayAgentMemoryOptions>,
     /// WorkGraph service construction switch (default on). `false` disables
     /// the store, member tools, overlays, and the mobkit/workgraph/* RPCs.
@@ -192,12 +195,22 @@ impl Default for GatewayRuntimeOptions {
             console_fetch_timeout_ms: None,
             access: None,
             demo_llm: false,
+            member_comms_address: None,
             agent_memory: None,
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
             host_runnables: Vec::new(),
         }
     }
+}
+
+fn gateway_agent_config(options: &GatewayRuntimeOptions) -> Config {
+    let mut config = Config::default();
+    if let Some(address) = options.member_comms_address.as_ref() {
+        config.comms.mode = meerkat_core::CommsRuntimeMode::Tcp;
+        config.comms.address = Some(address.clone());
+    }
+    config
 }
 
 #[derive(Default)]
@@ -760,6 +773,22 @@ actions = ["agent.view"]
         let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
 
         assert!(options.demo_llm);
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_member_comms_address() {
+        let params = json!({
+            "runtime_options": {
+                "member_comms_address": "127.0.0.1:0"
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(options.member_comms_address.as_deref(), Some("127.0.0.1:0"));
+        let config = gateway_agent_config(&options);
+        assert_eq!(config.comms.mode, meerkat_core::CommsRuntimeMode::Tcp);
+        assert_eq!(config.comms.address.as_deref(), Some("127.0.0.1:0"));
     }
 
     #[test]
@@ -2170,6 +2199,7 @@ fn parse_gateway_runtime_options(
         "console_read_only",
         "console_fetch_timeout_ms",
         "demo_llm",
+        "member_comms_address",
         "max_sessions",
         "event_log",
         "agent_memory",
@@ -2352,6 +2382,21 @@ fn parse_gateway_runtime_options(
         parsed.demo_llm = value
             .as_bool()
             .ok_or_else(|| "runtime_options.demo_llm must be a boolean".to_string())?;
+    }
+    if let Some(value) = runtime_options.get("member_comms_address") {
+        let address = value.as_str().ok_or_else(|| {
+            "runtime_options.member_comms_address must be a socket address string".to_string()
+        })?;
+        let socket = address
+            .parse::<std::net::SocketAddr>()
+            .map_err(|error| format!("runtime_options.member_comms_address is invalid: {error}"))?;
+        if socket.ip().is_unspecified() {
+            return Err(
+                "runtime_options.member_comms_address must name a concrete interface; wildcard binds cannot be advertised to external peers"
+                    .to_string(),
+            );
+        }
+        parsed.member_comms_address = Some(address.to_string());
     }
     if let Some(value) = runtime_options.get("max_sessions") {
         let max_sessions = value
@@ -4531,7 +4576,8 @@ external_addressable = true
         // the builder consumes it.
         let live_agent_factory = factory.clone();
         let live_machine = Arc::clone(&adapter);
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let mut inner_builder =
+            FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
         inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
             session_store.clone(),
         )));
@@ -4695,7 +4741,8 @@ external_addressable = true
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let mut inner_builder =
+            FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
         inner_builder.default_blob_store = Some(blob_store.clone());
         // No-persistent_state launches default to a memory-backed
         // workgraph (tools stay profile-gated, so nothing changes for
@@ -4763,7 +4810,8 @@ external_addressable = true
                 if image_generation {
                     factory = factory.with_image_generation_machine(adapter.clone());
                 }
-                let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+                let mut inner_builder =
+                    FactoryAgentBuilder::new(factory, gateway_agent_config(&gateway_options));
                 inner_builder.default_session_store = Some(Arc::new(
                     meerkat_store::StoreAdapter::new(session_store.clone()),
                 ));

@@ -1016,11 +1016,10 @@ async fn console_send_identity_first(
                     .await;
                 if let Some(events) = console_events {
                     events
-                        .record_lifecycle(
+                        .record_interaction_failure(
                             identity.as_str(),
-                            "interaction_failed",
+                            accepted.interaction_id.as_str(),
                             json!({
-                                "interaction_id": accepted.interaction_id,
                                 "origin": request.origin,
                                 "error": err.to_string(),
                             }),
@@ -1090,11 +1089,10 @@ async fn console_send_identity_first(
                     .await;
                 if let Some(events) = dispatch_events {
                     events
-                        .record_lifecycle(
+                        .record_interaction_failure(
                             dispatch_identity.as_str(),
-                            "interaction_failed",
+                            dispatch_accepted.interaction_id.as_str(),
                             json!({
-                                "interaction_id": dispatch_accepted.interaction_id,
                                 "origin": dispatch_origin,
                                 "error": err.to_string(),
                             }),

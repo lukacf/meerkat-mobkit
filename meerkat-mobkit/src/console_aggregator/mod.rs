@@ -2393,12 +2393,35 @@ fn stale_durable_session_mismatch<'a>(
     live_records: &'a [ConsoleIdentityRecord],
 ) -> Option<&'a ConsoleIdentityRecord> {
     live_records.iter().find(|record| {
-        record.identity == durable.identity
-            && record.runtime_member_id == durable.runtime_member_id
+        live_record_realizes_durable_binding(durable, record)
             && durable.session_id.is_some()
             && record.session_id.is_some()
             && durable.session_id != record.session_id
     })
+}
+
+/// Whether a live roster row is the bridge-authorized realization of a
+/// durable identity binding.
+///
+/// Session-backed identities use their generated `rt:<identity>:<generation>`
+/// alias directly. External peer bindings are intentionally different: the
+/// Meerkat bridge gives the peer a stable durable roster name and records the
+/// durable owner in the runtime-authoritative `agent_identity` label. Raw
+/// member creation cannot supply that label, so accepting this exact mapping
+/// preserves stale-generation fencing without mistaking the external member
+/// for an unrelated raw alias.
+fn live_record_realizes_durable_binding(
+    durable: &ConsoleIdentityRecord,
+    live: &ConsoleIdentityRecord,
+) -> bool {
+    if live.identity != durable.identity {
+        return false;
+    }
+    if live.runtime_member_id == durable.runtime_member_id {
+        return true;
+    }
+    crate::member_comms_id::durable_identity_label(&live.labels)
+        .is_some_and(|identity| live.runtime_member_id == identity)
 }
 
 fn stale_durable_record_error(
@@ -2432,7 +2455,7 @@ fn stale_durable_record_error(
     }
     if matching_live
         .iter()
-        .any(|record| record.runtime_member_id == durable.runtime_member_id)
+        .any(|record| live_record_realizes_durable_binding(durable, record))
     {
         return None;
     }
@@ -4807,7 +4830,31 @@ async fn authoritative_durable_sendable_member_index(
             if !Box::pin(console_identity_record_visible(entry, &record)).await {
                 continue;
             }
-            bindings.insert((entry.runtime_key.clone(), runtime_id.as_str().to_string()));
+            let mut projected_member_ids = BTreeSet::new();
+            for index in sendable_indices {
+                let resolved = &matches[*index];
+                if resolved.entry.runtime_key != entry.runtime_key {
+                    continue;
+                }
+                let Some(live_record) = identity_record_for_resolved_member(resolved).await else {
+                    continue;
+                };
+                if live_record_realizes_durable_binding(&record, &live_record)
+                    && stale_durable_session_mismatch(&record, std::slice::from_ref(&live_record))
+                        .is_none()
+                {
+                    projected_member_ids.insert(live_record.runtime_member_id);
+                }
+            }
+            if projected_member_ids.is_empty() {
+                bindings.insert((entry.runtime_key.clone(), runtime_id.as_str().to_string()));
+            } else {
+                bindings.extend(
+                    projected_member_ids
+                        .into_iter()
+                        .map(|member_id| (entry.runtime_key.clone(), member_id)),
+                );
+            }
         }
     }
 
@@ -6223,6 +6270,42 @@ comms = true
             err.contains("session-durable") && err.contains("session-live"),
             "error should name both sessions: {err}"
         );
+    }
+
+    #[test]
+    fn stable_external_member_alias_realizes_generated_durable_binding() {
+        let mut durable = identity_record_for_test("target-smoke");
+        durable.runtime_member_id = "rt:target-smoke:0".to_string();
+
+        let mut live = durable.clone();
+        live.runtime_member_id = "target-smoke".to_string();
+        live.labels
+            .insert("agent_identity".to_string(), "target-smoke".to_string());
+
+        assert!(live_record_realizes_durable_binding(&durable, &live));
+        assert_eq!(
+            stale_durable_record_error("target-smoke", &durable, &[live]),
+            None,
+            "the bridge-owned stable alias must not be classified as a stale generated binding"
+        );
+    }
+
+    #[test]
+    fn stable_external_member_alias_still_fences_session_split_brain() {
+        let mut durable = identity_record_for_test("target-smoke");
+        durable.runtime_member_id = "rt:target-smoke:0".to_string();
+        durable.session_id = Some("session-durable".to_string());
+
+        let mut live = durable.clone();
+        live.runtime_member_id = "target-smoke".to_string();
+        live.session_id = Some("session-live".to_string());
+        live.labels
+            .insert("agent_identity".to_string(), "target-smoke".to_string());
+
+        let error = stale_durable_record_error("target-smoke", &durable, &[live])
+            .expect("stable aliases must not hide a session split-brain");
+        assert!(error.contains("session-durable"));
+        assert!(error.contains("session-live"));
     }
 
     async fn identity_runtime_for_test(

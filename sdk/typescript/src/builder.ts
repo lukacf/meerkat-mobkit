@@ -106,6 +106,7 @@ export interface MobKitBuilderConfig {
   consoleReadOnly: boolean | null;
   consoleFetchTimeoutMs: number | null;
   demoLlm: boolean;
+  memberCommsAddress: string | null;
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
   schedulingFiles: string[];
@@ -142,6 +143,7 @@ function defaultConfig(): MobKitBuilderConfig {
     consoleReadOnly: null,
     consoleFetchTimeoutMs: null,
     demoLlm: false,
+    memberCommsAddress: null,
     gatingConfigPath: null,
     routingConfigPath: null,
     schedulingFiles: [],
@@ -249,6 +251,21 @@ export class MobKitBuilder {
    */
   demoLlm(enabled = true): this {
     this._config.demoLlm = enabled;
+    return this;
+  }
+
+  /**
+   * Give locally hosted mob members signed TCP comms endpoints.
+   *
+   * External members run in another process and cannot reply to the default
+   * in-process endpoints. Each local member binds an ephemeral TCP port. Pass
+   * a concrete externally reachable interface address for cross-host peers.
+   */
+  memberCommsTcp(address = "127.0.0.1:0"): this {
+    if (!address.trim()) {
+      throw new Error("memberCommsTcp address must not be empty");
+    }
+    this._config.memberCommsAddress = address;
     return this;
   }
 

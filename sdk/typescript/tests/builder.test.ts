@@ -144,6 +144,16 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.demoLlm, false);
   });
 
+  it("memberCommsTcp() configures cross-process peer replies", () => {
+    const builder = MobKit.builder();
+    const result = builder.memberCommsTcp();
+    assert.equal(result, builder);
+    assert.equal(builder._config.memberCommsAddress, "127.0.0.1:0");
+    builder.memberCommsTcp("192.0.2.10:0");
+    assert.equal(builder._config.memberCommsAddress, "192.0.2.10:0");
+    assert.throws(() => builder.memberCommsTcp(""), /must not be empty/);
+  });
+
   it("maxSessions() sets maxSessions and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.maxSessions(320);
@@ -277,6 +287,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.consoleReadOnly, null);
     assert.equal(cfg.consoleFetchTimeoutMs, null);
     assert.equal(cfg.demoLlm, false);
+    assert.equal(cfg.memberCommsAddress, null);
     assert.equal(cfg.gatingConfigPath, null);
     assert.equal(cfg.routingConfigPath, null);
     assert.deepEqual(cfg.schedulingFiles, []);
@@ -333,6 +344,7 @@ describe("MobKitBuilder method chaining", () => {
       .consoleReadOnly(true)
       .consoleFetchTimeoutMs(120_000)
       .demoLlm()
+      .memberCommsTcp()
       .gating("gating.toml")
       .routing("routing.toml")
       .scheduling("s1.toml")
@@ -349,6 +361,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.consoleReadOnly, true);
     assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
     assert.equal(builder._config.demoLlm, true);
+    assert.equal(builder._config.memberCommsAddress, "127.0.0.1:0");
     assert.equal(builder._config.gatingConfigPath, "gating.toml");
     assert.equal(builder._config.workgraphEnabled, false);
     assert.equal(builder._config.routingConfigPath, "routing.toml");
