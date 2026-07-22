@@ -88,8 +88,13 @@ reachable from the targets:
 ```bash
 MDM_SUPERVISOR_BIND_ADDRESS=0.0.0.0:5790 \
 MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
+MDM_MEMBER_COMMS_ADDRESS=<console-reachable-ip>:0 \
 ./004-mdm-console-pack/scripts/start-console.sh
 ```
+
+`MDM_MEMBER_COMMS_ADDRESS` must name a concrete local interface, not
+`0.0.0.0`; each Hive/member runtime binds an ephemeral port on that interface
+and advertises the resolved TCP endpoint back to external targets.
 
 For a local-only demo, the default supervisor bridge is
 `tcp://127.0.0.1:5790`.
@@ -118,22 +123,32 @@ cd examples
 npm run mdm:smoke
 npm run mdm:browser-smoke
 npm run mdm:real-target-smoke
+npm run mdm:real-target-e2e
+npm run mdm:real-target-multi-e2e
 npm run mdm:local-target
 npm run mdm:console
 ```
 
 The empty-target smokes verify that the console boots without the old kennel
 path. `mdm:real-target-smoke` starts a disposable real `mdm_mob_target`, binds it
-as an external mob member, sends a queued mob turn to that target, and checks
-that the target process observed the peer turn. That is the release gate for the
-Meerkat bridge integration.
+as an external mob member, sends through the same console RPC used by the UI,
+and checks that the target process observed the peer turn. This deterministic
+lane does not require a provider response. `mdm:real-target-e2e` additionally
+requires configured provider credentials, sends the operator turn to the local
+hive, waits for the hive to query the wired target through peer comms, and
+fails unless target-side model/shell execution returns through the hive's
+tracked console terminal. Direct external-member delivery remains an
+ingress-acknowledged lane in Meerkat 0.8.2; the hive interaction is the
+supported terminal-owning MDM path.
+`mdm:real-target-multi-e2e` raises the same gate with two independent target
+processes and requires Hive's verified terminal summary to name both targets.
 
-The pack is pinned to the Meerkat 0.6.30 family. Re-apply and validate the pin
+The pack is pinned to Meerkat 0.8.2. Re-apply and validate the pin
 with:
 
 ```bash
 cd examples
-npm run mdm:upgrade-meerkat -- 0.6.30
+npm run mdm:upgrade-meerkat -- 0.8.2
 npm run mdm:real-target-smoke
 ```
 
@@ -142,6 +157,7 @@ with unrestricted shell tools enabled on the target side. The useful prompt is
 something like: "Ask every target what machine it is running on." The answer
 should come from target-side peer turns, not from roster labels.
 
-`mdm:real-target-smoke` passes on the published Meerkat 0.6.30 line. If it
+`mdm:real-target-smoke` and the credential-gated `mdm:real-target-e2e` pass on
+the published Meerkat 0.8.2 line. If either
 fails, treat that as a real bridge or MobKit regression rather than falling back
 to labels, demo model text, or static binding metadata.

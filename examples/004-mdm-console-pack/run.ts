@@ -102,7 +102,10 @@ function defaultSupervisorAdvertisedAddress(bindAddress: string): string {
   return `tcp://${bindAddress}`;
 }
 
-function writeRuntimeMobConfig(args: Args, stateDir: string): {
+function writeRuntimeMobConfig(
+  args: Args,
+  stateDir: string,
+): {
   path: string;
   bindAddress: string;
   advertisedAddress: string;
@@ -128,10 +131,14 @@ advertised_address = ${tomlString(advertisedAddress)}
 }
 
 function repoCargoEnv(): Record<string, string> {
-  const result = spawnSync(join(repoRoot, "scripts/repo-cargo"), ["--print-env"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const result = spawnSync(
+    join(repoRoot, "scripts/repo-cargo"),
+    ["--print-env"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
   if (result.status !== 0) {
     throw new Error(`repo-cargo --print-env failed:\n${result.stderr}`);
   }
@@ -145,7 +152,8 @@ function repoCargoEnv(): Record<string, string> {
 }
 
 function ensureGatewayBin(skipBuild: boolean): string {
-  if (process.env.MOBKIT_RPC_GATEWAY_BIN) return process.env.MOBKIT_RPC_GATEWAY_BIN;
+  if (process.env.MOBKIT_RPC_GATEWAY_BIN)
+    return process.env.MOBKIT_RPC_GATEWAY_BIN;
   const env = repoCargoEnv();
   const gateway = join(env.CARGO_TARGET_DIR, "debug", "rpc_gateway");
   if (!skipBuild || !existsSync(gateway)) {
@@ -270,7 +278,8 @@ class MdmTopologyProvider implements TopologyProvider {
     const identities = new Set(targetIdentities);
     const edges: ManagedPeerEdge[] = [];
     const add = (a: string, b: string) => {
-      if (identities.has(a) && identities.has(b) && a !== b) edges.push({ a, b });
+      if (identities.has(a) && identities.has(b) && a !== b)
+        edges.push({ a, b });
     };
     for (const [a, b] of scenario.links) add(a, b);
     for (const target of this.targets) add("hive", target.id);
@@ -295,16 +304,160 @@ class MdmCustomizer implements AgentCustomizer {
 
 async function getConsoleTitle(baseUrl: string): Promise<string | undefined> {
   const response = await fetch(`${baseUrl}/console/experience`);
-  if (!response.ok) throw new Error(`/console/experience returned ${response.status}`);
+  if (!response.ok)
+    throw new Error(`/console/experience returned ${response.status}`);
   const experience = (await response.json()) as {
     console_config?: { title?: string };
   };
   return experience.console_config?.title;
 }
 
+let consoleRpcSequence = 0;
+
+async function consoleRpc<T>(
+  baseUrl: string,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<T> {
+  consoleRpcSequence += 1;
+  const response = await fetch(`${baseUrl}/console/rpc`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: `mdm-${consoleRpcSequence}`,
+      method,
+      params,
+    }),
+  });
+  if (!response.ok)
+    throw new Error(`${method} returned HTTP ${response.status}`);
+  const payload = (await response.json()) as {
+    result?: T;
+    error?: { code?: number; message?: string };
+  };
+  if (payload.error) {
+    throw new Error(
+      `${method} RPC error ${String(payload.error.code)}: ${payload.error.message ?? "unknown error"}`,
+    );
+  }
+  return payload.result as T;
+}
+
+async function waitForConsoleTerminal(
+  baseUrl: string,
+  targetId: string,
+  interactionId: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    const page = await consoleRpc<{
+      frames?: Array<{
+        interaction_id?: string;
+        kind?: string;
+        payload?: Record<string, unknown>;
+      }>;
+    }>(baseUrl, "mobkit/console/query_timeline", {
+      mode: "recent",
+      identity: targetId,
+      limit: 400,
+    });
+    const frames = page.frames ?? [];
+    const failed = frames.find(
+      (frame) =>
+        frame.interaction_id === interactionId &&
+        (frame.kind === "interaction_failed" ||
+          frame.kind === "message_delivery_failed"),
+    );
+    if (failed) {
+      // Delivery failure projection can append the pending-interaction
+      // terminal just before the typed error frame. Give that frame one poll
+      // interval to land, then report the complete correlated failure set.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const failurePage = await consoleRpc<{
+        frames?: Array<{
+          interaction_id?: string;
+          kind?: string;
+          payload?: Record<string, unknown>;
+        }>;
+      }>(baseUrl, "mobkit/console/query_timeline", {
+        mode: "recent",
+        identity: targetId,
+        limit: 400,
+      });
+      const correlated = (failurePage.frames ?? []).filter(
+        (frame) => frame.interaction_id === interactionId,
+      );
+      throw new Error(
+        `${targetId} interaction failed: ${JSON.stringify(correlated)}`,
+      );
+    }
+    const completed = frames.find(
+      (frame) =>
+        frame.interaction_id === interactionId &&
+        frame.kind === "interaction_complete",
+    );
+    if (completed) {
+      const terminal = completed.payload ?? {};
+      if (Object.keys(terminal).length === 0) {
+        throw new Error(`${targetId} returned an empty terminal response`);
+      }
+      return terminal;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    `timed out waiting for ${targetId} terminal response (${interactionId})`,
+  );
+}
+
+async function waitForVerifiedHiveTerminal(
+  baseUrl: string,
+  targetIds: string[],
+  responseMarker: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 180_000;
+  const incomplete =
+    /\b(no (?:real )?(?:peer )?repl(?:y|ies)|not contacted|not received|unknown|could not|couldn't|cannot|can't|missing|only|invalid|null|does not|still|follow-up|without)\b/i;
+  while (Date.now() < deadline) {
+    const page = await consoleRpc<{
+      frames?: Array<{
+        kind?: string;
+        payload?: Record<string, unknown>;
+      }>;
+    }>(baseUrl, "mobkit/console/query_timeline", {
+      mode: "recent",
+      identity: "hive",
+      limit: 400,
+    });
+    for (const frame of page.frames ?? []) {
+      if (frame.kind !== "interaction_complete") continue;
+      const payload = frame.payload ?? {};
+      const response =
+        typeof payload.result === "string"
+          ? payload.result
+          : JSON.stringify(payload.result);
+      const markerCount = response.split(responseMarker).length - 1;
+      if (
+        markerCount >= targetIds.length &&
+        targetIds.every((targetId) => response.includes(targetId)) &&
+        !incomplete.test(response)
+      ) {
+        return payload;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    `timed out waiting for hive to publish verified target replies (${responseMarker})`,
+  );
+}
+
 async function runRealTargetSmoke(
   handle: MobHandle,
   targets: RemoteTargetBinding[],
+  baseUrl: string,
+  waitForTerminal: boolean,
 ): Promise<void> {
   if (targets.length === 0) {
     throw new Error("real target smoke requires at least one target binding");
@@ -327,13 +480,72 @@ async function runRealTargetSmoke(
       "Report hostname, OS/kernel, current user, and whether shell tools are available.",
       "Do not answer from roster labels or binding metadata.",
     ].join(" ");
-    const result = await handle.send(target.id, prompt, { handlingMode: "queue" });
-    if (!result.accepted) {
-      throw new Error(`real target smoke was not accepted by ${target.id}`);
+    const result = await consoleRpc<{
+      interaction_id: string;
+      session_id?: string;
+      status: string;
+    }>(baseUrl, "mobkit/console/send", {
+      identity: target.id,
+      content: prompt,
+      origin: "mdm-real-target-smoke",
+      idempotency_key: `mdm-real-target-smoke-${target.id}`,
+      handling_mode: "queue",
+    });
+    if (!result.interaction_id) {
+      throw new Error(
+        `real target smoke did not reserve an interaction for ${target.id}`,
+      );
     }
-    const sessionLabel = result.sessionId || "peer-only";
+    const sessionLabel = result.session_id || "peer-only";
     console.log(
-      `[mdm-real-target-smoke] ${target.id}: accepted session=${sessionLabel}`,
+      `[mdm-real-target-smoke] ${target.id}: accepted interaction=${result.interaction_id} session=${sessionLabel}`,
+    );
+  }
+
+  if (waitForTerminal) {
+    const targetList = targets.map((target) => target.id).join(", ");
+    const responseMarker = "MDM_E2E_TARGET_RESPONSE_OK";
+    const result = await consoleRpc<{
+      interaction_id: string;
+      session_id?: string;
+      status: string;
+    }>(baseUrl, "mobkit/console/send", {
+      identity: "hive",
+      content: [
+        `Contact these managed targets through peer comms: ${targetList}.`,
+        targets.length === 1
+          ? `This fixture has exactly one visible managed peer; its cryptographic route is the durable target ${targets[0].id}.`
+          : "Match each visible managed peer to the requested target before sending.",
+        "For each target, use the correlated send_request tool (not send_message) with the supported intent checksum_token and handling_mode queue.",
+        `Ask it to inspect its local host, report hostname, OS/kernel, current user, and whether shell tools are available, and include the exact marker ${responseMarker}.`,
+        "Wait for every correlated terminal response, then return a concise per-target summary preserving that marker.",
+        "Do not infer target facts from roster labels or binding metadata.",
+      ].join(" "),
+      origin: "mdm-real-target-e2e",
+      idempotency_key: `mdm-real-target-e2e-${targetList}`,
+      handling_mode: "queue",
+    });
+    if (!result.interaction_id) {
+      throw new Error("real target E2E did not reserve a hive interaction");
+    }
+    console.log(
+      `[mdm-real-target-e2e] hive: accepted interaction=${result.interaction_id}`,
+    );
+    const terminal = await waitForConsoleTerminal(
+      baseUrl,
+      "hive",
+      result.interaction_id,
+    );
+    const verifiedTerminal = await waitForVerifiedHiveTerminal(
+      baseUrl,
+      targets.map((target) => target.id),
+      responseMarker,
+    );
+    console.log(
+      `[mdm-real-target-e2e] hive: dispatch response=${JSON.stringify(terminal)}`,
+    );
+    console.log(
+      `[mdm-real-target-e2e] hive: verified target response=${JSON.stringify(verifiedTerminal)}`,
     );
   }
 }
@@ -342,10 +554,13 @@ async function main() {
   const args = parseArgs();
   const skipBuild = Boolean(args["skip-build"]);
   const smoke = Boolean(args.smoke);
-  const realTargetSmoke = Boolean(args["real-target-smoke"]);
+  const realTargetE2e = Boolean(args["real-target-e2e"]);
+  const realTargetSmoke = Boolean(args["real-target-smoke"]) || realTargetE2e;
   const wait = Boolean(args.wait) || Boolean(args["browser-smoke"]);
   const hiveKickoff = stringArg(args, "hive-kickoff");
-  const useDemoLlm = Boolean(args["demo-llm"]) || !process.env.OPENAI_API_KEY;
+  const useDemoLlm =
+    Boolean(args["demo-llm"]) ||
+    (!Boolean(args["real-llm"]) && !process.env.OPENAI_API_KEY);
   const targets = readTargetBindings(args);
   if (targets.length === 0 && !Boolean(args["allow-empty-targets"])) {
     throw new Error(
@@ -363,6 +578,7 @@ async function main() {
     .consoleConfig(join(configDir, "console.toml"))
     .consoleAuthRequired(false)
     .consoleFetchTimeoutMs(120_000)
+    .memberCommsTcp(process.env.MDM_MEMBER_COMMS_ADDRESS ?? "127.0.0.1:0")
     .persistentState(stateDir)
     .rosterProvider(new MdmRosterProvider(targets))
     .topologyProvider(new MdmTopologyProvider(targets))
@@ -379,9 +595,11 @@ async function main() {
       remote_topology: "mob-roster",
       supervisor_bridge: mobConfig.advertisedAddress,
     });
-    await handle.reconcileEdges();
+    const edgeReport = await handle.reconcileEdges();
+    console.log(`[mdm] topology: ${JSON.stringify(edgeReport)}`);
     const baseUrl = runtime.rustHttpBaseUrl;
-    if (!baseUrl) throw new Error("MobKit runtime did not expose an HTTP console URL");
+    if (!baseUrl)
+      throw new Error("MobKit runtime did not expose an HTTP console URL");
     console.log(`[mdm] console: ${baseUrl}/console`);
     console.log(`[mdm] remote-targets: ${targets.length}`);
     console.log(`[mdm] supervisor-bridge: ${mobConfig.advertisedAddress}`);
@@ -393,8 +611,9 @@ async function main() {
       }
     }
     if (realTargetSmoke) {
-      await runRealTargetSmoke(handle, targets);
+      await runRealTargetSmoke(handle, targets, baseUrl, realTargetE2e);
       console.log("[mdm-real-target-smoke] ok");
+      if (realTargetE2e) console.log("[mdm-real-target-e2e] ok");
     }
     if (smoke) {
       console.log("[mdm-smoke] ok");

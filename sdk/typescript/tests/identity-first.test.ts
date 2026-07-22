@@ -1171,6 +1171,7 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       consoleReadOnly: null,
       consoleFetchTimeoutMs: null,
       demoLlm: false,
+      memberCommsAddress: null,
       gatingConfigPath: null,
       routingConfigPath: null,
       schedulingFiles: [],

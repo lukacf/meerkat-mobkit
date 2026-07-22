@@ -50,6 +50,19 @@ fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
         )
 }
 
+fn interaction_id_for_delivery<'a>(
+    spec: &DurableAgentSpec,
+    interaction_id: Option<&'a str>,
+) -> Option<&'a str> {
+    // Meerkat 0.8.2 deliberately rejects transcript interaction ids on
+    // remotely hosted / peer-only member turns: that metadata carrier is not
+    // representable on the wire path. MobKit still correlates the response
+    // through its pending-interaction ledger and the peer terminal event.
+    (!durable_spec_uses_external_binding(spec))
+        .then_some(interaction_id)
+        .flatten()
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -5986,7 +5999,7 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
-        let (runtime_id, memory_session_key, memory_generation) = {
+        let (runtime_id, memory_session_key, memory_generation, bridge_interaction_id) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -5999,6 +6012,7 @@ impl IdentityRuntime {
                 // Scopes the injector's cross-turn dedup + cumulative budget.
                 entry.continuity.as_ref().map(|c| c.session_id.to_string()),
                 entry.continuity.as_ref().map(|c| c.generation.get()),
+                interaction_id_for_delivery(&entry.spec, interaction_id),
             )
         };
         // Steer is latency-sensitive live operator input: it bypasses both
@@ -6046,7 +6060,7 @@ impl IdentityRuntime {
                     &content_to_deliver,
                     &injected_context,
                     handling_mode,
-                    interaction_id,
+                    bridge_interaction_id,
                 )
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
@@ -9042,6 +9056,25 @@ mod reset_reprofile_tests {
             backend: None,
             binding: None,
         }
+    }
+
+    #[test]
+    fn external_delivery_omits_unrepresentable_interaction_id_carrier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("target-smoke")?;
+        let mut external = durable_spec(identity.clone(), "target");
+        external.backend = Some(meerkat_mob::MobBackendKind::External);
+        assert_eq!(
+            interaction_id_for_delivery(&external, Some("interaction-1")),
+            None
+        );
+
+        let local = durable_spec(identity, "target");
+        assert_eq!(
+            interaction_id_for_delivery(&local, Some("interaction-1")),
+            Some("interaction-1")
+        );
+        Ok(())
     }
 
     async fn lazy_context_with_broken_retained_lease(

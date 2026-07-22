@@ -617,6 +617,9 @@ export class MobKitRuntime {
     if (this._config.demoLlm) {
       runtimeOptions.demo_llm = true;
     }
+    if (this._config.memberCommsAddress) {
+      runtimeOptions.member_comms_address = this._config.memberCommsAddress;
+    }
     if (this._config.implicitDelegateIdleRetireSecs !== undefined) {
       runtimeOptions.implicit_delegate_idle_retire_secs =
         this._config.implicitDelegateIdleRetireSecs;

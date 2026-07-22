@@ -8,7 +8,8 @@ use meerkat::{AgentFactory, FactoryAgentBuilder, PersistenceBundle, PersistentSe
 use meerkat_core::lifecycle::RunId;
 use meerkat_core::lifecycle::core_executor::{
     CoreApplyOutput, CoreExecutor, CoreExecutorBoundaryHandle, CoreExecutorError,
-    CoreExecutorInterruptHandle,
+    CoreExecutorInterruptHandle, CoreExecutorPostStopCleanupHandle, CoreExecutorPublicationHandle,
+    CoreExecutorTurnFinalizationBoundaryHandle,
 };
 use meerkat_core::lifecycle::run_primitive::{
     ConversationContextAppend, RunApplyBoundary, RunPrimitive,
@@ -74,6 +75,55 @@ struct TargetCoreExecutor {
     session_id: SessionId,
 }
 
+struct TargetCorePostStopCleanupHandle {
+    service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
+    mob_state: Arc<MobMcpState>,
+    session_id: SessionId,
+}
+
+#[async_trait::async_trait]
+impl CoreExecutorPostStopCleanupHandle for TargetCorePostStopCleanupHandle {
+    async fn cleanup_after_runtime_stop_terminalized(&self) -> Result<(), CoreExecutorError> {
+        meerkat::surface::persistent_runtime_post_stop_cleanup_handle(
+            Arc::clone(&self.service),
+            self.session_id.clone(),
+        )
+        .cleanup_after_runtime_stop_terminalized()
+        .await?;
+        self.mob_state
+            .destroy_bridge_session_mobs(&self.session_id.to_string())
+            .await
+            .map_err(|error| {
+                CoreExecutorError::control_failed_runtime(format!(
+                    "failed to clean up target mobs for session {}: {error}",
+                    self.session_id
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn cleanup_after_runtime_stop_terminalized_under_turn_finalization_boundary(
+        &self,
+    ) -> Result<(), CoreExecutorError> {
+        meerkat::surface::persistent_runtime_post_stop_cleanup_handle(
+            Arc::clone(&self.service),
+            self.session_id.clone(),
+        )
+        .cleanup_after_runtime_stop_terminalized_under_turn_finalization_boundary()
+        .await?;
+        self.mob_state
+            .destroy_bridge_session_mobs(&self.session_id.to_string())
+            .await
+            .map_err(|error| {
+                CoreExecutorError::control_failed_runtime(format!(
+                    "failed to clean up target mobs for session {}: {error}",
+                    self.session_id
+                ))
+            })?;
+        Ok(())
+    }
+}
+
 impl TargetCoreExecutor {
     fn new(
         service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
@@ -116,6 +166,16 @@ impl CoreExecutorBoundaryHandle for TargetCoreBoundaryHandle {
             })
             .map_err(|error| CoreExecutorError::control_failed_runtime(error.to_string()))
     }
+
+    async fn prepare_system_context_at_boundary(
+        &self,
+        expected_run_id: &RunId,
+        appends: Vec<PendingSystemContextAppend>,
+    ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
+        self.service
+            .prepare_live_system_context_boundary(&self.session_id, expected_run_id, appends)
+            .await
+    }
 }
 
 struct TargetCoreInterruptHandle {
@@ -154,6 +214,36 @@ impl CoreExecutor for TargetCoreExecutor {
         }))
     }
 
+    fn publication_handle(&self) -> Option<Arc<dyn CoreExecutorPublicationHandle>> {
+        Some(meerkat::surface::persistent_runtime_publication_handle(
+            Arc::clone(&self.service),
+            self.session_id.clone(),
+        ))
+    }
+
+    fn machine_managed_post_stop_unregister(&self) -> bool {
+        true
+    }
+
+    fn post_stop_cleanup_handle(&self) -> Option<Arc<dyn CoreExecutorPostStopCleanupHandle>> {
+        Some(Arc::new(TargetCorePostStopCleanupHandle {
+            service: Arc::clone(&self.service),
+            mob_state: Arc::clone(&self.mob_state),
+            session_id: self.session_id.clone(),
+        }))
+    }
+
+    fn turn_finalization_boundary_handle(
+        &self,
+    ) -> Option<Arc<dyn CoreExecutorTurnFinalizationBoundaryHandle>> {
+        Some(
+            meerkat::surface::persistent_runtime_turn_finalization_boundary_handle(
+                Arc::clone(&self.service),
+                self.session_id.clone(),
+            ),
+        )
+    }
+
     async fn apply(
         &mut self,
         run_id: RunId,
@@ -173,8 +263,12 @@ impl CoreExecutor for TargetCoreExecutor {
             }
             _ => Vec::new(),
         };
-        let prompt = primitive.extract_content_input();
-        let prompt_preview = match &prompt {
+        // Supervisor-bridge deliveries arrive as typed system notices. Their
+        // durable authorship stays in `typed_turn_appends`; only the preview
+        // uses the provider-facing projection so remote work is visible in
+        // diagnostics without flattening it into a fabricated user prompt.
+        let prompt_preview_input = primitive.model_projection_content_input();
+        let prompt_preview = match &prompt_preview_input {
             ContentInput::Text(text) => text.replace('\n', " "),
             ContentInput::Blocks(blocks) => format!("{} content blocks", blocks.len()),
         };
@@ -183,7 +277,7 @@ impl CoreExecutor for TargetCoreExecutor {
             prompt_preview.chars().take(160).collect::<String>()
         );
         let req = StartTurnRequest {
-            prompt,
+            prompt: primitive.extract_content_input(),
             injected_context: Vec::new(),
             system_prompt: None,
             event_tx: None,
@@ -196,7 +290,8 @@ impl CoreExecutor for TargetCoreExecutor {
                 metadata.and_then(|meta| meta.turn_tool_overlay.clone()),
                 pre_turn_context_appends,
                 metadata.cloned(),
-            ),
+            )
+            .with_typed_turn_appends(primitive.typed_turn_appends()),
         };
         let boundary = match &primitive {
             RunPrimitive::StagedInput(staged) => staged.boundary,
@@ -205,6 +300,56 @@ impl CoreExecutor for TargetCoreExecutor {
         let input_ids = primitive.contributing_input_ids().to_vec();
         self.service
             .apply_runtime_turn(&self.session_id, run_id, req, boundary, input_ids)
+            .await
+            .map_err(CoreExecutorError::apply_failed_from_session_error)
+    }
+
+    async fn reconcile_committed_compaction_projections(
+        &mut self,
+        intents: &[meerkat_core::CompactionProjectionIntent],
+    ) -> Result<(), CoreExecutorError> {
+        self.service
+            .reconcile_runtime_compaction_projections(&self.session_id, intents.to_vec())
+            .await
+            .map_err(|error| CoreExecutorError::Internal(error.to_string()))
+    }
+
+    async fn abort_uncommitted_compaction_projections(&mut self) -> Result<(), CoreExecutorError> {
+        self.service
+            .abort_uncommitted_compaction_projections(&self.session_id)
+            .await
+            .map_err(|error| CoreExecutorError::Internal(error.to_string()))
+    }
+
+    async fn abort_rejected_run_projections(&mut self) -> Result<(), CoreExecutorError> {
+        self.service
+            .abort_rejected_runtime_run_projections(&self.session_id)
+            .await
+            .map_err(|error| CoreExecutorError::Internal(error.to_string()))
+    }
+
+    async fn checkpoint_committed_session_snapshot(
+        &mut self,
+        session_snapshot: &[u8],
+    ) -> Result<(), CoreExecutorError> {
+        self.service
+            .checkpoint_committed_runtime_session_snapshot_under_runtime_turn_boundary(
+                &self.session_id,
+                session_snapshot,
+            )
+            .await
+            .map_err(CoreExecutorError::apply_failed_from_session_error)
+    }
+
+    async fn publish_interaction_terminals(
+        &mut self,
+        events: &[meerkat_core::AgentEvent],
+    ) -> Result<
+        Vec<meerkat_core::lifecycle::core_executor::CoreInteractionTerminalPublicationReceipt>,
+        CoreExecutorError,
+    > {
+        self.service
+            .publish_interaction_terminals_exact_batch(&self.session_id, events)
             .await
             .map_err(CoreExecutorError::apply_failed_from_session_error)
     }
@@ -224,22 +369,17 @@ impl CoreExecutor for TargetCoreExecutor {
     }
 
     async fn stop_runtime_executor(&mut self, _reason: String) -> Result<(), CoreExecutorError> {
-        let discard_result = self.service.discard_live_session(&self.session_id).await;
-        if let Err(error) = Box::pin(
-            self.mob_state
-                .destroy_bridge_session_mobs(&self.session_id.to_string()),
-        )
+        Ok(())
+    }
+
+    async fn cleanup_after_runtime_stop_terminalized(&mut self) -> Result<(), CoreExecutorError> {
+        TargetCorePostStopCleanupHandle {
+            service: Arc::clone(&self.service),
+            mob_state: Arc::clone(&self.mob_state),
+            session_id: self.session_id.clone(),
+        }
+        .cleanup_after_runtime_stop_terminalized()
         .await
-        {
-            eprintln!(
-                "[mdm-target] warning: cleanup mobs for session {}: {error}",
-                self.session_id
-            );
-        }
-        match discard_result {
-            Ok(()) | Err(SessionError::NotFound { .. }) => Ok(()),
-            Err(error) => Err(CoreExecutorError::control_failed_runtime(error.to_string())),
-        }
     }
 }
 
