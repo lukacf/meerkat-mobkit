@@ -1,5 +1,6 @@
 //! Builder for constructing a configured UnifiedRuntime instance.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,6 +70,7 @@ pub struct UnifiedRuntimeBuilder {
     agent_customizer: Option<Arc<dyn AgentCustomizer>>,
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
+    agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
     agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
@@ -246,16 +248,34 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Override identity-first memory tooling for a specific durable profile.
+    ///
+    /// Inline profiles inherit `profiles.<name>.tools.memory` automatically.
+    /// Realm-referenced profiles are unresolved at the customizer boundary and
+    /// therefore fail closed unless explicitly enabled with this method.
+    pub fn agent_memory_for_profile(
+        mut self,
+        profile: impl Into<meerkat_mob::ProfileName>,
+        enabled: bool,
+    ) -> Self {
+        self.agent_memory_profile_policy
+            .insert(profile.into(), enabled);
+        self
+    }
+
     fn composed_agent_customizer(
         &self,
         memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     ) -> Option<Arc<dyn AgentCustomizer>> {
         match memory_provider {
-            Some(provider) => Some(Arc::new(AgentMemoryCustomizer::wrap(
-                self.agent_customizer.clone(),
-                provider,
-                self.agent_memory_config.clone().unwrap_or_default(),
-            ))),
+            Some(provider) => Some(Arc::new(
+                AgentMemoryCustomizer::wrap(
+                    self.agent_customizer.clone(),
+                    provider,
+                    self.agent_memory_config.clone().unwrap_or_default(),
+                )
+                .with_profile_memory_policy(self.agent_memory_profile_policy.clone()),
+            )),
             None => self.agent_customizer.clone(),
         }
     }
@@ -883,7 +903,7 @@ impl UnifiedRuntimeBuilder {
             (None, None)
         };
         // Set immutable outer fields by rebuilding the struct
-        let runtime = UnifiedRuntime {
+        let mut runtime = UnifiedRuntime {
             access_controller: self.access_controller,
             topology_controller,
             post_spawn_hook: self.post_spawn_hook,
@@ -1005,17 +1025,10 @@ impl UnifiedRuntimeBuilder {
         // memory-stack errors can return by ordinary drop without retaining
         // the runtime and its persistent controller locks.
         if let (Some(context), Some(roster_specs)) = (
-            runtime.identity_first_context.as_ref(),
+            runtime.identity_first_context.clone(),
             identity_roster_specs.as_ref(),
         ) {
-            runtime
-                .mob_runtime
-                .install_identity_runtime_authority(Arc::clone(&context.runtime));
-            *runtime
-                .implicit_delegate_identity_runtime
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(Arc::clone(&context.runtime));
+            runtime.install_identity_first_context_authority(Arc::clone(&context));
 
             // Identity bootstrap may now launch background warming; if it
             // fails, drive the fully assembled runtime through the same
