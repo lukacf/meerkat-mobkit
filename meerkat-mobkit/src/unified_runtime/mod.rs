@@ -219,6 +219,7 @@ enum MobEventIngress {
 struct MobEventForwarder {
     event_rx: Receiver<EventEnvelope<UnifiedEvent>>,
     task: JoinHandle<()>,
+    identity_stream_health_task: JoinHandle<()>,
 }
 
 impl UnifiedRuntime {
@@ -1084,14 +1085,27 @@ impl UnifiedRuntime {
     ) -> MobEventIngress {
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+        // Identity lifecycle repair must remain live even when an embedding
+        // application does not drain the bounded console/event channel.
+        // A dedicated subscription monitor drains its streams independently
+        // and owns only permanent-loss detection; the ordinary forwarder
+        // retains lossless backpressure for user-visible events.
+        let identity_stream_health_task = tokio::spawn(run_identity_stream_health_monitor(
+            mob_handle.clone(),
+            agent_mob_mcp_state.clone(),
+            identity_runtime,
+        ));
         let task = tokio::spawn(run_resilient_mob_agent_event_forwarder(
             mob_handle,
             agent_mob_mcp_state,
             event_tx,
             mob_events,
-            identity_runtime,
         ));
-        MobEventIngress::Forwarder(MobEventForwarder { event_rx, task })
+        MobEventIngress::Forwarder(MobEventForwarder {
+            event_rx,
+            task,
+            identity_stream_health_task,
+        })
     }
 
     async fn rollback_mob_runtime(
@@ -1120,16 +1134,32 @@ enum ForwardedAgentEvent {
     Closed(TrackedAgentEventStream),
 }
 
-type TrackedAgentEventStream = (String, AgentIdentity, AgentRuntimeId, FenceToken);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TrackedAgentEventStream {
+    mob_id: String,
+    /// Trusted durable identity stamped by the identity-first spawn bridge.
+    /// Ordinary/child mobs do not carry this label and are never handed to
+    /// the primary identity repair authority.
+    durable_identity: Option<String>,
+    /// Concrete roster identity used to subscribe to Meerkat events.
+    member_identity: AgentIdentity,
+    runtime_id: AgentRuntimeId,
+    /// Identity-authority fencing token captured when the health subscription
+    /// was established. This is deliberately distinct from `fence_token`,
+    /// which belongs to Meerkat Mob's member-binding fencing domain.
+    identity_fencing_token: Option<u64>,
+    fence_token: FenceToken,
+}
 type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 
-/// Per-member subscribe-failure backoff for the console agent-event
-/// forwarder. The forwarder reconciles every 250ms; without backoff a
+/// Per-member subscribe-failure backoff for agent-event subscriptions.
+/// The forwarder and independent identity-health monitor reconcile every
+/// 250ms; without backoff a
 /// member that keeps failing `subscribe_agent_events` is retried 4×/s
 /// indefinitely and floods the log (observed: ~49k "failed to subscribe"
-/// warnings over 3.4h on a single wedged-retiring alias). We retry transient
-/// failures with exponential backoff and hand persistent loss to identity
-/// repair instead of suppressing the same dead session forever.
+/// warnings over 3.4h on a single wedged-retiring alias). Both retry transient
+/// failures with exponential backoff; only the independent health monitor
+/// hands persistent loss to identity repair.
 struct SubscribeBackoff {
     next_attempt: tokio::time::Instant,
     consecutive_failures: u32,
@@ -1156,18 +1186,54 @@ fn forwarder_should_subscribe(status: MobMemberStatus) -> bool {
     matches!(status, MobMemberStatus::Active)
 }
 
+fn durable_identity_label(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels.get("agent_identity").cloned()
+}
+
+async fn current_identity_fencing_token(
+    primary_mob_id: &str,
+    mob_id: &str,
+    durable_identity: Option<&str>,
+    identity_runtime: Option<
+        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    >,
+) -> Option<u64> {
+    if mob_id != primary_mob_id {
+        return None;
+    }
+    let durable_identity = durable_identity?;
+    let identity_runtime = identity_runtime?;
+    let authority = identity_runtime
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()?;
+    let identity = crate::identity_first::AgentIdentity::parse(durable_identity).ok()?;
+    authority
+        .status(&identity)
+        .await
+        .ok()?
+        .lease
+        .map(|lease| lease.fencing_token.get())
+}
+
 async fn trigger_identity_stream_repair(
     primary_mob_id: &str,
     tracked_key: &TrackedAgentEventStream,
     identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     detail: &str,
 ) {
-    let (mob_id, identity, runtime_id, _) = tracked_key;
-    if mob_id != primary_mob_id {
+    if tracked_key.mob_id != primary_mob_id {
         return;
     }
+    let Some(durable_identity) = tracked_key.durable_identity.as_deref() else {
+        return;
+    };
+    let Some(identity_fencing_token) = tracked_key.identity_fencing_token else {
+        return;
+    };
     let runtime_alias =
-        crate::member_comms_id::runtime_alias_str(runtime_id.identity.as_str()).into_owned();
+        crate::member_comms_id::runtime_alias_str(tracked_key.runtime_id.identity.as_str())
+            .into_owned();
     let authority = identity_runtime
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1175,11 +1241,11 @@ async fn trigger_identity_stream_repair(
     let Some(authority) = authority else {
         return;
     };
-    let identity = match crate::identity_first::AgentIdentity::parse(identity.as_str()) {
+    let identity = match crate::identity_first::AgentIdentity::parse(durable_identity) {
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(
-                identity = %identity,
+                identity = %durable_identity,
                 error = %error,
                 "mobkit agent event forwarder: roster identity cannot be mapped to identity authority"
             );
@@ -1187,12 +1253,12 @@ async fn trigger_identity_stream_repair(
         }
     };
     if let Err(error) = authority
-        .mark_active_runtime_broken(&identity, &runtime_alias, detail)
+        .mark_active_runtime_broken(&identity, &runtime_alias, identity_fencing_token, detail)
         .await
     {
         tracing::warn!(
             identity = %identity,
-            runtime_id = %runtime_id,
+            runtime_id = %tracked_key.runtime_id,
             error = %error,
             "mobkit agent event forwarder: failed to trigger identity repair after permanent stream loss"
         );
@@ -1204,7 +1270,6 @@ async fn run_resilient_mob_agent_event_forwarder(
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     event_tx: Sender<EventEnvelope<UnifiedEvent>>,
     mob_events: MobEventsStore,
-    identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
 ) {
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
@@ -1219,7 +1284,7 @@ async fn run_resilient_mob_agent_event_forwarder(
         &mut tracked,
         &mut subscribe_failures,
         &mut streams,
-        &identity_runtime,
+        None,
     ))
     .await;
 
@@ -1252,6 +1317,49 @@ async fn run_resilient_mob_agent_event_forwarder(
                     ForwardedAgentEvent::Closed(tracked_key) => {
                         tracked.remove(&tracked_key);
                         subscribe_failures.remove(&tracked_key);
+                    }
+                }
+            }
+            _ = reconcile_interval.tick() => {
+                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+            }
+        }
+    }
+}
+
+/// Drain a second subscription set dedicated to identity health. Keeping this
+/// task separate from console/event projection ensures a full user-facing
+/// output channel cannot suppress permanent stream-loss detection.
+async fn run_identity_stream_health_monitor(
+    handle: MobHandle,
+    agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
+    identity_runtime: Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+) {
+    let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
+    let mut tracked = HashSet::new();
+    let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
+    let mut reconcile_interval = tokio::time::interval(Duration::from_millis(250));
+    #[cfg(not(target_arch = "wasm32"))]
+    reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    Box::pin(reconcile_agent_event_streams(
+        &handle,
+        &agent_mob_mcp_state,
+        &mut tracked,
+        &mut subscribe_failures,
+        &mut streams,
+        Some(&identity_runtime),
+    ))
+    .await;
+
+    loop {
+        tokio::select! {
+            Some(forwarded) = streams.next() => {
+                match forwarded {
+                    ForwardedAgentEvent::Event(_) => {}
+                    ForwardedAgentEvent::Closed(tracked_key) => {
+                        tracked.remove(&tracked_key);
+                        subscribe_failures.remove(&tracked_key);
                         trigger_identity_stream_repair(
                             handle.mob_id().as_str(),
                             &tracked_key,
@@ -1262,7 +1370,14 @@ async fn run_resilient_mob_agent_event_forwarder(
                 }
             }
             _ = reconcile_interval.tick() => {
-                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, &identity_runtime)).await;
+                Box::pin(reconcile_agent_event_streams(
+                    &handle,
+                    &agent_mob_mcp_state,
+                    &mut tracked,
+                    &mut subscribe_failures,
+                    &mut streams,
+                    Some(&identity_runtime),
+                )).await;
             }
         }
     }
@@ -1274,7 +1389,9 @@ async fn reconcile_agent_event_streams(
     tracked: &mut HashSet<TrackedAgentEventStream>,
     subscribe_failures: &mut HashMap<TrackedAgentEventStream, SubscribeBackoff>,
     streams: &mut SelectAll<TaggedAgentEventStream>,
-    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    identity_runtime: Option<
+        &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    >,
 ) {
     let primary_mob_id = handle.mob_id().to_string();
     let mut handles = vec![handle.clone()];
@@ -1303,12 +1420,27 @@ async fn reconcile_agent_event_streams(
             let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
                 continue;
             };
-            current.insert((
-                mob_id.clone(),
-                entry.agent_identity.clone(),
+            let durable_identity = durable_identity_label(&entry.labels);
+            let identity_fencing_token = current_identity_fencing_token(
+                &primary_mob_id,
+                &mob_id,
+                durable_identity.as_deref(),
+                identity_runtime,
+            )
+            .await;
+            // The health monitor exists solely for identity-first repair.
+            // Avoid duplicating every ordinary/child-mob event stream.
+            if identity_runtime.is_some() && identity_fencing_token.is_none() {
+                continue;
+            }
+            current.insert(TrackedAgentEventStream {
+                mob_id: mob_id.clone(),
+                durable_identity,
+                member_identity: entry.agent_identity.clone(),
                 runtime_id,
+                identity_fencing_token,
                 fence_token,
-            ));
+            });
         }
     }
 
@@ -1325,12 +1457,25 @@ async fn reconcile_agent_event_streams(
             let Some((runtime_id, fence_token)) = entry.binding_atoms() else {
                 continue;
             };
-            let tracked_key = (
-                mob_id.clone(),
-                identity.clone(),
-                runtime_id.clone(),
+            let durable_identity = durable_identity_label(&entry.labels);
+            let identity_fencing_token = current_identity_fencing_token(
+                &primary_mob_id,
+                &mob_id,
+                durable_identity.as_deref(),
+                identity_runtime,
+            )
+            .await;
+            if identity_runtime.is_some() && identity_fencing_token.is_none() {
+                continue;
+            }
+            let tracked_key = TrackedAgentEventStream {
+                mob_id: mob_id.clone(),
+                durable_identity,
+                member_identity: identity.clone(),
+                runtime_id: runtime_id.clone(),
+                identity_fencing_token,
                 fence_token,
-            );
+            };
             if tracked.contains(&tracked_key) {
                 continue;
             }
@@ -1359,7 +1504,12 @@ async fn reconcile_agent_event_streams(
 
             let role = entry.role.clone();
 
-            match subscribe_agent_events_for_console_forwarder(&handle, &identity).await {
+            match subscribe_agent_events_for_console_forwarder(
+                &handle,
+                &tracked_key.member_identity,
+            )
+            .await
+            {
                 Ok(stream) => {
                     let close_key = tracked_key.clone();
                     subscribe_failures.remove(&tracked_key);
@@ -1394,14 +1544,14 @@ async fn reconcile_agent_event_streams(
                                 next_attempt: now,
                                 consecutive_failures: 0,
                             });
-                    if backoff.consecutive_failures == 0 {
+                    if identity_runtime.is_none() && backoff.consecutive_failures == 0 {
                         tracing::warn!(
                             mob_id = %mob_id,
                             identity = %identity,
                             error = %error,
                             "mobkit agent event forwarder: failed to subscribe; will retry with backoff"
                         );
-                    } else {
+                    } else if identity_runtime.is_none() {
                         tracing::debug!(
                             mob_id = %mob_id,
                             identity = %identity,
@@ -1415,7 +1565,7 @@ async fn reconcile_agent_event_streams(
                     backoff.consecutive_failures = backoff.consecutive_failures.saturating_add(1);
                     let stream_is_permanently_lost =
                         backoff.consecutive_failures >= PERMANENT_STREAM_FAILURE_THRESHOLD;
-                    if stream_is_permanently_lost {
+                    if stream_is_permanently_lost && let Some(identity_runtime) = identity_runtime {
                         trigger_identity_stream_repair(
                             &primary_mob_id,
                             &repair_key,
@@ -1611,6 +1761,21 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn identity_stream_tracking_uses_trusted_durable_identity_label() {
+        let labels =
+            BTreeMap::from([("agent_identity".to_string(), "review:singleton".to_string())]);
+        assert_eq!(
+            durable_identity_label(&labels).as_deref(),
+            Some("review:singleton")
+        );
+        assert_eq!(
+            durable_identity_label(&BTreeMap::new()),
+            None,
+            "ordinary mobs must not be guessed into identity authority"
+        );
     }
 
     /// Regression: identity-first members spawn under comms-safe encoded

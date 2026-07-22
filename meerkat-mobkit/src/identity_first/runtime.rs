@@ -4994,6 +4994,7 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
         expected_runtime_id: &str,
+        expected_fencing_token: u64,
         detail: &str,
     ) -> Result<bool, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
@@ -5007,7 +5008,11 @@ impl IdentityRuntime {
                 && entry
                     .continuity
                     .as_ref()
-                    .is_some_and(|record| record.agent_runtime_id.as_str() == expected_runtime_id);
+                    .is_some_and(|record| record.agent_runtime_id.as_str() == expected_runtime_id)
+                && entry
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.fencing_token.get() == expected_fencing_token);
             if is_current_active {
                 // Retain the exact live lease. Broken repair owns lower-plane
                 // cleanup and releases that grant before rematerializing.
@@ -9259,7 +9264,7 @@ mod reset_reprofile_tests {
 
         assert!(
             runtime
-                .mark_active_runtime_broken(&identity, &alias, "event stream closed")
+                .mark_active_runtime_broken(&identity, &alias, 7, "event stream closed")
                 .await?
         );
         assert_eq!(
@@ -9290,8 +9295,38 @@ mod reset_reprofile_tests {
                 .mark_active_runtime_broken(
                     &identity,
                     "rt:domain:replacement:stale",
+                    0,
                     "stale event stream closed",
                 )
+                .await?
+        );
+        assert_eq!(
+            runtime.status(&identity).await?.state,
+            IdentityLifecycleState::Active
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_fence_stream_loss_does_not_break_same_alias_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = AgentIdentity::parse("domain:replacement-fence")?;
+        let (runtime, alias) =
+            active_alias_runtime("replacement-fence-runtime", identity.as_str()).await?;
+        runtime
+            .update_lease(
+                &identity,
+                LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(8),
+                    ttl: Duration::from_secs(60),
+                },
+            )
+            .await?;
+
+        assert!(
+            !runtime
+                .mark_active_runtime_broken(&identity, &alias, 7, "old-fence event stream closed",)
                 .await?
         );
         assert_eq!(

@@ -1,5 +1,6 @@
 //! Builder for constructing a configured UnifiedRuntime instance.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,6 +70,7 @@ pub struct UnifiedRuntimeBuilder {
     agent_customizer: Option<Arc<dyn AgentCustomizer>>,
     agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     agent_memory_config: Option<AgentMemoryConfig>,
+    agent_memory_profile_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
     agent_memory_from_persistent_state: bool,
     agent_memory_engines: Option<crate::memory_wiring::MemoryEnginesConfig>,
     identity_bootstrap_mode: IdentityBootstrapMode,
@@ -246,16 +248,34 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Override identity-first memory tooling for a specific durable profile.
+    ///
+    /// Inline profiles inherit `profiles.<name>.tools.memory` automatically.
+    /// Realm-referenced profiles are unresolved at the customizer boundary and
+    /// therefore fail closed unless explicitly enabled with this method.
+    pub fn agent_memory_for_profile(
+        mut self,
+        profile: impl Into<meerkat_mob::ProfileName>,
+        enabled: bool,
+    ) -> Self {
+        self.agent_memory_profile_policy
+            .insert(profile.into(), enabled);
+        self
+    }
+
     fn composed_agent_customizer(
         &self,
         memory_provider: Option<Arc<dyn AgentMemoryProvider>>,
     ) -> Option<Arc<dyn AgentCustomizer>> {
         match memory_provider {
-            Some(provider) => Some(Arc::new(AgentMemoryCustomizer::wrap(
-                self.agent_customizer.clone(),
-                provider,
-                self.agent_memory_config.clone().unwrap_or_default(),
-            ))),
+            Some(provider) => Some(Arc::new(
+                AgentMemoryCustomizer::wrap(
+                    self.agent_customizer.clone(),
+                    provider,
+                    self.agent_memory_config.clone().unwrap_or_default(),
+                )
+                .with_profile_memory_policy(self.agent_memory_profile_policy.clone()),
+            )),
             None => self.agent_customizer.clone(),
         }
     }

@@ -443,6 +443,9 @@ impl UnifiedRuntime {
                 let task = forwarder.task;
                 task.abort();
                 let _ = task.await;
+                let health_task = forwarder.identity_stream_health_task;
+                health_task.abort();
+                let _ = health_task.await;
             }
             None => {}
         }

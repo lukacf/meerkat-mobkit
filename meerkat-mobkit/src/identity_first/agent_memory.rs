@@ -4,7 +4,7 @@
 //! boundary: callers provide a memory provider, and MobKit injects selected
 //! memories into the build draft during identity materialization.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -583,6 +583,10 @@ impl AgentMemoryProvider for MarkdownAgentMemoryStore {
 pub struct AgentMemoryCustomizer {
     inner: Option<Arc<dyn AgentCustomizer>>,
     coordinator: RecallCoordinator,
+    /// Explicit profile policy for bindings whose resolved tools declaration
+    /// is not available at the identity customizer boundary (notably
+    /// `RealmRef`). Explicit entries also allow per-profile overrides.
+    profile_memory_policy: BTreeMap<meerkat_mob::ProfileName, bool>,
 }
 
 /// Ambient per-turn memory injection plus inbound defanging. Thin caller
@@ -839,6 +843,7 @@ impl AgentMemoryCustomizer {
         Self {
             inner: None,
             coordinator: RecallCoordinator::new(provider, config),
+            profile_memory_policy: BTreeMap::new(),
         }
     }
 
@@ -850,7 +855,21 @@ impl AgentMemoryCustomizer {
         Self {
             inner,
             coordinator: RecallCoordinator::new(provider, config),
+            profile_memory_policy: BTreeMap::new(),
         }
+    }
+
+    /// Set the identity-first memory-tool policy for one durable profile.
+    ///
+    /// This is required for `RealmRef` profiles because the external profile
+    /// store is resolved later by Meerkat's spawn pipeline. Unresolved
+    /// references fail closed unless explicitly enabled here.
+    pub fn with_profile_memory_policy(
+        mut self,
+        policy: BTreeMap<meerkat_mob::ProfileName, bool>,
+    ) -> Self {
+        self.profile_memory_policy = policy;
+        self
     }
 
     /// Install the §7.2 provisional operator resolver on the build-time
@@ -875,22 +894,33 @@ impl AgentMemoryCustomizer {
     }
 }
 
-fn profile_enables_agent_memory(context: &AgentBuildContext, spec: &DurableAgentSpec) -> bool {
+fn profile_enables_agent_memory(
+    context: &AgentBuildContext,
+    spec: &DurableAgentSpec,
+    explicit_policy: &BTreeMap<meerkat_mob::ProfileName, bool>,
+) -> bool {
+    if let Some(enabled) = explicit_policy.get(&spec.profile) {
+        return *enabled;
+    }
     let Some(handle) = context.runtime_services.mob_handle() else {
         return true;
     };
-    definition_profile_enables_agent_memory(handle.definition(), &spec.profile)
+    definition_profile_enables_agent_memory(handle.definition(), &spec.profile, explicit_policy)
 }
 
 fn definition_profile_enables_agent_memory(
     definition: &meerkat_mob::MobDefinition,
     profile: &meerkat_mob::ProfileName,
+    explicit_policy: &BTreeMap<meerkat_mob::ProfileName, bool>,
 ) -> bool {
+    if let Some(enabled) = explicit_policy.get(profile) {
+        return *enabled;
+    }
     definition
         .profiles
         .get(profile)
         .and_then(|binding| binding.as_inline())
-        .is_none_or(|profile| profile.tools.memory)
+        .is_some_and(|profile| profile.tools.memory)
 }
 
 #[async_trait]
@@ -909,7 +939,7 @@ impl AgentCustomizer for AgentMemoryCustomizer {
         // Respect the same `profiles.<name>.tools.memory` declaration used by
         // Meerkat's native memory surface so a memory-disabled member receives
         // neither the MobKit recorder nor its behavioral/injection prompt.
-        if !profile_enables_agent_memory(context, spec) {
+        if !profile_enables_agent_memory(context, spec, &self.profile_memory_policy) {
             return Ok(());
         }
 
@@ -3337,7 +3367,7 @@ mod tests {
 
     #[test]
     fn profile_memory_policy_is_resolved_per_member_profile() -> Result<(), Box<dyn Error>> {
-        let definition = meerkat_mob::MobDefinition::from_toml(
+        let mut definition = meerkat_mob::MobDefinition::from_toml(
             r#"
 [mob]
 id = "profile-memory-policy"
@@ -3353,14 +3383,35 @@ model = "gpt-5.5"
 memory = false
 "#,
         )?;
+        let empty_policy = BTreeMap::new();
 
         assert!(definition_profile_enables_agent_memory(
             &definition,
-            &meerkat_mob::ProfileName::from("enabled")
+            &meerkat_mob::ProfileName::from("enabled"),
+            &empty_policy,
         ));
         assert!(!definition_profile_enables_agent_memory(
             &definition,
-            &meerkat_mob::ProfileName::from("disabled")
+            &meerkat_mob::ProfileName::from("disabled"),
+            &empty_policy,
+        ));
+
+        let realm_profile = meerkat_mob::ProfileName::from("realm-profile");
+        definition.profiles.insert(
+            realm_profile.clone(),
+            meerkat_mob::ProfileBinding::RealmRef {
+                realm_profile: "stored-profile".to_string(),
+            },
+        );
+        assert!(
+            !definition_profile_enables_agent_memory(&definition, &realm_profile, &empty_policy,),
+            "unresolved RealmRef memory policy must fail closed"
+        );
+        let explicit_policy = BTreeMap::from([(realm_profile.clone(), true)]);
+        assert!(definition_profile_enables_agent_memory(
+            &definition,
+            &realm_profile,
+            &explicit_policy,
         ));
         Ok(())
     }
