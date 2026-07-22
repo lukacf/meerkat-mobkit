@@ -50,6 +50,7 @@ type PersistentSessionServiceParts = (
     Arc<dyn BinaryBlobStore>,
     Option<ScheduleHostInputs>,
     Option<WorkGraphParts>,
+    meerkat_mobkit::storage_health::ResolvedStorageSummary,
 );
 
 #[derive(Debug, Deserialize)]
@@ -413,6 +414,13 @@ fn build_persistent_session_service(
         SqliteSessionStore::open(sqlite_path.clone())
             .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
     );
+    // H2: probe the incremental capability on the same store the session
+    // service receives below, so whole-blob degradation is loud and
+    // health-visible.
+    let session_store_incremental = meerkat_mobkit::storage_health::probe_session_store_incremental(
+        &(session_store.clone() as Arc<dyn meerkat::SessionStore>),
+        "SqliteSessionStore",
+    );
 
     let binary_blob_store: Arc<dyn BinaryBlobStore> =
         Arc::new(ObjectStoreBlobStore::local(store_dir.join("blobs"))?);
@@ -510,6 +518,12 @@ fn build_persistent_session_service(
         binary_blob_store,
         schedule_host_inputs,
         workgraph,
+        // Blob slot resolved fail-closed above (local disk under
+        // <store_dir>/blobs).
+        meerkat_mobkit::storage_health::ResolvedStorageSummary {
+            blob_durability: meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+            session_store_incremental: Some(session_store_incremental),
+        },
     ))
 }
 
@@ -763,15 +777,21 @@ async fn run() -> anyhow::Result<()> {
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
     let (session_spec, schedule_host_inputs, workgraph_service) = if persistent_sessions {
-        let (service, adapter, binary_blob_store, schedule_host_inputs, workgraph) =
-            build_persistent_session_service(
-                &store_path,
-                runtime_root.clone(),
-                project_root.clone(),
-                context_root.clone(),
-                image_generation,
-                &runtime_id,
-            )?;
+        let (
+            service,
+            adapter,
+            binary_blob_store,
+            schedule_host_inputs,
+            workgraph,
+            resolved_storage,
+        ) = build_persistent_session_service(
+            &store_path,
+            runtime_root.clone(),
+            project_root.clone(),
+            context_root.clone(),
+            image_generation,
+            &runtime_id,
+        )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
         let schedule_host_inputs = schedule_host_inputs
@@ -795,6 +815,7 @@ async fn run() -> anyhow::Result<()> {
         }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        spec.resolved_storage = Some(resolved_storage);
         (spec, schedule_host_inputs, workgraph_service)
     } else {
         // Build the ephemeral path manually to thread project/context roots
@@ -848,6 +869,12 @@ async fn run() -> anyhow::Result<()> {
             .with_workgraph_admission_slot(workgraph_admission_slot);
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        // In-memory blobs are the declared choice of the default ephemeral
+        // launch; no persistent session service, so no H2 flag.
+        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
+            blob_durability: meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+            session_store_incremental: None,
+        });
         // Ephemeral sessions have no persistent service; the runtime-backed
         // schedule firing host (and thus schedule tools) is persistent-only.
         (spec, None, workgraph_service)

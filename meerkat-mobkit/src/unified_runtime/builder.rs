@@ -78,6 +78,7 @@ pub struct UnifiedRuntimeBuilder {
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+    ephemeral_blobs: bool,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
     // --- Common fields ---
@@ -307,6 +308,20 @@ impl UnifiedRuntimeBuilder {
     /// `/blobs/{id}` and `mobkit/blob/*` serving/upload paths.
     pub fn blob_store(mut self, store: Arc<dyn meerkat_core::BlobStore>) -> Self {
         self.blob_store = Some(store);
+        self
+    }
+
+    /// Declare that blobs are intentionally ephemeral (in-memory).
+    ///
+    /// Persistent-state builds fail closed when the blob slot resolves to a
+    /// store that does not survive restart — a failed open of the local blob
+    /// directory or an injected [`blob_store`](Self::blob_store) reporting
+    /// `!is_persistent()`. This declaration makes in-memory blobs a
+    /// configuration instead of an error (tests, demos), and is reported as
+    /// `declared_ephemeral` on the health surfaces. Ephemeral launch modes
+    /// (scratch/temp-dir) declare it implicitly.
+    pub fn ephemeral_blobs(mut self, enabled: bool) -> Self {
+        self.ephemeral_blobs = enabled;
         self
     }
 
@@ -1088,6 +1103,18 @@ impl UnifiedRuntimeBuilder {
         Ok(runtime)
     }
 
+    /// Health-surface label for the store behind `custom_session_store`; the
+    /// H2 probe warning names the concrete store the builder composed
+    /// (`build()` installs a `ContinuitySessionStoreAdapter` there when a
+    /// continuity store is configured).
+    fn custom_session_store_kind(&self) -> &'static str {
+        if self.continuity_store.is_some() {
+            "ContinuitySessionStoreAdapter"
+        } else {
+            "custom session store"
+        }
+    }
+
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
@@ -1158,6 +1185,11 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
 
+            let session_store_kind = if self.custom_session_store.is_some() {
+                "custom session store"
+            } else {
+                "SqliteSessionStore"
+            };
             let session_store: Arc<dyn meerkat::SessionStore> =
                 if let Some(ref store) = self.custom_session_store {
                     store.clone()
@@ -1179,12 +1211,22 @@ impl UnifiedRuntimeBuilder {
                 state_path.clone(),
                 max_sessions,
                 session_store,
+                session_store_kind,
                 self.blob_store.clone(),
+                self.ephemeral_blobs,
                 hook,
                 caps,
                 after_hook.clone(),
                 self.meerkat_config.clone(),
             )
+            .map_err(|error| match error {
+                crate::storage_health::BlobStoreResolutionError::OpenFailed { .. } => {
+                    UnifiedRuntimeBuilderError::Io(error.to_string())
+                }
+                crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared => {
+                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
+                }
+            })?
         } else if let Some(ref scratch_dir) = self.scratch_dir {
             std::fs::create_dir_all(scratch_dir).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!(
@@ -1199,6 +1241,7 @@ impl UnifiedRuntimeBuilder {
                 scratch_dir.clone(),
                 max_sessions,
                 self.custom_session_store.clone(),
+                self.custom_session_store_kind(),
                 self.blob_store.clone(),
                 hook,
                 caps,
@@ -1218,6 +1261,7 @@ impl UnifiedRuntimeBuilder {
                 store_path,
                 max_sessions,
                 self.custom_session_store.clone(),
+                self.custom_session_store_kind(),
                 self.blob_store.clone(),
                 hook,
                 caps,
@@ -1239,12 +1283,58 @@ impl UnifiedRuntimeBuilder {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat_core::service::{
         CreateSessionRequest, DeferredPromptPolicy, InitialTurnPolicy, SessionService,
     };
+
+    /// H1: a persistent-state build with an injected blob store that reports
+    /// `!is_persistent()` fails composition unless `ephemeral_blobs(true)`
+    /// declares the choice — declared, it composes and reports a
+    /// non-persistent custom blob slot.
+    #[tokio::test]
+    async fn persistent_state_gates_non_persistent_blob_store_on_declaration() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let memory_blobs: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(crate::blob_store::Base64BlobStoreAdapter::new(Arc::new(
+                crate::blob_store::ObjectStoreBlobStore::memory(),
+            )));
+        let definition = || {
+            MobDefinition::from_toml("[mob]\nid = \"blob-declaration-test\"\n")
+                .expect("parse test mob definition")
+        };
+
+        let undeclared = UnifiedRuntimeBuilder::default()
+            .definition(definition())
+            .persistent_state(dir.path())
+            .blob_store(memory_blobs.clone());
+        match undeclared.resolve_mob_spec().await {
+            Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(message)) => {
+                assert!(
+                    message.contains("ephemeral_blobs"),
+                    "the error must name the remediation, got: {message}"
+                );
+            }
+            Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
+            Ok(_) => panic!("undeclared non-persistent blob store must fail composition"),
+        }
+
+        let declared = UnifiedRuntimeBuilder::default()
+            .definition(definition())
+            .persistent_state(dir.path())
+            .blob_store(memory_blobs)
+            .ephemeral_blobs(true);
+        let spec = declared
+            .resolve_mob_spec()
+            .await
+            .unwrap_or_else(|e| panic!("declared ephemeral blobs must compose: {e}"));
+        assert_eq!(
+            spec.resolved_storage.map(|summary| summary.blob_durability),
+            Some(crate::storage_health::BlobDurability::Custom { persistent: false })
+        );
+    }
 
     fn deferred_capacity_request(prompt: impl Into<String>) -> CreateSessionRequest {
         let build = meerkat_core::service::SessionBuildOptions {

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING / fail-closed (H1): persistent-mode blob storage no longer
+  silently falls back to in-memory blobs.** Previously, when a
+  persistent-mode runtime (`MobBootstrapSpec::persistent*`,
+  `UnifiedRuntimeBuilder::persistent_state()`) failed to open the local blob
+  directory (`<state>/blobs`), it logged one warning and continued on an
+  in-memory blob store — every blob written after that point silently
+  vanished on restart (the cause of a month-long silently-broken production
+  deployment). **Deployments that are unknowingly running on this fallback
+  today will now fail to boot.** That is deliberate: the failure was always
+  there, it is now visible at startup instead of at data-loss time.
+  Remediation: fix the blob directory (permissions, mount, read-only
+  filesystem), or — if in-memory blobs are genuinely intended (tests,
+  demos) — declare the choice explicitly with the new
+  `UnifiedRuntimeBuilder::ephemeral_blobs(true)`.
+  `MobBootstrapSpec::persistent` / `persistent_with_hook` now return
+  `Result<_, BlobStoreResolutionError>`. Additionally, persistent mode now
+  asserts `is_persistent()` on the *resolved* blob store at composition
+  time, so a custom-injected non-persistent store also requires the
+  `ephemeral_blobs(true)` declaration. Ephemeral launch modes (scratch or
+  temp-dir) are unchanged — their in-memory blobs are the declared choice of
+  the mode itself.
+
+### Added
+
+- **Storage durability health surface (H1/H2).** `mobkit/status` (unified
+  and console shapes) and the unified `mobkit/capabilities` now carry a
+  `storage` object: `blob_durability`
+  (`persistent_disk` | `declared_ephemeral` | `custom`),
+  `blob_store_persistent` (bool), and `session_store_incremental`
+  (bool, or null when no session persistence exists). New public vocabulary
+  in `meerkat_mobkit::storage_health` (`ResolvedStorageSummary`,
+  `BlobDurability`, `BlobStoreResolutionError`,
+  `probe_session_store_incremental`), carried on
+  `MobBootstrapSpec::resolved_storage` and readable via
+  `UnifiedRuntime::resolved_storage()`.
+- **Loud whole-blob degradation (H2).** At every composition site that
+  builds a `PersistentSessionService`, MobKit now probes the session store's
+  incremental-persistence capability (`as_incremental`) and logs a startup
+  warning when it is absent, naming the store kind and the consequence
+  (session persistence degrades to whole-blob saves on every turn). This
+  makes the identity-first gateway shape — where `ContinuitySessionStoreAdapter`
+  is the session authority and persists O(session) per turn — visible at
+  startup and on the health surfaces (`session_store_incremental: false`)
+  instead of silent. The structural fix (a genuine incremental channel on
+  the continuity contract) is tracked as storage-unification Phase M4; this
+  release makes the degradation honest, not fixed.
+
 ## [0.8.2] - 2026-07-22
 
 ### Changed

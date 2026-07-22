@@ -31,6 +31,7 @@ pub mod protocol;
 pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
+pub mod storage_health;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -184,6 +185,10 @@ pub use runtime::{
     run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
     start_mobkit_runtime_with_options,
+};
+pub use storage_health::{
+    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary,
+    probe_session_store_incremental,
 };
 pub use topology_control::{
     SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,

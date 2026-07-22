@@ -5813,17 +5813,19 @@ async fn handle_console_runtime_rpc_with_visibility(
         }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
-            response_value(
-                response_id,
-                Some(serde_json::json!({
-                    "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                    "running": matches!(mob_state, MobState::Creating | MobState::Running),
-                    // Console routes to MobRuntime directly — no module runtime available.
-                    // Return [] to keep StatusResult.loaded_modules schema-consistent.
-                    "loaded_modules": serde_json::json!([]),
-                })),
-                None,
-            )
+            let mut result = serde_json::json!({
+                "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
+                "running": matches!(mob_state, MobState::Creating | MobState::Running),
+                // Console routes to MobRuntime directly — no module runtime available.
+                // Return [] to keep StatusResult.loaded_modules schema-consistent.
+                "loaded_modules": serde_json::json!([]),
+            });
+            // H1/H2 storage durability resolution, same object as the
+            // unified `mobkit/status` shape.
+            if let Some(storage) = runtime.resolved_storage() {
+                result["storage"] = storage.status_json();
+            }
+            response_value(response_id, Some(result), None)
         }
         "mobkit/console/list_identities" => {
             let Some(aggregator) = &console_aggregator else {

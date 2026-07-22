@@ -4514,6 +4514,11 @@ external_addressable = true
             );
         }
         let sqlite_path = state_path.join("sessions.db");
+        let session_store_kind = if identity_session_store_adapter.is_some() {
+            "ContinuitySessionStoreAdapter"
+        } else {
+            "SqliteSessionStore"
+        };
         let session_store: Arc<dyn meerkat::SessionStore> =
             if let Some(adapter) = identity_session_store_adapter.clone() {
                 adapter
@@ -4527,6 +4532,14 @@ external_addressable = true
                     ),
                 }
             };
+        // H2: probe the incremental capability on the same Arc the session
+        // service receives below — identity-first launches ride the
+        // continuity adapter, which persists whole-blob only.
+        let session_store_incremental =
+            meerkat_mobkit::storage_health::probe_session_store_incremental(
+                &session_store,
+                session_store_kind,
+            );
         let mob_storage = MobStorage::in_memory();
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(state_path.join("blobs")) {
@@ -4695,6 +4708,13 @@ external_addressable = true
         }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        // Blob slot resolved fail-closed above (local disk under
+        // <state_path>/blobs); record it plus the H2 probe result for the
+        // health surfaces.
+        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
+            blob_durability: meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+            session_store_incremental: Some(session_store_incremental),
+        });
         (
             spec,
             None,
@@ -4799,9 +4819,18 @@ external_addressable = true
         let mut transcript_edit_service: Option<
             Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
         > = None;
+        let mut session_store_incremental: Option<bool> = None;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             if let Some(session_adapter) = identity_session_store_adapter.clone() {
                 let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
+                // H2: identity-first launches persist sessions through the
+                // continuity adapter — whole-blob only; make it loud.
+                session_store_incremental = Some(
+                    meerkat_mobkit::storage_health::probe_session_store_incremental(
+                        &session_store,
+                        "ContinuitySessionStoreAdapter",
+                    ),
+                );
                 let mut factory = AgentFactory::new(agent_workspace)
                     .builtins(false)
                     .shell(shell)
@@ -4862,6 +4891,13 @@ external_addressable = true
         }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        // In-memory blobs are the declared choice of this launch mode; the
+        // H2 flag is only set when the identity adapter backs a persistent
+        // session service above.
+        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
+            blob_durability: meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+            session_store_incremental,
+        });
         // Ephemeral sessions have no persistent service; firing is persistent-only.
         (
             spec,

@@ -2151,7 +2151,8 @@ comms = true
             dir.path().to_path_buf(),
             8,
             Arc::new(meerkat_store::MemoryStore::new()),
-        );
+        )
+        .expect("persistent spec");
         assert_eq!(
             spec.workgraph_admission_sidecar,
             Some(crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path())),

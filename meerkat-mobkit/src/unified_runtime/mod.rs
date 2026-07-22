@@ -854,6 +854,14 @@ impl UnifiedRuntime {
         self.workgraph_service.clone()
     }
 
+    /// Composition-time storage durability resolution (H1/H2) carried from
+    /// the bootstrap spec, reported by `mobkit/status` /
+    /// `mobkit/capabilities`. `None` when the spec was composed externally
+    /// without a declaration.
+    pub fn resolved_storage(&self) -> Option<crate::storage_health::ResolvedStorageSummary> {
+        self.mob_runtime.resolved_storage()
+    }
+
     /// The runtime-wide admission authority serializing the workgraph
     /// duplicate-binding guards' check-then-act windows (RPC arms + agent
     /// tool plane). Lives on the mob runtime so console routers (which

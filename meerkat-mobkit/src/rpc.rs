@@ -518,6 +518,10 @@ pub fn handle_mobkit_rpc_json(
     }
 
     let response = match request.method.as_str() {
+        // No `storage` object here: the module-only server holds a bare
+        // `MobkitRuntimeHandle` with no mob/unified runtime, so the
+        // composition-time `ResolvedStorageSummary` (H1/H2) is not reachable
+        // on this surface.
         "mobkit/status" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
@@ -1604,6 +1608,9 @@ async fn handle_unified_rpc_json_inner(
                     serde_json::to_value(ctx.runtime.identity_bootstrap_status())
                         .unwrap_or(Value::Null);
             }
+            if let Some(storage) = runtime.resolved_storage() {
+                result["storage"] = storage.status_json();
+            }
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
@@ -1764,6 +1771,13 @@ async fn handle_unified_rpc_json_inner(
             let (topology_methods, topology_capabilities) =
                 topology_methods::capability_projection(&topology, None, false);
             methods.extend(topology_methods);
+            // H1/H2 storage durability resolution — same object as
+            // `mobkit/status`; `null` when the spec was composed externally
+            // without a declaration.
+            let storage = runtime
+                .resolved_storage()
+                .map(|summary| summary.status_json())
+                .unwrap_or(Value::Null);
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
@@ -1771,6 +1785,7 @@ async fn handle_unified_rpc_json_inner(
                     "contract_version": MOBKIT_CONTRACT_VERSION,
                     "runtime_type": "unified",
                     "methods": methods,
+                    "storage": storage,
                     // Doctrine flag: when true the identity RPC set is live
                     // and member RPCs route durable targets through the
                     // identity authority.
