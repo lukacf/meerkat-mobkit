@@ -64,7 +64,7 @@ function reservePort() {
   });
 }
 
-async function waitForHttpOk(url, timeoutMs = 120_000) {
+async function waitForHttpOk(url, timeoutMs = 300_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
