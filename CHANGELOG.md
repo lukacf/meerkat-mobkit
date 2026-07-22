@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-22
+
+### Changed
+
+- Pinned the complete Meerkat dependency family to the public `0.8.3` crate
+  set, including identity-first flow target provisioning and runtime reliability
+  fixes.
+- Memory-tool installation now follows the resolved profile's explicit memory
+  policy, including realm-referenced profiles, instead of relying only on the
+  provider-wide authored-write capability.
+
+### Fixed
+
+- Identity-first `run_flow` now materializes dormant targets through the shared
+  Mob handle provisioner before dispatch, so admitted flows reliably become
+  member turns.
+- Permanent member event-stream loss now repairs the trusted durable identity,
+  fences stale generations, and is detected independently of bounded console
+  output consumption.
+- Quarantined or torn-down identity sessions transition to `Broken` and enter
+  the normal repair loop instead of remaining permanently `Active` zombies.
+
 ## [0.8.1] - 2026-07-22
 
 ### Changed
