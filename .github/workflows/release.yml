@@ -34,6 +34,8 @@ env:
 #   CARGO_REGISTRY_TOKEN  - crates.io API token
 #   PYPI_API_TOKEN        - PyPI API token (scoped to meerkat-mobkit package)
 #   NPM_TOKEN             - npm access token (scoped to @rkat org)
+#   DOCS_PUBLISH_TOKEN    - fine-grained token with Contents: write on lukacf/meerkat;
+#                           used only to dispatch the docs-owner workflow
 
 jobs:
   release_validate:
@@ -406,3 +408,52 @@ jobs:
           set -euo pipefail
           VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           python scripts/verify-published-registries.py --version "$VERSION"
+
+  publish_docs:
+    name: Publish released documentation
+    if: >-
+      always() &&
+      needs.publish_github_release.result == 'success' &&
+      needs.publish_registries.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' ||
+       github.event.inputs.registry_dry_run != 'true')
+    needs: [publish_github_release, publish_registries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout immutable release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Dispatch docs.rkat.ai publication
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_PUBLISH_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::DOCS_PUBLISH_TOKEN is required to publish released docs" >&2
+            exit 1
+          fi
+
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          tag_version="${RELEASE_TAG#v}"
+          if [[ "$version" != "$tag_version" ]]; then
+            echo "::error::Release tag $RELEASE_TAG does not match MobKit version $version" >&2
+            exit 1
+          fi
+          release_sha=$(git rev-parse HEAD)
+
+          jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg sha "$release_sha" \
+            --arg version "$version" \
+            '{
+              event_type: "mobkit-release-published",
+              client_payload: {
+                tag: $tag,
+                sha: $sha,
+                version: $version
+              }
+            }' | gh api --method POST repos/lukacf/meerkat/dispatches --input -

@@ -25,9 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://docs.rkat.ai"
+Homepage = "https://docs.rkat.ai/mobkit/introduction"
 Repository = "https://github.com/lukacf/meerkat-mobkit"
-Documentation = "https://docs.rkat.ai"
+Documentation = "https://docs.rkat.ai/mobkit/introduction"
 
 [project.optional-dependencies]
 dev = [
