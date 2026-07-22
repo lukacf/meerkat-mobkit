@@ -190,7 +190,7 @@ npm --prefix console run embedded:freshness --silent
 
 ## Documentation
 
-Full documentation is available at [docs.rkat.ai](https://docs.rkat.ai).
+Full documentation is available in the [MobKit section of docs.rkat.ai](https://docs.rkat.ai/mobkit/introduction).
 
 ## License
 

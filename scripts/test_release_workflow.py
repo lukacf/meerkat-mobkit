@@ -174,5 +174,35 @@ class RegistryReadbackWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.inputs.registry_dry_run != 'true'", workflow)
 
 
+class DocsPublicationWorkflowTests(unittest.TestCase):
+    def test_docs_dispatch_requires_completed_public_release(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        docs_job = workflow.index("  publish_docs:")
+        registry_readback = workflow.index(
+            "      - name: Verify exact packages are public on every registry"
+        )
+
+        self.assertGreater(docs_job, registry_readback)
+        self.assertIn(
+            "needs: [publish_github_release, publish_registries]",
+            workflow[docs_job:],
+        )
+        self.assertIn("needs.publish_github_release.result == 'success'", workflow[docs_job:])
+        self.assertIn("needs.publish_registries.result == 'success'", workflow[docs_job:])
+        self.assertIn("github.event.inputs.registry_dry_run != 'true'", workflow[docs_job:])
+
+    def test_docs_dispatch_carries_immutable_release_identity(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        docs_job = workflow[workflow.index("  publish_docs:") :]
+
+        self.assertIn("secrets.DOCS_PUBLISH_TOKEN", docs_job)
+        self.assertIn('event_type: "mobkit-release-published"', docs_job)
+        self.assertIn("tag: $tag", docs_job)
+        self.assertIn("sha: $sha", docs_job)
+        self.assertIn("version: $version", docs_job)
+        self.assertIn("release_sha=$(git rev-parse HEAD)", docs_job)
+        self.assertIn("repos/lukacf/meerkat/dispatches", docs_job)
+
+
 if __name__ == "__main__":
     unittest.main()
