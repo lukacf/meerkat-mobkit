@@ -519,3 +519,98 @@ async fn e2e_workgraph_unavailable_returns_minus_32041_shape() {
     );
     rt.mob_handle().stop().await.expect("stop");
 }
+
+// ---------------------------------------------------------------------------
+// mobkit/storage/doctor — read-only state-directory diagnosis (M1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_storage_doctor_reports_twins_and_is_advertised() {
+    let mut rt = test_runtime();
+
+    // Advertised on the module-only capabilities list.
+    let caps = rpc(
+        &mut rt,
+        &json!({
+            "jsonrpc": "2.0", "id": "caps-doc", "method": "mobkit/capabilities", "params": {}
+        }),
+    );
+    let methods = caps["result"]["methods"].as_array().expect("methods");
+    assert!(
+        methods
+            .iter()
+            .any(|m| m.as_str() == Some("mobkit/storage/doctor")),
+        "{methods:?}"
+    );
+
+    // Twin fixture: both sessions spellings side by side in one state dir.
+    let state = tempfile::tempdir().expect("state dir");
+    std::fs::write(state.path().join("sessions.db"), b"").expect("twin a");
+    std::fs::write(state.path().join("sessions.sqlite"), b"").expect("twin b");
+    let resp = rpc(
+        &mut rt,
+        &json!({
+            "jsonrpc": "2.0", "id": "doc1", "method": "mobkit/storage/doctor",
+            "params": { "state_dir": state.path() }
+        }),
+    );
+    let result = &resp["result"];
+    assert!(result["state_dir"].is_string(), "{resp:#?}");
+    assert!(
+        result["storage"].is_null(),
+        "module-only surface has no live durability summary: {resp:#?}"
+    );
+    let findings = result["diagnosis"]["findings"]
+        .as_array()
+        .expect("findings");
+    assert!(
+        findings
+            .iter()
+            .any(|f| f["code"] == "file-name-twins" && f["severity"] == "error"),
+        "{findings:#?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f["code"] == "durability-census-unavailable"),
+        "{findings:#?}"
+    );
+    assert!(result["diagnosis"]["inventory"].is_array());
+}
+
+#[test]
+fn e2e_storage_doctor_requires_state_dir_on_module_only_surface() {
+    let mut rt = test_runtime();
+    let resp = rpc(
+        &mut rt,
+        &json!({
+            "jsonrpc": "2.0", "id": "doc2", "method": "mobkit/storage/doctor", "params": {}
+        }),
+    );
+    assert_eq!(resp["error"]["code"], json!(-32602), "{resp:#?}");
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("state_dir"),
+        "{resp:#?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_unified_storage_doctor_missing_state_dir_is_typed_capability_error() {
+    let (_dir, rt) = runtime_without_workgraph().await;
+    let resp = unified_rpc(&rt, "doc3", "mobkit/storage/doctor", json!({})).await;
+    assert_eq!(resp["error"]["code"], json!(-32004), "{resp:#?}");
+
+    // Advertised on the unified capabilities list.
+    let caps = unified_rpc(&rt, "caps-doc3", "mobkit/capabilities", json!({})).await;
+    let methods = caps["result"]["methods"].as_array().expect("methods");
+    assert!(
+        methods
+            .iter()
+            .any(|m| m.as_str() == Some("mobkit/storage/doctor")),
+        "{methods:?}"
+    );
+    rt.mob_handle().stop().await.expect("stop");
+}

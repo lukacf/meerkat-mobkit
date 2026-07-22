@@ -31,6 +31,7 @@ pub mod protocol;
 pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
+pub mod storage_doctor;
 pub mod storage_health;
 pub mod storage_layout;
 pub mod tool_compose;
@@ -186,6 +187,10 @@ pub use runtime::{
     run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
     start_mobkit_runtime_with_options,
+};
+pub use storage_doctor::{
+    MobKitStorageMigrator, diagnose_state_dir, diagnose_state_dir_blocking,
+    diagnose_state_dir_with_runtime,
 };
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary,

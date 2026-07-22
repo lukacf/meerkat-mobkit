@@ -105,6 +105,7 @@ export {
   MEMBER_STATE_UNKNOWN,
   ErrorCategory,
   parseStatusResult,
+  parseStorageDoctorResult,
   parseCapabilitiesResult,
   parseReconcileResult,
   parseSpawnResult,
@@ -232,6 +233,8 @@ export {
 
 export type {
   StatusResult,
+  StorageDoctorResult,
+  StorageDoctorFinding,
   CapabilitiesResult,
   ReconcileResult,
   SpawnResult,

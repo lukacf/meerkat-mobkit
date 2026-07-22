@@ -118,6 +118,46 @@ export function parseStatusResult(raw: unknown): StatusResult {
   };
 }
 
+// -- StorageDoctorResult ----------------------------------------------------
+
+/** One storage-doctor finding (stable kebab-case `code`; consumers must
+ *  tolerate unknown codes). */
+export interface StorageDoctorFinding {
+  readonly severity: string;
+  readonly code: string;
+  readonly message: string;
+  readonly path?: string;
+  readonly realm?: string;
+}
+
+/** `mobkit/storage/doctor` result: the shape-stable StorageDiagnosis plus
+ *  the live H1/H2 storage summary when the gateway resolved one. */
+export interface StorageDoctorResult {
+  readonly stateDir: string;
+  readonly findings: readonly StorageDoctorFinding[];
+  readonly inventory: readonly Record<string, unknown>[];
+  readonly storage: Record<string, unknown> | null;
+}
+
+export function parseStorageDoctorResult(raw: unknown): StorageDoctorResult {
+  const d = asRecord(raw);
+  const diagnosis = asRecord(d.diagnosis);
+  const findings = asRecordArray(diagnosis.findings).map((entry) => ({
+    severity: String(entry.severity ?? ""),
+    code: String(entry.code ?? ""),
+    message: String(entry.message ?? ""),
+    ...(entry.path !== undefined ? { path: String(entry.path) } : {}),
+    ...(entry.realm !== undefined ? { realm: String(entry.realm) } : {}),
+  }));
+  return {
+    stateDir: String(d.state_dir ?? ""),
+    findings,
+    inventory: asRecordArray(diagnosis.inventory),
+    storage:
+      d.storage === null || d.storage === undefined ? null : asRecord(d.storage),
+  };
+}
+
 // -- RuntimeCapabilities --------------------------------------------------
 
 export interface ProfileCapabilities {

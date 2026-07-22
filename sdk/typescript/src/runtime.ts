@@ -54,6 +54,7 @@ import {
 import { discoverySpecToDict, type DiscoverySpec } from "./models.js";
 import {
   parseStatusResult,
+  parseStorageDoctorResult,
   parseCapabilitiesResult,
   parseReconcileResult,
   parseSpawnResult,
@@ -135,6 +136,7 @@ import {
   workGraphGoalRequestCloseOptionsToDict,
   workGraphAttentionPauseOptionsToDict,
   type StatusResult,
+  type StorageDoctorResult,
   type CapabilitiesResult,
   type ReconcileResult,
   type SpawnResult,
@@ -880,6 +882,26 @@ export class MobHandle {
   async modelsCatalog(): Promise<ModelsCatalogResult> {
     return parseModelsCatalogResult(
       await this._runtime._rpc("mobkit/models/catalog"),
+    );
+  }
+
+  /**
+   * Run the read-only storage doctor over a MobKit state directory.
+   *
+   * `stateDir` is required until the gateway can report its own persistent
+   * state directory (Phase M2); omitting it rejects with
+   * `CapabilityUnavailableError`. `identity` narrows the continuity
+   * checkpoint census to one identity.
+   */
+  async storageDoctor(options?: {
+    stateDir?: string;
+    identity?: string;
+  }): Promise<StorageDoctorResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.stateDir !== undefined) params.state_dir = options.stateDir;
+    if (options?.identity !== undefined) params.identity = options.identity;
+    return parseStorageDoctorResult(
+      await this._runtime._rpc("mobkit/storage/doctor", params),
     );
   }
 

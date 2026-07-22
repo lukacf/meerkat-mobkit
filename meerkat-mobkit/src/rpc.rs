@@ -32,6 +32,7 @@ pub(crate) mod params;
 mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
+pub(crate) mod storage_methods;
 mod subscribe_methods;
 pub(crate) mod topology_methods;
 pub(crate) mod workgraph_methods;
@@ -557,6 +558,7 @@ pub fn handle_mobkit_rpc_json(
                 "mobkit/gating/audit",
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
+                storage_methods::STORAGE_DOCTOR_METHOD,
             ];
             methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
             JsonRpcResponse {
@@ -584,6 +586,47 @@ pub fn handle_mobkit_rpc_json(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        // Read-only state-directory diagnosis. The module-only server holds
+        // no runtime state directory, so `state_dir` is required here and
+        // the durability census always reports unavailable.
+        storage_methods::STORAGE_DOCTOR_METHOD => {
+            match storage_methods::parse_storage_doctor_params(&request.params) {
+                Ok(Some(params)) => {
+                    let diagnosis =
+                        crate::storage_doctor::diagnose_state_dir_blocking(&params.scope(), None);
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(storage_methods::storage_doctor_result_json(
+                            &params, &diagnosis, None,
+                        )),
+                        error: None,
+                    }
+                }
+                Ok(None) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: state_dir required (the module-only runtime \
+                                  has no state directory)"
+                            .to_string(),
+                        data: None,
+                    }),
+                },
+                Err(reason) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {reason}"),
+                        data: None,
+                    }),
+                },
+            }
+        }
         method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
             handle_mobpack_authoring_rpc(method, &request.params, response_id.clone())
                 .unwrap_or_else(|| JsonRpcResponse {
@@ -1682,6 +1725,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/run_labels/set",
                 "mobkit/run_labels/get",
                 "mobkit/run_labels/delete",
+                storage_methods::STORAGE_DOCTOR_METHOD,
             ];
             methods.extend_from_slice(MOBPACK_AUTHORING_METHODS);
             // Workgraph methods are advertised only when the service is
@@ -2856,6 +2900,40 @@ async fn handle_unified_rpc_json_inner(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        // Read-only state-directory diagnosis with the live H1/H2 durability
+        // census attached. `state_dir` is explicit until the M2 layout
+        // authority gives the runtime a reportable state directory.
+        storage_methods::STORAGE_DOCTOR_METHOD => {
+            match storage_methods::parse_storage_doctor_params(&request.params) {
+                Ok(Some(params)) => {
+                    let result =
+                        storage_methods::run_storage_doctor(&params, runtime.resolved_storage())
+                            .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
+                Ok(None) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(storage_methods::storage_doctor_state_dir_unavailable_error()),
+                },
+                Err(reason) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {reason}"),
+                        data: None,
+                    }),
+                },
+            }
+        }
         method if MOBPACK_AUTHORING_METHODS.contains(&method) => {
             handle_unified_mobpack_authoring_rpc(runtime, method, &request.params, response_id)
                 .await

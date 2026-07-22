@@ -571,6 +571,44 @@ Execute BigQuery-specific session store operations.
 
 ---
 
+## Storage methods
+
+### `mobkit/storage/doctor`
+
+Read-only storage diagnosis over a MobKit state directory (the diagnose half
+of Meerkat's `StorageMigrator` seam). Safe against a live gateway: read-only
+SQLite opens, no file creation, no leases, no schema-ledger runs. Reports the
+per-directory database inventory (with schema-ledger versions), file-name
+twins (`sessions.db` beside `sessions.sqlite`, `continuity.db` beside
+`identity_continuity.sqlite`, `agent-memory/` beside `agent-memory-sqlite/`,
+...), the continuity checkpoint-evidence census per identity, dangling
+console-frame blob references, legacy-FS blob objects, and filesystem
+artifacts. On a live persistent gateway the H1/H2 durability resolution
+(`blob-durability`, `session-store-incremental`) is attached as findings; a
+cold directory reports `durability-census-unavailable`.
+
+Available on the module-only, unified, and console (`POST /console/rpc`,
+read method, `runtime.admin` grant) surfaces. Additive method — no
+`contract_version` bump.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `state_dir` | `string` | yes (see note) | The state directory to diagnose. Required until the gateway can report its own persistent state directory (Phase M2): the unified/console surfaces answer a missing `state_dir` with error `-32004` (capability unavailable); the module-only surface with `-32602`. |
+| `identity` | `string` | no | Narrow the continuity checkpoint census to one identity |
+</Accordion>
+
+<Accordion title="Result">
+| Field | Type | Description |
+|-------|------|-------------|
+| `state_dir` | `string` | The diagnosed directory |
+| `diagnosis.findings` | `array` | Findings with `severity` (`info`/`warning`/`error`), stable kebab-case `code`, `message`, optional `path`/`realm`. Consumers must tolerate unknown codes. |
+| `diagnosis.inventory` | `array` | Per-directory database inventory with schema-ledger `domains` (`null` version = no ledger row) |
+| `storage` | `object \| null` | The live H1/H2 storage summary (same object as `mobkit/status`), `null` when the surface has none |
+</Accordion>
+
+---
+
 ## Subscribe methods
 
 ### `mobkit/events/subscribe`

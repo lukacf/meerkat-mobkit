@@ -1079,6 +1079,27 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/models/catalog")
         return ModelsCatalogResult.from_dict(raw)
 
+    async def storage_doctor(
+        self,
+        state_dir: str | None = None,
+        identity: str | None = None,
+    ) -> Any:
+        """Run the read-only storage doctor over a MobKit state directory.
+
+        Returns the raw wire result: ``state_dir``, ``diagnosis`` (with
+        ``findings`` and ``inventory``), and ``storage`` (the live H1/H2
+        durability summary, or ``None``). ``state_dir`` is required until the
+        gateway can report its own persistent state directory (Phase M2);
+        omitting it raises ``CapabilityUnavailableError``. ``identity``
+        narrows the continuity checkpoint census to one identity.
+        """
+        params: dict[str, Any] = {}
+        if state_dir is not None:
+            params["state_dir"] = state_dir
+        if identity is not None:
+            params["identity"] = identity
+        return await self._runtime._rpc("mobkit/storage/doctor", params)
+
     async def tools_catalog(self) -> MobpackToolsCatalogResult:
         """Return the MobKit tool catalog used by mobpack authoring."""
         raw = await self._runtime._rpc("mobkit/tools/catalog")

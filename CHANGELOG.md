@@ -71,6 +71,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   at `$TMPDIR/mobkit-scratch-<pid>/` and the choice is recorded in the
   serializable `layout_summary()` (`durability: declared_ephemeral`), which
   the Phase M1 storage doctor consumes.
+
+- **Storage doctor (M1): `mobkit/storage/doctor` RPC + console read
+  method.** A read-only diagnosis of a MobKit state directory, safe against
+  a live gateway (read-only SQLite opens, no file creation, no leases, no
+  schema-ledger runs), exposed on the module-only and unified stdin RPC
+  surfaces and on `POST /console/rpc` (read method, `runtime.admin` grant;
+  the console `mobkit/status` payload now advertises
+  `storage.doctor_available: true`). Reports: the per-directory database
+  inventory across every historical filename spelling, with schema-ledger
+  domain versions (`no-schema-ledger` on pre-M3 files,
+  `empty-database-shell` on table-less files); **file-name twins** as
+  errors (`file-name-twins`) for `sessions.db`/`sessions.sqlite`/
+  `sessions.sqlite3`, `continuity.db`/`identity_continuity.sqlite`/
+  `continuity.sqlite3`, `mobkit_metadata.sqlite`/`.sqlite3`,
+  `mobkit_console.sqlite`/`.sqlite3`, and `agent-memory/`/
+  `agent-memory-sqlite/`; the continuity checkpoint-evidence census per
+  identity (`legacy-unverified-continuity-snapshots`,
+  `checkpoint-metadata-invalid`, `continuity-snapshot-undecodable`) that
+  H3's adoption dry-run consumes; dangling console-frame blob references
+  (`dangling-console-blob-reference`); blob-root inventory (`blob-root`,
+  `legacy-fs-blobs`); gateway-home artifacts when scoped
+  (`peer-key-file`, `runtime-registry`); the workgraph admission sidecar
+  (`workgraph-admission-sidecar`); filesystem artifacts
+  (`maintenance-fence-lock`, `backup-artifact`, `quarantine-artifact`); and
+  the live H1/H2 durability resolution (`blob-durability`,
+  `session-store-incremental`) when invoked through a live gateway, or
+  `durability-census-unavailable` on a cold directory. `params.state_dir`
+  is required until the Phase M2 layout authority lets the runtime report
+  its own state directory — runtime-backed surfaces answer a missing
+  `state_dir` with error `-32004`. New public seam
+  `meerkat_mobkit::storage_doctor` (`diagnose_state_dir`,
+  `MobKitStorageMigrator` implementing
+  `meerkat_core::storage_diagnostics::StorageMigrator`) plus
+  `storage_doctor(...)` / `storageDoctor(...)` wrappers in the Python and
+  TypeScript SDKs. Additive method: `MOBKIT_CONTRACT_VERSION` stays at
+  `0.4.0`.
 - **Storage durability health surface (H1/H2).** `mobkit/status` (unified
   and console shapes) and the unified `mobkit/capabilities` now carry a
   `storage` object: `blob_durability`
