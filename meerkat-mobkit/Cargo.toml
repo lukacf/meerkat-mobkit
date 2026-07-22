@@ -69,6 +69,10 @@ meerkat-memory = "=0.8.3"
 meerkat-live = "=0.8.3"
 meerkat-runtime = { version = "=0.8.3", features = ["sqlite-store", "live"] }
 meerkat-session = { version = "=0.8.3", features = ["session-store"] }
+# Shared SQLite mechanics (storage-unification M3): named connection
+# profiles, the per-file migration ledger, and per-operation maintenance
+# fence guards. Every in-crate SQLite opener flows through this crate.
+meerkat-sqlite = "=0.8.3"
 meerkat-store = { version = "=0.8.3", features = ["sqlite"] }
 meerkat-tools = "=0.8.3"
 tempfile = "3"

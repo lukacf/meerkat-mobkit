@@ -78,6 +78,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Quarantined or torn-down identity sessions transition to `Broken` and enter
   the normal repair loop instead of remaining permanently `Active` zombies.
 
+- All six in-crate SQLite openers (agent memory, continuity writer + read
+  pool, runtime metadata, console aggregator, workgraph admission sidecar,
+  schedule triage) now flow through the shared `meerkat-sqlite` mechanics
+  crate under named connection profiles; MobKit no longer hand-rolls any
+  PRAGMA setup (storage-unification Phase M3).
+- **Console aggregator store gains WAL journaling, a busy timeout, and
+  `synchronous=FULL` for the first time.** It previously set zero PRAGMAs
+  (rollback journal, no busy handler). This is the highest-write-rate MobKit
+  database: writes now fsync on commit and participate in WAL semantics, so
+  concurrency-heavy deployments should re-run console-load benchmarks.
+- **The continuity store's writer now runs with `synchronous=FULL`** (it
+  previously set only WAL + busy timeout). Continuity writes sit on the
+  identity-first hot path — every checkpoint/fencing CAS now fsyncs on
+  commit. This is a deliberate durability upgrade; latency-sensitive
+  deployments should note the fsync-rate change. The agent-memory and
+  runtime-metadata stores gain the same explicit `synchronous=FULL`.
+- Busy timeouts harmonized on the shared 60s production default (previously
+  5s for memory/continuity/metadata, none for the console store). The
+  admission sidecar keeps its deliberate 30s wait-then-fail-closed policy as
+  a named per-open override.
+- Every MobKit-owned SQLite database now carries a per-file migration ledger
+  (`meerkat_schema` table, domains `mobkit-memory`, `mobkit-continuity`,
+  `mobkit-metadata`, `mobkit-console`) and a `<file>.mfence` maintenance
+  lock file appears next to each database. Files written by a newer MobKit
+  are refused with a typed schema-from-the-future error instead of being
+  mutated. The workgraph admission sidecar is deliberately exempt from the
+  ledger (stamping it would take the very lock it arbitrates). Legacy files
+  (including pre-`ever_quarantined`/`taint` agent-memory stores) converge on
+  first open; the memory store's historical column probes are now versioned
+  migrations.
+- `ContinuityStoreError` gains a `Transient` variant: busy/locked SQLite
+  failures are now classified transient (and corruption classified corrupt)
+  at the store boundary, so identity reconcile can distinguish retry-worthy
+  failures from poison without string-sniffing. Classification does not
+  itself authorize retry; retry policy stays with callers.
+
 ## [0.8.1] - 2026-07-22
 
 ### Changed

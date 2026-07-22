@@ -996,10 +996,10 @@ fn triage_poisoned_rows(
     json_column: &str,
     parse: impl Fn(&[u8]) -> Result<(), String>,
 ) -> Vec<String> {
-    let conn = match rusqlite::Connection::open_with_flags(
-        store_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
+    // Passive diagnostic read of meerkat-schedule's tables: the `ReadOnly`
+    // profile never creates, never converts the journal mode, and cannot
+    // write.
+    let conn = match meerkat_sqlite::open(store_path, meerkat_sqlite::ConnectionProfile::ReadOnly) {
         Ok(conn) => conn,
         Err(err) => return vec![format!("(row triage unavailable: {err})")],
     };

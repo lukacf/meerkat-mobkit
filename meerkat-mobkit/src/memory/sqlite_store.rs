@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::identity_first::AgentIdentity;
 use crate::identity_first::agent_memory::{
@@ -49,8 +49,6 @@ pub const DEFAULT_SCOPE_FLOOR_BYTES: usize = 32 * 1024 * 1024;
 /// Staged-but-uncommitted batches older than this are garbage-collected on
 /// realm open — a dead producer leaves a token that is never applied.
 const STAGE_GC_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
-
-const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS records (
@@ -186,6 +184,104 @@ const RECORD_COLUMNS: &str = "memory_id, scope_kind, scope_key, kind, title, des
      tags, provenance, trust, status_kind, status_detail, supersedes, derived_from, \
      working_set_rank, rank_set_at_ms, content_hash, created_at_ms, updated_at_ms, \
      usage_stats, tombstoned_at_ms";
+
+/// The agent-memory store's schema domain in the per-realm-file migration
+/// ledger (`meerkat_schema`, one row per domain).
+///
+/// Migration 0001 is `SCHEMA_SQL` (all `CREATE ... IF NOT EXISTS`, so it
+/// converges a pre-ledger file without touching its existing tables);
+/// 0002 lifts the historical `ensure_column` probes and their backfills
+/// verbatim. The open-time stage GC and markdown import are open-time
+/// behaviors, not migrations — they keep running on every realm open in
+/// [`SqliteAgentMemoryStore::realm_connection`].
+const MOBKIT_MEMORY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
+    name: "mobkit-memory",
+    migrations: &[
+        meerkat_sqlite::Migration {
+            version: 1,
+            name: "base-schema",
+            apply: migration_0001_base_schema,
+        },
+        meerkat_sqlite::Migration {
+            version: 2,
+            name: "quarantine-and-taint-columns",
+            apply: migration_0002_quarantine_and_taint_columns,
+        },
+    ],
+};
+
+fn migration_0001_base_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    tx.execute_batch(SCHEMA_SQL)
+}
+
+/// Column migrations for stores created before the columns joined
+/// SCHEMA_SQL (CREATE TABLE IF NOT EXISTS never alters). The `table_info`
+/// guards keep this convergent on files of any vintage: a fresh file whose
+/// 0001 already created the columns skips both the ALTERs and the
+/// backfills, exactly like the historical probes did.
+fn migration_0002_quarantine_and_taint_columns(
+    tx: &Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    if add_column_if_absent(
+        tx,
+        "records",
+        "ever_quarantined",
+        "INTEGER NOT NULL DEFAULT 0",
+    )? {
+        // Backfill the durable §10.2 marker: currently-quarantined rows
+        // directly; tombstoned rows through their audit trail (the
+        // tombstone apply nulls status_detail, so the audit row's
+        // `"quarantined":"<reason>"` is the only remaining evidence
+        // that a row once landed quarantined).
+        tx.execute(
+            "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'quarantined'",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'tombstoned' \
+             AND memory_id IN (SELECT memory_id FROM audit \
+             WHERE detail LIKE '%\"quarantined\":\"%')",
+            [],
+        )?;
+    }
+    if add_column_if_absent(tx, "proposals", "taint", "TEXT")? {
+        // Conservative backfill (mirrors ever_quarantined above): the
+        // propose-time taint fact for pre-migration proposals lived only
+        // in the in-memory SessionTaintTracker and is unrecoverable, so
+        // still-live proposals route through the operator-gated
+        // promotion path instead of reading as clean. Terminal statuses
+        // (accepted/rejected) are never re-verdicted and stay untouched.
+        tx.execute(
+            "UPDATE proposals SET taint = 'pre-migration proposal: propose-time \
+             taint fact unrecoverable' WHERE status IN ('pending', 'held')",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// `PRAGMA table_info` guard lifted from the historical `ensure_column`
+/// probe: adds the column when absent and reports whether it did (its
+/// backfill is owed only then).
+fn add_column_if_absent(
+    tx: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<bool, rusqlite::Error> {
+    let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    if existing.iter().any(|name| name == column) {
+        return Ok(false);
+    }
+    tx.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+        [],
+    )?;
+    Ok(true)
+}
 
 /// Bundled SQLite store. Cheap to clone; connections are cached per realm
 /// and shared across clones.
@@ -344,54 +440,13 @@ impl SqliteAgentMemoryStore {
         if let Some(existing) = connections.get(realm) {
             return Ok(existing.clone());
         }
-        let mut conn = Connection::open(self.path_for_realm(realm)).map_err(sql_err)?;
-        conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
-            .map_err(sql_err)?;
-        // WAL survives crashes without blocking readers; query_row because
-        // the pragma returns the new mode.
-        conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))
-            .map_err(sql_err)?;
-        conn.execute_batch(SCHEMA_SQL).map_err(sql_err)?;
-        // Column migrations for stores created before the columns joined
-        // SCHEMA_SQL (CREATE TABLE IF NOT EXISTS never alters).
-        if ensure_column(
-            &conn,
-            "records",
-            "ever_quarantined",
-            "INTEGER NOT NULL DEFAULT 0",
-        )? {
-            // Backfill the durable §10.2 marker: currently-quarantined rows
-            // directly; tombstoned rows through their audit trail (the
-            // tombstone apply nulls status_detail, so the audit row's
-            // `"quarantined":"<reason>"` is the only remaining evidence
-            // that a row once landed quarantined).
-            conn.execute(
-                "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'quarantined'",
-                [],
-            )
-            .map_err(sql_err)?;
-            conn.execute(
-                "UPDATE records SET ever_quarantined = 1 WHERE status_kind = 'tombstoned' \
-                 AND memory_id IN (SELECT memory_id FROM audit \
-                 WHERE detail LIKE '%\"quarantined\":\"%')",
-                [],
-            )
-            .map_err(sql_err)?;
-        }
-        if ensure_column(&conn, "proposals", "taint", "TEXT")? {
-            // Conservative backfill (mirrors ever_quarantined above): the
-            // propose-time taint fact for pre-migration proposals lived only
-            // in the in-memory SessionTaintTracker and is unrecoverable, so
-            // still-live proposals route through the operator-gated
-            // promotion path instead of reading as clean. Terminal statuses
-            // (accepted/rejected) are never re-verdicted and stay untouched.
-            conn.execute(
-                "UPDATE proposals SET taint = 'pre-migration proposal: propose-time \
-                 taint fact unrecoverable' WHERE status IN ('pending', 'held')",
-                [],
-            )
-            .map_err(sql_err)?;
-        }
+        let mut conn = meerkat_sqlite::open(
+            &self.path_for_realm(realm),
+            meerkat_sqlite::ConnectionProfile::PRIMARY,
+        )
+        .map_err(sqlite_store_err)?;
+        meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_MEMORY_DOMAIN)
+            .map_err(sqlite_store_err)?;
         let now = now_ms();
         // Stage GC spares tokens referenced by a still-pending gated
         // promotion (§10.2) — the operator's decision window outranks the
@@ -585,6 +640,13 @@ impl SqliteAgentMemoryStore {
         realm: &str,
         f: impl FnOnce(&mut Connection) -> Result<T, AgentMemoryError>,
     ) -> Result<T, AgentMemoryError> {
+        // Per-operation maintenance-fence guard: realm connections are
+        // cached for the store's lifetime, so the fence cannot ride the
+        // open — every operation takes its own shared guard instead, and
+        // offline maintenance drains in-flight guards before touching the
+        // file.
+        let _fence = meerkat_sqlite::OperationGuard::for_database(&self.path_for_realm(realm))
+            .map_err(sqlite_store_err)?;
         let conn = self.realm_connection(realm)?;
         let mut guard = conn
             .lock()
@@ -3471,38 +3533,15 @@ fn record_import_audit(
     Ok(())
 }
 
-/// Add `column` to `table` when absent. Returns true when the column was
-/// just added (the caller's cue to run a one-time backfill).
-fn ensure_column(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    ddl: &str,
-) -> Result<bool, AgentMemoryError> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(sql_err)?;
-    let existing: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sql_err)?
-        .collect::<Result<_, _>>()
-        .map_err(sql_err)?;
-    if existing.iter().any(|name| name == column) {
-        return Ok(false);
-    }
-    conn.execute(
-        &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
-        [],
-    )
-    .map_err(sql_err)?;
-    Ok(true)
-}
-
 fn json_string<T: serde::Serialize>(value: &T) -> Result<String, AgentMemoryError> {
     serde_json::to_string(value).map_err(|err| AgentMemoryError::Parse(err.to_string()))
 }
 
 fn sql_err(err: rusqlite::Error) -> AgentMemoryError {
+    AgentMemoryError::Io(err.to_string())
+}
+
+fn sqlite_store_err(err: meerkat_sqlite::SqliteStoreError) -> AgentMemoryError {
     AgentMemoryError::Io(err.to_string())
 }
 
@@ -4047,6 +4086,131 @@ mod tests {
                 "terminal proposal '{id}' must stay untouched: {taint:?}"
             );
         }
+        Ok(())
+    }
+
+    /// A fresh realm database is stamped with the `mobkit-memory` ledger
+    /// domain at its highest supported version.
+    #[tokio::test]
+    async fn fresh_store_stamps_mobkit_memory_domain() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let conn = store.realm_connection("family")?;
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            meerkat_sqlite::domain_version(&guard, "mobkit-memory")?,
+            Some(2)
+        );
+        Ok(())
+    }
+
+    /// A pre-ledger, pre-`ever_quarantined`/`taint` file converges through
+    /// migrations 0001+0002 on open, is stamped, preserves its rows, and
+    /// writes the load-bearing taint sentinel BYTE-FOR-BYTE — operator
+    /// flows key on the exact string.
+    #[tokio::test]
+    async fn legacy_file_converges_and_writes_taint_sentinel_byte_for_byte()
+    -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let db_path = {
+            let store = SqliteAgentMemoryStore::open(dir.path())?;
+            store.path_for_realm("family")
+        };
+        {
+            let conn = Connection::open(&db_path)?;
+            conn.execute_batch(
+                "CREATE TABLE records (
+                    memory_id       TEXT PRIMARY KEY,
+                    scope_kind      TEXT NOT NULL,
+                    scope_key       TEXT NOT NULL,
+                    kind            TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    description     TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL,
+                    tags            TEXT NOT NULL DEFAULT '[]',
+                    provenance      TEXT NOT NULL,
+                    trust           TEXT NOT NULL,
+                    status_kind     TEXT NOT NULL,
+                    status_detail   TEXT,
+                    supersedes      TEXT,
+                    derived_from    TEXT NOT NULL DEFAULT '[]',
+                    working_set_rank INTEGER,
+                    rank_set_at_ms  INTEGER,
+                    content_hash    TEXT NOT NULL,
+                    created_at_ms   INTEGER NOT NULL,
+                    updated_at_ms   INTEGER NOT NULL,
+                    usage_stats     TEXT NOT NULL DEFAULT '{}',
+                    tombstoned_at_ms INTEGER
+                );
+                CREATE TABLE proposals (
+                    proposal_id   TEXT PRIMARY KEY,
+                    scope_kind    TEXT NOT NULL,
+                    scope_key    TEXT NOT NULL,
+                    record        TEXT NOT NULL,
+                    author        TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    created_at_ms INTEGER NOT NULL
+                );",
+            )?;
+            conn.execute(
+                "INSERT INTO records (memory_id, scope_kind, scope_key, kind, title, \
+                 description, body, tags, provenance, trust, status_kind, status_detail, \
+                 supersedes, derived_from, content_hash, created_at_ms, updated_at_ms, \
+                 usage_stats) VALUES ('mem-q', 'identity', 'identity:luka', 'fact', 'T', '', \
+                 'body', '[]', '{\"author\":{\"author\":\"application\"}}', 'agent_observed', \
+                 'quarantined', 'tainted', NULL, '[]', 'h1', 1, 1, '{}')",
+                [],
+            )?;
+            for (id, status) in [
+                ("prop-pending", "pending"),
+                ("prop-held", "held"),
+                ("prop-accepted", "accepted"),
+            ] {
+                conn.execute(
+                    "INSERT INTO proposals (proposal_id, scope_kind, scope_key, record, \
+                     author, status, created_at_ms) VALUES (?1, 'mob', 'mob:home', '{}', \
+                     '{}', ?2, 1)",
+                    params![id, status],
+                )?;
+            }
+        }
+        let store = SqliteAgentMemoryStore::open(dir.path())?;
+        let conn = store.realm_connection("family")?;
+        let guard = conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            meerkat_sqlite::domain_version(&guard, "mobkit-memory")?,
+            Some(2),
+            "legacy file must be stamped after convergence"
+        );
+        let quarantined: i64 = guard.query_row(
+            "SELECT ever_quarantined FROM records WHERE memory_id = 'mem-q'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(quarantined, 1, "legacy quarantined row must be backfilled");
+        let taint = |id: &str| -> Result<Option<String>, Box<dyn Error>> {
+            Ok(guard.query_row(
+                "SELECT taint FROM proposals WHERE proposal_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?)
+        };
+        for id in ["prop-pending", "prop-held"] {
+            assert_eq!(
+                taint(id)?.as_deref(),
+                Some("pre-migration proposal: propose-time taint fact unrecoverable"),
+                "sentinel must be preserved byte-for-byte for '{id}'"
+            );
+        }
+        assert_eq!(
+            taint("prop-accepted")?,
+            None,
+            "terminal proposals stay untouched"
+        );
         Ok(())
     }
 
