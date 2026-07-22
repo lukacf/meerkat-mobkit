@@ -1547,12 +1547,76 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
             .await
     }
 
+    async fn compare_and_swap_input_states_atomically_with_fence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected: &[StoredInputState],
+        replacements: &[InputStatePersistenceRecord],
+        write_fence: Arc<dyn meerkat_runtime::store::RuntimeStoreWriteFence>,
+    ) -> Result<
+        meerkat_runtime::store::FencedInputStateBatchCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_input_states_atomically_with_fence(
+                runtime_id,
+                expected,
+                replacements,
+                write_fence,
+            )
+            .await
+    }
+
     async fn load_input_state(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         input_id: &meerkat_core::lifecycle::InputId,
     ) -> Result<Option<StoredInputState>, meerkat_runtime::store::RuntimeStoreError> {
         self.inner.load_input_state(runtime_id, input_id).await
+    }
+
+    async fn observe_machine_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        meerkat_runtime::store::MachineLifecycleObservation,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.observe_machine_lifecycle(runtime_id).await
+    }
+
+    async fn compare_and_swap_machine_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected: meerkat_runtime::store::MachineLifecycleExpectedVersion,
+        replacement: MachineLifecycleCommit,
+    ) -> Result<
+        meerkat_runtime::store::MachineLifecycleCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_machine_lifecycle(runtime_id, expected, replacement)
+            .await
+    }
+
+    async fn compare_and_swap_machine_lifecycle_with_fence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected: meerkat_runtime::store::MachineLifecycleExpectedVersion,
+        replacement: MachineLifecycleCommit,
+        write_fence: Arc<dyn meerkat_runtime::store::RuntimeStoreWriteFence>,
+    ) -> Result<
+        meerkat_runtime::store::FencedMachineLifecycleCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_machine_lifecycle_with_fence(
+                runtime_id,
+                expected,
+                replacement,
+                write_fence,
+            )
+            .await
     }
 
     async fn load_machine_lifecycle_record(

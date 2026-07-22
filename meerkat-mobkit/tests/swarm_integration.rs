@@ -185,6 +185,10 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
         self.inner.supports_persistent_sessions()
     }
 
+    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+        self.inner.runtime_adapter()
+    }
+
     async fn session_belongs_to_mob(&self, session_id: &SessionId, mob_id: &MobId) -> bool {
         self.inner.session_belongs_to_mob(session_id, mob_id).await
     }

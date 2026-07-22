@@ -421,12 +421,13 @@ class TestHouseholdIncident:
                 )
             print("[Phase 5] All 7 actors restored with stable IDs")
 
-            # Wait for autonomous loops to restart after restore
-            await rt2.wait_until_ready([
-                "triage:main", "domain:school", "domain:calendar",
-                "gate:main", "identity:luka", "identity:louise",
-                "family-group:main",
-            ], timeout=30)
+            # A resumed member does not replay its one-time kickoff turn.
+            # Wait on the typed lifecycle readiness barrier rather than output
+            # previews, which may stay empty until fresh work is delivered.
+            startup = await rt2.wait_identity_bootstrap(
+                target="startup_ready", timeout=30
+            )
+            assert startup.startup_ready is True, startup.to_dict()
 
             # ASSERT conversational continuity via LLM content.
             # Luka received the school closure notice before shutdown.

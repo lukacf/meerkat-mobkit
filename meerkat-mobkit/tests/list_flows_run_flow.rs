@@ -309,7 +309,6 @@ impl meerkat::LlmClient for HangingTestClient {
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_quiesces_an_in_flight_flow_run() {
     let fixture = build_unified_runtime_with_flow_and_client(Arc::new(HangingTestClient)).await;
-
     let run_response = parse_json_rpc(
         &handle_unified_rpc_json(
             &fixture.runtime,
