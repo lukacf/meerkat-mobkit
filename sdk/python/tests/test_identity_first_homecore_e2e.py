@@ -223,6 +223,34 @@ async def _boot_identity_runtime(
     return await builder.build()
 
 
+async def _wait_for_identity_convergence(runtime, *, timeout: float = 60.0):
+    """Wait through diagnostic Broken states until the roster converges.
+
+    Eager bootstrap is terminal once every identity has a classified outcome;
+    a retryable resume failure is therefore observable as ``Broken`` before
+    the runtime-owned repair supervisor's first backoff expires.  Recovery is
+    level-triggered, so restart tests must assert eventual convergence rather
+    than depend on whether the first observation won that race.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    status = await runtime.identity_bootstrap_status()
+    while not status.ready and loop.time() < deadline:
+        await asyncio.sleep(0.5)
+        status = await runtime.identity_bootstrap_status()
+    assert status.ready, status.to_dict()
+
+    # Active lifecycle is necessary but not sufficient: once the repair
+    # supervisor converges every identity, use the typed member-readiness
+    # barrier for the remaining time budget.
+    remaining = max(0.0, deadline - loop.time())
+    startup = await runtime.wait_identity_bootstrap(
+        target="startup_ready", timeout=remaining
+    )
+    assert startup.startup_ready is True, startup.to_dict()
+    return startup
+
+
 @pytest.fixture
 def mob_toml(tmp_path):
     p = tmp_path / "mob.toml"
@@ -639,7 +667,7 @@ class TestHC07ResetVsDelete:
 @_skip_no_binary
 class TestHC08PersistentRestart:
     @pytest.mark.asyncio
-    @pytest.mark.timeout(180)
+    @pytest.mark.timeout(360)
     async def test_session_and_continuity_preserved_across_restart(self, mob_toml, state_dir):
         roster = HomeCoreRoster(_DEFAULT_ROSTER)
         topology = HomeCoreTopology(_DEFAULT_EDGES)
@@ -678,6 +706,8 @@ class TestHC08PersistentRestart:
             after = await rt2.status("identity:luka")
             assert after.session_id == session_before
             assert after.agent_runtime_id == rt_id_before
+            await _wait_for_identity_convergence(rt2)
+            after = await rt2.status("identity:luka")
             assert after.state == "active"
 
             triage_after = await rt2.status("triage:main")
@@ -695,3 +725,27 @@ class TestHC08PersistentRestart:
             # was restored (not fresh-created).
         finally:
             await rt2.shutdown()
+
+        # Restart once more after the resumed runtime has committed another
+        # turn. This catches a latent same-base sibling fork that can look
+        # healthy during the first recovery but wedge the following restart.
+        rt3 = await _boot_identity_runtime(
+            state_dir, mob_toml, roster, topology, customizer
+        )
+        try:
+            after_second_restart = await rt3.status("identity:luka")
+            assert after_second_restart.session_id == session_before
+            assert after_second_restart.agent_runtime_id == rt_id_before
+            await _wait_for_identity_convergence(rt3)
+            after_second_restart = await rt3.status("identity:luka")
+            assert after_second_restart.state == "active"
+
+            triage_after_second_restart = await rt3.status("triage:main")
+            assert triage_after_second_restart.session_id == triage_session_before
+
+            await rt3.send(
+                "identity:luka",
+                "Confirm this session is still writable after the second restart.",
+            )
+        finally:
+            await rt3.shutdown()

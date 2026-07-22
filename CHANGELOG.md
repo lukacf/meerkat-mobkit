@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-22
+
+### Changed
+
+- Pinned the complete Meerkat dependency family to the public `0.8.2` crate
+  set. MobKit composes Meerkat's concrete `retire` authority for explicit
+  member deletion but does not duplicate the still-unsupported generated
+  `EnsureSessionAuthority` and `ReleaseSessionAuthority` actuators. Those
+  generic recovery observations remain explicitly repair-blocked upstream.
+
+### Fixed
+
+- Snapshot coherence now treats a snapshot's fence as historical write
+  provenance while requiring the presented fence to equal current write
+  authority. Cross-identity and cross-generation snapshot replacement is
+  rejected, and embedded session IDs must match their durable key.
+- The continuity session adapter remains a strict projection store: it no
+  longer runs a second transcript-recovery classifier or fabricates an empty
+  session when durable bytes are missing. Authoritative projection CAS checks
+  only the visible durable row.
+- Identity registration now rejects conflicting owners, generations, and
+  regressing fencing epochs, and ambiguous lost acknowledgements never rewind
+  checkpoint allocation.
+
 ## [0.8.0] - 2026-07-18
 
 ### Added

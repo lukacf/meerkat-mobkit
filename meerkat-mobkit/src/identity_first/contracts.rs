@@ -27,9 +27,12 @@ use crate::mob_handle_runtime::SessionCreatedContext;
 /// Candidate used by stores that can prove an exact, provenance-preserving
 /// snapshot no-op without returning and reparsing the durable document.
 ///
-/// A store may report a match only when both the bytes and every ownership/CAS
-/// field identify its current durable row. Implementations that cannot prove
-/// the complete predicate must use the trait's default `false` response.
+/// A store may report a match only when the bytes, identity, generation, and
+/// checkpoint revision identify its durable snapshot and the presented fence
+/// is current write authority. The snapshot's stored fence is historical
+/// provenance: it may precede the current lease epoch, but may never exceed
+/// it. Implementations that cannot prove the complete predicate must use the
+/// trait's default `false` response.
 #[derive(Debug, Clone)]
 pub struct SessionSnapshotMatchCandidate {
     pub identity: AgentIdentity,
@@ -72,8 +75,9 @@ pub trait ContinuityStore: Send + Sync {
     ) -> Result<Option<SessionSnapshot>, ContinuityStoreError>;
 
     /// Return `true` only when `candidate` is byte-for-byte identical to the
-    /// current durable row and its identity, generation, checkpoint version,
-    /// and fencing token all match.
+    /// current durable row and its identity, generation, and checkpoint
+    /// version match. `candidate.fencing_token` must equal current write
+    /// authority; the row's historical fence may be older but not newer.
     ///
     /// This additive capability lets adapters skip a full document load and
     /// parse for an already-durable save. The conservative default preserves

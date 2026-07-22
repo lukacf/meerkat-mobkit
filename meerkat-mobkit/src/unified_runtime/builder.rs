@@ -1366,7 +1366,6 @@ runtime_mode = "autonomous_host"
         )
         .expect("definition parses");
         let tmp = tempfile::tempdir().expect("temp dir");
-
         let builder = UnifiedRuntimeBuilder::default()
             .definition(definition)
             .persistent_state(tmp.path().join("state"))

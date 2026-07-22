@@ -11,6 +11,7 @@ from meerkat_mobkit.identity_first_models import (
     IdentityBootstrapMode,
 )
 from meerkat_mobkit.identity_first_providers import (
+    ContinuityRecord,
     ContinuityResolveState,
     LeaseAcquireResult,
     LeaseGrant,
@@ -59,24 +60,73 @@ class _Roster:
 
 
 class _ContinuityStore:
+    def __init__(self):
+        self.records: dict[str, ContinuityRecord] = {}
+        self.snapshots: dict[str, object] = {}
+        self.fencing_tokens: dict[str, int] = {}
+
     async def resolve_many(self, identities):
         return {
-            identity: ContinuityResolveState(state="uninitialized")
+            identity: (
+                ContinuityResolveState(state="ready", record=self.records[identity])
+                if identity in self.records
+                else ContinuityResolveState(state="uninitialized")
+            )
             for identity in identities
         }
 
     async def load_session_snapshot(self, session_id):
-        del session_id
-        return None
+        return self.snapshots.get(session_id)
 
-    async def save_session_snapshot(self, *args):
-        del args
+    async def save_session_snapshot(
+        self,
+        identity,
+        session_id,
+        generation,
+        version,
+        fencing_token,
+        snapshot,
+    ):
+        record = self.records[identity]
+        assert record.session_id == session_id
+        assert record.generation == generation
+        assert self.fencing_tokens[identity] == fencing_token
+        self.snapshots[session_id] = snapshot
+        self.records[identity] = ContinuityRecord(
+            identity=record.identity,
+            agent_runtime_id=record.agent_runtime_id,
+            session_id=record.session_id,
+            generation=record.generation,
+            checkpoint_version=version,
+        )
 
-    async def upsert_continuity_record(self, *args):
-        del args
+    async def upsert_continuity_record(self, record, fencing_token):
+        self.records[record.identity] = record
+        self.fencing_tokens[record.identity] = fencing_token
 
-    async def delete_continuity_record(self, *args):
-        del args
+    async def delete_continuity_record(self, identity, fencing_token):
+        assert self.fencing_tokens.get(identity) == fencing_token
+        self.records.pop(identity, None)
+        self.fencing_tokens.pop(identity, None)
+
+    async def session_snapshot_matches_current(
+        self,
+        identity,
+        session_id,
+        generation,
+        checkpoint_version,
+        fencing_token,
+        snapshot,
+    ):
+        record = self.records.get(identity)
+        return (
+            record is not None
+            and record.session_id == session_id
+            and record.generation == generation
+            and record.checkpoint_version == checkpoint_version
+            and self.fencing_tokens.get(identity) == fencing_token
+            and self.snapshots.get(session_id) == snapshot
+        )
 
     async def delete_session_snapshot_if_current_revision(self, *args):
         del args

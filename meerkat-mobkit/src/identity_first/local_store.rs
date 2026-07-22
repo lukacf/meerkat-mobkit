@@ -385,12 +385,12 @@ impl ContinuityStore for LocalContinuityStore {
                              AND continuity.session_id = snapshot.session_id
                              AND continuity.generation = snapshot.generation
                              AND continuity.checkpoint_version = snapshot.checkpoint_version
-                             AND continuity.fencing_token = snapshot.fencing_token
                             WHERE snapshot.session_id = ?1
                               AND snapshot.identity = ?2
                               AND snapshot.generation = ?3
                               AND snapshot.checkpoint_version = ?4
-                              AND snapshot.fencing_token = ?5
+                              AND continuity.fencing_token = ?5
+                              AND snapshot.fencing_token <= ?5
                               AND snapshot.data = ?6
                         )",
                         rusqlite::params![
@@ -550,6 +550,26 @@ impl ContinuityStore for LocalContinuityStore {
                             current: CheckpointVersion::new(current_version),
                         });
                     }
+                }
+
+                let existing_snapshot_owner = tx
+                    .query_row(
+                        "SELECT identity, generation FROM session_snapshots WHERE session_id = ?1",
+                        rusqlite::params![session_id.to_string()],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| {
+                        ContinuityStoreError::Io(format!("query snapshot owner: {e}"))
+                    })?;
+                if let Some((snapshot_identity, snapshot_generation)) = existing_snapshot_owner
+                    && (snapshot_identity != identity.as_str()
+                        || snapshot_generation != generation.get())
+                {
+                    return Err(ContinuityStoreError::Corruption(format!(
+                        "session snapshot {session_id} is owned by {snapshot_identity}/generation \
+                         {snapshot_generation}, not {identity}/generation {generation}"
+                    )));
                 }
 
                 tx.execute(
@@ -1429,11 +1449,136 @@ mod tests {
             .unwrap();
         assert!(
             !store
-                .session_snapshot_matches_current(candidate)
+                .session_snapshot_matches_current(candidate.clone())
                 .await
                 .unwrap(),
-            "stale snapshot-row bytes must not mask a newer continuity head fence"
+            "a stale presented write fence must not match a newer continuity head"
         );
+        assert!(
+            store
+                .session_snapshot_matches_current(SessionSnapshotMatchCandidate {
+                    fencing_token: FencingToken::new(2),
+                    ..candidate
+                })
+                .await
+                .unwrap(),
+            "the historical row fence is provenance and may precede current write authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_save_rejects_another_identity_owning_the_session_id() {
+        let store = LocalContinuityStore::in_memory().expect("in-memory store");
+        let first = AgentIdentity::parse("agent:first-owner").unwrap();
+        let second = AgentIdentity::parse("agent:second-owner").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        store
+            .upsert_continuity_record(&record(&first, &session_id), FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &first,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: vec![1] },
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_continuity_record(&record(&second, &session_id), FencingToken::new(2))
+            .await
+            .unwrap();
+
+        let error = store
+            .save_session_snapshot(
+                &second,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(2),
+                &SessionSnapshot { data: vec![2] },
+            )
+            .await
+            .expect_err("a different identity must not overwrite the session row");
+        assert!(matches!(error, ContinuityStoreError::Corruption(_)));
+        assert_eq!(
+            store.load_session_snapshot(&session_id).await.unwrap(),
+            Some(SessionSnapshot { data: vec![1] })
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_save_rejects_same_identity_from_another_generation_atomically() {
+        let store = LocalContinuityStore::in_memory().expect("in-memory store");
+        let identity = AgentIdentity::parse("agent:generation-owner").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: vec![1] },
+            )
+            .await
+            .unwrap();
+
+        let identity_for_update = identity.clone();
+        store
+            .run_blocking("advance-test-generation", move |inner| {
+                inner.with_writer(|connection| {
+                    connection
+                        .execute(
+                            "UPDATE continuity_records
+                             SET generation = 1, checkpoint_version = 0, fencing_token = 2
+                             WHERE identity = ?1",
+                            rusqlite::params![identity_for_update.as_str()],
+                        )
+                        .map_err(|error| {
+                            ContinuityStoreError::Io(format!(
+                                "advance test continuity generation: {error}"
+                            ))
+                        })?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        let error = store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(1),
+                CheckpointVersion::new(1),
+                FencingToken::new(2),
+                &SessionSnapshot { data: vec![2] },
+            )
+            .await
+            .expect_err("a new generation must not overwrite the prior session row");
+        assert!(matches!(error, ContinuityStoreError::Corruption(_)));
+        assert_eq!(
+            store.load_session_snapshot(&session_id).await.unwrap(),
+            Some(SessionSnapshot { data: vec![1] }),
+            "failed cross-generation save must leave snapshot bytes unchanged"
+        );
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        let ContinuityResolveState::Ready { record } = resolved.get(&identity).unwrap() else {
+            panic!("expected ready continuity head");
+        };
+        assert_eq!(record.generation, ContinuityGeneration::new(1));
+        assert_eq!(record.checkpoint_version, CheckpointVersion::new(0));
     }
 
     #[tokio::test(flavor = "current_thread")]
