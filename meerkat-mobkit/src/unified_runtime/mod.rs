@@ -1822,7 +1822,7 @@ mod tests {
     /// most ~once per cap instead of 4×/s.
     #[test]
     fn subscribe_backoff_grows_and_caps() {
-        assert!(PERMANENT_STREAM_FAILURE_THRESHOLD > 1);
+        const { assert!(PERMANENT_STREAM_FAILURE_THRESHOLD > 1) };
         assert_eq!(subscribe_backoff_delay(0), SUBSCRIBE_BACKOFF_BASE);
         assert_eq!(subscribe_backoff_delay(1), SUBSCRIBE_BACKOFF_BASE * 2);
         assert_eq!(subscribe_backoff_delay(3), SUBSCRIBE_BACKOFF_BASE * 8);

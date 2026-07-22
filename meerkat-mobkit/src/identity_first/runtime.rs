@@ -9257,7 +9257,7 @@ mod reset_reprofile_tests {
                 LeaseGrant {
                     identity: identity.clone(),
                     fencing_token: FencingToken::new(7),
-                    ttl: Duration::from_secs(60),
+                    ttl: Duration::from_mins(1),
                 },
             )
             .await?;
@@ -9319,7 +9319,7 @@ mod reset_reprofile_tests {
                 LeaseGrant {
                     identity: identity.clone(),
                     fencing_token: FencingToken::new(8),
-                    ttl: Duration::from_secs(60),
+                    ttl: Duration::from_mins(1),
                 },
             )
             .await?;
