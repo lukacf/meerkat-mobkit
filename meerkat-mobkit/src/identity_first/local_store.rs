@@ -37,14 +37,15 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS continuity_records (
 /// The continuity store's schema domain in the per-file migration ledger.
 /// Migration 0001 is the historical two-table DDL (all `CREATE ... IF NOT
 /// EXISTS`, so a pre-ledger file converges without its rows being touched).
-const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
-    name: "mobkit-continuity",
-    migrations: &[meerkat_sqlite::Migration {
-        version: 1,
-        name: "base-schema",
-        apply: migration_0001_continuity_schema,
-    }],
-};
+pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
+    meerkat_sqlite::SchemaDomain {
+        name: "mobkit-continuity",
+        migrations: &[meerkat_sqlite::Migration {
+            version: 1,
+            name: "base-schema",
+            apply: migration_0001_continuity_schema,
+        }],
+    };
 
 fn migration_0001_continuity_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
     tx.execute_batch(SCHEMA)

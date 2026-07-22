@@ -33,6 +33,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Continuity snapshot checkpoint adoption (storage-unification H3).**
+  Session bytes written by 0.7.x-era MobKit live inside continuity
+  `session_snapshots` rows; on 0.8.x they decode as legacy-unverified and
+  hard-fail every resume through the identity-first path (the bridge
+  correctly refuses fresh-spawn, so the identity stays `Broken` on every
+  reconcile retry). Meerkat ≥0.8.3 auto-migrates the documents *it* reads
+  (session store, runtime snapshots); continuity snapshots are the copies
+  meerkat never sees, and this release heals them via the exported
+  `meerkat_core::adopt_legacy_session` helper with the **observed cursor**
+  (generation / checkpoint version) from the matching continuity record.
+  Two sanctioned shapes:
+  - **Batch, in a deploy/maintenance window**:
+    `meerkat_mobkit::identity_first::adopt_continuity_snapshots` (library
+    entry) and the new `mobkit_gateway storage-adopt-checkpoints
+    (--db <path> | --state-dir <dir>) [--apply] [--json]` maintenance
+    subcommand (never an eager side effect of gateway startup; dry-run by
+    default and byte-identical without `--apply`; exit 1 on refusals or an
+    unacquirable fence). The walk holds the exclusive maintenance fence on
+    the database file, enumerates rows by direct SQL (the `ContinuityStore`
+    trait has no enumeration API and cannot rewrite in place at the same
+    `CheckpointVersion`), rewrites each legacy row's bytes in place, and
+    deliberately leaves the row's `generation` / `checkpoint_version` /
+    `fencing_token` columns untouched — the stamp binds to the observed
+    cursor the row already records. Stale rows (record rebound away or
+    generation superseded) are classified and reported, never adopted and
+    never an error; a re-run is a byte-identical no-op.
+  - **Lazy, at restore** (always-on single-replica deployments, where the
+    pod restart is the window): `ContinuitySessionStoreAdapter` adopts a
+    legacy snapshot at first load under the registered continuity cursor
+    and persists the adopted bytes through the store's own CAS at the next
+    checkpoint version. Named opt-in
+    (`with_lazy_checkpoint_adoption(true)`), enabled on the identity-first
+    gateway wirings (`rpc_gateway`, the builder's external-authoritative
+    arm) — it is the fleet-unbrick behavior. Downstream lazy shims that
+    stamped continuity copies by hand can retire on this release (retirement
+    chain: meerkat #909 → this H3 → shim removal).
+
+  **Ordering constraint:** meerkat's own lazy path seeds `INITIAL` cursors
+  and a verified document never re-migrates, so on any fleet whose
+  continuity rows record a **nonzero generation floor**, run H3 (batch verb,
+  or restore through the lazy-enabled adapter) **before** meerkat's lazy
+  path first touches those sessions. Generation-0 fleets are unaffected.
 - **`MobKitStorageLayout` path authority + canonical-name-first probing
   (storage-unification Phase M2).** One module,
   `meerkat_mobkit::storage_layout`, now owns every storage root and

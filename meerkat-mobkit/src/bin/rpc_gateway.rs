@@ -4523,7 +4523,13 @@ external_addressable = true
         None
     };
     let identity_session_store_adapter = identity_continuity_store.as_ref().map(|store| {
-        Arc::new(meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone()))
+        // Lazy checkpoint adoption ON for the identity-first gateway: the
+        // continuity store is the session authority on this surface, and a
+        // 0.7.x-era snapshot would otherwise hard-fail every resume (H3).
+        Arc::new(
+            meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone())
+                .with_lazy_checkpoint_adoption(true),
+        )
     });
 
     // 5. Build session service with callback bridge.
