@@ -227,6 +227,38 @@ pub fn adopt_continuity_snapshots_blocking(
     adopt_with_fence_deadline(db_path, mode, FENCE_DRAIN_DEADLINE)
 }
 
+/// Adoption walk for a caller that **already holds** the exclusive
+/// maintenance fence on `db_path` — the M6 `storage-migrate` verb fences
+/// every state-dir database for its whole pass, and the fence file lock is
+/// not re-entrant (a second acquisition in the same process blocks on the
+/// first), so re-acquiring here would deadlock the combined pass against
+/// itself. This is the sanctioned fence-composition seam: the M6 fence is
+/// meerkat's Phase 6 primitive, and case 4 runs under that same fence pass
+/// instead of releasing and re-taking it (which would open a window for a
+/// foreign holder mid-migration).
+///
+/// Safety net: the walk still *tries* the fence non-blocking. If no one
+/// actually holds it, it is taken here (and released when the walk ends), so
+/// the quiescence contract holds even for a caller that lied.
+pub fn adopt_continuity_snapshots_already_fenced(
+    db_path: &Path,
+    mode: AdoptionMode,
+) -> Result<ContinuityAdoptionReport, ContinuityAdoptionError> {
+    if !db_path.is_file() {
+        return Err(ContinuityAdoptionError::Open {
+            path: db_path.to_path_buf(),
+            detail: "database file does not exist".to_string(),
+        });
+    }
+    let _fence = meerkat_sqlite::ExclusiveFence::try_acquire(db_path).map_err(|error| {
+        ContinuityAdoptionError::FenceUnavailable {
+            path: db_path.to_path_buf(),
+            detail: error.to_string(),
+        }
+    })?;
+    adopt_quiesced(db_path, mode)
+}
+
 fn adopt_with_fence_deadline(
     db_path: &Path,
     mode: AdoptionMode,
@@ -250,6 +282,15 @@ fn adopt_with_fence_deadline(
             }
         })?;
 
+    adopt_quiesced(db_path, mode)
+}
+
+/// The walk body, assuming the database is already quiesced (the caller
+/// holds the exclusive maintenance fence, one way or another).
+fn adopt_quiesced(
+    db_path: &Path,
+    mode: AdoptionMode,
+) -> Result<ContinuityAdoptionReport, ContinuityAdoptionError> {
     // DryRun opens read-only, making byte-identity a property of the
     // connection rather than of walk discipline.
     let profile = meerkat_sqlite::ConnectionProfile::Maintenance {

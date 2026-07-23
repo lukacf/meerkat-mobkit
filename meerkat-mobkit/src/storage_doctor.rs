@@ -120,16 +120,18 @@ const RUNTIME_REGISTRY_FILE: &str = "tux-runtimes.json";
 /// One database domain with every filename spelling the three surfaces ever
 /// used for it (the recon census), plus the ledger domains its owning stores
 /// stamp. Two or more spellings existing side by side is the twin finding.
-struct DatabaseFamily {
-    name: &'static str,
-    spellings: &'static [&'static str],
-    ledger_domains: &'static [&'static str],
+/// Shared with the M6 migrate verb, which reads the same inventory for its
+/// ledger matrix.
+pub(crate) struct DatabaseFamily {
+    pub(crate) name: &'static str,
+    pub(crate) spellings: &'static [&'static str],
+    pub(crate) ledger_domains: &'static [&'static str],
 }
 
 /// The nine top-level databases across builder / `mobkit_gateway` /
 /// `rpc_gateway` spellings, plus the M2 canonical `*.sqlite3` spellings so a
 /// post-rename directory diagnosed with this binary censuses cleanly.
-const DATABASE_FAMILIES: &[DatabaseFamily] = &[
+pub(crate) const DATABASE_FAMILIES: &[DatabaseFamily] = &[
     DatabaseFamily {
         name: "sessions",
         spellings: &["sessions.db", "sessions.sqlite", "sessions.sqlite3"],
@@ -180,10 +182,10 @@ const DATABASE_FAMILIES: &[DatabaseFamily] = &[
 /// `agent-memory-sqlite/` while `rpc_gateway` uses `agent-memory/` for the
 /// same store kind — the third twin pair (a deployment moved between the two
 /// surfaces silently orphans its whole memory realm corpus).
-const MEMORY_ROOT_SPELLINGS: &[&str] = &["agent-memory", "agent-memory-sqlite"];
+pub(crate) const MEMORY_ROOT_SPELLINGS: &[&str] = &["agent-memory", "agent-memory-sqlite"];
 
 /// Ledger domain the per-realm memory databases stamp.
-const MEMORY_LEDGER_DOMAIN: &str = "mobkit-memory";
+pub(crate) const MEMORY_LEDGER_DOMAIN: &str = "mobkit-memory";
 
 /// Read-only diagnosis of MobKit state directories, cold (no live runtime;
 /// the durability-resolution census reports
@@ -256,10 +258,45 @@ pub fn diagnose_state_dir_blocking(
 /// The MobKit implementation of the [`StorageMigrator`] diagnose seam.
 ///
 /// Deliberately a dumb unit struct delegating to [`diagnose_state_dir`], the
-/// same shape as `meerkat_store::doctor::DiskStorageMigrator`; the M6
-/// mutation verbs arrive later as defaulted trait methods.
+/// same shape as `meerkat_store::doctor::DiskStorageMigrator`.
+///
+/// The M6 mutation verbs ([`Self::migrate`], [`Self::prune`]) are **inherent
+/// methods on this concrete type**, not additions to the meerkat-owned
+/// [`StorageMigrator`] trait and not a mobkit-side extension trait: the core
+/// trait stays diagnose-only (meerkat owns its contract), and an extension
+/// trait would be uncallable through the `&dyn StorageMigrator` that
+/// [`crate::storage_provider::MobKitStorageProvider::migrator`] returns
+/// anyway. Callers that want mutation hold the concrete migrator — it is a
+/// `Copy` unit struct, so "obtaining" one is `MobKitStorageMigrator` — and
+/// the `mobkit_gateway storage-migrate` / `storage-prune` verbs are thin
+/// wrappers over the same [`crate::storage_migrate`] library functions.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MobKitStorageMigrator;
+
+impl MobKitStorageMigrator {
+    /// The fenced M6 migration pass over one MobKit state directory
+    /// (blocking; see [`crate::storage_migrate::migrate_state_dir`]). Async
+    /// callers should wrap it in `spawn_blocking`.
+    pub fn migrate(
+        &self,
+        state_dir: &std::path::Path,
+        mode: crate::storage_migrate::MigrateMode,
+        adopt: Option<&std::path::Path>,
+    ) -> crate::storage_migrate::MobKitMigrateReport {
+        crate::storage_migrate::migrate_state_dir(state_dir, mode, adopt)
+    }
+
+    /// Registered maintenance-artifact lifecycle over one MobKit state
+    /// directory (blocking; see [`crate::storage_migrate::prune_state_dir`]).
+    pub fn prune(
+        &self,
+        state_dir: &std::path::Path,
+        older_than_days: u64,
+        mode: crate::storage_migrate::MigrateMode,
+    ) -> crate::storage_migrate::MobKitPruneReport {
+        crate::storage_migrate::prune_state_dir(state_dir, older_than_days, mode)
+    }
+}
 
 #[async_trait]
 impl StorageMigrator for MobKitStorageMigrator {
@@ -888,7 +925,10 @@ fn sweep_artifacts(dir: &Path, out: &mut StorageDiagnosis) {
                 )
                 .with_path(file.clone()),
             );
-        } else if name.contains(".pre-") {
+        } else if crate::storage_migrate::is_registered_backup_artifact_name(name) {
+            // Strict full-shape validation, shared with the prune verb — a
+            // loose `.pre-` substring match would misreport user files like
+            // `notes.pre-release` as registered backups.
             out.findings.push(
                 StorageFinding::new(
                     FindingSeverity::Info,
@@ -897,7 +937,7 @@ fn sweep_artifacts(dir: &Path, out: &mut StorageDiagnosis) {
                 )
                 .with_path(file.clone()),
             );
-        } else if name.contains(".corrupt-") {
+        } else if crate::storage_migrate::is_registered_quarantine_artifact_name(name) {
             out.findings.push(
                 StorageFinding::new(
                     FindingSeverity::Info,
@@ -1171,8 +1211,12 @@ mod tests {
             "CREATE TABLE admission_lock (id INTEGER PRIMARY KEY)",
         );
         std::fs::write(state.join("sessions.db.mfence"), b"").unwrap();
-        std::fs::write(state.join("sessions.db.pre-1-1700000000"), b"backup").unwrap();
+        std::fs::write(state.join("sessions.db.pre-0.0.1-1700000000"), b"backup").unwrap();
         std::fs::write(state.join("continuity.db.corrupt-123"), b"x").unwrap();
+        // Lookalikes outside the registered full shape are never reported
+        // as maintenance artifacts.
+        std::fs::write(state.join("notes.pre-release"), b"user file").unwrap();
+        std::fs::write(state.join("report.corrupt-12a"), b"user file").unwrap();
         let legacy_shard = state.join("blobs").join("aa");
         std::fs::create_dir_all(&legacy_shard).unwrap();
         std::fs::write(legacy_shard.join(format!("{}.json", "a".repeat(64))), b"{}").unwrap();
@@ -1188,6 +1232,11 @@ mod tests {
         ] {
             assert!(found.contains(&expected), "missing {expected}: {found:?}");
         }
+        // Exactly the strictly-shaped artifacts are reported; the lookalike
+        // user files are not.
+        let count_of = |code: &str| found.iter().filter(|found| **found == code).count();
+        assert_eq!(count_of(FINDING_BACKUP_ARTIFACT), 1, "{found:?}");
+        assert_eq!(count_of(FINDING_QUARANTINE_ARTIFACT), 1, "{found:?}");
         assert!(!diagnosis.has_errors(), "{diagnosis:?}");
     }
 

@@ -34,6 +34,7 @@ pub mod schedule_wiring;
 pub mod storage_doctor;
 pub mod storage_health;
 pub mod storage_layout;
+pub mod storage_migrate;
 pub mod storage_provider;
 pub mod tool_compose;
 pub mod topology_control;
@@ -202,6 +203,14 @@ pub use storage_layout::{
     DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,
     ResolvedDatabase, StateDirDurability, StorageLayoutError, StorageLayoutSummary,
     default_ephemeral_scratch_root, default_gateway_home,
+};
+pub use storage_migrate::{
+    CheckpointAdoptionOutcome, DivergenceStatus, FileRenameEntry, LedgerBaselineAction,
+    LedgerBaselineEntry, MigrateMode, MobKitMaintenanceFence, MobKitMigrateReport,
+    MobKitPruneArtifact, MobKitPruneReport, PruneAction, PruneArtifactKind, RenameAction,
+    RowDivergenceEntry, SiblingRename, TwinReport, TwinResolution, enumerate_state_dir_artifacts,
+    enumerate_state_dir_databases, is_registered_backup_artifact_name,
+    is_registered_quarantine_artifact_name, migrate_state_dir, prune_state_dir,
 };
 pub use storage_provider::{
     DiskMobKitStorageProvider, MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet,

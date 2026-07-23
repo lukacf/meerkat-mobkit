@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`mobkit_gateway storage-migrate` / `storage-prune` — MobKit migration
+  participation (storage-unification Phase M6).** New library module
+  `meerkat_mobkit::storage_migrate` plus two offline maintenance verbs on
+  the gateway binary (argv verbs beside `storage-adopt-checkpoints`; no RPC
+  method — migration is never an eager side effect of gateway startup).
+  `storage-migrate --state-dir <dir> [--apply] [--adopt <path>] [--json]`
+  runs the five migration cases under `MobKitMaintenanceFence` — one
+  `meerkat_sqlite::ExclusiveFence` per materialized database (meerkat's
+  Phase 6 primitive; MobKit builds no second fence), sorted acquisition
+  order, all-or-nothing RAII:
+  1. **Ledger baseline (auto-safe):** every existing MobKit-owned database
+     opens through its normal M3 constructor so `meerkat_schema` domains
+     stamp (continuity, metadata, console, per-realm agent-memory files);
+     dry-run is a read-only version matrix. The workgraph admission sidecar
+     is exempt by design (no ledger — M3 decision, noted in the report);
+     meerkat-shared databases (sessions/runtime/schedule/workgraph) are
+     report-only and converge through the owning meerkat store's next open.
+  2. **File-name unification (auto-safe, rename-only):** a lone legacy
+     spelling (`sessions.db`, `sessions.sqlite`, `continuity.db`,
+     `identity_continuity.sqlite`, `mobkit_metadata.sqlite`,
+     `mobkit_console.sqlite`, `agent-memory-sqlite/`) renames to its M2
+     canonical name **only here, under the fence** (the resolver never
+     renames at open), moving `-wal`/`-shm` siblings with the database — a
+     non-empty WAL is checkpointed first and the move refuses if it cannot
+     be. Every rename writes a registered marker
+     (`<legacy>.pre-<version>-<ts>.renamed`) so doctor lists it and
+     retention tooling recognizes the transition.
+  3. **Twin reconciliation (manual, fail-closed):** both spellings
+     populated → per-domain divergence report (row-level by primary key +
+     content digest for continuity/metadata/console; file-digest for the
+     rest) and a typed refusal that fails the whole run closed.
+     Byte-identical twins dedup under plain `--apply`; divergent twins
+     resolve only with `--apply --adopt <path>` — the adopted copy keeps
+     its place (renamed to canonical if legacy-named), the rest archived
+     read-only. **No synthesis**: continuity fencing tokens and console
+     `AUTOINCREMENT` cursors are per-database sequences.
+  4. **Continuity checkpoint adoption:** H3's snapshot-adoption walk runs
+     under the same fence pass (new
+     `adopt_continuity_snapshots_already_fenced` composition seam) and its
+     report merges into the migrate report.
+  5. **Leftovers (report-only):** legacy sharded-FS blob files, the
+     admission sidecar, `*.pre-*`/`*.corrupt-*` artifacts, and dead
+     `tux-runtimes.json` entries (recorded pid no longer alive).
+  `storage-prune --state-dir <dir> [--apply] [--older-than-days N]
+  [--json]` owns the registered-artifact lifecycle (`*.pre-*` backups,
+  `*.corrupt-*` quarantines; default threshold 30 days; deletion refuses
+  anything outside the registered naming). Backup naming is shared with
+  meerkat verbatim (`<original>.pre-<version>-<timestamp>[.<purpose>]`,
+  reusing `meerkat_store::migrate`'s helpers), so HomeCore-class
+  generation-cloning recognizes MobKit artifacts the same way — but
+  recognition validates the COMPLETE generated shape
+  (`is_registered_backup_artifact_name` /
+  `is_registered_quarantine_artifact_name`: dotted numeric version,
+  all-digit timestamp, exact `.corrupt-<digits>` suffix), never a loose
+  `.pre-` substring, so prune and doctor can never claim user files like
+  `notes.pre-release`. Exit codes:
+  0 clean, 1 refusals/fence/store failures, 2 usage errors; dry-run
+  default. `MobKitStorageMigrator` gains concrete `migrate`/`prune`
+  methods (the meerkat-owned `StorageMigrator` trait stays diagnose-only).
 - **`MobKitStorageProvider` — the composite storage-provider seam
   (storage-unification Phase M4b, the "one remote bundle").** New module
   `meerkat_mobkit::storage_provider`: a downstream backend (BigQuery,

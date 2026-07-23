@@ -743,6 +743,286 @@ fn run_storage_adopt_checkpoints(args: &[String]) -> i32 {
     }
 }
 
+const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --state-dir <dir> \
+     [--apply] [--adopt <path>] [--json]\n\
+     Fenced offline migration of one MobKit state directory \
+     (storage-unification M6): ledger baseline, legacy-spelling renames, \
+     twin reconciliation, continuity checkpoint adoption, leftover census.\n\
+     Dry-run by default; --apply mutates under the exclusive maintenance \
+     fence. --adopt <path> resolves a divergent file-name twin by adopting \
+     that copy and archiving the rest read-only (requires --apply).\n\
+     Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
+
+/// Maintenance verb: `mobkit_gateway storage-migrate`. Runs the five-case
+/// M6 migration pass and prints the report. Like the H3 verb, it is a
+/// standalone argv verb bypassing the stdin init handshake — migration is
+/// never an eager side effect of ordinary gateway startup.
+fn run_storage_migrate(args: &[String]) -> i32 {
+    let mut state_dir: Option<PathBuf> = None;
+    let mut adopt: Option<PathBuf> = None;
+    let mut apply = false;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--state-dir" => match iter.next() {
+                Some(value) => state_dir = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--state-dir requires a directory\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--adopt" => match iter.next() {
+                Some(value) => adopt = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--adopt requires a path\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--apply" => apply = true,
+            "--json" => json = true,
+            other => {
+                eprintln!("unknown argument {other:?}\n{STORAGE_MIGRATE_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(state_dir) = state_dir else {
+        eprintln!("--state-dir is required\n{STORAGE_MIGRATE_USAGE}");
+        return 2;
+    };
+    if adopt.is_some() && !apply {
+        eprintln!("--adopt requires --apply\n{STORAGE_MIGRATE_USAGE}");
+        return 2;
+    }
+    let mode = if apply {
+        meerkat_mobkit::MigrateMode::Apply
+    } else {
+        meerkat_mobkit::MigrateMode::DryRun
+    };
+    let report = meerkat_mobkit::migrate_state_dir(&state_dir, mode, adopt.as_deref());
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("failed to serialize migrate report: {error}");
+                return 1;
+            }
+        }
+    } else {
+        print_migrate_report_text(&report);
+    }
+    i32::from(report.has_errors())
+}
+
+fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
+    let mode = match report.mode {
+        meerkat_mobkit::MigrateMode::Apply => "apply",
+        _ => "dry-run",
+    };
+    println!(
+        "Storage migrate ({mode}) over {} ({} database(s) fenced):",
+        report.state_dir.display(),
+        report.fenced_databases.len()
+    );
+    for twin in &report.twins {
+        println!("twin [{}]:", twin.slot);
+        for path in &twin.paths {
+            println!("  copy: {}", path.display());
+        }
+        println!(
+            "  rows: {} equal across all copies; byte-identical: {}",
+            twin.rows_equal, twin.byte_identical
+        );
+        for row in &twin.rows {
+            let status = match &row.status {
+                meerkat_mobkit::DivergenceStatus::Equal => "equal".to_string(),
+                meerkat_mobkit::DivergenceStatus::Divergent => "divergent".to_string(),
+                meerkat_mobkit::DivergenceStatus::OnlyIn { location } => {
+                    format!("only in {}", location.display())
+                }
+                _ => "unknown".to_string(),
+            };
+            println!("    {}: {status}", row.key);
+        }
+        match &twin.resolution {
+            meerkat_mobkit::TwinResolution::Refused { reason } => {
+                println!("  resolution: REFUSED — {reason}");
+            }
+            meerkat_mobkit::TwinResolution::Deduped { kept, archived } => {
+                println!("  resolution: deduped, kept {}", kept.display());
+                for archive in archived {
+                    println!("    archived read-only: {}", archive.display());
+                }
+            }
+            meerkat_mobkit::TwinResolution::Adopted { adopted, archived } => {
+                println!("  resolution: adopted {}", adopted.display());
+                for archive in archived {
+                    println!("    archived read-only: {}", archive.display());
+                }
+            }
+            _ => println!("  resolution: unknown"),
+        }
+        for note in &twin.notes {
+            println!("  note: {note}");
+        }
+        for error in &twin.errors {
+            println!("  error: {error}");
+        }
+    }
+    for rename in &report.renames {
+        let action = match rename.action {
+            meerkat_mobkit::RenameAction::WouldRename => "would rename",
+            meerkat_mobkit::RenameAction::Renamed => "renamed",
+            meerkat_mobkit::RenameAction::Refused => "REFUSED",
+            _ => "unknown",
+        };
+        println!(
+            "rename [{}]: {} -> {} ({action}, {} sibling(s), wal checkpointed: {})",
+            rename.slot,
+            rename.from.display(),
+            rename.to.display(),
+            rename.siblings.len(),
+            rename.wal_checkpointed
+        );
+    }
+    for entry in &report.ledger {
+        let action = match entry.action {
+            meerkat_mobkit::LedgerBaselineAction::WouldStamp => "would-stamp",
+            meerkat_mobkit::LedgerBaselineAction::Recorded => "recorded",
+            meerkat_mobkit::LedgerBaselineAction::Stamped => "stamped",
+            meerkat_mobkit::LedgerBaselineAction::AlreadyCurrent => "already-current",
+            meerkat_mobkit::LedgerBaselineAction::ReportOnly => "report-only",
+            meerkat_mobkit::LedgerBaselineAction::Exempt => "exempt",
+            _ => "unknown",
+        };
+        let describe =
+            |version: Option<i64>| version.map_or_else(|| "none".to_string(), |v| v.to_string());
+        println!(
+            "ledger {} [{}]: {} -> {} ({action})",
+            entry.database.display(),
+            entry.domain,
+            describe(entry.before),
+            describe(entry.after)
+        );
+    }
+    if let Some(adoption) = &report.adoption {
+        match (&adoption.skipped, &adoption.report) {
+            (Some(skipped), _) => println!("adoption: {skipped}"),
+            (None, Some(walk)) => {
+                println!("adoption at {}:\n{walk}", adoption.database.display());
+            }
+            (None, None) => {}
+        }
+    }
+    for finding in &report.findings {
+        let path = finding
+            .path
+            .as_ref()
+            .map(|path| format!(" at {}", path.display()))
+            .unwrap_or_default();
+        println!("leftover [{}] {}{path}", finding.code, finding.message);
+    }
+    for note in &report.notes {
+        println!("note: {note}");
+    }
+    for error in &report.errors {
+        println!("error: {error}");
+    }
+    println!("storage migrate: {} error(s)", report.errors.len());
+}
+
+const STORAGE_PRUNE_USAGE: &str = "usage: mobkit_gateway storage-prune --state-dir <dir> \
+     [--apply] [--older-than-days N] [--json]\n\
+     Lifecycle of registered maintenance artifacts (`*.pre-*` backups, \
+     `*.corrupt-*` quarantines) under one MobKit state directory. Never \
+     touches anything outside those naming patterns.\n\
+     Dry-run by default; --apply deletes artifacts at least \
+     --older-than-days old (default 30; 0 = all).\n\
+     Exit codes: 0 clean, 1 delete failures, 2 usage error.";
+
+/// Maintenance verb: `mobkit_gateway storage-prune`.
+fn run_storage_prune(args: &[String]) -> i32 {
+    let mut state_dir: Option<PathBuf> = None;
+    let mut older_than_days: u64 = 30;
+    let mut apply = false;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--state-dir" => match iter.next() {
+                Some(value) => state_dir = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--state-dir requires a directory\n{STORAGE_PRUNE_USAGE}");
+                    return 2;
+                }
+            },
+            "--older-than-days" => match iter.next().map(|value| value.parse::<u64>()) {
+                Some(Ok(days)) => older_than_days = days,
+                _ => {
+                    eprintln!("--older-than-days requires a number\n{STORAGE_PRUNE_USAGE}");
+                    return 2;
+                }
+            },
+            "--apply" => apply = true,
+            "--json" => json = true,
+            other => {
+                eprintln!("unknown argument {other:?}\n{STORAGE_PRUNE_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(state_dir) = state_dir else {
+        eprintln!("--state-dir is required\n{STORAGE_PRUNE_USAGE}");
+        return 2;
+    };
+    let mode = if apply {
+        meerkat_mobkit::MigrateMode::Apply
+    } else {
+        meerkat_mobkit::MigrateMode::DryRun
+    };
+    let report = meerkat_mobkit::prune_state_dir(&state_dir, older_than_days, mode);
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("failed to serialize prune report: {error}");
+                return 1;
+            }
+        }
+    } else {
+        let mode = if apply { "apply" } else { "dry-run" };
+        println!(
+            "Storage prune ({mode}, older than {} day(s)) over {}:",
+            report.older_than_days,
+            report.state_dir.display()
+        );
+        if report.artifacts.is_empty() {
+            println!("No registered maintenance artifacts found.");
+        }
+        for artifact in &report.artifacts {
+            let action = match artifact.action {
+                meerkat_mobkit::PruneAction::WouldDelete => "would delete",
+                meerkat_mobkit::PruneAction::Deleted => "deleted",
+                meerkat_mobkit::PruneAction::Kept => "kept (younger than threshold)",
+                meerkat_mobkit::PruneAction::DeleteFailed => "DELETE FAILED",
+                _ => "unknown",
+            };
+            println!(
+                "  {}  {} bytes, {} day(s) old — {action}",
+                artifact.path.display(),
+                artifact.bytes,
+                artifact.age_days
+            );
+        }
+        for error in &report.errors {
+            println!("error: {error}");
+        }
+        println!("storage prune: {} error(s)", report.errors.len());
+    }
+    i32::from(report.has_errors())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -754,6 +1034,12 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("storage-adopt-checkpoints") {
         std::process::exit(run_storage_adopt_checkpoints(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("storage-migrate") {
+        std::process::exit(run_storage_migrate(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("storage-prune") {
+        std::process::exit(run_storage_prune(&args[1..]));
     }
     // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
     // every tracing event in the process is silently dropped: runtime

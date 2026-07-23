@@ -30,7 +30,8 @@ pub use bridge::{
 };
 pub use checkpoint_adoption::{
     AdoptionMode, AdoptionRefusal, ContinuityAdoptionError, ContinuityAdoptionReport,
-    adopt_continuity_snapshots, adopt_continuity_snapshots_blocking,
+    adopt_continuity_snapshots, adopt_continuity_snapshots_already_fenced,
+    adopt_continuity_snapshots_blocking,
 };
 pub use contracts::*;
 pub use gateway_bridges::{

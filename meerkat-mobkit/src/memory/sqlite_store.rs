@@ -1175,7 +1175,16 @@ impl SqliteAgentMemoryStore {
         })
     }
 
-    fn known_realms(&self) -> Result<Vec<String>, AgentMemoryError> {
+    /// Force one realm's database through the normal ledgered open path
+    /// (`realm_connection`: profile open, `meerkat_schema` migrations, stage
+    /// GC, markdown import) without issuing any query. The M6 offline ledger
+    /// baseline uses this to stamp existing realm files under the
+    /// maintenance fence.
+    pub(crate) fn open_realm_ledgered(&self, realm: &str) -> Result<(), AgentMemoryError> {
+        self.realm_connection(realm).map(|_| ())
+    }
+
+    pub(crate) fn known_realms(&self) -> Result<Vec<String>, AgentMemoryError> {
         let entries =
             fs::read_dir(&self.root).map_err(|err| AgentMemoryError::Io(err.to_string()))?;
         let mut realms = Vec::new();
