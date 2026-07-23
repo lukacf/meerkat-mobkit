@@ -256,12 +256,33 @@ impl MobKitMaintenanceFence {
         self.fences.is_empty()
     }
 
-    /// Best-effort re-fence after a rename: the original fence rides the
-    /// OLD lock path, so the file's NEW canonical path is covered for the
-    /// rest of the pass by taking a fresh fence on it.
-    fn cover_renamed(&mut self, path: &Path) {
-        if let Ok(Some(fence)) = meerkat_sqlite::ExclusiveFence::try_acquire(path) {
-            self.fences.push(fence);
+    /// Re-fence after a rename: the original fence rides the OLD lock path,
+    /// so the file's NEW canonical path must get a fresh fence for the rest
+    /// of the pass. Failure is fail-closed for the renamed database — the
+    /// caller records the typed error and skips further mutation of it,
+    /// never continuing unfenced.
+    fn cover_renamed(&mut self, path: &Path) -> Result<(), meerkat_sqlite::SqliteStoreError> {
+        // Canonical-name-first fencing may have covered the canonical path
+        // up front (twin adoption renames INTO a path this fence already
+        // holds); custody is already ours, and a second exclusive fence on
+        // it would self-refuse.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if self
+            .databases
+            .iter()
+            .any(|held| std::fs::canonicalize(held).unwrap_or_else(|_| held.clone()) == canonical)
+        {
+            return Ok(());
+        }
+        match meerkat_sqlite::ExclusiveFence::try_acquire(path)? {
+            Some(fence) => {
+                self.fences.push(fence);
+                self.databases.push(path.to_path_buf());
+                Ok(())
+            }
+            None => Err(meerkat_sqlite::SqliteStoreError::MaintenanceFenceHeld {
+                path: path.to_path_buf(),
+            }),
         }
     }
 }
@@ -608,6 +629,11 @@ pub fn migrate_state_dir(
         None
     };
 
+    // Canonical paths whose post-rename fence could not be re-acquired:
+    // fail-closed — the fence failure is recorded as an error and the
+    // remaining cases never mutate these databases.
+    let mut unfenced: Vec<PathBuf> = Vec::new();
+
     // ── Case 3: twin reconciliation (fail-closed). ───────────────────────
     let mut unresolved_twin = false;
     for slot in DatabaseSlot::ALL {
@@ -622,6 +648,8 @@ pub fn migrate_state_dir(
             adopt,
             &mut report.renames,
             fence.as_mut(),
+            &mut report.errors,
+            &mut unfenced,
         );
         if let TwinResolution::Refused { reason } = &twin.resolution {
             unresolved_twin = true;
@@ -650,8 +678,14 @@ pub fn migrate_state_dir(
         if entry.action == RenameAction::Renamed
             && slot != DatabaseSlot::AgentMemory
             && let Some(fence) = fence.as_mut()
+            && let Err(error) = fence.cover_renamed(&to)
         {
-            fence.cover_renamed(&to);
+            report.errors.push(format!(
+                "renamed {slot} store is not fenced at its canonical path {}: {error}; \
+                 skipping further mutation of this database",
+                to.display()
+            ));
+            unfenced.push(to.clone());
         }
         report.renames.push(entry);
     }
@@ -659,7 +693,7 @@ pub fn migrate_state_dir(
     // ── Case 1: ledger baseline. ─────────────────────────────────────────
     let before = read_ledger_matrix(state_dir);
     if apply {
-        open_stores_through_ledgered_constructors(&layout, &mut report.errors);
+        open_stores_through_ledgered_constructors(&layout, &unfenced, &mut report.errors);
         let after = read_ledger_matrix(state_dir);
         let before_of = |database: &Path, domain: &str| -> Option<i64> {
             before
@@ -733,7 +767,7 @@ pub fn migrate_state_dir(
     }
 
     // ── Case 4: continuity checkpoint-evidence adoption (H3 machinery). ──
-    run_checkpoint_adoption(&layout, mode, &mut report);
+    run_checkpoint_adoption(&layout, mode, &unfenced, &mut report);
 
     // ── Case 5: deprecated leftovers (report-only). ──────────────────────
     let scope = DiagnoseScope::new(vec![state_dir.to_path_buf()]);
@@ -853,13 +887,16 @@ fn read_ledger_matrix(state_dir: &Path) -> Vec<(PathBuf, String, Option<i64>)> {
 /// M3 constructor. The guarded ledger migrations are the structural
 /// verification; a constructor that fails is a per-store error, never an
 /// abort of the pass. Only files that already exist are opened — migrate
-/// converges existing state, it never materializes new stores.
+/// converges existing state, it never materializes new stores. Databases in
+/// `unfenced` (canonical fence lost after a rename) are skipped fail-closed;
+/// the fence failure is already recorded as an error.
 fn open_stores_through_ledgered_constructors(
     layout: &MobKitStorageLayout,
+    unfenced: &[PathBuf],
     errors: &mut Vec<String>,
 ) {
     match layout.continuity_db() {
-        Ok(resolved) if resolved.path.is_file() => {
+        Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
             if let Err(error) = LocalContinuityStore::open(&resolved.path) {
                 errors.push(format!("continuity store open failed: {error}"));
             }
@@ -868,7 +905,7 @@ fn open_stores_through_ledgered_constructors(
         Err(error) => errors.push(format!("continuity locator unresolved: {error}")),
     }
     match layout.metadata_db() {
-        Ok(resolved) if resolved.path.is_file() => {
+        Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
             if let Err(error) = SqliteMetadataStore::open(&resolved.path) {
                 errors.push(format!("metadata store open failed: {error}"));
             }
@@ -877,7 +914,7 @@ fn open_stores_through_ledgered_constructors(
         Err(error) => errors.push(format!("metadata locator unresolved: {error}")),
     }
     match layout.console_db() {
-        Ok(resolved) if resolved.path.is_file() => {
+        Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
             if let Err(error) = SqliteConsoleLogStore::open(&resolved.path) {
                 errors.push(format!("console store open failed: {error}"));
             }
@@ -912,10 +949,13 @@ fn open_stores_through_ledgered_constructors(
 
 /// Case 4: the H3 adoption walk over the canonical-resolved continuity
 /// database. Apply composes with the already-held pass fence; dry-run takes
-/// H3's own short-lived fence (nothing else is held).
+/// H3's own short-lived fence (nothing else is held). A continuity database
+/// in `unfenced` (canonical fence lost after a rename) is skipped
+/// fail-closed; the fence failure is already recorded as an error.
 fn run_checkpoint_adoption(
     layout: &MobKitStorageLayout,
     mode: MigrateMode,
+    unfenced: &[PathBuf],
     report: &mut MobKitMigrateReport,
 ) {
     let resolved = match layout.continuity_db() {
@@ -927,6 +967,18 @@ fn run_checkpoint_adoption(
             return;
         }
     };
+    if unfenced.contains(&resolved.path) {
+        report.adoption = Some(CheckpointAdoptionOutcome {
+            database: resolved.path,
+            report: None,
+            skipped: Some(
+                "continuity database is not fenced at its canonical path after rename; \
+                 adoption skipped (fail-closed)"
+                    .to_string(),
+            ),
+        });
+        return;
+    }
     if !resolved.path.is_file() {
         report.adoption = Some(CheckpointAdoptionOutcome {
             database: resolved.path,
@@ -1347,7 +1399,10 @@ fn archive_twin_copy(
 }
 
 /// Case 3 for one slot: compute the per-domain divergence report, then
-/// refuse, dedup (exact equality), or adopt-and-archive.
+/// refuse, dedup (exact equality), or adopt-and-archive. A canonicalization
+/// rename that cannot be re-fenced at its new path records a pass error in
+/// `errors` and the path in `unfenced` (the later cases skip it fail-closed).
+#[allow(clippy::too_many_arguments)]
 fn reconcile_twin(
     slot: DatabaseSlot,
     paths: &[PathBuf],
@@ -1355,6 +1410,8 @@ fn reconcile_twin(
     adopt: Option<&Path>,
     renames: &mut Vec<FileRenameEntry>,
     fence: Option<&mut MobKitMaintenanceFence>,
+    errors: &mut Vec<String>,
+    unfenced: &mut Vec<PathBuf>,
 ) -> TwinReport {
     let mut twin = TwinReport {
         slot: slot.to_string(),
@@ -1533,8 +1590,14 @@ fn reconcile_twin(
         if renamed {
             if slot != DatabaseSlot::AgentMemory
                 && let Some(fence) = fence
+                && let Err(error) = fence.cover_renamed(&canonical_path)
             {
-                fence.cover_renamed(&canonical_path);
+                errors.push(format!(
+                    "adopted {slot} store is not fenced at its canonical path {}: {error}; \
+                     skipping further mutation of this database",
+                    canonical_path.display()
+                ));
+                unfenced.push(canonical_path.clone());
             }
             canonical_path
         } else {
@@ -1925,6 +1988,76 @@ mod tests {
             report.errors[0].contains("maintenance fence"),
             "{:?}",
             report.errors
+        );
+        drop(foreign);
+    }
+
+    #[test]
+    fn failed_canonical_fence_after_rename_fails_closed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let legacy_db = state.join("continuity.db");
+        let (sid, bytes) = legacy_session_bytes();
+        {
+            let conn = create_legacy_continuity(&legacy_db);
+            insert_record(&conn, "test:alice", &sid);
+            insert_snapshot(&conn, &sid, "test:alice", &bytes);
+        }
+
+        // A FOREIGN holder on the CANONICAL path's fence lock: the pass
+        // fence rides the legacy lock path, so acquisition and the rename
+        // itself succeed — but the post-rename re-fence must fail, and the
+        // pass must not keep mutating the now-unfenced database.
+        let canonical = state.join("continuity.sqlite3");
+        let foreign_lock = meerkat_sqlite::fence_lock_path(&canonical);
+        let foreign = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&foreign_lock)
+            .expect("open foreign lock");
+        foreign.try_lock().expect("foreign exclusive lock");
+
+        let report = migrate_state_dir(state, MigrateMode::Apply, None);
+
+        assert!(canonical.is_file(), "rename itself must have happened");
+        assert!(report.has_errors(), "{:?}", report.errors);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("not fenced at its canonical path")),
+            "{:?}",
+            report.errors
+        );
+
+        // Fail-closed: the ledgered constructor never ran against the
+        // unfenced database (no meerkat_schema table materialized) ...
+        {
+            let conn = Connection::open(&canonical).expect("open canonical");
+            let ledger_tables: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type = 'table' AND name = 'meerkat_schema'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("probe ledger");
+            assert_eq!(
+                ledger_tables, 0,
+                "constructor must not run against an unfenced database"
+            );
+        }
+        // ... and the adoption walk was skipped, not run unfenced.
+        let adoption = report.adoption.as_ref().expect("adoption outcome");
+        assert!(adoption.report.is_none());
+        assert!(
+            adoption
+                .skipped
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fence")),
+            "{adoption:?}"
         );
         drop(foreign);
     }

@@ -102,6 +102,24 @@ describe("eventLog config", () => {
     assert.deepEqual(eventLog.nullStore().toDict(), { storage: "null" });
   });
 
+  it("memory() rejects a non-positive flushIntervalMs", () => {
+    // A zero interval would panic the gateway's ingestion task.
+    assert.throws(() => eventLog.memory({ flushIntervalMs: 0 }), /flushIntervalMs/);
+    assert.throws(() => eventLog.memory({ flushIntervalMs: -5 }), /flushIntervalMs/);
+  });
+
+  it("memory() rejects a non-finite or non-integer flushIntervalMs", () => {
+    assert.throws(
+      () => eventLog.memory({ flushIntervalMs: Number.NaN }),
+      /flushIntervalMs/,
+    );
+    assert.throws(
+      () => eventLog.memory({ flushIntervalMs: Number.POSITIVE_INFINITY }),
+      /flushIntervalMs/,
+    );
+    assert.throws(() => eventLog.memory({ flushIntervalMs: 10.5 }), /flushIntervalMs/);
+  });
+
   it("builder accepts the typed declaration", () => {
     const b = MobKit.builder().eventLog(eventLog.nullStore());
     const params = initParams(b);

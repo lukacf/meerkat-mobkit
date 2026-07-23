@@ -224,3 +224,41 @@ fn undeclared_event_log_storage_rejects_as_invalid_params() {
         "{message}"
     );
 }
+
+/// A zero flush interval would panic the ingestion task
+/// (`tokio::time::interval` requires a non-zero period); the gateway
+/// rejects it as invalid params instead of booting a runtime whose event
+/// log dies silently.
+#[test]
+fn zero_event_log_flush_interval_rejects_as_invalid_params() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = GatewayProcess::start();
+    let init = gateway.init(
+        &state_dir,
+        json!({ "event_log": { "storage": "memory", "flush_interval_ms": 0 } }),
+    );
+    assert_eq!(init["error"]["code"], json!(-32602), "{init}");
+    let message = init["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("runtime_options.event_log.flush_interval_ms"),
+        "{message}"
+    );
+}
+
+/// Non-integer flush intervals are typed invalid params, not a silent
+/// fallback to the default interval.
+#[test]
+fn non_integer_event_log_flush_interval_rejects_as_invalid_params() {
+    let state_dir = tempfile::tempdir().expect("state dir");
+    let mut gateway = GatewayProcess::start();
+    let init = gateway.init(
+        &state_dir,
+        json!({ "event_log": { "storage": "memory", "flush_interval_ms": "fast" } }),
+    );
+    assert_eq!(init["error"]["code"], json!(-32602), "{init}");
+    let message = init["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("runtime_options.event_log.flush_interval_ms"),
+        "{message}"
+    );
+}

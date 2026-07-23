@@ -30,6 +30,20 @@ class MemoryEventLogConfig:
     batch_size: int | None = None
     flush_interval_ms: int | None = None
 
+    def __post_init__(self) -> None:
+        # A zero interval panics the gateway's ingestion task
+        # (`tokio::time::interval` requires a non-zero period), and the
+        # wire only accepts positive integers.
+        if self.flush_interval_ms is not None and (
+            not isinstance(self.flush_interval_ms, int)
+            or isinstance(self.flush_interval_ms, bool)
+            or self.flush_interval_ms <= 0
+        ):
+            raise ValueError(
+                "flush_interval_ms must be a positive integer "
+                f"(got {self.flush_interval_ms!r})"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"storage": "memory"}
         if self.batch_size is not None:

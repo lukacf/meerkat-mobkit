@@ -84,6 +84,11 @@ pub struct UnifiedRuntimeBuilder {
     ephemeral_runtime_store: bool,
     schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
     storage_provider: Option<Arc<dyn crate::storage_provider::MobKitStorageProvider>>,
+    // Materialized from `storage_provider` (M4b): the meerkat-level bundle
+    // opened through `meerkat_provider()` for non-disk backends, and the
+    // provider's per-slot durability declarations retained for the census.
+    provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
+    provider_slot_census: Vec<crate::storage_health::StorageSlotSummary>,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
     // --- Common fields ---
@@ -380,13 +385,18 @@ impl UnifiedRuntimeBuilder {
     /// substrate (continuity + lease authority), console timeline, metadata,
     /// blobs, schedule store, and (when configured) the event log and agent
     /// memory, replacing the per-slot builder seams; supplying both the
-    /// provider and an individual seam is a conflict.
+    /// provider and an individual seam is a conflict. For a non-disk backend
+    /// the composition also opens the provider's meerkat-level bundle
+    /// through
+    /// [`meerkat_provider`](crate::storage_provider::MobKitStorageProvider::meerkat_provider)
+    /// (M4b), so runtime and workgraph authority land in the same backend
+    /// instead of local files; the built-in disk backend keeps the flat
+    /// local composition.
     ///
     /// Requires an identity-first configuration (`roster_provider()`): the
     /// provider's continuity store is the session authority. The realm root
-    /// comes from `persistent_state()` (disk-shared runtime/workgraph state)
-    /// or `scratch_dir()` (ephemeral local disk, remote-authoritative
-    /// stores — the ob3 shape).
+    /// comes from `persistent_state()` or `scratch_dir()` (ephemeral local
+    /// disk — the ob3 shape).
     ///
     /// [`MobKitStorageProvider`]: crate::storage_provider::MobKitStorageProvider
     pub fn storage_provider(
@@ -714,6 +724,23 @@ impl UnifiedRuntimeBuilder {
             }
             None => self.resolve_mob_spec().await?,
         };
+
+        // Provider-declared durability flows to the census verbatim (M4b):
+        // replace the locally-labeled slots for the domains the provider
+        // declared and add the slots the local composition has no
+        // equivalent record for (continuity, event_log, console, metadata,
+        // agent_memory).
+        if !self.provider_slot_census.is_empty()
+            && let Some(summary) = mob_spec.resolved_storage.as_mut()
+        {
+            let provider_census = std::mem::take(&mut self.provider_slot_census);
+            summary.slots.retain(|slot| {
+                !provider_census.iter().any(|provider_slot| {
+                    provider_slot.declaration.domain == slot.declaration.domain
+                })
+            });
+            summary.slots.extend(provider_census);
+        }
 
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
             modules: Vec::new(),
@@ -1108,22 +1135,38 @@ impl UnifiedRuntimeBuilder {
             (stack_provider, self.agent_memory_engines.as_ref())
         {
             let config = self.agent_memory_config.clone().unwrap_or_default();
-            let persistent_state = self.persistent_state_path.clone();
+            // Engine factory state and the HNSW discard source live under
+            // the realm's path root — the state directory, or the scratch
+            // root on the remote-authoritative (scratch_dir) shape.
+            let persistent_state = self
+                .persistent_state_path
+                .clone()
+                .or_else(|| self.scratch_dir.clone());
             let transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
                 if engines.distiller.enabled || engines.steward.enabled {
-                    let layout = storage_layout.as_ref().ok_or_else(|| {
-                        UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                            "agent memory engines require persistent_state()".to_string(),
-                        )
-                    })?;
-                    Some(Arc::new(
-                        meerkat_store::SqliteSessionStore::open(layout.session_db()?.path)
-                            .map_err(|e| {
-                                UnifiedRuntimeBuilderError::Io(format!(
-                                    "agent memory session store: {e}"
-                                ))
-                            })?,
-                    ))
+                    if let Some(store) = self.custom_session_store.clone() {
+                        // The ACTIVE session authority — the provider/
+                        // continuity adapter or a caller-injected store. The
+                        // engines must read the transcripts the runtime
+                        // actually persists; opening the local session
+                        // database here would hand them an empty or stale
+                        // parallel history.
+                        Some(store)
+                    } else {
+                        let layout = storage_layout.as_ref().ok_or_else(|| {
+                            UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                                "agent memory engines require persistent_state()".to_string(),
+                            )
+                        })?;
+                        Some(Arc::new(
+                            meerkat_store::SqliteSessionStore::open(layout.session_db()?.path)
+                                .map_err(|e| {
+                                    UnifiedRuntimeBuilderError::Io(format!(
+                                        "agent memory session store: {e}"
+                                    ))
+                                })?,
+                        ))
+                    }
                 } else {
                     None
                 };
@@ -1270,6 +1313,11 @@ impl UnifiedRuntimeBuilder {
             return Ok(());
         };
         let conflicting: Vec<&str> = [
+            // A caller-supplied mob spec routes composition through the
+            // legacy spec path, silently bypassing the provider's meerkat
+            // bundle and the session-authority rewiring — both P1 classes
+            // this seam exists to prevent.
+            ("mob_spec()", self.mob_spec.is_some()),
             ("continuity_store()", self.continuity_store.is_some()),
             ("lease_provider()", self.lease_provider.is_some()),
             ("blob_store()", self.blob_store.is_some()),
@@ -1330,6 +1378,41 @@ impl UnifiedRuntimeBuilder {
         // Providers are contracted to enforce this before returning; the
         // composition re-checks because the rule is the composition's.
         crate::storage_provider::enforce_fail_closed_store_set(&set, &ctx)?;
+
+        // M4b: the single-bundle contract covers the meerkat-shared level
+        // too. The built-in disk backend IS the local composition the spec
+        // opens (M2 layout compatibility — runtime.sqlite/workgraph.sqlite3
+        // stay flat under the state dir), so only a non-disk backend routes
+        // the meerkat-level slots through the provider's realm bundle;
+        // runtime and workgraph authority then land in the same backend as
+        // continuity, fail-closed at the seam instead of a silent local
+        // split.
+        let meerkat_provider = provider.meerkat_provider();
+        self.provider_meerkat_stores = if meerkat_provider.name() == "disk" {
+            None
+        } else {
+            Some(
+                crate::storage_provider::open_provider_meerkat_stores(meerkat_provider, &ctx)
+                    .await?,
+            )
+        };
+        // Retain the provider's per-slot durability declarations for the
+        // census: the health surfaces must report the provider-declared
+        // resolutions verbatim, not the local defaults those declarations
+        // replaced (an explicitly-ephemeral schedule must not read as
+        // persistent).
+        self.provider_slot_census = set
+            .durability
+            .iter()
+            .map(|declaration| crate::storage_health::StorageSlotSummary {
+                declaration: declaration.clone(),
+                backend: format!("storage provider '{}'", provider.name()),
+                detail: Some(
+                    "provider-declared durability (composite realm store set)".to_string(),
+                ),
+                degraded: false,
+            })
+            .collect();
 
         self.continuity_store = Some(set.continuity_store);
         self.lease_provider = Some(match set.lease_authority {
@@ -1453,7 +1536,7 @@ impl UnifiedRuntimeBuilder {
                 };
             let mob_storage = MobStorage::in_memory();
 
-            MobBootstrapSpec::persistent_inner(
+            MobBootstrapSpec::persistent_inner_with_provider_stores(
                 definition,
                 mob_storage,
                 state_path.clone(),
@@ -1468,6 +1551,7 @@ impl UnifiedRuntimeBuilder {
                 caps,
                 after_hook.clone(),
                 self.meerkat_config.clone(),
+                self.provider_meerkat_stores.clone(),
             )
             .map_err(|error| match error {
                 crate::storage_health::StorageResolutionError::Blob(
@@ -1488,7 +1572,7 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
 
-            MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            MobBootstrapSpec::ephemeral_runtime_backed_with_provider_stores(
                 definition,
                 MobStorage::in_memory(),
                 scratch_dir.clone(),
@@ -1501,6 +1585,7 @@ impl UnifiedRuntimeBuilder {
                 caps,
                 after_hook,
                 self.meerkat_config.clone(),
+                self.provider_meerkat_stores.clone(),
             )
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.

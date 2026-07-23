@@ -695,8 +695,15 @@ impl ContinuitySessionStoreAdapter {
             return session;
         };
         let observed_generation = meerkat_core::SessionGeneration::new(state.generation.get());
+        // The observed revision is the DURABLE cursor the runtime registered
+        // from the continuity record — never the in-memory version allocator,
+        // which advances before persistence: after a failed save the
+        // allocator sits ahead of the durable row, and stamping from it would
+        // certify the legacy bytes under a revision that never committed.
+        // The allocator's only role here is minting the NEXT version inside
+        // `save_registered_snapshot` for the store's own CAS write.
         let observed_revision =
-            meerkat_core::SessionCheckpointRevision::new(self.current_version(id).get());
+            meerkat_core::SessionCheckpointRevision::new(state.checkpoint_version.get());
         let adopted =
             match meerkat_core::adopt_legacy_session(raw, observed_generation, observed_revision) {
                 Ok(adopted) => adopted,
@@ -2459,6 +2466,118 @@ mod tests {
             panic!("expected ready record");
         };
         assert_eq!(record.checkpoint_version, CheckpointVersion::new(2));
+    }
+
+    #[tokio::test]
+    async fn lazy_adoption_failed_save_is_not_observable_and_retry_stamps_durable_cursor() {
+        let inner = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let fail_store = Arc::new(FailSaveContinuityStore::new(inner.clone()));
+        let adapter = ContinuitySessionStoreAdapter::new(fail_store.clone())
+            .with_lazy_checkpoint_adoption(true);
+
+        let session = meerkat_core::Session::new();
+        let sid = session.id().clone();
+        let legacy = serde_json::to_vec(&session).expect("serialize legacy session");
+        let identity = AgentIdentity::parse("agent:lazy-fail").expect("identity");
+        let fencing_token = FencingToken::new(5);
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:lazy-fail:0").expect("runtime id"),
+            session_id: sid.clone(),
+            generation: ContinuityGeneration::new(3),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        inner
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        inner
+            .save_session_snapshot(
+                &identity,
+                &sid,
+                ContinuityGeneration::new(3),
+                CheckpointVersion::new(4),
+                fencing_token,
+                &SessionSnapshot {
+                    data: legacy.clone(),
+                },
+            )
+            .await
+            .expect("seed legacy snapshot");
+        adapter
+            .register_session(
+                &sid,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(3),
+                    fencing_token,
+                    checkpoint_version: CheckpointVersion::new(4),
+                },
+            )
+            .await
+            .expect("register session");
+
+        // The failed adoption save mints (and burns) version 5 in the
+        // allocator but commits nothing; the caller must see the legacy
+        // document, never a stamped-but-uncommitted verification.
+        fail_store.fail_saves(true);
+        let loaded = meerkat::SessionStore::load(&adapter, &sid)
+            .await
+            .expect("load under failing save")
+            .expect("session present");
+        assert!(
+            matches!(
+                loaded.try_checkpoint_state().expect("checkpoint state"),
+                meerkat_core::SessionCheckpointState::LegacyUnverified { .. }
+            ),
+            "a failed adoption save must pass the legacy document through"
+        );
+        let durable = inner
+            .load_session_snapshot(&sid)
+            .await
+            .expect("durable load")
+            .expect("snapshot present");
+        assert_eq!(
+            durable.data, legacy,
+            "a failed adoption save must leave the durable legacy bytes untouched"
+        );
+
+        // Retry after the store recovers: the stamp must bind the durable
+        // registered cursor (4), not the unpersisted allocator mint (5).
+        fail_store.fail_saves(false);
+        let adopted = meerkat::SessionStore::load(&adapter, &sid)
+            .await
+            .expect("load after recovery")
+            .expect("session present");
+        let stamp = match adopted.try_checkpoint_state().expect("checkpoint state") {
+            meerkat_core::SessionCheckpointState::Verified(stamp) => stamp,
+            other => panic!("expected an adopted document, got {other:?}"),
+        };
+        assert_eq!(stamp.generation(), meerkat_core::SessionGeneration::new(3));
+        assert_eq!(
+            stamp.checkpoint_revision(),
+            meerkat_core::SessionCheckpointRevision::new(4),
+            "the stamp must bind the durable cursor, never a revision that only \
+             the in-memory allocator ever saw"
+        );
+
+        // The durable copy carries the same stamp.
+        let durable = inner
+            .load_session_snapshot(&sid)
+            .await
+            .expect("durable load after adoption")
+            .expect("snapshot present");
+        let durable_session: meerkat_core::Session =
+            serde_json::from_slice(&durable.data).expect("decode adopted snapshot");
+        match durable_session
+            .try_checkpoint_state()
+            .expect("durable checkpoint state")
+        {
+            meerkat_core::SessionCheckpointState::Verified(durable_stamp) => {
+                assert_eq!(durable_stamp, stamp);
+            }
+            other => panic!("expected a verified durable document, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -216,6 +216,133 @@ pub fn enforce_fail_closed_store_set(
     Ok(())
 }
 
+/// The meerkat-level realm id for a composite provider's shared store set.
+/// The state directory is already deployment-scoped, so one constant realm
+/// per state dir is stable; a non-disk backend's realm pins external under
+/// the provider's name at `<state_dir>/mobkit/realm_manifest.json`.
+pub const MEERKAT_LEVEL_REALM_ID: &str = "mobkit";
+
+/// The meerkat-level stores (with their provider-declared durability) the
+/// builder reroutes into the mob bootstrap composition when a composite
+/// provider's backend is non-disk — the slots the spec would otherwise open
+/// as local files, silently splitting the advertised single bundle across
+/// backends.
+#[derive(Clone)]
+pub(crate) struct ProviderMeerkatStores {
+    pub provider_name: String,
+    pub runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+    pub runtime_declaration: DurabilityDeclaration,
+    pub workgraph_store: Arc<dyn meerkat::WorkGraphStore>,
+    pub workgraph_declaration: DurabilityDeclaration,
+}
+
+impl ProviderMeerkatStores {
+    pub(crate) fn runtime_slot_summary(&self) -> crate::storage_health::StorageSlotSummary {
+        self.slot_summary(&self.runtime_declaration)
+    }
+
+    pub(crate) fn workgraph_slot_summary(&self) -> crate::storage_health::StorageSlotSummary {
+        self.slot_summary(&self.workgraph_declaration)
+    }
+
+    fn slot_summary(
+        &self,
+        declaration: &DurabilityDeclaration,
+    ) -> crate::storage_health::StorageSlotSummary {
+        crate::storage_health::StorageSlotSummary {
+            declaration: declaration.clone(),
+            backend: format!("storage provider '{}'", self.provider_name),
+            detail: Some(
+                "meerkat-level slot from the composite provider's realm bundle".to_string(),
+            ),
+            degraded: false,
+        }
+    }
+}
+
+/// Open the meerkat-level store set of a composite provider's backend
+/// through the realm convergence the meerkat facade uses: ensure the
+/// manifest pin (external under the provider's name for non-disk backends),
+/// open through the [`RealmStorageProvider`] seam, and enforce fail-closed
+/// durability before any slot is composed.
+pub(crate) async fn open_provider_meerkat_stores(
+    provider: &dyn RealmStorageProvider,
+    ctx: &MobKitRealmOpenContext,
+) -> Result<ProviderMeerkatStores, MobKitStorageProviderError> {
+    let provider_name = provider.name().to_string();
+    let pin_name = (provider_name != "disk").then_some(provider_name.as_str());
+    let pin = meerkat_store::realm::ensure_realm_manifest_pin_with_candidates(
+        &ctx.state_dir,
+        &[],
+        MEERKAT_LEVEL_REALM_ID,
+        pin_name,
+        None,
+        None,
+    )
+    .await
+    .map_err(|error| MobKitStorageProviderError::Open {
+        slot: "meerkat-level realm manifest".to_string(),
+        message: error.to_string(),
+    })?;
+    let realm = meerkat_core::RealmId::parse(MEERKAT_LEVEL_REALM_ID).map_err(|error| {
+        MobKitStorageProviderError::Open {
+            slot: "meerkat-level realm".to_string(),
+            message: format!("invalid realm id '{MEERKAT_LEVEL_REALM_ID}': {error}"),
+        }
+    })?;
+    let open_ctx = meerkat::storage_provider::RealmOpenContext {
+        locator: meerkat_core::RealmLocator {
+            state_root: ctx.state_dir.clone(),
+            realm,
+        },
+        manifest: pin.clone(),
+        paths: meerkat_store::realm_paths_in(&ctx.state_dir, MEERKAT_LEVEL_REALM_ID),
+        layout: None,
+    };
+    let set = provider
+        .open(&open_ctx)
+        .await
+        .map_err(|error| MobKitStorageProviderError::Open {
+            slot: "meerkat-level realm store set".to_string(),
+            message: error.to_string(),
+        })?;
+    // The embedder's explicit ephemeral declarations extend the pinned
+    // manifest's, exactly as they gate the mobkit-level slots.
+    let mut ephemeral_domains = pin.ephemeral_domains().to_vec();
+    ephemeral_domains.extend(ctx.declared_ephemeral_domains.iter().cloned());
+    meerkat::storage_provider::enforce_fail_closed_durability(&set, &ephemeral_domains).map_err(
+        |error| match error {
+            meerkat::PersistenceError::DurabilityViolation { domain } => {
+                MobKitStorageProviderError::DurabilityViolation {
+                    domain: format!("{domain} (meerkat level)"),
+                }
+            }
+            other => MobKitStorageProviderError::Open {
+                slot: "meerkat-level realm store set".to_string(),
+                message: other.to_string(),
+            },
+        },
+    )?;
+    let declaration = |domain: &str| {
+        set.durability
+            .iter()
+            .find(|declaration| declaration.domain == domain)
+            .cloned()
+            .ok_or_else(|| MobKitStorageProviderError::DurabilityViolation {
+                domain: format!("{domain} (meerkat level: declaration missing)"),
+            })
+    };
+    let runtime_declaration = declaration("runtime")?;
+    let workgraph_declaration = declaration("workgraph")?;
+    Ok(ProviderMeerkatStores {
+        provider_name,
+        runtime_store: set.runtime_store,
+        runtime_declaration,
+        workgraph_store: set.workgraph_store,
+        workgraph_declaration,
+    })
+}
+
 /// The built-in disk provider: reproduces today's SQLite/object-store layout
 /// via the M2 [`MobKitStorageLayout`] locators and the M3 ledgered openers.
 #[derive(Debug, Clone, Copy, Default)]
@@ -485,5 +612,135 @@ mod tests {
             schedule_store: Arc::clone(&set.schedule_store),
             durability: set.durability.clone(),
         }
+    }
+
+    /// Non-disk meerkat-level provider stub: in-memory stores with
+    /// self-declared ephemerality, plus a configurable runtime resolution
+    /// for the fail-closed refusal case.
+    struct StubMeerkatProvider {
+        opened: std::sync::atomic::AtomicBool,
+        runtime_resolution: DurabilityResolution,
+    }
+
+    impl StubMeerkatProvider {
+        fn declared_ephemeral() -> Self {
+            Self {
+                opened: std::sync::atomic::AtomicBool::new(false),
+                runtime_resolution: DurabilityResolution::DeclaredEphemeral,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RealmStorageProvider for StubMeerkatProvider {
+        fn name(&self) -> &str {
+            "stub-remote"
+        }
+
+        async fn open(
+            &self,
+            ctx: &meerkat::storage_provider::RealmOpenContext,
+        ) -> Result<meerkat::storage_provider::RealmStoreSet, meerkat::PersistenceError> {
+            self.opened.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(meerkat::storage_provider::RealmStoreSet {
+                session_store: Arc::new(meerkat_store::MemoryStore::new()),
+                runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+                schedule_store: Arc::new(meerkat_schedule::MemoryScheduleStore::new()),
+                workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+                blob_store: Arc::new(meerkat_store::MemoryBlobStore::new()),
+                artifact_store: Arc::new(meerkat_store::MemoryArtifactStore::new()),
+                store_path: ctx.paths.root.clone(),
+                projection_root: None,
+                durability: ["sessions", "schedule", "workgraph", "blobs", "artifacts"]
+                    .iter()
+                    .map(|domain| {
+                        DurabilityDeclaration::durable(
+                            domain,
+                            DurabilityResolution::DeclaredEphemeral,
+                        )
+                    })
+                    .chain(std::iter::once(DurabilityDeclaration::durable(
+                        "runtime",
+                        self.runtime_resolution,
+                    )))
+                    .collect(),
+            })
+        }
+    }
+
+    /// M4b: the meerkat-level open routes through the provider's realm seam
+    /// — the provider is genuinely opened, its runtime/workgraph stores and
+    /// their verbatim declarations come back, and the realm is pinned
+    /// external under the provider's name.
+    #[tokio::test]
+    async fn meerkat_level_open_routes_the_provider_bundle_and_pins_external() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = context(dir.path());
+        let provider = StubMeerkatProvider::declared_ephemeral();
+
+        let stores = open_provider_meerkat_stores(&provider, &ctx)
+            .await
+            .expect("stub meerkat bundle opens");
+
+        assert!(provider.opened.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(stores.provider_name, "stub-remote");
+        assert_eq!(
+            stores.runtime_declaration.resolution,
+            DurabilityResolution::DeclaredEphemeral
+        );
+        assert_eq!(
+            stores.workgraph_declaration.resolution,
+            DurabilityResolution::DeclaredEphemeral
+        );
+        let runtime_slot = stores.runtime_slot_summary();
+        assert_eq!(runtime_slot.declaration.domain, "runtime");
+        assert!(runtime_slot.backend.contains("stub-remote"));
+        let manifest_path = ctx
+            .state_dir
+            .join(MEERKAT_LEVEL_REALM_ID)
+            .join("realm_manifest.json");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .expect("meerkat-level realm manifest must be pinned");
+        assert!(
+            manifest.contains("stub-remote"),
+            "the pin must carry the provider name, got: {manifest}"
+        );
+    }
+
+    /// The meerkat-level fail-closed rule holds at the composite seam: an
+    /// undeclared non-persistent durable slot refuses composition typed and
+    /// names the level.
+    #[tokio::test]
+    async fn meerkat_level_open_refuses_undeclared_nonpersistent_durables() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = context(dir.path());
+        let provider = StubMeerkatProvider {
+            opened: std::sync::atomic::AtomicBool::new(false),
+            runtime_resolution: DurabilityResolution::NonPersistent,
+        };
+
+        let error = match open_provider_meerkat_stores(&provider, &ctx).await {
+            Err(error) => error,
+            Ok(_) => panic!("an undeclared non-persistent runtime slot must refuse"),
+        };
+        assert!(matches!(
+            error,
+            MobKitStorageProviderError::DurabilityViolation { ref domain }
+                if domain.contains("runtime") && domain.contains("meerkat level")
+        ));
+
+        // The same resolution composes when the embedder declared the
+        // domain ephemeral (the builder's ephemeral_runtime_store gate).
+        let mut declared = ctx.clone();
+        declared
+            .declared_ephemeral_domains
+            .push("runtime".to_string());
+        let provider = StubMeerkatProvider {
+            opened: std::sync::atomic::AtomicBool::new(false),
+            runtime_resolution: DurabilityResolution::NonPersistent,
+        };
+        open_provider_meerkat_stores(&provider, &declared)
+            .await
+            .expect("a declared-ephemeral runtime domain must compose");
     }
 }

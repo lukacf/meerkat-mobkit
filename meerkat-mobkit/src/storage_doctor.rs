@@ -40,7 +40,10 @@ use meerkat_core::storage_diagnostics::{
     DatabaseInventory, DiagnoseScope, FindingSeverity, StorageDiagnosis, StorageDiagnosticsError,
     StorageFinding, StorageInventoryEntry, StorageMigrator,
 };
-use meerkat_core::{SessionCheckpointMetadataState, session_metadata_document_from_slice};
+use meerkat_core::{
+    Session, SessionCheckpointMetadataState, SessionCheckpointState,
+    session_metadata_document_from_slice,
+};
 use rusqlite::Connection;
 
 use crate::auth::GATEWAY_PEER_KEY_FILE;
@@ -71,6 +74,12 @@ pub const FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS: &str =
 /// Snapshot checkpoint metadata that is present but malformed (never
 /// laundered into "legacy").
 pub const FINDING_CHECKPOINT_METADATA_INVALID: &str = "checkpoint-metadata-invalid";
+/// A stamped continuity snapshot whose checkpoint digest does not verify
+/// against its payload bytes (tampered or corrupted; restore rejects it).
+/// Bounded work: digests are verified only for the stamped rows the census
+/// already materializes — the payload bytes are in hand, only stamped rows
+/// pay the full-session decode + digest.
+pub const FINDING_CHECKPOINT_DIGEST_MISMATCH: &str = "checkpoint-digest-mismatch";
 /// Continuity snapshot payloads that do not decode as a session document.
 pub const FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE: &str = "continuity-snapshot-undecodable";
 /// A console frame references a blob object missing from the blob root.
@@ -617,6 +626,13 @@ fn inspect_database(
 /// over `session_snapshots.data`, each payload decoded as a Meerkat session
 /// document and classified through the core metadata census helper. This is
 /// the per-identity stamped/legacy count H3's dry-run adoption consumes.
+///
+/// A structural stamp is not counted as healthy on its own: restore verifies
+/// the stamp digest against the full document, so the census does too — a
+/// stamped row whose digest fails verification is an error-severity
+/// [`FINDING_CHECKPOINT_DIGEST_MISMATCH`] naming the session. The payload
+/// bytes are already loaded for the structural check; only stamped rows pay
+/// the additional full-session decode + digest.
 fn census_continuity_snapshots(
     db_path: &Path,
     identity_filter: Option<&str>,
@@ -632,27 +648,45 @@ fn census_continuity_snapshots(
         Err(_) => return, // already reported by inspect_database
     }
 
-    // identity -> (stamped, legacy)
+    // identity -> (stamped-and-verified, legacy)
     let mut census: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut invalid = 0usize;
     let mut undecodable = 0usize;
+    // (session id, identity, verification error) per stamped row whose
+    // digest fails against the payload bytes.
+    let mut digest_failures: Vec<(String, String, String)> = Vec::new();
 
     let result = (|| -> Result<(), rusqlite::Error> {
-        let mut statement = conn.prepare("SELECT identity, data FROM session_snapshots")?;
+        let mut statement =
+            conn.prepare("SELECT session_id, identity, data FROM session_snapshots")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
-            let identity: String = row.get(0)?;
+            let session_id: String = row.get(0)?;
+            let identity: String = row.get(1)?;
             if identity_filter.is_some_and(|filter| filter != identity) {
                 continue;
             }
-            let data: Vec<u8> = row.get(1)?;
+            let data: Vec<u8> = row.get(2)?;
             let Ok(document) = session_metadata_document_from_slice(&data) else {
                 undecodable += 1;
                 continue;
             };
             match document.try_checkpoint_metadata_state() {
                 Ok(SessionCheckpointMetadataState::Stamped(_)) => {
-                    census.entry(identity).or_default().0 += 1;
+                    match serde_json::from_slice::<Session>(&data) {
+                        Ok(session) => match session.try_checkpoint_state() {
+                            Ok(SessionCheckpointState::Verified(_)) => {
+                                census.entry(identity).or_default().0 += 1;
+                            }
+                            Ok(SessionCheckpointState::LegacyUnverified { .. }) => {
+                                census.entry(identity).or_default().1 += 1;
+                            }
+                            Err(error) => {
+                                digest_failures.push((session_id, identity, error.to_string()));
+                            }
+                        },
+                        Err(_) => undecodable += 1,
+                    }
                 }
                 Ok(SessionCheckpointMetadataState::LegacyUnverified { .. }) => {
                     census.entry(identity).or_default().1 += 1;
@@ -690,6 +724,20 @@ fn census_continuity_snapshots(
                 .with_realm(identity.clone()),
             );
         }
+    }
+    for (session_id, identity, error) in &digest_failures {
+        out.findings.push(
+            StorageFinding::new(
+                FindingSeverity::Error,
+                FINDING_CHECKPOINT_DIGEST_MISMATCH,
+                format!(
+                    "stamped snapshot for session '{session_id}' fails checkpoint digest \
+                     verification ({error}); restore will reject it"
+                ),
+            )
+            .with_path(db_path.to_path_buf())
+            .with_realm(identity.clone()),
+        );
     }
     if invalid > 0 {
         out.findings.push(
@@ -1120,6 +1168,66 @@ mod tests {
             "{filtered:?}"
         );
         assert!(codes(&filtered).contains(&FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE));
+    }
+
+    /// A session with a verified root checkpoint stamp installed.
+    fn stamped_session() -> Session {
+        let mut session = Session::new();
+        session.push(Message::User(UserMessage::text("stamped")));
+        let stamp = meerkat_core::SessionCheckpointStamp::root(
+            &session,
+            meerkat_core::SessionCheckpointProvenance::SessionCreated,
+        )
+        .expect("root stamp");
+        session
+            .install_checkpoint_stamp(stamp)
+            .expect("install stamp");
+        session
+    }
+
+    #[tokio::test]
+    async fn continuity_census_verifies_stamped_checkpoint_digests() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let db_path = state.join("continuity.db");
+        create_db_with_table(&db_path, CONTINUITY_DDL);
+
+        // One verified stamped snapshot, and one whose content changed after
+        // stamping — structurally stamped, but the digest no longer matches
+        // the bytes (restore rejects it; the doctor must not call it clean).
+        let good = stamped_session();
+        let (good_sid, good_bytes) = (
+            good.id().to_string(),
+            serde_json::to_vec(&good).expect("serialize"),
+        );
+        let mut tampered = stamped_session();
+        tampered.push(Message::User(UserMessage::text("tampered after stamping")));
+        let (bad_sid, bad_bytes) = (
+            tampered.id().to_string(),
+            serde_json::to_vec(&tampered).expect("serialize"),
+        );
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            insert_snapshot(&conn, &good_sid, "domain:good", &good_bytes);
+            insert_snapshot(&conn, &bad_sid, "domain:bad", &bad_bytes);
+        }
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        let mismatches: Vec<_> = diagnosis
+            .findings
+            .iter()
+            .filter(|f| f.code == FINDING_CHECKPOINT_DIGEST_MISMATCH)
+            .collect();
+        assert_eq!(mismatches.len(), 1, "{diagnosis:?}");
+        assert_eq!(mismatches[0].severity, FindingSeverity::Error);
+        assert!(
+            mismatches[0].message.contains(&bad_sid),
+            "the finding must name the session: {}",
+            mismatches[0].message
+        );
+        assert_eq!(mismatches[0].realm.as_deref(), Some("domain:bad"));
+        assert!(!mismatches[0].message.contains(&good_sid));
+        assert!(diagnosis.has_errors());
     }
 
     #[tokio::test]

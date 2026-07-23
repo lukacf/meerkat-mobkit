@@ -3774,9 +3774,51 @@ impl MobBootstrapSpec {
         ephemeral_runtime_store: bool,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
         hook: Option<PreBuildHook>,
+        caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
+        agent_config: Option<Config>,
+    ) -> Result<Self, StorageResolutionError> {
+        Self::persistent_inner_with_provider_stores(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            session_store,
+            session_store_kind,
+            custom_blob_store,
+            ephemeral_blobs,
+            ephemeral_runtime_store,
+            schedule_store,
+            hook,
+            caps,
+            after_create_hook,
+            agent_config,
+            None,
+        )
+    }
+
+    /// [`persistent_inner`](Self::persistent_inner) with the composite
+    /// storage provider's meerkat-level bundle (M4b): when present, the
+    /// runtime and workgraph slots compose over the provider's stores
+    /// instead of local SQLite files, so the advertised single bundle is
+    /// not silently split across backends.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn persistent_inner_with_provider_stores(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Arc<dyn SessionStore>,
+        session_store_kind: &str,
+        custom_blob_store: Option<BlobStoreInjection>,
+        ephemeral_blobs: bool,
+        ephemeral_runtime_store: bool,
+        schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
+        provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
     ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         // H1 fail-closed blob slot: the slot resolves to a configured
@@ -3865,6 +3907,14 @@ impl MobBootstrapSpec {
                     "explicitly declared: sessions do not survive process restart",
                 ),
             )
+        } else if let Some(provider) = provider_meerkat_stores.as_ref() {
+            // M4b single-bundle: runtime authority rides the composite
+            // provider's meerkat-level bundle; the provider-declared
+            // resolution flows to the census verbatim.
+            (
+                Arc::clone(&provider.runtime_store),
+                provider.runtime_slot_summary(),
+            )
         } else {
             (
                 build_persistent_runtime_store(&store_path)?,
@@ -3903,27 +3953,39 @@ impl MobBootstrapSpec {
                  attaches schedule tools without a firing host",
             )
         });
-        // Durable workgraph store beside runtime.sqlite (boot-without on
-        // open failure — a sanctioned, health-visible degradation).
+        // Durable workgraph store: the composite provider's meerkat-level
+        // bundle when installed (M4b single-bundle), otherwise local SQLite
+        // beside runtime.sqlite (boot-without on open failure — a
+        // sanctioned, health-visible degradation).
         let (workgraph_service, workgraph_admission_slot, workgraph_slot) =
-            match crate::workgraph_wiring::attach_workgraph_tools_reporting(
-                &builder,
-                &store_path,
-                definition.id.as_str(),
-            ) {
-                Ok((service, slot)) => (
-                    Some(service),
-                    Some(slot),
-                    StorageSlotSummary::persistent("workgraph", "SqliteWorkGraphStore"),
-                ),
-                Err(error) => (
-                    None,
-                    None,
-                    StorageSlotSummary::degraded(
-                        "workgraph",
-                        format!("workgraph store failed to open; workgraph disabled: {error}"),
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                let service = meerkat::WorkGraphService::with_scope(
+                    Arc::clone(&provider.workgraph_store),
+                    definition.id.as_str(),
+                    meerkat::WorkNamespace::default(),
+                );
+                let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
+                (Some(service), Some(slot), provider.workgraph_slot_summary())
+            } else {
+                match crate::workgraph_wiring::attach_workgraph_tools_reporting(
+                    &builder,
+                    &store_path,
+                    definition.id.as_str(),
+                ) {
+                    Ok((service, slot)) => (
+                        Some(service),
+                        Some(slot),
+                        StorageSlotSummary::persistent("workgraph", "SqliteWorkGraphStore"),
                     ),
-                ),
+                    Err(error) => (
+                        None,
+                        None,
+                        StorageSlotSummary::degraded(
+                            "workgraph",
+                            format!("workgraph store failed to open; workgraph disabled: {error}"),
+                        ),
+                    ),
+                }
             };
         let concrete_session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
@@ -3967,8 +4029,9 @@ impl MobBootstrapSpec {
         spec.binary_blob_store = Some(binary_blob_store);
         spec.workgraph_service = workgraph_service;
         if let Some(slot) = workgraph_admission_slot {
-            // SQLite-backed store: the file is shareable across processes,
-            // so admissions additionally serialize through the sidecar lock.
+            // SQLite- or provider-backed store: the backend is shareable
+            // across processes, so admissions additionally serialize through
+            // the sidecar lock (a same-host guard).
             spec.workgraph_admission_slots.push(slot);
             spec.workgraph_admission_sidecar =
                 Some(crate::workgraph_admission::workgraph_admission_sidecar_path(&store_path));
@@ -4007,9 +4070,46 @@ impl MobBootstrapSpec {
         custom_blob_store: Option<BlobStoreInjection>,
         schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
         hook: Option<PreBuildHook>,
+        caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
+        agent_config: Option<Config>,
+    ) -> Self {
+        Self::ephemeral_runtime_backed_with_provider_stores(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            custom_session_store,
+            session_store_kind,
+            custom_blob_store,
+            schedule_store,
+            hook,
+            caps,
+            after_create_hook,
+            agent_config,
+            None,
+        )
+    }
+
+    /// [`ephemeral_runtime_backed_inner`](Self::ephemeral_runtime_backed_inner)
+    /// with the composite storage provider's meerkat-level bundle (M4b, the
+    /// scratch/ob3 shape): when present, runtime and workgraph authority
+    /// ride the provider's stores instead of process-local memory.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ephemeral_runtime_backed_with_provider_stores(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        custom_session_store: Option<Arc<dyn SessionStore>>,
+        session_store_kind: &str,
+        custom_blob_store: Option<BlobStoreInjection>,
+        schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+        hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
+        provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
@@ -4058,16 +4158,19 @@ impl MobBootstrapSpec {
         // handles early enough for mob edge reconciliation; this bounded bridge
         // preserves live comms while avoiding the old "image tool sees the
         // session as destroyed" split-machine bug.
-        let base_runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            if let Some(custom_session_store) = custom_session_store.clone() {
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                // M4b single-bundle: runtime authority rides the composite
+                // provider's meerkat-level bundle (the remote-authoritative
+                // scratch shape), not process-local memory.
+                Arc::clone(&provider.runtime_store)
+            } else if let Some(custom_session_store) = custom_session_store.clone() {
                 Arc::new(SessionStoreBackedRuntimeStore::new(
-                    Arc::clone(&base_runtime_store),
+                    Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
                     custom_session_store,
                 ))
             } else {
-                Arc::clone(&base_runtime_store)
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
             };
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
@@ -4101,10 +4204,23 @@ impl MobBootstrapSpec {
             )
         });
         let (workgraph_service, workgraph_admission_slot) =
-            crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
-                &builder,
-                definition.id.as_str(),
-            );
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                // M4b single-bundle: the workgraph rides the composite
+                // provider's meerkat-level bundle instead of process-local
+                // memory.
+                let service = meerkat::WorkGraphService::with_scope(
+                    Arc::clone(&provider.workgraph_store),
+                    definition.id.as_str(),
+                    meerkat::WorkNamespace::default(),
+                );
+                let slot = crate::workgraph_wiring::install_workgraph_tools(&builder, &service);
+                (service, slot)
+            } else {
+                crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
+                    &builder,
+                    definition.id.as_str(),
+                )
+            };
         let session_service: Arc<dyn MobSessionService> =
             if let Some(custom_session_store) = custom_session_store {
                 let concrete_session_service =
@@ -4192,17 +4308,25 @@ impl MobBootstrapSpec {
                     "declared by the ephemeral launch mode",
                 )
             },
-            StorageSlotSummary::declared_ephemeral(
-                "runtime",
-                "InMemoryRuntimeStore",
-                "declared by the ephemeral launch mode",
-            ),
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                provider.runtime_slot_summary()
+            } else {
+                StorageSlotSummary::declared_ephemeral(
+                    "runtime",
+                    "InMemoryRuntimeStore",
+                    "declared by the ephemeral launch mode",
+                )
+            },
             blob_slot_summary(blob_durability),
-            StorageSlotSummary::declared_ephemeral(
-                "workgraph",
-                "MemoryWorkGraphStore",
-                "declared by the ephemeral launch mode",
-            ),
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                provider.workgraph_slot_summary()
+            } else {
+                StorageSlotSummary::declared_ephemeral(
+                    "workgraph",
+                    "MemoryWorkGraphStore",
+                    "declared by the ephemeral launch mode",
+                )
+            },
         ];
         if let Some(slot) = schedule_slot {
             slots.push(slot);

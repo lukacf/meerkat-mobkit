@@ -28,6 +28,18 @@ export function memory(options?: {
   batchSize?: number;
   flushIntervalMs?: number;
 }): EventLogDeclaration {
+  // A zero interval panics the gateway's ingestion task
+  // (`tokio::time::interval` requires a non-zero period), and the wire
+  // only accepts positive integers.
+  const flushIntervalMs = options?.flushIntervalMs;
+  if (
+    flushIntervalMs !== undefined &&
+    (!Number.isInteger(flushIntervalMs) || flushIntervalMs <= 0)
+  ) {
+    throw new Error(
+      `eventLog.memory: flushIntervalMs must be a positive integer (got ${flushIntervalMs})`,
+    );
+  }
   return {
     toDict() {
       const result: Record<string, unknown> = { storage: "memory" };

@@ -58,6 +58,19 @@ class TestEventLogConfig:
     def test_null_wire_form(self):
         assert event_log.null().to_dict() == {"storage": "null"}
 
+    def test_memory_rejects_non_positive_flush_interval(self):
+        # A zero interval would panic the gateway's ingestion task.
+        with pytest.raises(ValueError, match="flush_interval_ms"):
+            event_log.memory(flush_interval_ms=0)
+        with pytest.raises(ValueError, match="flush_interval_ms"):
+            event_log.memory(flush_interval_ms=-5)
+
+    def test_memory_rejects_non_integer_flush_interval(self):
+        with pytest.raises(ValueError, match="flush_interval_ms"):
+            event_log.memory(flush_interval_ms=10.5)
+        with pytest.raises(ValueError, match="flush_interval_ms"):
+            event_log.memory(flush_interval_ms=float("nan"))
+
     def test_builder_accepts_typed_config(self):
         b = MobKit.builder().event_log(event_log.null())
         params = MobKitRuntime(b._config)._build_init_params()

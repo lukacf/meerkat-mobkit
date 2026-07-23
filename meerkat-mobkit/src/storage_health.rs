@@ -232,6 +232,11 @@ pub struct ResolvedStorageSummary {
     /// summary before the census existed keep their wire shape and gain a
     /// `"slots"` array.
     pub slots: Vec<StorageSlotSummary>,
+    /// The state directory this runtime's stores resolved under (`None` =
+    /// the composing surface recorded none). Consumed by the storage-doctor
+    /// RPC to prove a requested state_dir is this runtime's own before
+    /// attaching the live census; never part of `status_json`.
+    pub state_dir: Option<PathBuf>,
 }
 
 impl ResolvedStorageSummary {
@@ -242,6 +247,7 @@ impl ResolvedStorageSummary {
             blob_durability,
             session_store_incremental,
             slots: Vec::new(),
+            state_dir: None,
         }
     }
 
@@ -249,6 +255,14 @@ impl ResolvedStorageSummary {
     #[must_use]
     pub fn with_slots(mut self, slots: Vec<StorageSlotSummary>) -> Self {
         self.slots = slots;
+        self
+    }
+
+    /// Record the state directory the stores resolved under (the doctor
+    /// RPC's own-directory census guard).
+    #[must_use]
+    pub fn with_state_dir(mut self, state_dir: impl Into<PathBuf>) -> Self {
+        self.state_dir = Some(state_dir.into());
         self
     }
 

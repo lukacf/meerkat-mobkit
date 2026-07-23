@@ -971,6 +971,29 @@ actions = ["agent.view"]
     }
 
     #[test]
+    fn agent_memory_census_slot_covers_both_store_kinds() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let params = json!({ "runtime_options": { "agent_memory": true } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let slot = agent_memory_census_slot(&options.agent_memory.expect("agent memory options"));
+        assert_eq!(slot.declaration.domain, "agent-memory");
+        assert_eq!(
+            slot.declaration.resolution,
+            meerkat_core::DurabilityResolution::Persistent
+        );
+        assert_eq!(slot.backend, "SqliteAgentMemoryStore");
+        assert!(!slot.degraded);
+
+        let params = json!({ "runtime_options": { "agent_memory": { "store": "markdown" } } });
+        let options =
+            parse_gateway_runtime_options(&params, Some(tmp.path())).expect("runtime options");
+        let slot = agent_memory_census_slot(&options.agent_memory.expect("agent memory options"));
+        assert_eq!(slot.declaration.domain, "agent-memory");
+        assert_eq!(slot.backend, "MarkdownAgentMemoryStore");
+    }
+
+    #[test]
     fn gateway_runtime_options_parse_agent_memory_defang_inbound() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let params = json!({
@@ -2644,10 +2667,24 @@ fn parse_gateway_event_log_config(value: &Value) -> Result<EventLogConfig, Strin
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(64);
-    let flush_interval_ms = object
-        .get("flush_interval_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(1_000);
+    // `tokio::time::interval` requires a non-zero period; a zero flush
+    // interval would kill the ingestion task, so it is invalid params here
+    // rather than a silently clamped value.
+    let flush_interval_ms = match object.get("flush_interval_ms") {
+        Some(value) => {
+            let flush_interval_ms = value.as_u64().ok_or_else(|| {
+                "runtime_options.event_log.flush_interval_ms must be a positive integer".to_string()
+            })?;
+            if flush_interval_ms == 0 {
+                return Err(
+                    "runtime_options.event_log.flush_interval_ms must be greater than zero"
+                        .to_string(),
+                );
+            }
+            flush_interval_ms
+        }
+        None => 1_000,
+    };
     Ok(EventLogConfig {
         store,
         filter: None,
@@ -2677,6 +2714,29 @@ fn gateway_event_log_slot(
             "operational events are not ingested; set runtime_options.event_log to declare a \
              store explicitly",
         )
+    }
+}
+
+/// The agent-memory slot for the composition-time durability census.
+/// Configured `runtime_options.agent_memory` always composes a disk-backed
+/// store under the persistent state dir (both kinds), so the slot belongs
+/// inside the durable boundary the gateway reports.
+fn agent_memory_census_slot(
+    agent_memory: &GatewayAgentMemoryOptions,
+) -> meerkat_mobkit::storage_health::StorageSlotSummary {
+    match agent_memory.store {
+        GatewayAgentMemoryStoreKind::Sqlite => {
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "agent-memory",
+                "SqliteAgentMemoryStore",
+            )
+        }
+        GatewayAgentMemoryStoreKind::Markdown => {
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "agent-memory",
+                "MarkdownAgentMemoryStore",
+            )
+        }
     }
 }
 
@@ -4992,6 +5052,11 @@ external_addressable = true
             workgraph_slot,
             gateway_event_log_slot(&gateway_options),
         ];
+        // Configured agent memory is a durable disk-backed slot under the
+        // state dir; the census must cover it like every other store.
+        if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
+            slots.push(agent_memory_census_slot(agent_memory));
+        }
         if identity_continuity_store.is_some() {
             slots.push(if has_continuity_store {
                 meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
@@ -5012,6 +5077,7 @@ external_addressable = true
                 meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
                 Some(session_store_incremental),
             )
+            .with_state_dir(storage_layout.state_dir())
             .with_slots(slots),
         );
         (
@@ -5290,6 +5356,9 @@ external_addressable = true
                 meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
                 session_store_incremental,
             )
+            // The declared-ephemeral scratch root is still this runtime's
+            // own state dir: a doctor request over it may see the census.
+            .with_state_dir(storage_layout.state_dir())
             .with_slots(slots),
         );
         // Ephemeral sessions have no persistent service; firing is persistent-only.
@@ -5532,6 +5601,9 @@ external_addressable = true
                 // Concrete store construction is the only per-kind decision
                 // left (M4 de-weld); everything downstream assembles on the
                 // provider's advertised capabilities.
+                // Agent memory is a durable storage slot: an open failure is
+                // a storage-resolution refusal (-32014), same as the other
+                // fail-closed store opens above.
                 let provider: Arc<dyn meerkat_mobkit::AgentMemoryProvider> =
                     match agent_memory.store {
                         GatewayAgentMemoryStoreKind::Markdown => Arc::new(
@@ -5539,7 +5611,7 @@ external_addressable = true
                                 .unwrap_or_else(|e| {
                                     fail_init(
                                         &request_id,
-                                        -32603,
+                                        STORAGE_RESOLUTION_CODE,
                                         format!("failed to open agent memory store: {e}"),
                                     );
                                 }),
@@ -5549,7 +5621,7 @@ external_addressable = true
                                 .unwrap_or_else(|e| {
                                     fail_init(
                                         &request_id,
-                                        -32603,
+                                        STORAGE_RESOLUTION_CODE,
                                         format!("failed to open agent memory store: {e}"),
                                     );
                                 }),

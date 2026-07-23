@@ -10,7 +10,8 @@
 //! it never sees continuity snapshots. This module is the continuity-side
 //! half: it stamps those bytes via the exported
 //! [`meerkat_core::adopt_legacy_session`] helper with the **observed cursor**
-//! from the matching `continuity_records` row.
+//! the snapshot row itself records, validated against the matching
+//! `continuity_records` row.
 //!
 //! # The two sanctioned invocation shapes
 //!
@@ -53,9 +54,13 @@
 //!
 //! Every `session_snapshots` row is classified, never skipped silently:
 //! already stamped (verified) rows are counted and left untouched;
-//! legacy-unverified rows with a matching record are adopted; rows whose
-//! owning record was rebound away or whose generation was superseded are
-//! **stale** — reported, never adopted, never an error for the walk;
+//! legacy-unverified rows whose matching record agrees with the row's own
+//! `checkpoint_version` are adopted (the stamp binds the row's version
+//! custody); rows whose owning record was rebound away or whose generation
+//! was superseded are **stale** — reported, never adopted, never an error
+//! for the walk; rows whose record cursor diverges from the row's own
+//! `checkpoint_version` (a lost or raced snapshot write) are refused typed —
+//! bytes are never certified at a version that does not belong to them;
 //! undecodable payloads are reported; helper refusals (typed-but-broken
 //! documents, key/embedded-id mismatches) land in `refused` with the reason.
 
@@ -378,6 +383,7 @@ struct SnapshotRowMeta {
     session_id: String,
     identity: String,
     generation: u64,
+    checkpoint_version: u64,
     fencing_token: u64,
 }
 
@@ -419,7 +425,7 @@ fn walk_snapshot_rows(
     let snapshot_rows: Vec<SnapshotRowMeta> = {
         let mut stmt = tx
             .prepare(
-                "SELECT session_id, identity, generation, fencing_token \
+                "SELECT session_id, identity, generation, checkpoint_version, fencing_token \
                  FROM session_snapshots ORDER BY session_id",
             )
             .map_err(sql_err("prepare snapshots"))?;
@@ -429,7 +435,8 @@ fn walk_snapshot_rows(
                     session_id: row.get(0)?,
                     identity: row.get(1)?,
                     generation: row.get(2)?,
-                    fencing_token: row.get(3)?,
+                    checkpoint_version: row.get(3)?,
+                    fencing_token: row.get(4)?,
                 })
             })
             .map_err(sql_err("query snapshots"))?;
@@ -508,10 +515,31 @@ fn walk_snapshot_rows(
             continue;
         };
 
+        // The stamp certifies the row's BYTES, so the revision it binds must
+        // be the one those bytes were saved under — the row's own
+        // checkpoint_version. A record cursor that advanced past the row (or
+        // lags it) means a snapshot write or record advance was lost or
+        // raced: certifying the bytes at either version would be a truth
+        // inversion, so the row is refused typed for the operator.
+        if row.checkpoint_version != cursor.checkpoint_version {
+            report.refused.push(AdoptionRefusal {
+                session_id: row.session_id.clone(),
+                reason: format!(
+                    "checkpoint version divergence: snapshot row holds version {} but the \
+                     continuity record's cursor is {}",
+                    row.checkpoint_version, cursor.checkpoint_version
+                ),
+            });
+            continue;
+        }
+
+        // Generation and checkpoint_version are pinned equal to the record's
+        // cursor by the filter and divergence refusal above; stamping from
+        // the row makes the byte-custody binding explicit.
         let adopted = match meerkat_core::adopt_legacy_session(
             &data,
-            meerkat_core::SessionGeneration::new(cursor.generation),
-            meerkat_core::SessionCheckpointRevision::new(cursor.checkpoint_version),
+            meerkat_core::SessionGeneration::new(row.generation),
+            meerkat_core::SessionCheckpointRevision::new(row.checkpoint_version),
         ) {
             Ok(adopted) => adopted,
             Err(error) => {
@@ -533,12 +561,13 @@ fn walk_snapshot_rows(
                 .execute(
                     "UPDATE session_snapshots SET data = ?1 \
                      WHERE session_id = ?2 AND identity = ?3 AND generation = ?4 \
-                       AND fencing_token = ?5",
+                       AND checkpoint_version = ?5 AND fencing_token = ?6",
                     rusqlite::params![
                         adopted.serialized,
                         row.session_id,
                         row.identity,
                         row.generation,
+                        row.checkpoint_version,
                         row.fencing_token,
                     ],
                 )
@@ -554,8 +583,8 @@ fn walk_snapshot_rows(
         tracing::info!(
             session_id = %row.session_id,
             identity = %row.identity,
-            observed_generation = cursor.generation,
-            observed_checkpoint_revision = cursor.checkpoint_version,
+            observed_generation = row.generation,
+            observed_checkpoint_revision = row.checkpoint_version,
             applied = matches!(mode, AdoptionMode::Apply),
             "continuity adoption: stamped legacy session snapshot with the observed cursor"
         );
@@ -787,6 +816,63 @@ mod tests {
         assert_eq!(
             stamp.checkpoint_revision(),
             meerkat_core::SessionCheckpointRevision::new(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn version_divergence_between_row_and_record_is_refused_not_promoted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = fixture_db(dir.path());
+        // Row behind record: the record's cursor advanced to 9 but these
+        // bytes were saved at 4 — a newer snapshot write was lost or raced.
+        let (behind_sid, behind_bytes) = legacy_session_bytes();
+        // Row ahead of record: the record advance was lost instead.
+        let (ahead_sid, ahead_bytes) = legacy_session_bytes();
+        // Adoptable control row proving divergent rows do not stop the walk.
+        let (live_sid, live_bytes) = legacy_session_bytes();
+        {
+            let conn = Connection::open(&db).expect("open fixture");
+            insert_record(&conn, "test:behind", &behind_sid, 3, 9, 7);
+            insert_snapshot(&conn, &behind_sid, "test:behind", 3, 4, 7, &behind_bytes);
+            insert_record(&conn, "test:ahead", &ahead_sid, 0, 2, 1);
+            insert_snapshot(&conn, &ahead_sid, "test:ahead", 0, 5, 1, &ahead_bytes);
+            insert_record(&conn, "test:alice", &live_sid, 0, 6, 2);
+            insert_snapshot(&conn, &live_sid, "test:alice", 0, 6, 2, &live_bytes);
+        }
+
+        let report = adopt_continuity_snapshots(&db, AdoptionMode::Apply)
+            .await
+            .expect("apply walk");
+        assert_eq!(report.scanned, 3);
+        assert_eq!(report.adopted, 1);
+        assert_eq!(report.stale_rows, 0);
+        assert_eq!(report.refused.len(), 2);
+        assert!(!report.is_clean());
+        let mut refused_ids: Vec<&str> = report
+            .refused
+            .iter()
+            .map(|refusal| refusal.session_id.as_str())
+            .collect();
+        refused_ids.sort_unstable();
+        let mut expected = [behind_sid.as_str(), ahead_sid.as_str()];
+        expected.sort_unstable();
+        assert_eq!(refused_ids, expected);
+        for refusal in &report.refused {
+            assert!(
+                refusal.reason.contains("checkpoint version divergence"),
+                "divergence must be refused typed, got: {}",
+                refusal.reason
+            );
+        }
+
+        // Divergent rows keep their legacy bytes exactly: never certified at
+        // a version that does not belong to them, in either direction.
+        assert_eq!(snapshot_row(&db, &behind_sid).3, behind_bytes);
+        assert_eq!(snapshot_row(&db, &ahead_sid).3, ahead_bytes);
+        let stamp = verified_stamp(&snapshot_row(&db, &live_sid).3);
+        assert_eq!(
+            stamp.checkpoint_revision(),
+            meerkat_core::SessionCheckpointRevision::new(6)
         );
     }
 
