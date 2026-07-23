@@ -8,14 +8,21 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use meerkat_core::session_store::session_projection_cas_token;
 use meerkat_core::types::SessionId;
+use meerkat_core::{DurabilityDeclaration, DurabilityResolution};
 use meerkat_mobkit::identity_first::{
-    AgentIdentity, ContinuityGeneration, ContinuityRecord, ContinuityResolveState, ContinuityStore,
-    ContinuityStoreError, FencingToken, SessionSnapshot,
+    AgentIdentity, AgentMemoryError, AgentMemoryForgetResult, AgentMemoryProvider,
+    AgentMemoryRecallRequest, AgentMemoryRecord, ContinuityGeneration, ContinuityRecord,
+    ContinuityResolveState, ContinuityStore, ContinuityStoreError, FencingToken, NewAgentMemory,
+    SessionSnapshot,
+};
+use meerkat_mobkit::storage_provider::{
+    MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet, MobKitStorageProvider,
+    MobKitStorageProviderError, enforce_fail_closed_store_set,
 };
 use meerkat_mobkit::unified_runtime::{EventLogError, EventLogStore, EventQuery, PersistedEvent};
 
@@ -306,5 +313,218 @@ impl EventLogStore for ReferenceEventLogStore {
             }
             Ok(rows)
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReferenceInMemoryAgentMemoryStore
+// ---------------------------------------------------------------------------
+
+/// Minimal in-memory `AgentMemoryProvider` for the reference bundle: the
+/// recall/remember/forget shape (the `MarkdownAgentMemoryStore` capability
+/// profile) with every other capability honestly refused via the trait's
+/// `Unsupported` defaults.
+#[derive(Default)]
+pub struct ReferenceInMemoryAgentMemoryStore {
+    records: Mutex<BTreeMap<(String, String), Vec<AgentMemoryRecord>>>,
+    next_id: Mutex<u64>,
+}
+
+impl ReferenceInMemoryAgentMemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl AgentMemoryProvider for ReferenceInMemoryAgentMemoryStore {
+    async fn recall(
+        &self,
+        request: AgentMemoryRecallRequest,
+    ) -> Result<Vec<AgentMemoryRecord>, AgentMemoryError> {
+        let records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut rows = records
+            .get(&(request.realm.clone(), request.identity.as_str().to_string()))
+            .cloned()
+            .unwrap_or_default();
+        rows.truncate(request.max_entries);
+        Ok(rows)
+    }
+
+    async fn remember(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory: NewAgentMemory,
+    ) -> Result<AgentMemoryRecord, AgentMemoryError> {
+        let memory_id = {
+            let mut next = self
+                .next_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *next += 1;
+            format!("reference-memory-{next}")
+        };
+        let record = AgentMemoryRecord {
+            memory_id,
+            title: memory.title,
+            body: memory.body,
+            tags: memory.tags,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((realm.to_string(), identity.as_str().to_string()))
+            .or_default()
+            .push(record.clone());
+        Ok(record)
+    }
+
+    fn supports_remember(&self) -> bool {
+        true
+    }
+
+    async fn forget(
+        &self,
+        realm: &str,
+        identity: &AgentIdentity,
+        memory_id: &str,
+    ) -> Result<AgentMemoryForgetResult, AgentMemoryError> {
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deleted = records
+            .get_mut(&(realm.to_string(), identity.as_str().to_string()))
+            .map(|rows| {
+                let before = rows.len();
+                rows.retain(|row| row.memory_id != memory_id);
+                rows.len() != before
+            })
+            .unwrap_or(false);
+        Ok(AgentMemoryForgetResult {
+            memory_id: memory_id.to_string(),
+            deleted,
+        })
+    }
+
+    fn supports_forget(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReferenceMemoryBundleProvider — the one-remote-bundle demonstration
+// ---------------------------------------------------------------------------
+
+/// Meerkat-level half of the reference bundle: a non-disk
+/// [`meerkat::storage_provider::RealmStorageProvider`] serving declared
+/// in-memory implementations of every meerkat-shared store.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReferenceMemoryRealmProvider;
+
+#[async_trait]
+impl meerkat::storage_provider::RealmStorageProvider for ReferenceMemoryRealmProvider {
+    fn name(&self) -> &'static str {
+        "reference-memory"
+    }
+
+    async fn open(
+        &self,
+        ctx: &meerkat::storage_provider::RealmOpenContext,
+    ) -> Result<meerkat::storage_provider::RealmStoreSet, meerkat::PersistenceError> {
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
+        Ok(meerkat::storage_provider::RealmStoreSet {
+            session_store,
+            runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            schedule_store: Arc::new(meerkat::MemoryScheduleStore::new()),
+            workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+            blob_store,
+            artifact_store: Arc::new(meerkat_store::MemoryArtifactStore::new()),
+            store_path: ctx.paths.root.clone(),
+            projection_root: None,
+            durability: [
+                "sessions",
+                "runtime",
+                "schedule",
+                "workgraph",
+                "blobs",
+                "artifacts",
+            ]
+            .iter()
+            .map(|domain| {
+                DurabilityDeclaration::durable(domain, DurabilityResolution::DeclaredEphemeral)
+            })
+            .collect(),
+        })
+    }
+}
+
+/// The in-crate reference [`MobKitStorageProvider`]: a **non-disk**,
+/// in-memory-declared bundle proving that a downstream implements ONE
+/// provider and gets sessions, continuity, events, blobs, and memory
+/// through the single seam — without touching MobKit internals. Every open
+/// mints a fresh realm (in-memory stores share state per handle, which is
+/// the correct restart model for deliberately non-persistent backends).
+#[derive(Default)]
+pub struct ReferenceMemoryBundleProvider {
+    meerkat: ReferenceMemoryRealmProvider,
+}
+
+impl ReferenceMemoryBundleProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl MobKitStorageProvider for ReferenceMemoryBundleProvider {
+    fn name(&self) -> &'static str {
+        "reference-memory"
+    }
+
+    async fn open_realm(
+        &self,
+        ctx: &MobKitRealmOpenContext,
+    ) -> Result<MobKitRealmStoreSet, MobKitStorageProviderError> {
+        let set = MobKitRealmStoreSet {
+            continuity_store: Arc::new(CompatRollbackContinuityStore::new()),
+            lease_authority: MobKitLeaseAuthority::FencingFloor(0),
+            event_log_store: Some(Box::new(ReferenceEventLogStore::new())),
+            console_log_store: Arc::new(
+                meerkat_mobkit::console_aggregator::InMemoryConsoleLogStore::new(),
+            ),
+            metadata_store: Arc::new(meerkat_mobkit::runtime::InMemoryMetadataStore::new()),
+            blob_store: Arc::new(meerkat_mobkit::blob_store::ObjectStoreBlobStore::memory()),
+            agent_memory_provider: Some(Arc::new(ReferenceInMemoryAgentMemoryStore::new())),
+            schedule_store: Arc::new(meerkat::MemoryScheduleStore::new()),
+            durability: [
+                "continuity",
+                "event_log",
+                "console",
+                "metadata",
+                "blobs",
+                "agent_memory",
+                "schedule",
+            ]
+            .iter()
+            .map(|domain| {
+                DurabilityDeclaration::durable(domain, DurabilityResolution::DeclaredEphemeral)
+            })
+            .collect(),
+        };
+        enforce_fail_closed_store_set(&set, ctx)?;
+        Ok(set)
+    }
+
+    fn meerkat_provider(&self) -> &dyn meerkat::storage_provider::RealmStorageProvider {
+        &self.meerkat
     }
 }

@@ -42,10 +42,13 @@ const CHAPTER: &str = "continuity_session_adapter";
 /// adapter's `delete` escalates a declined CAS delete to an error, so stores
 /// without that capability cannot host this chapter.
 ///
-/// `expect_incremental` pins the `as_incremental` capability: pass `false`
-/// today (H2: the adapter cannot forward what its substrate does not have)
-/// and flip to `true` when M4 lands the typed incremental continuity
-/// capability — the chapter fails loudly on any mismatch in either
+/// `expect_incremental` pins the `as_incremental` capability: the adapter
+/// genuinely forwards its substrate's
+/// `ContinuityStore::as_incremental_sessions` (M4b), so pass whatever the
+/// substrate advertises — `false` for the bundled `LocalContinuityStore`
+/// (which defers its delta channel deliberately; see its impl note) and for
+/// the whole-snapshot-verb `GatewayContinuityStore`, `true` for a substrate
+/// that ships one. The chapter fails loudly on any mismatch in either
 /// direction.
 pub async fn continuity_session_adapter(
     factory: &dyn ContinuityStoreFactory,

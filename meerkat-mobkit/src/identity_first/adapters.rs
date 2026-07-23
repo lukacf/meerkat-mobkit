@@ -1069,6 +1069,216 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         }
         Ok(deleted)
     }
+
+    /// Genuine forwarding of the incremental capability (M4b): `Some` exactly
+    /// when the continuity substrate advertises a session-delta channel
+    /// ([`super::contracts::ContinuityStore::as_incremental_sessions`]). The
+    /// returned wrapper preserves the adapter's registration and fencing
+    /// discipline — every delta mutation requires a registered,
+    /// non-suspended, non-superseded session and serializes on the same
+    /// per-session lock as the whole-blob paths. With the bundled
+    /// `LocalContinuityStore` (which defers the channel) and the JSON-RPC
+    /// `GatewayContinuityStore` (whole-snapshot wire verbs only) this stays
+    /// `None`: the H2 whole-blob degradation report remains truthful.
+    fn as_incremental(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+        let inner = self.store.as_incremental_sessions()?;
+        Some(Arc::new(ContinuityIncrementalSessionStore {
+            adapter: self,
+            inner,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Incremental forwarding wrapper (M4b)
+// ---------------------------------------------------------------------------
+
+/// The incremental session-store view the adapter returns when its
+/// substrate advertises [`super::contracts::ContinuityStore::as_incremental_sessions`].
+///
+/// Split of responsibilities:
+/// - the substrate's channel owns the durable delta contract (append
+///   contiguity/idempotency, rewrite verification, head CAS) **and** the
+///   continuity write discipline (fence CAS + version monotonicity per
+///   mutation) — that is the advertised capability's documented obligation;
+/// - this wrapper owns the adapter-side session lifecycle: delta mutations
+///   are admitted only for sessions registered with the identity runtime and
+///   are refused while a session is suspended (authority rotation),
+///   unregistered, or superseded — under the same per-session lock the
+///   whole-blob save paths serialize on (H3's lazy adoption included).
+///
+/// Whole-document `SessionStore` verbs delegate to the adapter unchanged, so
+/// mixed consumers observe one behavior.
+pub struct ContinuityIncrementalSessionStore {
+    adapter: Arc<ContinuitySessionStoreAdapter>,
+    inner: Arc<dyn meerkat_core::session_store::IncrementalSessionStore>,
+}
+
+impl ContinuityIncrementalSessionStore {
+    fn ensure_registered_for_delta_write(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        if self.adapter.session_was_superseded(id) {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {id} was superseded by a committed continuity reset; \
+                 incremental writes are refused"
+            )));
+        }
+        self.adapter.ensure_session_mutation_allowed(id)?;
+        if self.adapter.lookup_session(&id.to_string()).is_none() {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {id} is not registered with the identity runtime; \
+                 incremental writes require a registered continuity cursor"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl meerkat::SessionStore for ContinuityIncrementalSessionStore {
+    async fn save(
+        &self,
+        session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        self.adapter.save(session).await
+    }
+
+    async fn save_transcript_rewrite(
+        &self,
+        session: &meerkat_core::Session,
+        commit: &meerkat_core::TranscriptRewriteCommit,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        self.adapter.save_transcript_rewrite(session, commit).await
+    }
+
+    async fn save_authoritative_projection(
+        &self,
+        session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        self.adapter.save_authoritative_projection(session).await
+    }
+
+    async fn save_authoritative_projection_if_current_revision(
+        &self,
+        session: &meerkat_core::Session,
+        expected_current_revision: Option<String>,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        self.adapter
+            .save_authoritative_projection_if_current_revision(session, expected_current_revision)
+            .await
+    }
+
+    async fn load(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
+        self.adapter.load(id).await
+    }
+
+    async fn list(
+        &self,
+        filter: meerkat_store::SessionFilter,
+    ) -> Result<Vec<meerkat_core::SessionMeta>, meerkat_store::SessionStoreError> {
+        self.adapter.list(filter).await
+    }
+
+    async fn delete(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        self.adapter.delete(id).await
+    }
+
+    async fn delete_if_current_revision(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        expected_current_revision: &str,
+    ) -> Result<bool, meerkat_store::SessionStoreError> {
+        self.adapter
+            .delete_if_current_revision(id, expected_current_revision)
+            .await
+    }
+
+    fn as_incremental(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl meerkat_core::session_store::IncrementalSessionStore for ContinuityIncrementalSessionStore {
+    async fn append_messages(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        strand: &meerkat_core::session_store::TranscriptStrandId,
+        base_seq: u64,
+        messages: &[meerkat_core::Message],
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let _guard = self.adapter.lock_session(id).await;
+        self.ensure_registered_for_delta_write(id)?;
+        self.inner
+            .append_messages(id, strand, base_seq, messages)
+            .await
+    }
+
+    async fn commit_rewrite(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        record: &meerkat_core::TranscriptRewriteRecord,
+        expected: meerkat_core::session_store::SessionHeadCas,
+    ) -> Result<meerkat_core::session_store::SessionHead, meerkat_store::SessionStoreError> {
+        let _guard = self.adapter.lock_session(id).await;
+        self.ensure_registered_for_delta_write(id)?;
+        self.inner.commit_rewrite(id, record, expected).await
+    }
+
+    async fn save_head(
+        &self,
+        head: &meerkat_core::session_store::SessionHead,
+        expected: meerkat_core::session_store::SessionHeadCas,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let _guard = self.adapter.lock_session(&head.id).await;
+        self.ensure_registered_for_delta_write(&head.id)?;
+        self.inner.save_head(head, expected).await
+    }
+
+    async fn load_head(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::session_store::SessionHead>, meerkat_store::SessionStoreError>
+    {
+        if self.adapter.session_was_superseded(id) {
+            return Ok(None);
+        }
+        self.inner.load_head(id).await
+    }
+
+    async fn load_messages(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        strand: &meerkat_core::session_store::TranscriptStrandId,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<meerkat_core::Message>, meerkat_store::SessionStoreError> {
+        if self.adapter.session_was_superseded(id) {
+            return Ok(Vec::new());
+        }
+        self.inner.load_messages(id, strand, range).await
+    }
+
+    async fn load_rewrites(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Vec<meerkat_core::TranscriptRewriteRecord>, meerkat_store::SessionStoreError> {
+        if self.adapter.session_was_superseded(id) {
+            return Ok(Vec::new());
+        }
+        self.inner.load_rewrites(id).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3026,5 +3236,200 @@ mod tests {
             .expect("load after save")
             .expect("snapshot after save");
         assert_eq!(loaded.metadata().get("projection"), Some(&json!("current")));
+    }
+
+    /// A continuity store advertising the M4b incremental capability: the
+    /// whole-blob verbs delegate to an in-memory `LocalContinuityStore`,
+    /// the delta channel to `meerkat_store::MemoryStore` (which implements
+    /// the upstream incremental contract).
+    struct IncrementalCapableStore {
+        inner: Arc<LocalContinuityStore>,
+        incremental: Arc<meerkat_store::MemoryStore>,
+    }
+
+    impl IncrementalCapableStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(LocalContinuityStore::in_memory().expect("store")),
+                incremental: Arc::new(meerkat_store::MemoryStore::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ContinuityStore for IncrementalCapableStore {
+        async fn resolve_many(
+            &self,
+            identities: &[AgentIdentity],
+        ) -> Result<
+            std::collections::BTreeMap<AgentIdentity, ContinuityResolveState>,
+            ContinuityStoreError,
+        > {
+            self.inner.resolve_many(identities).await
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+            self.inner.load_session_snapshot(session_id).await
+        }
+
+        async fn save_session_snapshot(
+            &self,
+            identity: &AgentIdentity,
+            session_id: &meerkat_core::types::SessionId,
+            generation: ContinuityGeneration,
+            version: CheckpointVersion,
+            fencing_token: FencingToken,
+            snapshot: &SessionSnapshot,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .save_session_snapshot(
+                    identity,
+                    session_id,
+                    generation,
+                    version,
+                    fencing_token,
+                    snapshot,
+                )
+                .await
+        }
+
+        async fn upsert_continuity_record(
+            &self,
+            record: &ContinuityRecord,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .upsert_continuity_record(record, fencing_token)
+                .await
+        }
+
+        async fn delete_continuity_record(
+            &self,
+            identity: &AgentIdentity,
+            fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            self.inner
+                .delete_continuity_record(identity, fencing_token)
+                .await
+        }
+
+        fn as_incremental_sessions(
+            &self,
+        ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+            Some(self.incremental.clone())
+        }
+    }
+
+    /// M4b: the adapter genuinely forwards `as_incremental` — `None` over the
+    /// bundled store (the deliberate deferral), `Some` when the substrate
+    /// advertises the capability.
+    #[tokio::test]
+    async fn adapter_forwards_incremental_capability_only_when_substrate_advertises() {
+        let bundled = Arc::new(ContinuitySessionStoreAdapter::new(Arc::new(
+            LocalContinuityStore::in_memory().expect("store"),
+        )));
+        assert!(
+            meerkat::SessionStore::as_incremental(bundled).is_none(),
+            "the bundled LocalContinuityStore defers the delta channel (M4b)"
+        );
+
+        let capable = Arc::new(ContinuitySessionStoreAdapter::new(Arc::new(
+            IncrementalCapableStore::new(),
+        )));
+        assert!(
+            meerkat::SessionStore::as_incremental(capable).is_some(),
+            "an advertising substrate must surface through the adapter"
+        );
+    }
+
+    /// M4b: incremental mutations preserve the adapter's registration and
+    /// rotation discipline — refused before registration, admitted after,
+    /// refused again while suspended.
+    #[tokio::test]
+    async fn incremental_mutations_respect_registration_and_suspension() {
+        let store = Arc::new(IncrementalCapableStore::new());
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(
+            store.clone() as Arc<dyn ContinuityStore>
+        ));
+        let incremental = meerkat::SessionStore::as_incremental(adapter.clone())
+            .expect("advertising substrate forwards");
+
+        let session = meerkat_core::Session::new();
+        let root = meerkat_core::session_store::TranscriptStrandId::root();
+        let message =
+            meerkat_core::Message::User(meerkat_core::UserMessage::text("delta turn".to_string()));
+
+        let unregistered = incremental
+            .append_messages(session.id(), &root, 0, std::slice::from_ref(&message))
+            .await
+            .expect_err("unregistered delta writes must be refused");
+        assert!(
+            unregistered.to_string().contains("not registered"),
+            "the refusal must name the registration requirement: {unregistered}"
+        );
+
+        let identity = AgentIdentity::parse("agent:incremental").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:incremental:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        store
+            .upsert_continuity_record(&record, FencingToken::new(1))
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token: FencingToken::new(1),
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register");
+
+        incremental
+            .append_messages(session.id(), &root, 0, std::slice::from_ref(&message))
+            .await
+            .expect("registered delta writes delegate to the substrate channel");
+        let mut document = session.clone();
+        document.push(message.clone());
+        let head =
+            meerkat_core::session_store::SessionHead::from_session(&document, root.clone(), 0)
+                .expect("head from session");
+        incremental
+            .save_head(&head, meerkat_core::session_store::SessionHeadCas::Create)
+            .await
+            .expect("registered head writes delegate to the substrate channel");
+        let rows = incremental
+            .load_messages(session.id(), &root, 0..1)
+            .await
+            .expect("read back");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the delta row must be durable in the channel"
+        );
+
+        adapter
+            .suspend_session(session.id())
+            .await
+            .expect("suspend");
+        let suspended = incremental
+            .append_messages(session.id(), &root, 1, std::slice::from_ref(&message))
+            .await
+            .expect_err("suspended sessions must refuse delta writes");
+        assert!(
+            suspended.to_string().contains("suspended"),
+            "the refusal must name the suspension: {suspended}"
+        );
     }
 }

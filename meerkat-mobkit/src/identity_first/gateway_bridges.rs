@@ -53,6 +53,13 @@ pub trait CallbackBridge: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Gateway-side `ContinuityStore` that delegates to Python/TypeScript via JSON-RPC.
+///
+/// `as_incremental_sessions` keeps the trait's `None` default deliberately:
+/// the callback wire protocol carries only whole-snapshot verbs
+/// (`continuity/save_snapshot` and friends), so SDK-hosted stores cannot
+/// advertise the incremental session-delta capability without new callback
+/// methods. Identity-first launches persisting through this store therefore
+/// stay on the loudly-reported whole-blob path (H2).
 pub struct GatewayContinuityStore {
     bridge: Box<dyn CallbackBridge>,
 }

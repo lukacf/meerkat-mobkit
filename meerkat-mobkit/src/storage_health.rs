@@ -1,9 +1,9 @@
-//! Composition-time storage durability resolution (H1/H2 hotfixes of the
-//! storage-unification arc).
+//! Composition-time storage durability resolution (H1/H2 hotfixes plus the
+//! M4 per-slot census of the storage-unification arc).
 //!
 //! Every durable slot must resolve to a configured backend, an explicitly
 //! declared ephemeral choice, or a startup error — never a silent fallback.
-//! This module carries the vocabulary for the two hotfixed slots:
+//! This module carries the vocabulary:
 //!
 //! - **Blobs (H1)**: [`BlobDurability`] records what the blob slot resolved
 //!   to; [`BlobStoreResolutionError`] is the fail-closed startup error a
@@ -13,6 +13,14 @@
 //!   duplicates the capability probe `PersistentSessionService` runs
 //!   privately, so the whole-blob degradation it silently accepts is logged
 //!   at startup and visible on the health surfaces.
+//! - **Runtime store (M4)**: [`RuntimeStoreResolutionError`] is the
+//!   fail-closed startup error replacing the former silent
+//!   `SqliteRuntimeStore` → `InMemoryRuntimeStore` fallback; an in-memory
+//!   runtime store is constructible only by declaration.
+//! - **Per-slot census (M4)**: [`StorageSlotSummary`] records what every
+//!   composed storage slot resolved to (backend, durability class,
+//!   resolution, sanctioned degradations) using meerkat's machine-readable
+//!   [`meerkat_core::DurabilityDeclaration`] vocabulary.
 //!
 //! The resolved [`ResolvedStorageSummary`] rides the bootstrap spec onto the
 //! runtime and is reported by `mobkit/status` / `mobkit/capabilities`.
@@ -21,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use meerkat::SessionStore;
+use meerkat_core::{DurabilityClass, DurabilityDeclaration, DurabilityResolution};
 
 /// How the runtime's blob slot was resolved at composition time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,10 +64,163 @@ impl BlobDurability {
     }
 }
 
+/// One composed storage slot's resolution record: meerkat's machine-readable
+/// durability declaration plus the concrete backend and any sanctioned
+/// degradation detail. Recorded per slot at composition time (M4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageSlotSummary {
+    /// Domain name, durability class, and resolution (meerkat vocabulary).
+    pub declaration: DurabilityDeclaration,
+    /// Human-readable backend name (`"SqliteRuntimeStore"`,
+    /// `"InMemoryConsoleLogStore (declared default)"`, ...).
+    pub backend: String,
+    /// Extra context: the sanctioned boot-without degradation reason, the
+    /// declared-default rationale, or a provider note.
+    pub detail: Option<String>,
+    /// True for the sanctioned boot-without degradations (schedule /
+    /// workgraph store open failure): the feature is disabled and the slot
+    /// is health-visible instead of a warn line, per the storage plan.
+    pub degraded: bool,
+}
+
+impl StorageSlotSummary {
+    /// A slot backed by persistent storage.
+    pub fn persistent(domain: &str, backend: impl Into<String>) -> Self {
+        Self {
+            declaration: DurabilityDeclaration::durable(domain, DurabilityResolution::Persistent),
+            backend: backend.into(),
+            detail: None,
+            degraded: false,
+        }
+    }
+
+    /// A durable-class slot resolving non-persistent as an explicit,
+    /// documented choice (declared ephemeral / declared default).
+    pub fn declared_ephemeral(
+        domain: &str,
+        backend: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            declaration: DurabilityDeclaration::durable(
+                domain,
+                DurabilityResolution::DeclaredEphemeral,
+            ),
+            backend: backend.into(),
+            detail: Some(detail.into()),
+            degraded: false,
+        }
+    }
+
+    /// The sanctioned boot-without degradation (schedule / workgraph store
+    /// open failure): the feature is disabled, the slot resolves
+    /// non-persistent, and the record is health-visible.
+    pub fn degraded(domain: &str, detail: impl Into<String>) -> Self {
+        Self {
+            declaration: DurabilityDeclaration::durable(
+                domain,
+                DurabilityResolution::NonPersistent,
+            ),
+            backend: "disabled".to_string(),
+            detail: Some(detail.into()),
+            degraded: true,
+        }
+    }
+
+    /// Attach (or replace) the free-form detail note.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// A Scratch-class slot: ephemeral by design (the in-process ring
+    /// buffers), classified explicitly so the non-durability is a documented
+    /// decision rather than an accident.
+    pub fn scratch(domain: &str, backend: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            declaration: DurabilityDeclaration {
+                domain: domain.to_string(),
+                class: DurabilityClass::Scratch,
+                resolution: DurabilityResolution::DeclaredEphemeral,
+            },
+            backend: backend.into(),
+            detail: Some(detail.into()),
+            degraded: false,
+        }
+    }
+
+    fn status_json(&self) -> serde_json::Value {
+        let mut object = serde_json::json!({
+            "domain": self.declaration.domain,
+            "class": serde_json::to_value(self.declaration.class)
+                .unwrap_or(serde_json::Value::Null),
+            "resolution": serde_json::to_value(self.declaration.resolution)
+                .unwrap_or(serde_json::Value::Null),
+            "backend": self.backend,
+            "degraded": self.degraded,
+        });
+        if let (Some(detail), Some(map)) = (self.detail.as_ref(), object.as_object_mut()) {
+            map.insert(
+                "detail".to_string(),
+                serde_json::Value::String(detail.clone()),
+            );
+        }
+        object
+    }
+}
+
+/// Project the H1 [`BlobDurability`] resolution onto its slot-census entry.
+pub fn blob_slot_summary(durability: BlobDurability) -> StorageSlotSummary {
+    match durability {
+        BlobDurability::PersistentDisk => {
+            StorageSlotSummary::persistent("blobs", "ObjectStoreBlobStore (local disk)")
+        }
+        BlobDurability::DeclaredEphemeral => StorageSlotSummary::declared_ephemeral(
+            "blobs",
+            "ObjectStoreBlobStore (memory)",
+            "explicitly declared (ephemeral launch mode or ephemeral_blobs(true))",
+        ),
+        BlobDurability::Custom { persistent: true } => {
+            StorageSlotSummary::persistent("blobs", "custom blob store")
+                .with_detail("caller-injected store reporting is_persistent()")
+        }
+        BlobDurability::Custom { persistent: false } => StorageSlotSummary::declared_ephemeral(
+            "blobs",
+            "custom blob store",
+            "caller-injected store reports !is_persistent()",
+        ),
+    }
+}
+
+/// The three in-process ring buffers (`MobkitRuntimeHandle` state), classified
+/// `Scratch` explicitly: bounded drop-oldest retention, no store seam. A
+/// durable gating-audit slot is a flagged candidate follow-up of the storage
+/// plan, deliberately not part of this arc.
+pub fn scratch_ring_buffer_slots() -> Vec<StorageSlotSummary> {
+    vec![
+        StorageSlotSummary::scratch(
+            "gating_audit",
+            "in-process ring buffer",
+            "drop-oldest retention (512 entries); durable audit slot is a flagged follow-up",
+        ),
+        StorageSlotSummary::scratch(
+            "delivery_history",
+            "in-process ring buffer",
+            "drop-oldest retention (200 entries)",
+        ),
+        StorageSlotSummary::scratch(
+            "routing_resolutions",
+            "in-process ring buffer",
+            "drop-oldest retention (512 entries)",
+        ),
+    ]
+}
+
 /// Composition-time storage resolution summary, recorded when the runtime's
 /// stores are composed and surfaced through `mobkit/status` and
 /// `mobkit/capabilities`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedStorageSummary {
     /// What the blob slot resolved to (H1).
     pub blob_durability: BlobDurability,
@@ -66,9 +228,30 @@ pub struct ResolvedStorageSummary {
     /// advertises the incremental-persistence capability (H2). `None` when
     /// the runtime persists no sessions (ephemeral session service).
     pub session_store_incremental: Option<bool>,
+    /// Per-slot durability census (M4). Additive: surfaces emitting the
+    /// summary before the census existed keep their wire shape and gain a
+    /// `"slots"` array.
+    pub slots: Vec<StorageSlotSummary>,
 }
 
 impl ResolvedStorageSummary {
+    /// The pre-census (H1/H2) summary shape: blob durability + the
+    /// incremental probe, with an empty slot census.
+    pub fn new(blob_durability: BlobDurability, session_store_incremental: Option<bool>) -> Self {
+        Self {
+            blob_durability,
+            session_store_incremental,
+            slots: Vec::new(),
+        }
+    }
+
+    /// Attach the per-slot census.
+    #[must_use]
+    pub fn with_slots(mut self, slots: Vec<StorageSlotSummary>) -> Self {
+        self.slots = slots;
+        self
+    }
+
     /// The `"storage"` object shared by every `mobkit/status` /
     /// `mobkit/capabilities` handler, so the three status shapes stay
     /// field-consistent.
@@ -77,6 +260,11 @@ impl ResolvedStorageSummary {
             "blob_durability": self.blob_durability.as_str(),
             "blob_store_persistent": self.blob_durability.is_persistent(),
             "session_store_incremental": self.session_store_incremental,
+            "slots": self
+                .slots
+                .iter()
+                .map(StorageSlotSummary::status_json)
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -114,6 +302,68 @@ impl std::fmt::Display for BlobStoreResolutionError {
 }
 
 impl std::error::Error for BlobStoreResolutionError {}
+
+/// Fail-closed runtime-store resolution failure (M4, the "fifth fallback").
+///
+/// Formerly a `tracing::warn!` plus a silent `InMemoryRuntimeStore` twin —
+/// a degraded mode in which resume across restart and archive operations
+/// fail long after boot. Now a startup error; an in-memory runtime store
+/// remains constructible only as an explicit declaration
+/// (`UnifiedRuntimeBuilder::ephemeral_runtime_store(true)`, or the gateway's
+/// `runtime_options.runtime_store = {"storage": "memory"}`).
+#[derive(Debug)]
+pub struct RuntimeStoreResolutionError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl std::fmt::Display for RuntimeStoreResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to open the persistent runtime store at {}: {} \
+             (sessions would not survive restart and archive operations would \
+             fail; fix the database file, or declare an in-memory runtime \
+             store explicitly via ephemeral_runtime_store(true) / \
+             runtime_options.runtime_store = {{\"storage\": \"memory\"}})",
+            self.path.display(),
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for RuntimeStoreResolutionError {}
+
+/// Composite fail-closed storage composition failure for the persistent
+/// bootstrap path: any durable slot that can refuse at composition time.
+#[derive(Debug)]
+pub enum StorageResolutionError {
+    Blob(BlobStoreResolutionError),
+    RuntimeStore(RuntimeStoreResolutionError),
+}
+
+impl std::fmt::Display for StorageResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blob(error) => error.fmt(f),
+            Self::RuntimeStore(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for StorageResolutionError {}
+
+impl From<BlobStoreResolutionError> for StorageResolutionError {
+    fn from(error: BlobStoreResolutionError) -> Self {
+        Self::Blob(error)
+    }
+}
+
+impl From<RuntimeStoreResolutionError> for StorageResolutionError {
+    fn from(error: RuntimeStoreResolutionError) -> Self {
+        Self::RuntimeStore(error)
+    }
+}
 
 /// Probe a session store's incremental-persistence capability before handing
 /// it to `PersistentSessionService`.
@@ -264,22 +514,61 @@ mod tests {
 
     #[test]
     fn status_json_carries_all_health_fields() {
-        let summary = ResolvedStorageSummary {
-            blob_durability: BlobDurability::DeclaredEphemeral,
-            session_store_incremental: None,
-        };
+        let summary = ResolvedStorageSummary::new(BlobDurability::DeclaredEphemeral, None);
         let json = summary.status_json();
         assert_eq!(json["blob_durability"], "declared_ephemeral");
         assert_eq!(json["blob_store_persistent"], false);
         assert!(json["session_store_incremental"].is_null());
+        assert_eq!(json["slots"], serde_json::json!([]));
 
-        let summary = ResolvedStorageSummary {
-            blob_durability: BlobDurability::PersistentDisk,
-            session_store_incremental: Some(true),
-        };
+        let summary = ResolvedStorageSummary::new(BlobDurability::PersistentDisk, Some(true));
         let json = summary.status_json();
         assert_eq!(json["blob_durability"], "persistent_disk");
         assert_eq!(json["blob_store_persistent"], true);
         assert_eq!(json["session_store_incremental"], true);
+    }
+
+    /// M4: the per-slot census rides the same `"storage"` object additively —
+    /// pre-census fields keep their spellings; each slot entry carries the
+    /// meerkat durability vocabulary plus backend and degradation facts.
+    #[test]
+    fn status_json_slot_census_is_additive_and_machine_readable() {
+        let summary = ResolvedStorageSummary::new(BlobDurability::PersistentDisk, Some(true))
+            .with_slots(vec![
+                StorageSlotSummary::persistent("runtime", "SqliteRuntimeStore"),
+                StorageSlotSummary::declared_ephemeral(
+                    "metadata",
+                    "InMemoryMetadataStore (declared default)",
+                    "this surface keeps metadata in-memory by contract",
+                ),
+                StorageSlotSummary::degraded("schedule", "schedule store failed to open: disk"),
+                StorageSlotSummary::scratch("gating_audit", "in-process ring buffer", "512"),
+            ]);
+        let json = summary.status_json();
+        let slots = json["slots"].as_array().expect("slots array");
+        assert_eq!(slots.len(), 4);
+        assert_eq!(slots[0]["domain"], "runtime");
+        assert_eq!(slots[0]["class"], "durable");
+        assert_eq!(slots[0]["resolution"], "persistent");
+        assert_eq!(slots[0]["backend"], "SqliteRuntimeStore");
+        assert_eq!(slots[0]["degraded"], false);
+        assert!(slots[0].get("detail").is_none());
+        assert_eq!(slots[1]["resolution"], "declared_ephemeral");
+        assert_eq!(slots[2]["resolution"], "non_persistent");
+        assert_eq!(slots[2]["degraded"], true);
+        assert_eq!(slots[2]["backend"], "disabled");
+        assert_eq!(slots[3]["class"], "scratch");
+    }
+
+    #[test]
+    fn runtime_store_resolution_error_names_the_remediation() {
+        let error = RuntimeStoreResolutionError {
+            path: PathBuf::from("/state/runtime.sqlite"),
+            message: "disk I/O error".to_string(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("/state/runtime.sqlite"));
+        assert!(text.contains("ephemeral_runtime_store(true)"));
+        assert!(text.contains("runtime_options.runtime_store"));
     }
 }

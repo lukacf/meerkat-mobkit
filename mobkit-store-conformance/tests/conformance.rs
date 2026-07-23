@@ -187,9 +187,11 @@ async fn local_continuity_store_rollback_atomic_override() {
 }
 
 /// Exercises the trait's NON-ATOMIC compatibility rollback (the reference
-/// store deliberately does not override it). This pins today's reality: the
-/// default's restore-previous path is rejected by the store's own
-/// generation-monotonic upsert; only the delete path compensates.
+/// store deliberately does not override it). M4b fixed the default —
+/// delete-then-reinsert restore a conforming generation-monotonic store CAN
+/// satisfy — and this pins the fixed behavior, including the documented
+/// caveat that the identity's snapshots (previous generation's included) do
+/// not survive the compatibility path.
 #[tokio::test]
 async fn compat_reference_store_rollback_default_impl() {
     let factory = SharedContinuityFactory {
@@ -212,10 +214,17 @@ async fn local_continuity_fencing_floor_survives_reopen() {
 // ContinuitySessionStoreAdapter
 // ---------------------------------------------------------------------------
 
-/// H2 pin: `as_incremental` is None today — every identity-first deployment
-/// persists whole session documents per save. Phase M4 inverts this
-/// expectation to `true` when the typed incremental continuity capability
-/// lands; this test then fails loudly and the flag below flips.
+/// H2 pin, kept after M4b's DELIBERATE deferral: the capability seam
+/// (`ContinuityStore::as_incremental_sessions`) and the adapter forwarding
+/// landed, but the bundled `LocalContinuityStore` returns `None` — shipping
+/// a store-side delta channel beside the whole-snapshot byte authority
+/// (exact-match probes, parse-derived CAS tokens, `checkpoint_session`,
+/// H3's lazy adoption byte custody) would create two write authorities over
+/// one session with no reconciliation rule. Every identity-first deployment
+/// on the bundled store therefore still persists whole session documents
+/// per save; this pin flips when the local snapshot representation itself
+/// moves to head+rows (gated by meerkat-store-conformance's incremental
+/// profile).
 #[tokio::test]
 async fn continuity_session_adapter_over_local_store() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -227,8 +236,11 @@ async fn continuity_session_adapter_over_local_store() {
         .expect("ContinuitySessionStoreAdapter must satisfy the adapter chapter");
 }
 
-/// Canary: asserting the M4 world today must FAIL at the capability step —
-/// proving the pin actually flips instead of passing vacuously.
+/// Canary: asserting the flipped world today must FAIL at the capability
+/// step — proving the pin actually flips instead of passing vacuously.
+/// (Written pre-M4b to flip with the incremental channel; it stays pinned
+/// false because M4b deferred the bundled store's channel — see the pin
+/// above for why.)
 #[tokio::test]
 async fn continuity_session_adapter_incremental_expectation_fails_today() {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -858,6 +858,30 @@ impl ContinuityStore for LocalContinuityStore {
         .await
     }
 
+    /// M4b deferral (deliberate `None`): the bundled store does NOT ship the
+    /// incremental session-delta channel yet.
+    ///
+    /// Shipping it honestly requires making head+rows the canonical durable
+    /// representation of a session in this database, which conflicts with
+    /// everything that treats `session_snapshots.data` as the byte authority
+    /// today: the exact-match no-op probe and the parse-derived CAS revision
+    /// tokens (`session_snapshot_matches_current`,
+    /// `delete_session_snapshot_if_current_revision`), explicit whole-document
+    /// checkpoints (`checkpoint_session`), and H3's lazy checkpoint adoption,
+    /// which takes byte custody of the stored BLOB at restore. A delta channel
+    /// bolted beside the blob would create two write authorities over one
+    /// session in one store with no reconciliation rule — the
+    /// "independently-adopted byte-divergent pair" failure class. The
+    /// capability seam ([`ContinuityStore::as_incremental_sessions`]) and the
+    /// adapter forwarding are in place; the store-side channel lands when the
+    /// snapshot representation itself moves to head+rows, gated by the
+    /// meerkat-store-conformance incremental profile.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+        None
+    }
+
     async fn delete_continuity_record(
         &self,
         identity: &AgentIdentity,

@@ -96,6 +96,11 @@ struct GatewayRuntimeOptions {
     /// host runnable whose fire forwards over the callback bridge as
     /// `callback/schedule_fire`.
     host_runnables: Vec<meerkat::HostRunnableName>,
+    /// `runtime_options.runtime_store = {"storage": "memory"}`: the explicit
+    /// declaration that the runtime store is in-memory on a persistent
+    /// launch (M4). Without it, a failed `runtime.sqlite` open is a startup
+    /// error — the former silent `InMemoryRuntimeStore` fallback is gone.
+    runtime_store_ephemeral: bool,
 }
 
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
@@ -200,6 +205,7 @@ impl Default for GatewayRuntimeOptions {
             workgraph: GatewayWorkgraphOption::Enabled,
             live: GatewayLiveOption::Disabled,
             host_runnables: Vec::new(),
+            runtime_store_ephemeral: false,
         }
     }
 }
@@ -492,6 +498,72 @@ mod tests {
             };
             assert!(err.contains(needle), "{err} should mention '{needle}'");
         }
+    }
+
+    /// The runtime_options allowlist stays closed: unknown keys are a hard
+    /// init error naming the offender (M4 added `runtime_store`; anything
+    /// else still rejects).
+    #[test]
+    fn gateway_runtime_options_reject_unknown_fields() {
+        let params = json!({ "runtime_options": { "blob_storage": {} } });
+        let err = match parse_gateway_runtime_options(&params, None) {
+            Err(err) => err,
+            Ok(_) => panic!("unknown runtime_options keys must be rejected"),
+        };
+        assert!(
+            err.contains("unsupported runtime_options fields: blob_storage"),
+            "{err}"
+        );
+    }
+
+    /// M4: `runtime_store` accepts only the explicit in-memory declaration;
+    /// persistent SQLite is the default and any other spelling rejects.
+    #[test]
+    fn gateway_runtime_options_parse_runtime_store_declaration() {
+        let params = json!({ "runtime_options": { "runtime_store": { "storage": "memory" } } });
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+        assert!(options.runtime_store_ephemeral);
+
+        let defaulted = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("runtime options");
+        assert!(!defaulted.runtime_store_ephemeral);
+
+        for (value, needle) in [
+            (json!({"storage": "sqlite"}), "unsupported"),
+            (json!({"storage": 7}), "must be 'memory'"),
+            (json!("memory"), "must be a JSON object"),
+        ] {
+            let params = json!({ "runtime_options": { "runtime_store": value } });
+            let err = match parse_gateway_runtime_options(&params, None) {
+                Err(err) => err,
+                Ok(_) => panic!("expected rejection for {params}"),
+            };
+            assert!(err.contains(needle), "{err} should mention '{needle}'");
+        }
+    }
+
+    /// M4: `event_log.storage` gains the explicit 'null' declaration; the
+    /// pre-existing 'memory' wire form keeps working; everything else
+    /// rejects.
+    #[test]
+    fn gateway_runtime_options_event_log_storage_declarations() {
+        for storage in ["memory", "in_memory", "null"] {
+            let params = json!({ "runtime_options": { "event_log": { "storage": storage } } });
+            let options = parse_gateway_runtime_options(&params, None)
+                .unwrap_or_else(|err| panic!("storage '{storage}' must parse: {err}"));
+            assert!(options.event_log.is_some());
+        }
+        let err = match parse_gateway_runtime_options(
+            &json!({ "runtime_options": { "event_log": { "storage": "sqlite" } } }),
+            None,
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("undeclared event_log storage must be rejected"),
+        };
+        assert!(
+            err.contains("unsupported runtime_options.event_log.storage"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2208,6 +2280,7 @@ fn parse_gateway_runtime_options(
         "workgraph",
         "live",
         "host_runnables",
+        "runtime_store",
     ];
     let unsupported = runtime_options
         .keys()
@@ -2411,6 +2484,9 @@ fn parse_gateway_runtime_options(
     if let Some(event_log) = runtime_options.get("event_log") {
         parsed.event_log = Some(parse_gateway_event_log_config(event_log)?);
     }
+    if let Some(runtime_store) = runtime_options.get("runtime_store") {
+        parsed.runtime_store_ephemeral = parse_gateway_runtime_store_config(runtime_store)?;
+    }
     if let Some(value) = runtime_options.get("implicit_delegate_idle_retire_secs") {
         parsed.runtime_options.implicit_delegate_idle_retire_secs = if value.is_null() {
             None
@@ -2547,12 +2623,22 @@ fn parse_gateway_event_log_config(value: &Value) -> Result<EventLogConfig, Strin
     let storage = object
         .get("storage")
         .and_then(Value::as_str)
-        .ok_or_else(|| "runtime_options.event_log.storage must be 'memory'".to_string())?;
-    if !matches!(storage, "memory" | "in_memory") {
-        return Err(format!(
-            "unsupported runtime_options.event_log.storage '{storage}'"
-        ));
-    }
+        .ok_or_else(|| {
+            "runtime_options.event_log.storage must be 'memory' or 'null'".to_string()
+        })?;
+    // Declared ephemeral choices only: 'memory'/'in_memory' keeps a bounded
+    // queryable in-process store, 'null' (M4) explicitly declares dropped
+    // events. Both are configurations, never fallbacks — the silent case is
+    // the absence of the event_log key (no ingestion at all).
+    let store: Box<dyn EventLogStore> = match storage {
+        "memory" | "in_memory" => Box::new(InMemoryEventLogStore::default()),
+        "null" => Box::new(meerkat_mobkit::unified_runtime::NullEventLogStore),
+        other => {
+            return Err(format!(
+                "unsupported runtime_options.event_log.storage '{other}'"
+            ));
+        }
+    };
     let batch_size = object
         .get("batch_size")
         .and_then(Value::as_u64)
@@ -2563,11 +2649,55 @@ fn parse_gateway_event_log_config(value: &Value) -> Result<EventLogConfig, Strin
         .and_then(Value::as_u64)
         .unwrap_or(1_000);
     Ok(EventLogConfig {
-        store: Box::new(InMemoryEventLogStore::default()),
+        store,
         filter: None,
         batch_size,
         flush_interval: Duration::from_millis(flush_interval_ms),
     })
+}
+
+/// The event-log slot census entry: an explicitly declared in-process store
+/// when `runtime_options.event_log` was configured, otherwise the
+/// health-visible record that operational events are not ingested at all —
+/// the formerly silent case (M4).
+fn gateway_event_log_slot(
+    options: &GatewayRuntimeOptions,
+) -> meerkat_mobkit::storage_health::StorageSlotSummary {
+    if options.event_log.is_some() {
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "event_log",
+            "in-process store",
+            "declared via runtime_options.event_log ('memory' retains a bounded queryable \
+             buffer; 'null' drops events explicitly)",
+        )
+    } else {
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "event_log",
+            "not configured",
+            "operational events are not ingested; set runtime_options.event_log to declare a \
+             store explicitly",
+        )
+    }
+}
+
+/// Parse `runtime_options.runtime_store`. The single accepted form is the
+/// explicit ephemeral declaration `{"storage": "memory"}` (persistent SQLite
+/// is the default and needs no key); everything else is a typed init error.
+fn parse_gateway_runtime_store_config(value: &Value) -> Result<bool, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.runtime_store must be a JSON object".to_string())?;
+    let storage = object
+        .get("storage")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "runtime_options.runtime_store.storage must be 'memory'".to_string())?;
+    if !matches!(storage, "memory" | "in_memory") {
+        return Err(format!(
+            "unsupported runtime_options.runtime_store.storage '{storage}' (persistent SQLite \
+             is the default; the only declaration is 'memory')"
+        ));
+    }
+    Ok(true)
 }
 
 fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, String> {
@@ -4596,20 +4726,46 @@ external_addressable = true
         // Persistent runtime store — must be Some() on the session service
         // so archive/retire can mutate the authoritative session, and must
         // be persistent so resume works across gateway restart.
+        //
+        // Fail-closed (M4): an open failure is an init error; the in-memory
+        // form exists only as the explicit
+        // `runtime_options.runtime_store = {"storage": "memory"}` declaration
+        // (the former silent fallback left resume and archive broken long
+        // after boot).
         let runtime_db_path = storage_layout.runtime_db();
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        let (runtime_store, runtime_store_slot): (
+            Arc<dyn meerkat_runtime::RuntimeStore>,
+            meerkat_mobkit::storage_health::StorageSlotSummary,
+        ) = if gateway_options.runtime_store_ephemeral {
+            (
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+                meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                    "runtime",
+                    "InMemoryRuntimeStore",
+                    "explicitly declared via runtime_options.runtime_store: sessions do not \
+                     survive gateway restart",
+                ),
+            )
+        } else {
             match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
-                Ok(store) => Arc::new(store),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %runtime_db_path.display(),
-                        error = %err,
-                        "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
-                         Sessions will not survive process restart and archive operations may fail.",
-                    );
-                    Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
-                }
-            };
+                Ok(store) => (
+                    Arc::new(store) as Arc<dyn meerkat_runtime::RuntimeStore>,
+                    meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                        "runtime",
+                        "SqliteRuntimeStore",
+                    ),
+                ),
+                Err(err) => fail_init(
+                    &request_id,
+                    -32603,
+                    meerkat_mobkit::storage_health::RuntimeStoreResolutionError {
+                        path: runtime_db_path.clone(),
+                        message: err.to_string(),
+                    }
+                    .to_string(),
+                ),
+            }
+        };
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -4642,11 +4798,29 @@ external_addressable = true
         // after the runtime boots — meerkat's runtime-backed host is now generic
         // over the session builder, so scheduled sessions materialize through the
         // SDK build callback and keep their identity-scoped tools.
-        let schedule_tools =
-            meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+        let (schedule_tools, schedule_slot) =
+            match meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets_reporting(
                 &inner_builder,
                 storage_layout.state_dir(),
-            );
+            ) {
+                Ok(tools) => (
+                    Some(tools),
+                    meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                        "schedule",
+                        "SqliteScheduleStore",
+                    ),
+                ),
+                Err(error) => (
+                    None,
+                    // Sanctioned boot-without degradation: schedule tools are
+                    // disabled and the fact is health-visible, not a warn
+                    // line alone (M4).
+                    meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                        "schedule",
+                        format!("schedule store failed to open; schedule tools disabled: {error}"),
+                    ),
+                ),
+            };
         // WorkGraph: durable store beside the schedule store (or in the
         // explicitly configured directory), realm scoped to the mob
         // definition id. Fills the member tool slot, threads to the
@@ -4654,27 +4828,62 @@ external_addressable = true
         // inheritance), the schedule host, and the RPC surface. The
         // state dir travels along for the cross-process admission
         // sidecar (a durable store is shareable across processes).
-        let workgraph = match &gateway_options.workgraph {
-            GatewayWorkgraphOption::Disabled => None,
+        let (workgraph, workgraph_slot) = match &gateway_options.workgraph {
+            GatewayWorkgraphOption::Disabled => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                    "workgraph",
+                    "disabled",
+                    "explicitly disabled via runtime_options.workgraph = false",
+                ),
+            ),
             GatewayWorkgraphOption::Enabled => {
-                meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                match meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_reporting(
                     &inner_builder,
                     storage_layout.state_dir(),
                     &schedule_owner_id,
-                )
-                .map(|(service, slot)| (service, slot, storage_layout.state_dir().to_path_buf()))
+                ) {
+                    Ok((service, slot)) => (
+                        Some((service, slot, storage_layout.state_dir().to_path_buf())),
+                        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                            "workgraph",
+                            "SqliteWorkGraphStore",
+                        ),
+                    ),
+                    Err(error) => (
+                        None,
+                        meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                            "workgraph",
+                            format!("workgraph store failed to open; workgraph disabled: {error}"),
+                        ),
+                    ),
+                }
             }
             GatewayWorkgraphOption::DurableDir(dir) => {
                 // An explicit directory overrides the state-dir default.
                 // Open failure keeps the boot-without-workgraph posture
-                // (attach_workgraph_tools warns with the path).
+                // (health-visible as a degraded slot).
                 let _ = std::fs::create_dir_all(dir);
-                meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
+                match meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_reporting(
                     &inner_builder,
                     dir,
                     &schedule_owner_id,
-                )
-                .map(|(service, slot)| (service, slot, dir.clone()))
+                ) {
+                    Ok((service, slot)) => (
+                        Some((service, slot, dir.clone())),
+                        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                            "workgraph",
+                            "SqliteWorkGraphStore",
+                        ),
+                    ),
+                    Err(error) => (
+                        None,
+                        meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                            "workgraph",
+                            format!("workgraph store failed to open; workgraph disabled: {error}"),
+                        ),
+                    ),
+                }
             }
         };
         let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
@@ -4749,12 +4958,59 @@ external_addressable = true
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         // Blob slot resolved fail-closed above (local disk under
-        // <state_path>/blobs); record it plus the H2 probe result for the
-        // health surfaces.
-        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
-            blob_durability: meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
-            session_store_incremental: Some(session_store_incremental),
-        });
+        // <state_path>/blobs); record it plus the H2 probe result and the
+        // per-slot census (M4) for the health surfaces.
+        let mut slots = vec![
+            if identity_session_store_adapter.is_some() {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "sessions",
+                    "ContinuitySessionStoreAdapter",
+                )
+                .with_detail("sessions ride the identity continuity store")
+            } else {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "sessions",
+                    "SqliteSessionStore",
+                )
+            },
+            runtime_store_slot,
+            meerkat_mobkit::storage_health::blob_slot_summary(
+                meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "console",
+                "SqliteConsoleLogStore",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "metadata",
+                "SqliteMetadataStore",
+            ),
+            schedule_slot,
+            workgraph_slot,
+            gateway_event_log_slot(&gateway_options),
+        ];
+        if identity_continuity_store.is_some() {
+            slots.push(if has_continuity_store {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "continuity",
+                    "GatewayContinuityStore (SDK-hosted)",
+                )
+                .with_detail("durability rides with the SDK-hosted continuity store")
+            } else {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "continuity",
+                    "LocalContinuityStore",
+                )
+            });
+        }
+        slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+                meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+                Some(session_store_incremental),
+            )
+            .with_slots(slots),
+        );
         (
             spec,
             None,
@@ -4810,12 +5066,37 @@ external_addressable = true
         // durable store instead — and, being cross-process shareable, a
         // cross-process admission sidecar beside it.
         let mut workgraph_sidecar_dir: Option<PathBuf> = None;
-        let workgraph_service = match &gateway_options.workgraph {
-            GatewayWorkgraphOption::Disabled => None,
+        let (workgraph_service, ephemeral_workgraph_slot) = match &gateway_options.workgraph {
+            GatewayWorkgraphOption::Disabled => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                    "workgraph",
+                    "disabled",
+                    "explicitly disabled via runtime_options.workgraph = false",
+                ),
+            ),
             GatewayWorkgraphOption::DurableDir(dir) => {
                 let _ = std::fs::create_dir_all(dir);
                 workgraph_sidecar_dir = Some(dir.clone());
-                meerkat_mobkit::workgraph_wiring::open_workgraph_service(dir, &schedule_owner_id)
+                match meerkat_mobkit::workgraph_wiring::open_workgraph_service_reporting(
+                    dir,
+                    &schedule_owner_id,
+                ) {
+                    Ok(service) => (
+                        Some(service),
+                        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                            "workgraph",
+                            "SqliteWorkGraphStore",
+                        ),
+                    ),
+                    Err(error) => (
+                        None,
+                        meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                            "workgraph",
+                            format!("workgraph store failed to open; workgraph disabled: {error}"),
+                        ),
+                    ),
+                }
             }
             GatewayWorkgraphOption::Enabled => {
                 if has_continuity_store {
@@ -4834,9 +5115,22 @@ external_addressable = true
                              workgraph.sqlite3.",
                     );
                 }
-                Some(
-                    meerkat_mobkit::workgraph_wiring::ephemeral_workgraph_service(
-                        &schedule_owner_id,
+                (
+                    Some(
+                        meerkat_mobkit::workgraph_wiring::ephemeral_workgraph_service(
+                            &schedule_owner_id,
+                        ),
+                    ),
+                    meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                        "workgraph",
+                        "MemoryWorkGraphStore",
+                        if has_continuity_store {
+                            "memory-backed on an otherwise durable identity-first launch: set \
+                             runtime_options.workgraph to a directory (or persistent_state) \
+                             for a durable store"
+                        } else {
+                            "declared by the ephemeral launch mode"
+                        },
                     ),
                 )
             }
@@ -4934,10 +5228,67 @@ external_addressable = true
         // In-memory blobs are the declared choice of this launch mode; the
         // H2 flag is only set when the identity adapter backs a persistent
         // session service above.
-        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
-            blob_durability: meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
-            session_store_incremental,
-        });
+        let mut slots = vec![
+            if identity_session_store_adapter.is_some() {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "sessions",
+                    "ContinuitySessionStoreAdapter",
+                )
+                .with_detail("sessions ride the identity continuity store")
+            } else {
+                meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                    "sessions",
+                    "EphemeralSessionService",
+                    "declared by the ephemeral launch mode",
+                )
+            },
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "runtime",
+                "InMemoryRuntimeStore",
+                "declared by the ephemeral launch mode",
+            ),
+            meerkat_mobkit::storage_health::blob_slot_summary(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+            ),
+            // The ephemeral gateway's console timeline and metadata cursor
+            // are in-memory by this surface's contract — a declared default,
+            // documented and health-visible (M4), not an error.
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "console",
+                "InMemoryConsoleLogStore",
+                "declared default of the ephemeral launch mode",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "metadata",
+                "InMemoryMetadataStore",
+                "declared default of the ephemeral launch mode",
+            ),
+            ephemeral_workgraph_slot,
+            gateway_event_log_slot(&gateway_options),
+        ];
+        if identity_continuity_store.is_some() {
+            slots.push(if has_continuity_store {
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "continuity",
+                    "GatewayContinuityStore (SDK-hosted)",
+                )
+                .with_detail("durability rides with the SDK-hosted continuity store")
+            } else {
+                meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                    "continuity",
+                    "LocalContinuityStore",
+                    "backed by the declared-ephemeral scratch root",
+                )
+            });
+        }
+        slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+                session_store_incremental,
+            )
+            .with_slots(slots),
+        );
         // Ephemeral sessions have no persistent service; firing is persistent-only.
         (
             spec,

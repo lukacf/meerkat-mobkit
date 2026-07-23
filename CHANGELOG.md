@@ -7,7 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`MobKitStorageProvider` — the composite storage-provider seam
+  (storage-unification Phase M4b, the "one remote bundle").** New module
+  `meerkat_mobkit::storage_provider`: a downstream backend (BigQuery,
+  Postgres, object stores) implements ONE provider that wraps or references
+  a meerkat `RealmStorageProvider` (`meerkat_provider()`, the
+  meerkat-shared stores) and opens the realm-wide MobKit store set
+  (`open_realm(&MobKitRealmOpenContext) -> MobKitRealmStoreSet`:
+  continuity, lease authority — a `LeaseProvider` or the fencing floor to
+  seed one — event log, console timeline, metadata, binary blobs, agent
+  memory, schedule), each slot paired with a machine-readable
+  `meerkat_core::DurabilityDeclaration`; `migrator()` exposes the storage
+  maintenance hook. Composition is fail-closed
+  (`enforce_fail_closed_store_set`): a `Durable` slot resolving
+  non-persistent without an explicit ephemeral declaration is a typed
+  startup error, never a silent in-memory fallback. The built-in
+  `DiskMobKitStorageProvider` reproduces today's SQLite/object-store layout
+  through the M2 layout locators and M3 ledgered openers, and returns
+  `MobKitStorageMigrator` as its maintenance hook.
+  `UnifiedRuntimeBuilder::storage_provider(...)` installs a provider for
+  identity-first builds (requires `roster_provider()`; the provider's
+  continuity store is the session authority; realm root from
+  `persistent_state()` or `scratch_dir()`); supplying the provider together
+  with a per-slot seam it subsumes is a typed conflict. The acceptance
+  proof lives in `mobkit-store-conformance`
+  (`tests/one_remote_bundle.rs`): an in-crate, in-memory-declared reference
+  provider (`ReferenceMemoryBundleProvider`) passes the full MobKit
+  conformance suite through the single seam and the meerkat conformance
+  profiles (baseline, append-only, incremental, blobs, artifacts) through
+  its `meerkat_provider()`.
+- **New `UnifiedRuntimeBuilder` seams:** `schedule_store(Arc<dyn
+  ScheduleStore>)` (the public schedule-store seam ob3 lacked — schedule
+  tools attach over the caller's store on both the persistent and the
+  ephemeral/scratch paths; library mode wires no firing host, and injection
+  is a foundation: shadow-scheduler deletion downstream still requires a
+  feature-parity audit), `binary_blob_store(Arc<dyn BinaryBlobStore>)`
+  (typed raw-bytes blob injection that skips the base64 adapter round-trip
+  on the byte-serving paths; mutually exclusive with `blob_store()`), and
+  `ephemeral_runtime_store(bool)` (the explicit in-memory runtime-store
+  declaration; see the fail-closed change below).
+  `schedule_wiring::attach_schedule_tools_with_store` and the
+  `*_reporting` variants of the schedule/workgraph attach functions are
+  public for gateway-grade composition.
+- **Per-slot storage census on the health surfaces.**
+  `ResolvedStorageSummary` grows a `slots` array (additive wire change on
+  the `"storage"` object of `mobkit/status` / `mobkit/capabilities` /
+  `mobkit/storage/doctor`): every composed slot reports its domain,
+  durability class, resolution (`persistent` / `declared_ephemeral` /
+  `non_persistent`), backend, degradation flag, and detail. Declared
+  defaults are now visible instead of silent (the ephemeral gateway's
+  in-memory console/metadata, `mobkit_gateway`'s in-memory console/metadata
+  contract, an unconfigured event log = "events are not ingested"), the
+  schedule/workgraph boot-without posture is a health-visible degraded slot
+  entry instead of a warn line alone, and the three in-process ring buffers
+  (gating audit 512 / delivery history 200 / routing resolutions 512) are
+  classified `Scratch` explicitly — a documented decision; a durable
+  gating-audit slot remains a flagged follow-up, not part of this arc.
+- **Incremental-continuity capability seam (typed, discoverable —
+  deliberately deferred for the bundled store).** `ContinuityStore` gains
+  `as_incremental_sessions() -> Option<Arc<dyn IncrementalSessionStore>>`
+  (default `None`), and `ContinuitySessionStoreAdapter::as_incremental`
+  genuinely forwards it: `Some` exactly when the substrate advertises the
+  session-delta channel, wrapped so every delta mutation preserves the
+  adapter's registration/suspension/supersede discipline under the same
+  per-session lock as the whole-blob paths (H3 lazy adoption included).
+  The bundled `LocalContinuityStore` deliberately returns `None`: shipping
+  a delta channel beside today's whole-snapshot byte authority (exact-match
+  probes, parse-derived CAS revision tokens, `checkpoint_session`, H3's
+  adoption byte custody) would create two write authorities over one
+  session in one store with no reconciliation rule. The store-side channel
+  lands when the snapshot representation itself moves to head+rows, gated
+  by the meerkat-store-conformance incremental profile; the H2 whole-blob
+  health flag and the M0 canary stay pinned `false` accordingly.
+  `GatewayContinuityStore` cannot advertise the capability (its callback
+  wire protocol has only whole-snapshot verbs).
+- `runtime_options` (rpc_gateway) wire additions: `event_log.storage`
+  accepts `"null"` (explicitly declared dropped events; the existing
+  `"memory"` form keeps working), and the new `runtime_store` key accepts
+  `{"storage": "memory"}` — the explicit ephemeral runtime-store
+  declaration. Unknown keys still reject.
+
+### Fixed
+
+- **BREAKING for external `ContinuityStore` implementors relying on the
+  old default: `rollback_continuity_record`'s compatibility implementation
+  now actually restores.** The previous default restored the pre-reset
+  record via `upsert_continuity_record`, which the trait requires to be
+  generation-monotonic — so on every conforming store the restore path
+  failed with `StaleContinuityGeneration` and only the delete arm
+  compensated. The default now validates the attempt row, deletes it under
+  the fence CAS, and re-upserts the previous record as a fresh insert —
+  semantics a conforming store CAN satisfy. Documented caveats (why stores
+  should still override with one atomic CAS transaction, as
+  `LocalContinuityStore` does): the path is non-atomic, and
+  `delete_continuity_record` removes the identity's session snapshots —
+  including the previous generation's rollback-authority snapshots, which
+  the atomic override retains. The
+  `mobkit-store-conformance` `RollbackPath::CompatibilityDefault` chapter
+  pins the fixed behavior (working restore + the snapshot-loss caveat);
+  external stores that rely on the default and depended on the old
+  always-fail behavior must re-run the suite.
+
 ### Changed
+
+- **BREAKING / fail-closed (M4): the runtime store no longer silently falls
+  back to in-memory.** All three composition surfaces
+  (`MobBootstrapSpec::persistent*` and the builder's `persistent_state()`
+  path, `rpc_gateway`, `mobkit_gateway`) previously answered a failed
+  `runtime.sqlite` open with a `tracing::warn!` plus a silent
+  `InMemoryRuntimeStore` — a degraded mode in which resume across restart
+  and archive operations fail long after boot (the fifth silent fallback of
+  the storage-unification recon). A failed open is now a startup error
+  whose message names the remediation (fix the database file, or declare
+  the ephemeral choice explicitly via
+  `UnifiedRuntimeBuilder::ephemeral_runtime_store(true)` /
+  `runtime_options.runtime_store = {"storage": "memory"}`).
+  `InMemoryRuntimeStore` remains constructible by declaration only.
+  Signature note: `MobBootstrapSpec::persistent` /
+  `persistent_with_hook` now return
+  `Result<Self, StorageResolutionError>` (a composite of the H1 blob error
+  and the new runtime-store error) instead of
+  `Result<Self, BlobStoreResolutionError>`.
+- **REQ-23 lifted (M4): `persistent_state()` and an external
+  continuity/lease pair may coexist.** The external substrate (or a
+  `storage_provider()`) stays the identity and session authority —
+  `ContinuitySessionStoreAdapter` remains the session store — while the
+  state directory supplies the meerkat-shared local stores (runtime,
+  workgraph, blobs, topology control). The genuinely contradictory
+  combinations keep typed errors: `persistent_state()` + `scratch_dir()`
+  (two path roots for one realm), and half an external substrate
+  (`continuity_store()` without `lease_provider()` or vice versa alongside
+  `persistent_state()` — fencing floors are store-coupled).
 
 - **BREAKING (pre-1.0): the judgment plane is de-welded onto capability
   traits (storage-unification Phase M4).** The taint firewall controls, the

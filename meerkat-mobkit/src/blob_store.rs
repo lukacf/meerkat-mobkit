@@ -25,6 +25,35 @@ pub struct BinaryBlobPayload {
     pub data: Bytes,
 }
 
+/// Which typed form a caller injected the blob slot in (M4b).
+///
+/// MobKit needs both faces of one store — the raw-bytes
+/// [`BinaryBlobStore`] (HTTP `/blobs/{id}` serving, `mobkit/blob/*`) and
+/// meerkat's base64 `BlobStore` (runtime image blobs). A caller who has the
+/// binary form injects it directly and avoids the
+/// [`BinaryBlobStoreAdapter`] base64 round-trip on the byte-serving paths;
+/// a caller with only the meerkat form keeps the historical adapter shape.
+#[derive(Clone)]
+pub enum BlobStoreInjection {
+    /// A meerkat `BlobStore` (base64 payloads); the binary face is adapted.
+    Core(Arc<dyn BlobStore>),
+    /// A raw-bytes [`BinaryBlobStore`]; the meerkat face is adapted.
+    Binary(Arc<dyn BinaryBlobStore>),
+}
+
+impl BlobStoreInjection {
+    /// Resolve both faces of the injected store.
+    pub(crate) fn into_pair(self) -> (Arc<dyn BinaryBlobStore>, Arc<dyn BlobStore>) {
+        match self {
+            Self::Core(core) => (Arc::new(BinaryBlobStoreAdapter::new(core.clone())), core),
+            Self::Binary(binary) => (
+                binary.clone(),
+                Arc::new(Base64BlobStoreAdapter::new(binary)),
+            ),
+        }
+    }
+}
+
 #[async_trait]
 pub trait BinaryBlobStore: Send + Sync {
     async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError>;

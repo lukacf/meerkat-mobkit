@@ -79,7 +79,11 @@ pub struct UnifiedRuntimeBuilder {
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+    binary_blob_store: Option<Arc<dyn crate::blob_store::BinaryBlobStore>>,
     ephemeral_blobs: bool,
+    ephemeral_runtime_store: bool,
+    schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+    storage_provider: Option<Arc<dyn crate::storage_provider::MobKitStorageProvider>>,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
     // --- Common fields ---
@@ -172,7 +176,11 @@ impl UnifiedRuntimeBuilder {
 
     /// Set an external `ContinuityStore` for the identity-first path.
     ///
-    /// Mutually exclusive with `persistent_state()`.
+    /// Supply [`lease_provider`](Self::lease_provider) with it — the pair is
+    /// one substrate (fencing floors are store-coupled). May coexist with
+    /// `persistent_state()` (M4): the external substrate stays the identity
+    /// and session authority while the state directory supplies the
+    /// meerkat-shared local stores.
     pub fn continuity_store(
         mut self,
         store: Arc<dyn crate::identity_first::contracts::ContinuityStore>,
@@ -183,7 +191,8 @@ impl UnifiedRuntimeBuilder {
 
     /// Set an external `LeaseProvider` for the identity-first path.
     ///
-    /// Mutually exclusive with `persistent_state()`.
+    /// Supply [`continuity_store`](Self::continuity_store) with it; see
+    /// there for the `persistent_state()` coexistence semantics.
     pub fn lease_provider(
         mut self,
         provider: Arc<dyn crate::identity_first::contracts::LeaseProvider>,
@@ -314,6 +323,16 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Set an optional blob store in its raw-bytes [`BinaryBlobStore`] form
+    /// (M4). Like [`blob_store`](Self::blob_store) but without the base64
+    /// adapter round-trip on the HTTP `/blobs/{id}` and `mobkit/blob/*`
+    /// byte-serving paths; the meerkat `BlobStore` face is adapted from it.
+    /// Mutually exclusive with `blob_store()` — inject exactly one form.
+    pub fn binary_blob_store(mut self, store: Arc<dyn crate::blob_store::BinaryBlobStore>) -> Self {
+        self.binary_blob_store = Some(store);
+        self
+    }
+
     /// Declare that blobs are intentionally ephemeral (in-memory).
     ///
     /// Persistent-state builds fail closed when the blob slot resolves to a
@@ -325,6 +344,56 @@ impl UnifiedRuntimeBuilder {
     /// (scratch/temp-dir) declare it implicitly.
     pub fn ephemeral_blobs(mut self, enabled: bool) -> Self {
         self.ephemeral_blobs = enabled;
+        self
+    }
+
+    /// Declare that the runtime store is intentionally ephemeral
+    /// (in-memory) on a persistent-state build.
+    ///
+    /// Persistent-state builds fail closed when `runtime.sqlite` cannot be
+    /// opened — the former silent `InMemoryRuntimeStore` fallback (in which
+    /// resume across restart and archive operations fail) is gone. This
+    /// declaration makes the in-memory runtime store a configuration
+    /// instead of an error (tests, demos), reported as `declared_ephemeral`
+    /// in the per-slot storage census. Ephemeral launch modes declare it
+    /// implicitly; without `persistent_state()` this is a no-op.
+    pub fn ephemeral_runtime_store(mut self, enabled: bool) -> Self {
+        self.ephemeral_runtime_store = enabled;
+        self
+    }
+
+    /// Set an external [`ScheduleStore`](meerkat::ScheduleStore) (M4): the
+    /// agent-facing schedule tools attach over the caller's store instead of
+    /// the bundled SQLite file. Library mode wires no firing host — authored
+    /// schedules become durable rows the embedder's own driver (or a gateway
+    /// pointed at the same store) fires. Injection is a *foundation*: any
+    /// shadow-scheduler deletion downstream requires a feature-parity audit
+    /// first (multi-replica claims, timezone cron, jitter, delivery-policy
+    /// handoffs).
+    pub fn schedule_store(mut self, store: Arc<dyn meerkat::ScheduleStore>) -> Self {
+        self.schedule_store = Some(store);
+        self
+    }
+
+    /// Install a composite [`MobKitStorageProvider`] — the one-remote-bundle
+    /// seam (M4). The provider's realm store set supplies the identity
+    /// substrate (continuity + lease authority), console timeline, metadata,
+    /// blobs, schedule store, and (when configured) the event log and agent
+    /// memory, replacing the per-slot builder seams; supplying both the
+    /// provider and an individual seam is a conflict.
+    ///
+    /// Requires an identity-first configuration (`roster_provider()`): the
+    /// provider's continuity store is the session authority. The realm root
+    /// comes from `persistent_state()` (disk-shared runtime/workgraph state)
+    /// or `scratch_dir()` (ephemeral local disk, remote-authoritative
+    /// stores — the ob3 shape).
+    ///
+    /// [`MobKitStorageProvider`]: crate::storage_provider::MobKitStorageProvider
+    pub fn storage_provider(
+        mut self,
+        provider: Arc<dyn crate::storage_provider::MobKitStorageProvider>,
+    ) -> Self {
+        self.storage_provider = Some(provider);
         self
     }
 
@@ -508,6 +577,24 @@ impl UnifiedRuntimeBuilder {
             .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
 
         let has_persistent_state = self.persistent_state_path.is_some();
+        // One path root per realm: the state directory and a scratch root
+        // are competing path authorities.
+        if has_persistent_state && self.scratch_dir.is_some() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_state() and scratch_dir() are mutually exclusive — one path root \
+                 per realm"
+                    .to_string(),
+            ));
+        }
+        if self.blob_store.is_some() && self.binary_blob_store.is_some() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "blob_store() and binary_blob_store() are mutually exclusive — inject the one \
+                 typed form you have"
+                    .to_string(),
+            ));
+        }
+        self.materialize_storage_provider().await?;
+
         let has_continuity_store = self.continuity_store.is_some();
         let has_lease_provider = self.lease_provider.is_some();
         let has_roster_provider = self.roster_provider.is_some();
@@ -543,13 +630,18 @@ impl UnifiedRuntimeBuilder {
             ));
         }
 
-        // REQ-23: persistent_state and explicit continuity/lease/scratch
-        // providers are mutually exclusive. Roster/topology/customizers are
-        // identity inputs and can use the bundled persistent identity store.
-        if has_persistent_state && has_external_identity_storage {
+        // REQ-23, lifted (M4): an external continuity/lease pair may coexist
+        // with persistent_state() — the external substrate stays the
+        // identity and session authority while the state directory supplies
+        // the meerkat-shared local stores (runtime, workgraph, blobs, ...).
+        // The genuinely contradictory combination keeps a typed error: half
+        // an external substrate. The bundled store cannot split authority
+        // with an external half — the lease provider's fencing floor is
+        // coupled to its continuity store's persisted high-water.
+        if has_persistent_state && (has_continuity_store != has_lease_provider) {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_state() and identity-first continuity_store()/lease_provider()/scratch_dir() setters \
-                 are mutually exclusive — use one storage authority"
+                "continuity_store() and lease_provider() must be supplied together — the lease \
+                 authority's fencing floor is coupled to its continuity store"
                     .to_string(),
             ));
         }
@@ -845,7 +937,14 @@ impl UnifiedRuntimeBuilder {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
-            ) = if let Some(layout) = storage_layout.as_ref() {
+            ) = if let (Some(continuity_store), Some(lease_provider)) =
+                (self.continuity_store.clone(), self.lease_provider.clone())
+            {
+                // An explicit external pair (or a storage provider's realm
+                // set) is the identity authority even alongside
+                // persistent_state() — the REQ-23 lift (M4).
+                (continuity_store, lease_provider)
+            } else if let Some(layout) = storage_layout.as_ref() {
                 let continuity_path = layout.continuity_db()?.path;
                 let (local_store, high_water) =
                     LocalContinuityStore::open_with_fencing_floor(continuity_path.clone())
@@ -1142,6 +1241,125 @@ impl UnifiedRuntimeBuilder {
         }
     }
 
+    /// Resolve the caller's blob injection into its typed form. `build()`
+    /// rejects supplying both forms up front; this keeps direct
+    /// `resolve_mob_spec` users honest too.
+    fn blob_injection(
+        &self,
+    ) -> Result<Option<crate::blob_store::BlobStoreInjection>, UnifiedRuntimeBuilderError> {
+        match (self.blob_store.clone(), self.binary_blob_store.clone()) {
+            (Some(_), Some(_)) => Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "blob_store() and binary_blob_store() are mutually exclusive — inject the one \
+                 typed form you have"
+                    .to_string(),
+            )),
+            (Some(core), None) => Ok(Some(crate::blob_store::BlobStoreInjection::Core(core))),
+            (None, Some(binary)) => Ok(Some(crate::blob_store::BlobStoreInjection::Binary(binary))),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Open the composite [`crate::storage_provider::MobKitStorageProvider`]
+    /// realm (when one is installed) and materialize its slots into the
+    /// per-slot builder seams, so the rest of `build()` composes through one
+    /// code path. Conflicts between the provider and explicit per-slot seams
+    /// are typed errors; the provider's set was validated fail-closed at
+    /// `open_realm`.
+    async fn materialize_storage_provider(&mut self) -> Result<(), UnifiedRuntimeBuilderError> {
+        let Some(provider) = self.storage_provider.take() else {
+            return Ok(());
+        };
+        let conflicting: Vec<&str> = [
+            ("continuity_store()", self.continuity_store.is_some()),
+            ("lease_provider()", self.lease_provider.is_some()),
+            ("blob_store()", self.blob_store.is_some()),
+            ("binary_blob_store()", self.binary_blob_store.is_some()),
+            ("schedule_store()", self.schedule_store.is_some()),
+            ("with_console_log_store()", self.console_log_store.is_some()),
+            ("persistent_metadata()", self.persistent_metadata.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect();
+        if !conflicting.is_empty() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                format!(
+                    "storage_provider() supplies the realm store set; the per-slot seams it \
+                 subsumes cannot also be set: {}",
+                    conflicting.join(", ")
+                ),
+            ));
+        }
+        if self.roster_provider.is_none() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "storage_provider() requires roster_provider(): the provider's continuity \
+                 store is the identity-first session authority"
+                    .to_string(),
+            ));
+        }
+        let (state_dir, layout) = if let Some(state_path) = self.persistent_state_path.clone() {
+            (
+                state_path.clone(),
+                MobKitStorageLayout::with_injected_roots(state_path, None),
+            )
+        } else if let Some(scratch) = self.scratch_dir.clone() {
+            (
+                scratch.clone(),
+                MobKitStorageLayout::declared_ephemeral(scratch),
+            )
+        } else {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "storage_provider() requires persistent_state() or scratch_dir() as the \
+                 realm's path root"
+                    .to_string(),
+            ));
+        };
+        let mut declared_ephemeral_domains = Vec::new();
+        if self.ephemeral_blobs {
+            declared_ephemeral_domains.push("blobs".to_string());
+        }
+        if self.ephemeral_runtime_store {
+            declared_ephemeral_domains.push("runtime".to_string());
+        }
+        let ctx = crate::storage_provider::MobKitRealmOpenContext {
+            layout,
+            state_dir,
+            declared_ephemeral_domains,
+        };
+        let set = provider.open_realm(&ctx).await?;
+        // Providers are contracted to enforce this before returning; the
+        // composition re-checks because the rule is the composition's.
+        crate::storage_provider::enforce_fail_closed_store_set(&set, &ctx)?;
+
+        self.continuity_store = Some(set.continuity_store);
+        self.lease_provider = Some(match set.lease_authority {
+            crate::storage_provider::MobKitLeaseAuthority::Provider(provider) => provider,
+            crate::storage_provider::MobKitLeaseAuthority::FencingFloor(floor) => {
+                Arc::new(LocalLeaseProvider::with_floor(floor))
+            }
+        });
+        self.binary_blob_store = Some(set.blob_store);
+        self.schedule_store = Some(set.schedule_store);
+        self.console_log_store = Some(set.console_log_store);
+        self.persistent_metadata = Some(set.metadata_store);
+        if self.event_log_config.is_none()
+            && let Some(store) = set.event_log_store
+        {
+            self.event_log_config = Some(EventLogConfig {
+                store,
+                ..EventLogConfig::default()
+            });
+        }
+        if self.agent_memory_provider.is_none()
+            && !self.agent_memory_from_persistent_state
+            && (self.agent_memory_config.is_some() || self.agent_memory_engines.is_some())
+            && let Some(memory) = set.agent_memory_provider
+        {
+            self.agent_memory_provider = Some(memory);
+        }
+        Ok(())
+    }
+
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
@@ -1213,7 +1431,7 @@ impl UnifiedRuntimeBuilder {
             })?;
 
             let session_store_kind = if self.custom_session_store.is_some() {
-                "custom session store"
+                self.custom_session_store_kind()
             } else {
                 "SqliteSessionStore"
             };
@@ -1242,19 +1460,24 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 session_store,
                 session_store_kind,
-                self.blob_store.clone(),
+                self.blob_injection()?,
                 self.ephemeral_blobs,
+                self.ephemeral_runtime_store,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook.clone(),
                 self.meerkat_config.clone(),
             )
             .map_err(|error| match error {
-                crate::storage_health::BlobStoreResolutionError::OpenFailed { .. } => {
+                crate::storage_health::StorageResolutionError::Blob(
+                    crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared,
+                ) => UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string()),
+                crate::storage_health::StorageResolutionError::Blob(
+                    crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
+                )
+                | crate::storage_health::StorageResolutionError::RuntimeStore(_) => {
                     UnifiedRuntimeBuilderError::Io(error.to_string())
-                }
-                crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared => {
-                    UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string())
                 }
             })?
         } else if let Some(ref scratch_dir) = self.scratch_dir {
@@ -1272,7 +1495,8 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 self.custom_session_store.clone(),
                 self.custom_session_store_kind(),
-                self.blob_store.clone(),
+                self.blob_injection()?,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook,
@@ -1292,7 +1516,8 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 self.custom_session_store.clone(),
                 self.custom_session_store_kind(),
-                self.blob_store.clone(),
+                self.blob_injection()?,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook,

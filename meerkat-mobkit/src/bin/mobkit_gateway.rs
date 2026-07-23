@@ -396,20 +396,24 @@ fn build_persistent_session_service(
     // Persistent runtime store — same path chosen by
     // `MobBootstrapSpec::persistent_inner`, so a gateway and a library-mode
     // runtime pointed at the same dir share state.
+    //
+    // Fail-closed (M4): an open failure is a startup error — the former
+    // silent `InMemoryRuntimeStore` fallback left resume and archive broken
+    // long after boot. This surface has no ephemeral-runtime-store
+    // declaration; its ephemeral launch mode (persistent_sessions = false)
+    // is the declared in-memory path.
     let runtime_db_path = layout.runtime_db();
-    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-        match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
-            Ok(store) => Arc::new(store),
-            Err(err) => {
-                tracing::warn!(
-                    path = %runtime_db_path.display(),
-                    error = %err,
-                    "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
-                     Sessions will not survive process restart and archive operations may fail.",
-                );
-                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
-            }
-        };
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path).map_err(|err| {
+            anyhow!(
+                "{}",
+                meerkat_mobkit::storage_health::RuntimeStoreResolutionError {
+                    path: runtime_db_path.clone(),
+                    message: err.to_string(),
+                }
+            )
+        })?,
+    );
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),
         Arc::clone(&blob_store),
@@ -436,22 +440,52 @@ fn build_persistent_session_service(
     // Attach meerkat's per-session schedule tools so members whose profile sets
     // tools.schedule=true get the meerkat_schedule_* surface; the returned
     // service backs the firing host spawned once the runtime has booted.
-    let schedule_tools =
-        meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+    let (schedule_tools, schedule_slot) =
+        match meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets_reporting(
             &builder,
             layout.state_dir(),
-        );
+        ) {
+            Ok(tools) => (
+                Some(tools),
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "schedule",
+                    "SqliteScheduleStore",
+                ),
+            ),
+            Err(error) => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                    "schedule",
+                    format!("schedule store failed to open; schedule tools disabled: {error}"),
+                ),
+            ),
+        };
     // WorkGraph: durable store beside the schedule store, realm scoped to
     // the mob definition id (member tools + overlays + console RPCs). The
     // state dir travels along so the bootstrap spec can place the
     // cross-process admission sidecar beside the store.
     let workgraph_state_dir = layout.state_dir().to_path_buf();
-    let workgraph = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
-        &builder,
-        &workgraph_state_dir,
-        realm_id,
-    )
-    .map(|(service, admission_slot)| (service, admission_slot, workgraph_state_dir));
+    let (workgraph, workgraph_slot) =
+        match meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_reporting(
+            &builder,
+            &workgraph_state_dir,
+            realm_id,
+        ) {
+            Ok((service, admission_slot)) => (
+                Some((service, admission_slot, workgraph_state_dir)),
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "workgraph",
+                    "SqliteWorkGraphStore",
+                ),
+            ),
+            Err(error) => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                    "workgraph",
+                    format!("workgraph store failed to open; workgraph disabled: {error}"),
+                ),
+            ),
+        };
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -467,18 +501,50 @@ fn build_persistent_session_service(
             layout.schedule_db(),
         )
     });
+    // Blob slot resolved fail-closed above (local disk under
+    // <store_dir>/blobs). The console timeline and metadata cursor of this
+    // surface are in-memory by contract (`UnifiedRuntime::bootstrap` keeps
+    // its defaults) — a declared default, documented and health-visible
+    // (M4), not an error.
+    let mut slots = vec![
+        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+            "sessions",
+            "SqliteSessionStore",
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+            "runtime",
+            "SqliteRuntimeStore",
+        ),
+        meerkat_mobkit::storage_health::blob_slot_summary(
+            meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "console",
+            "InMemoryConsoleLogStore",
+            "declared default of this surface (UnifiedRuntime::bootstrap keeps in-memory \
+             console/metadata)",
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "metadata",
+            "InMemoryMetadataStore",
+            "declared default of this surface (UnifiedRuntime::bootstrap keeps in-memory \
+             console/metadata)",
+        ),
+        schedule_slot,
+        workgraph_slot,
+    ];
+    slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
     Ok((
         service,
         adapter,
         binary_blob_store,
         schedule_host_inputs,
         workgraph,
-        // Blob slot resolved fail-closed above (local disk under
-        // <store_dir>/blobs).
-        meerkat_mobkit::storage_health::ResolvedStorageSummary {
-            blob_durability: meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
-            session_store_incremental: Some(session_store_incremental),
-        },
+        meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+            meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+            Some(session_store_incremental),
+        )
+        .with_slots(slots),
     ))
 }
 
@@ -935,10 +1001,44 @@ async fn run() -> anyhow::Result<()> {
         spec.binary_blob_store = Some(binary_blob_store);
         // In-memory blobs are the declared choice of the default ephemeral
         // launch; no persistent session service, so no H2 flag.
-        spec.resolved_storage = Some(meerkat_mobkit::storage_health::ResolvedStorageSummary {
-            blob_durability: meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
-            session_store_incremental: None,
-        });
+        let mut slots = vec![
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "sessions",
+                "EphemeralSessionService",
+                "declared by the default ephemeral launch (persistent_sessions = false)",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "runtime",
+                "InMemoryRuntimeStore",
+                "declared by the default ephemeral launch",
+            ),
+            meerkat_mobkit::storage_health::blob_slot_summary(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "console",
+                "InMemoryConsoleLogStore",
+                "declared default of this surface",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "metadata",
+                "InMemoryMetadataStore",
+                "declared default of this surface",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "workgraph",
+                "MemoryWorkGraphStore",
+                "declared by the default ephemeral launch",
+            ),
+        ];
+        slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+                None,
+            )
+            .with_slots(slots),
+        );
         // Ephemeral sessions have no persistent service; the runtime-backed
         // schedule firing host (and thus schedule tools) is persistent-only.
         (spec, None, workgraph_service)

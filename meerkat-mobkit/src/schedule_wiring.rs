@@ -37,8 +37,9 @@ use meerkat::{
     HostRunnableInvocation, HostRunnableName, HostRunnableOutcome, HostRunnableRegistry,
     HostRunnableTargetBinding, IntervalTriggerSpec, MobTargetBinding, Occurrence, OccurrenceFilter,
     OccurrencePhase, PersistentSessionService, Schedule, ScheduleRunnableHost, ScheduleService,
-    ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction, SessionAgentBuilder,
-    SessionTargetBinding, SqliteScheduleStore, TargetBinding, TriggerSpec, UpdateScheduleRequest,
+    ScheduleStore, ScheduleToolDispatcher, ScheduledMobAction, ScheduledSessionAction,
+    SessionAgentBuilder, SessionTargetBinding, SqliteScheduleStore, TargetBinding, TriggerSpec,
+    UpdateScheduleRequest,
 };
 use meerkat_core::service::SessionBuildOptions;
 use meerkat_mob::runtime::MobHandle;
@@ -648,6 +649,17 @@ pub fn attach_schedule_tools_with_identity_targets(
     builder: &FactoryAgentBuilder,
     state_dir: &Path,
 ) -> Option<AttachedScheduleTools> {
+    attach_schedule_tools_with_identity_targets_reporting(builder, state_dir).ok()
+}
+
+/// [`attach_schedule_tools_with_identity_targets`] with the open failure
+/// reported instead of swallowed, so composition sites can record the
+/// sanctioned boot-without posture as a health-visible storage-slot
+/// degradation (M4) rather than a warn line alone.
+pub fn attach_schedule_tools_with_identity_targets_reporting(
+    builder: &FactoryAgentBuilder,
+    state_dir: &Path,
+) -> Result<AttachedScheduleTools, String> {
     let path = state_dir.join(SCHEDULE_STORE_FILE);
     let store = match SqliteScheduleStore::open(&path) {
         Ok(store) => store,
@@ -657,20 +669,35 @@ pub fn attach_schedule_tools_with_identity_targets(
                 error = %error,
                 "failed to open schedule store; schedule tools disabled for this gateway",
             );
-            return None;
+            return Err(format!("{}: {error}", path.display()));
         }
     };
-    let service = ScheduleService::new(Arc::new(store));
+    Ok(attach_schedule_tools_with_store(builder, Arc::new(store)))
+}
+
+/// Attach the agent-facing schedule tools over a caller-supplied
+/// [`ScheduleStore`] (the public store seam, M4): the store no longer has to
+/// be the bundled SQLite file — a downstream backend (BigQuery, Postgres)
+/// injects its own implementation and gets the identical tool surface.
+///
+/// Injection is a *foundation*: any shadow-scheduler deletion downstream
+/// requires a feature-parity audit first (multi-replica claims, timezone
+/// cron, jitter, delivery-policy handoffs).
+pub fn attach_schedule_tools_with_store(
+    builder: &FactoryAgentBuilder,
+    store: Arc<dyn ScheduleStore>,
+) -> AttachedScheduleTools {
+    let service = ScheduleService::new(store);
     let mob_target_registry = ScheduleMobTargetRegistry::default();
     let dispatcher = MobIdentityScheduleToolDispatcher::new(
         Arc::new(ScheduleToolDispatcher::new(service.clone())),
         mob_target_registry.clone(),
     );
     meerkat::surface::set_default_schedule_tools(builder, Some(Arc::new(dispatcher)));
-    Some(AttachedScheduleTools {
+    AttachedScheduleTools {
         service,
         mob_target_registry,
-    })
+    }
 }
 
 /// Spawn the runtime-backed schedule host so authored schedules fire: at due

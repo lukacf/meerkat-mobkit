@@ -473,18 +473,21 @@ async fn fencing_and_version_cas(
 pub enum RollbackPath {
     /// The store overrides rollback with one atomic compare-and-swap
     /// transaction (`LocalContinuityStore`). Restoring the previous record
-    /// works, and the fence must match the current write authority exactly.
+    /// works, the fence must match the current write authority exactly, and
+    /// the previous generation's snapshots are retained.
     AtomicOverride,
     /// The store relies on the trait's non-atomic compatibility default.
     ///
-    /// PINNED REALITY: the default implementation restores `previous` by
-    /// calling `upsert_continuity_record`, but the trait requires ordinary
-    /// upserts to be generation-monotonic — so restoring the previous
-    /// (older-generation) record is rejected with
-    /// `StaleContinuityGeneration` by the store's own upsert. Only the
-    /// delete path (`previous == None`) actually compensates. If the
-    /// compatibility default ever gains a real restore path, this chapter
-    /// fails and must be flipped deliberately.
+    /// PINNED BEHAVIOR (fixed in M4b — the pre-fix default restored
+    /// `previous` through the store's own generation-monotonic upsert and
+    /// therefore always failed with `StaleContinuityGeneration` on a
+    /// conforming store): the default now compensates via
+    /// delete-then-reinsert, which a conforming store CAN satisfy. Restoring
+    /// the previous record works, with the documented caveats: the path is
+    /// non-atomic, and `delete_continuity_record` removes the identity's
+    /// session snapshots — including the previous generation's rollback-
+    /// authority snapshots, which the atomic override retains. This chapter
+    /// pins both the working restore and that data caveat.
     CompatibilityDefault,
 }
 
@@ -676,41 +679,59 @@ pub async fn continuity_rollback(
             )?;
         }
         RollbackPath::CompatibilityDefault => {
-            // PINNED REALITY (loudly): the compatibility default cannot
-            // restore a previous generation through a conforming
-            // (generation-monotonic) upsert. This assertion FLIPS the day the
-            // default implementation gains a real compensation path.
-            match restore {
-                Err(ContinuityStoreError::StaleContinuityGeneration { .. }) => {}
-                Err(other) => {
-                    return Err(steps.fail(
+            // PINNED BEHAVIOR (M4b fix): the compatibility default restores
+            // the previous record via delete-then-reinsert — a conforming
+            // generation-monotonic store admits the older generation as a
+            // fresh insert after the fenced delete abandoned the attempt.
+            steps.wrap(step, restore)?;
+            let resolved =
+                steps.wrap(step, store.resolve_many(std::slice::from_ref(&main)).await)?;
+            match resolved.get(&main) {
+                Some(ContinuityResolveState::Ready { record: current }) => {
+                    steps.ensure(
                         step,
+                        current == &previous_head,
                         format!(
-                            "the compatibility default's restore path is expected to be \
-                             rejected by the store's generation-monotonic upsert with \
-                             StaleContinuityGeneration, got: {other}"
+                            "the compatibility rollback must restore the previous record \
+                             exactly (expected {previous_head:?}, got {current:?})"
                         ),
-                    ));
+                    )?;
                 }
-                Ok(()) => {
+                other => {
                     return Err(steps.fail(
                         step,
-                        "the trait's compatibility rollback restored a previous generation — \
-                         the default implementation has grown a real restore path; flip this \
-                         chapter's CompatibilityDefault expectations deliberately",
+                        format!("expected Ready(previous) after rollback, got {other:?}"),
                     ));
                 }
             }
-            // The failed restore must leave the provisional row in place.
-            let resolved =
-                steps.wrap(step, store.resolve_many(std::slice::from_ref(&main)).await)?;
             steps.ensure(
                 step,
-                matches!(
-                    resolved.get(&main),
-                    Some(ContinuityResolveState::Ready { record }) if record.generation.get() == 2
-                ),
-                "a failed compatibility rollback must leave the provisional record in place",
+                steps
+                    .wrap(
+                        step,
+                        store.load_session_snapshot(attempt_session.id()).await,
+                    )?
+                    .is_none(),
+                "rollback must delete the provisional generation's snapshots",
+            )?;
+            // PINNED DATA CAVEAT (documented on the trait): the delete verb
+            // removes ALL of the identity's snapshots, so the previous
+            // generation's rollback-authority snapshot does NOT survive the
+            // compatibility path — stores wanting to retain it must override
+            // with the atomic shape. Pinning this keeps the consequence
+            // loud; if the default ever learns to retain prior-generation
+            // snapshots, flip this expectation deliberately.
+            steps.ensure(
+                step,
+                steps
+                    .wrap(
+                        step,
+                        store.load_session_snapshot(previous_session.id()).await,
+                    )?
+                    .is_none(),
+                "the compatibility rollback is documented to lose the previous generation's \
+                 snapshots (delete_continuity_record removes them); a retained snapshot means \
+                 the default grew atomic-override semantics — flip this pin deliberately",
             )?;
         }
     }

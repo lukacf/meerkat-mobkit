@@ -1194,10 +1194,7 @@ mod tests {
     #[tokio::test]
     async fn live_durability_census_attaches_resolved_summary() {
         let temp = tempfile::tempdir().unwrap();
-        let summary = ResolvedStorageSummary {
-            blob_durability: BlobDurability::PersistentDisk,
-            session_store_incremental: Some(true),
-        };
+        let summary = ResolvedStorageSummary::new(BlobDurability::PersistentDisk, Some(true));
         let diagnosis =
             diagnose_state_dir_with_runtime(&scope(&[temp.path()]), Some(summary)).await;
         let found = codes(&diagnosis);

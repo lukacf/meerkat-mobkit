@@ -139,8 +139,14 @@ impl Default for EventLogConfig {
     }
 }
 
-/// No-op store for when event logging is not configured.
-struct NullEventLogStore;
+/// No-op store that drops every event and serves empty queries.
+///
+/// A legitimate **declared** choice (tests, demos, gateways answering
+/// `runtime_options.event_log = {"storage": "null"}`), never an unconfigured
+/// default the composition falls back to silently — the silent case is the
+/// absence of event-log configuration, which means no ingestion at all.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullEventLogStore;
 
 impl EventLogStore for NullEventLogStore {
     fn append_batch(

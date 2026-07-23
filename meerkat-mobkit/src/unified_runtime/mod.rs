@@ -49,7 +49,9 @@ pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
 };
-pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
+pub use event_log::{
+    EventLogConfig, EventLogError, EventLogStore, EventQuery, NullEventLogStore, PersistedEvent,
+};
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
 pub use types::{

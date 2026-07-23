@@ -101,6 +101,6 @@ pub(crate) async fn run_storage_doctor(
     resolved: Option<ResolvedStorageSummary>,
 ) -> Value {
     let diagnosis =
-        storage_doctor::diagnose_state_dir_with_runtime(&params.scope(), resolved).await;
+        storage_doctor::diagnose_state_dir_with_runtime(&params.scope(), resolved.clone()).await;
     storage_doctor_result_json(params, &diagnosis, resolved)
 }

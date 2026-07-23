@@ -154,10 +154,25 @@ pub trait ContinuityStore: Send + Sync {
     /// Ordinary upserts are generation-monotonic and must reject an older
     /// generation even under a newer fence. Reset is the one workflow that
     /// can need a compensating rollback after publishing a provisional row so
-    /// the persistent session service can construct the replacement. Stores
-    /// should override this with one atomic compare-and-swap transaction.
-    /// The compatibility implementation is safe for externally serialized
-    /// providers, but cannot make the comparison and replacement atomic.
+    /// the persistent session service can construct the replacement. Restore
+    /// therefore has to bypass monotonicity, and the only non-monotonic write
+    /// verb the trait offers is deletion — the compatibility implementation
+    /// deletes the attempt row (after validating it is still the attempt)
+    /// and re-upserts `previous` as a fresh insert, which every conforming
+    /// generation-monotonic store accepts.
+    ///
+    /// Documented compatibility caveats (why stores should override this
+    /// with one atomic compare-and-swap transaction, as
+    /// `LocalContinuityStore` does):
+    ///
+    /// - **Non-atomic**: a crash or a concurrent writer between the delete
+    ///   and the re-upsert can leave the identity `Uninitialized`.
+    /// - **Prior-generation snapshots are lost**: `delete_continuity_record`
+    ///   removes the identity's session snapshots along with the record, so
+    ///   the restored `previous` row comes back without its rollback-
+    ///   authority snapshots; they must be re-established by the next
+    ///   checkpoint. An atomic override deletes only the provisional
+    ///   generation's snapshots and retains the previous generation's.
     async fn rollback_continuity_record(
         &self,
         expected_attempt: &ContinuityRecord,
@@ -184,12 +199,15 @@ pub trait ContinuityStore: Send + Sync {
                 current: current.generation,
             });
         }
+        // Delete-then-reinsert: the delete abandons the provisional row under
+        // the fence CAS; the re-upsert of `previous` is a fresh insert, so a
+        // conforming store's generation monotonicity (measured against the
+        // current row) admits the older generation.
+        self.delete_continuity_record(&expected_attempt.identity, fencing_token)
+            .await?;
         match previous {
             Some(previous) => self.upsert_continuity_record(previous, fencing_token).await,
-            None => {
-                self.delete_continuity_record(&expected_attempt.identity, fencing_token)
-                    .await
-            }
+            None => Ok(()),
         }
     }
 
@@ -202,6 +220,39 @@ pub trait ContinuityStore: Send + Sync {
         identity: &AgentIdentity,
         fencing_token: FencingToken,
     ) -> Result<(), ContinuityStoreError>;
+
+    /// Typed, discoverable capability: a session-delta channel compatible
+    /// with meerkat's incremental persistence contract (O(delta) appends +
+    /// CAS-guarded small head writes instead of a whole session document per
+    /// save).
+    ///
+    /// Contract for stores that advertise this (return `Some`):
+    ///
+    /// - The returned store is a **session-granular authority over the same
+    ///   durable state** the whole-snapshot verbs serve: a session persisted
+    ///   through the incremental channel must load back through
+    ///   [`Self::load_session_snapshot`]-backed reads (the committed-
+    ///   authority resolver path) byte-consistently, and the CAS revision
+    ///   tokens consumed by
+    ///   [`Self::delete_session_snapshot_if_current_revision`] must remain
+    ///   derivable from the current head + rows.
+    /// - Every mutation must be enforced under the store's own continuity
+    ///   write discipline — fencing-token compare-and-set and per
+    ///   `(identity, generation)` version monotonicity apply per append and
+    ///   per head write, not just per whole-blob save.
+    ///
+    /// The default is `None`: the store persists whole snapshots only, and
+    /// `ContinuitySessionStoreAdapter::as_incremental` stays `None` (the H2
+    /// loudly-reported whole-blob degradation). The bundled
+    /// `LocalContinuityStore` deliberately returns `None` — see the M4b
+    /// deferral note on that impl — and the JSON-RPC
+    /// `GatewayContinuityStore` cannot advertise it (its wire protocol has
+    /// only whole-snapshot verbs).
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

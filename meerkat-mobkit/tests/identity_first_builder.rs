@@ -1239,23 +1239,50 @@ async fn assert_build_err_not_contains(builder: UnifiedRuntimeBuilder, not_a: &s
 }
 
 // ===========================================================================
-// Task 1.12: Builder persistent_state mutual exclusivity (REQ-23)
+// Task 1.12 (re-scoped by the M4 REQ-23 lift): persistent_state may coexist
+// with a COMPLETE external continuity/lease pair (the external substrate
+// stays the identity and session authority); the genuinely contradictory
+// combos keep typed errors — half a substrate, or two path roots.
 // ===========================================================================
 
 #[tokio::test]
-async fn identity_first_builder_persistent_state_conflicts_with_continuity_store() {
+async fn identity_first_builder_persistent_state_rejects_half_an_external_substrate() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .continuity_store(Arc::new(StubContinuityStore));
-    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
-}
+    Box::pin(assert_build_err_contains(
+        builder,
+        "must be supplied together",
+    ))
+    .await;
 
-#[tokio::test]
-async fn identity_first_builder_persistent_state_conflicts_with_lease_provider() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .lease_provider(Arc::new(StubLeaseProvider));
-    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
+    Box::pin(assert_build_err_contains(
+        builder,
+        "must be supplied together",
+    ))
+    .await;
+}
+
+/// The REQ-23 lift: a complete external pair + persistent_state composes
+/// (no conflict error); the build proceeds to the ordinary
+/// missing-definition failure.
+#[tokio::test]
+async fn identity_first_builder_persistent_state_coexists_with_external_pair() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .persistent_state(tmp.path())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])));
+    Box::pin(assert_build_err_not_contains(
+        builder,
+        "mutually exclusive",
+        "must be supplied together",
+    ))
+    .await;
 }
 
 #[tokio::test]
@@ -3750,4 +3777,89 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
         err.contains("external backend is not configured"),
         "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
     );
+}
+
+// ===========================================================================
+// M4: the composite storage-provider seam (one remote bundle)
+// ===========================================================================
+
+/// `storage_provider()` subsumes the per-slot seams: supplying both is a
+/// typed conflict; it also requires an identity-first roster and a realm
+/// path root.
+#[tokio::test]
+async fn builder_storage_provider_validation_matrix() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])))
+        .persistent_state(tmp.path());
+    Box::pin(assert_build_err_contains(builder, "continuity_store()")).await;
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .persistent_state(tmp.path());
+    Box::pin(assert_build_err_contains(builder, "roster_provider")).await;
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])));
+    Box::pin(assert_build_err_contains(builder, "path root")).await;
+}
+
+/// Injecting both typed blob forms is a conflict — one store, one form.
+#[tokio::test]
+async fn builder_rejects_both_blob_injection_forms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
+            tmp.path().join("blobs"),
+        )))
+        .binary_blob_store(Arc::new(
+            meerkat_mobkit::blob_store::ObjectStoreBlobStore::memory(),
+        ));
+    Box::pin(assert_build_err_contains(builder, "binary_blob_store()")).await;
+}
+
+/// The full provider-backed build: the disk bundle supplies the identity
+/// substrate and every MobKit slot through the single seam, the runtime
+/// boots, and the per-slot census reports the provider's stores.
+#[tokio::test]
+async fn builder_storage_provider_full_build_over_disk_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+            .persistent_state(tmp.path())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![])))
+            .identity_runtime_instance_id("builder-storage-provider-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("a provider-backed identity-first build must boot");
+
+    let storage = runtime
+        .resolved_storage()
+        .expect("provider-backed build records the storage census");
+    assert!(
+        storage.slots.iter().any(|slot| {
+            slot.declaration.domain == "schedule" && slot.backend.contains("custom")
+        }),
+        "the provider's schedule store must be census-visible, got: {:?}",
+        storage.slots
+    );
+    assert!(
+        storage.slots.iter().any(|slot| {
+            slot.declaration.domain == "sessions"
+                && slot.backend.contains("ContinuitySessionStoreAdapter")
+        }),
+        "sessions must ride the provider's continuity store, got: {:?}",
+        storage.slots
+    );
+
+    runtime.shutdown().await;
 }

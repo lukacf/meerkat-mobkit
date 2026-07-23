@@ -68,4 +68,7 @@ pub use factory::{
     ContinuityStoreFactory, EventLogStoreFactory,
 };
 pub use meerkat_store_conformance::ConformanceFailure;
-pub use reference::{CompatRollbackContinuityStore, ReferenceEventLogStore};
+pub use reference::{
+    CompatRollbackContinuityStore, ReferenceEventLogStore, ReferenceInMemoryAgentMemoryStore,
+    ReferenceMemoryBundleProvider, ReferenceMemoryRealmProvider,
+};

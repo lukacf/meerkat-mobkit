@@ -3065,13 +3065,89 @@ async fn identity_first_runtime_reset_create_failure_preserves_old_continuity() 
     assert_status_lease_is_renewable(&lease_prov, &runtime, &id, old_token).await;
 }
 
+/// Delegates to a `LocalContinuityStore` but fails `rollback_continuity_record`
+/// with an injected error — the external-store shape whose rollback CAS
+/// fails. (Pre-M4b this test rode the trait's then-broken compatibility
+/// default, which always failed on a conforming store; the fixed default
+/// restores, so the failure is injected explicitly now.)
+struct RollbackFailingContinuityStore {
+    inner: Arc<LocalContinuityStore>,
+}
+
+#[async_trait]
+impl ContinuityStore for RollbackFailingContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        self.inner.resolve_many(identities).await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await
+    }
+
+    async fn rollback_continuity_record(
+        &self,
+        _expected_attempt: &ContinuityRecord,
+        _previous: Option<&ContinuityRecord>,
+        _fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Err(ContinuityStoreError::Io(
+            "injected rollback CAS failure".to_string(),
+        ))
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &AgentIdentity,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await
+    }
+}
+
 #[tokio::test]
 async fn identity_first_runtime_reset_rollback_failure_projects_authoritative_generation() {
-    // This wrapper intentionally inherits ContinuityStore's compatibility
-    // rollback. Its inner LocalContinuityStore rejects the default method's
-    // generation-regressing upsert, exercising the fail-closed projection
-    // required for external stores whose rollback CAS fails.
-    let store = Arc::new(CountingContinuityStore::new());
+    let store = Arc::new(RollbackFailingContinuityStore {
+        inner: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+    });
     let lease_prov = Arc::new(LocalLeaseProvider::new());
     let bridge = Arc::new(CountingBridge::default());
     bridge.fail_create();
@@ -3129,6 +3205,58 @@ async fn identity_first_runtime_reset_rollback_failure_projects_authoritative_ge
     assert_eq!(status.session_id.as_ref(), Some(&authoritative.session_id));
     assert!(status.lease.is_none());
     assert_other_holder_can_acquire(&lease_prov, &id, "rollback-failure-failover").await;
+}
+
+/// M4b: a store on the trait's COMPATIBILITY rollback (no override —
+/// `CountingContinuityStore` inherits the default) now genuinely restores
+/// the previous record when a reset's bridge create fails. Pre-fix, the
+/// default's restore was rejected by the store's own generation-monotonic
+/// upsert and the tentative generation stayed authoritative.
+#[tokio::test]
+async fn identity_first_runtime_reset_rollback_compatibility_default_restores_previous() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.fail_create();
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov.clone(), bridge);
+
+    let id = make_identity("triage:main");
+    let initial_grants = lease_prov
+        .acquire_leases(std::slice::from_ref(&id), "test-runtime")
+        .await
+        .unwrap();
+    let initial_grant = match initial_grants.get(&id).unwrap() {
+        LeaseAcquireResult::Acquired(grant) => grant.clone(),
+        other => panic!("expected acquired lease, got {other:?}"),
+    };
+    let previous = make_record("triage:main", 0, 5);
+    store
+        .upsert_continuity_record(&previous, initial_grant.fencing_token)
+        .await
+        .unwrap();
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Dormant,
+            Some(previous.clone()),
+            None,
+        )
+        .await;
+
+    let err = runtime.reset(&id).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("bridge create_session after reset"),
+        "the create failure stays observable: {err}"
+    );
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    assert_eq!(
+        resolved.get(&id),
+        Some(&ContinuityResolveState::Ready {
+            record: previous.clone()
+        }),
+        "the fixed compatibility rollback must restore the previous record"
+    );
 }
 
 #[tokio::test]

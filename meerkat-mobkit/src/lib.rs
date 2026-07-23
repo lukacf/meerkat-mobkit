@@ -34,6 +34,7 @@ pub mod schedule_wiring;
 pub mod storage_doctor;
 pub mod storage_health;
 pub mod storage_layout;
+pub mod storage_provider;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -194,13 +195,17 @@ pub use storage_doctor::{
     diagnose_state_dir_with_runtime,
 };
 pub use storage_health::{
-    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary,
-    probe_session_store_incremental,
+    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
+    StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,
 };
 pub use storage_layout::{
     DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,
     ResolvedDatabase, StateDirDurability, StorageLayoutError, StorageLayoutSummary,
     default_ephemeral_scratch_root, default_gateway_home,
+};
+pub use storage_provider::{
+    DiskMobKitStorageProvider, MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet,
+    MobKitStorageProvider, MobKitStorageProviderError, enforce_fail_closed_store_set,
 };
 pub use topology_control::{
     SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,

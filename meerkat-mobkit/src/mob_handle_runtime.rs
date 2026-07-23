@@ -26,14 +26,15 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::blob_store::{
-    Base64BlobStoreAdapter, BinaryBlobStore, BinaryBlobStoreAdapter, ObjectStoreBlobStore,
+    Base64BlobStoreAdapter, BinaryBlobStore, BlobStoreInjection, ObjectStoreBlobStore,
 };
 use crate::console_spawn::{
     ConsoleSpawnSink, SharedConsoleSpawnSinkSlot, new_console_spawn_sink_slot,
 };
 use crate::storage_health::{
-    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary,
-    probe_session_store_incremental,
+    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
+    StorageResolutionError, StorageSlotSummary, blob_slot_summary, probe_session_store_incremental,
+    scratch_ring_buffer_slots,
 };
 
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
@@ -1333,24 +1334,23 @@ fn sanitize_message_for_stateless_replay(message: Message) -> Message {
 /// session snapshot used by `load_persisted_session` (resume path) and
 /// `load_persisted_session_for_control` (archive/retire path). Lives at
 /// `<store_path>/runtime.sqlite` — separate file from the session
-/// store so we don't depend on the session_store's concrete type. If
-/// the SQLite open fails (rare: disk full, permissions), fall back to
-/// `InMemoryRuntimeStore` so the runtime can still bootstrap. In that
-/// degraded mode resume across restart and archive operations will
-/// fail; the warning makes the cause visible in operator logs.
-fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime::RuntimeStore> {
+/// store so we don't depend on the session_store's concrete type.
+///
+/// Fail-closed (M4): an open failure is a startup error, never a silent
+/// `InMemoryRuntimeStore` twin — in that formerly-degraded mode resume
+/// across restart and archive operations fail long after boot. An
+/// in-memory runtime store remains constructible only as an explicit
+/// declaration (`UnifiedRuntimeBuilder::ephemeral_runtime_store(true)`).
+fn build_persistent_runtime_store(
+    store_path: &Path,
+) -> Result<Arc<dyn meerkat_runtime::RuntimeStore>, RuntimeStoreResolutionError> {
     let runtime_db = store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME);
     match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db) {
-        Ok(store) => Arc::new(store),
-        Err(err) => {
-            tracing::warn!(
-                path = %runtime_db.display(),
-                error = %err,
-                "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
-                 Sessions will not survive process restart and archive operations may fail.",
-            );
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
-        }
+        Ok(store) => Ok(Arc::new(store)),
+        Err(err) => Err(RuntimeStoreResolutionError {
+            path: runtime_db,
+            message: err.to_string(),
+        }),
     }
 }
 
@@ -3668,10 +3668,18 @@ impl MobBootstrapSpec {
         // Ephemeral mode: in-memory blobs are the declared choice of the
         // mode itself; the ephemeral session service persists nothing, so
         // the incremental capability is not applicable.
-        spec.resolved_storage = Some(ResolvedStorageSummary {
-            blob_durability: BlobDurability::DeclaredEphemeral,
-            session_store_incremental: None,
-        });
+        let mut slots = vec![
+            StorageSlotSummary::declared_ephemeral(
+                "sessions",
+                "EphemeralSessionService",
+                "declared by the ephemeral launch mode",
+            ),
+            blob_slot_summary(BlobDurability::DeclaredEphemeral),
+        ];
+        slots.extend(scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            ResolvedStorageSummary::new(BlobDurability::DeclaredEphemeral, None).with_slots(slots),
+        );
         spec
     }
 
@@ -3684,16 +3692,16 @@ impl MobBootstrapSpec {
     ///
     /// # Errors
     ///
-    /// Fails closed when the local blob directory under `store_path` cannot
-    /// be opened — persistent mode never silently falls back to in-memory
-    /// blobs.
+    /// Fails closed when the local blob directory or the runtime store under
+    /// `store_path` cannot be opened — persistent mode never silently falls
+    /// back to in-memory stores.
     pub fn persistent(
         definition: MobDefinition,
         storage: MobStorage,
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
-    ) -> Result<Self, BlobStoreResolutionError> {
+    ) -> Result<Self, StorageResolutionError> {
         Self::persistent_inner(
             definition,
             storage,
@@ -3703,6 +3711,8 @@ impl MobBootstrapSpec {
             "caller-supplied session store",
             None,
             false,
+            false,
+            None,
             None,
             CapabilityFlags::default(),
             None,
@@ -3716,9 +3726,9 @@ impl MobBootstrapSpec {
     ///
     /// # Errors
     ///
-    /// Fails closed when the local blob directory under `store_path` cannot
-    /// be opened — persistent mode never silently falls back to in-memory
-    /// blobs.
+    /// Fails closed when the local blob directory or the runtime store under
+    /// `store_path` cannot be opened — persistent mode never silently falls
+    /// back to in-memory stores.
     pub fn persistent_with_hook(
         definition: MobDefinition,
         storage: MobStorage,
@@ -3732,7 +3742,7 @@ impl MobBootstrapSpec {
         > + Send
         + Sync
         + 'static,
-    ) -> Result<Self, BlobStoreResolutionError> {
+    ) -> Result<Self, StorageResolutionError> {
         Self::persistent_inner(
             definition,
             storage,
@@ -3742,6 +3752,8 @@ impl MobBootstrapSpec {
             "caller-supplied session store",
             None,
             false,
+            false,
+            None,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -3757,13 +3769,15 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
         session_store_kind: &str,
-        custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+        custom_blob_store: Option<BlobStoreInjection>,
         ephemeral_blobs: bool,
+        ephemeral_runtime_store: bool,
+        schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
         agent_config: Option<Config>,
-    ) -> Result<Self, BlobStoreResolutionError> {
+    ) -> Result<Self, StorageResolutionError> {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         // H1 fail-closed blob slot: the slot resolves to a configured
         // backend, an explicitly declared ephemeral choice, or a startup
@@ -3774,9 +3788,8 @@ impl MobBootstrapSpec {
             Arc<dyn BinaryBlobStore>,
             Arc<dyn meerkat_core::BlobStore>,
             BlobDurability,
-        ) = if let Some(blob_store) = custom_blob_store {
-            let binary_blob_store: Arc<dyn BinaryBlobStore> =
-                Arc::new(BinaryBlobStoreAdapter::new(blob_store.clone()));
+        ) = if let Some(injection) = custom_blob_store {
+            let (binary_blob_store, blob_store) = injection.into_pair();
             let persistent = binary_blob_store.is_persistent();
             (
                 binary_blob_store,
@@ -3802,7 +3815,8 @@ impl MobBootstrapSpec {
                         return Err(BlobStoreResolutionError::OpenFailed {
                             path: blob_path,
                             message: err.to_string(),
-                        });
+                        }
+                        .into());
                     }
                 };
             let blob_store: Arc<dyn meerkat_core::BlobStore> =
@@ -3817,7 +3831,7 @@ impl MobBootstrapSpec {
         // restart is only legal as an explicit declaration — this keeps
         // custom-injected stores honest too.
         if !binary_blob_store.is_persistent() && !ephemeral_blobs {
-            return Err(BlobStoreResolutionError::NonPersistentUndeclared);
+            return Err(BlobStoreResolutionError::NonPersistentUndeclared.into());
         }
         // H2: duplicate the incremental-capability probe the session service
         // runs privately, so whole-blob degradation is loud and
@@ -3835,8 +3849,28 @@ impl MobBootstrapSpec {
         // resume failed. Switching the in-memory store for a persistent one
         // satisfies both. The store lives at `store_path/runtime.sqlite`,
         // sibling to whatever path the caller's `session_store` uses.
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            build_persistent_runtime_store(&store_path);
+        //
+        // Fail-closed (M4): an open failure is a startup error; the
+        // in-memory form exists only as the explicit
+        // `ephemeral_runtime_store` declaration.
+        let (runtime_store, runtime_store_slot): (
+            Arc<dyn meerkat_runtime::RuntimeStore>,
+            StorageSlotSummary,
+        ) = if ephemeral_runtime_store {
+            (
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+                StorageSlotSummary::declared_ephemeral(
+                    "runtime",
+                    "InMemoryRuntimeStore",
+                    "explicitly declared: sessions do not survive process restart",
+                ),
+            )
+        } else {
+            (
+                build_persistent_runtime_store(&store_path)?,
+                StorageSlotSummary::persistent("runtime", "SqliteRuntimeStore"),
+            )
+        };
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -3857,16 +3891,39 @@ impl MobBootstrapSpec {
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+        // Injected schedule store (M4 builder seam): attach the agent-facing
+        // schedule tools over the caller's store. Library mode wires no
+        // firing host — authored schedules become durable rows the embedder's
+        // own driver (or a gateway pointed at the same store) fires.
+        let schedule_slot = schedule_store.map(|store| {
+            let _attached =
+                crate::schedule_wiring::attach_schedule_tools_with_store(&builder, store);
+            StorageSlotSummary::persistent("schedule", "custom schedule store").with_detail(
+                "caller-injected store; durability rides with the injector. Library mode \
+                 attaches schedule tools without a firing host",
+            )
+        });
         // Durable workgraph store beside runtime.sqlite (boot-without on
-        // open failure, matching the schedule-tools posture).
-        let (workgraph_service, workgraph_admission_slot) =
-            match crate::workgraph_wiring::attach_workgraph_tools(
+        // open failure — a sanctioned, health-visible degradation).
+        let (workgraph_service, workgraph_admission_slot, workgraph_slot) =
+            match crate::workgraph_wiring::attach_workgraph_tools_reporting(
                 &builder,
                 &store_path,
                 definition.id.as_str(),
             ) {
-                Some((service, slot)) => (Some(service), Some(slot)),
-                None => (None, None),
+                Ok((service, slot)) => (
+                    Some(service),
+                    Some(slot),
+                    StorageSlotSummary::persistent("workgraph", "SqliteWorkGraphStore"),
+                ),
+                Err(error) => (
+                    None,
+                    None,
+                    StorageSlotSummary::degraded(
+                        "workgraph",
+                        format!("workgraph store failed to open; workgraph disabled: {error}"),
+                    ),
+                ),
             };
         let concrete_session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
@@ -3916,10 +3973,26 @@ impl MobBootstrapSpec {
             spec.workgraph_admission_sidecar =
                 Some(crate::workgraph_admission::workgraph_admission_sidecar_path(&store_path));
         }
-        spec.resolved_storage = Some(ResolvedStorageSummary {
-            blob_durability,
-            session_store_incremental,
-        });
+        let mut slots = vec![
+            StorageSlotSummary::persistent("sessions", session_store_kind).with_detail(
+                if session_store_kind == "SqliteSessionStore" {
+                    "builder-opened SQLite store under the state directory"
+                } else {
+                    "caller-injected store; durability rides with the injector"
+                },
+            ),
+            runtime_store_slot,
+            blob_slot_summary(blob_durability),
+            workgraph_slot,
+        ];
+        if let Some(slot) = schedule_slot {
+            slots.push(slot);
+        }
+        slots.extend(scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            ResolvedStorageSummary::new(blob_durability, session_store_incremental)
+                .with_slots(slots),
+        );
         Ok(spec)
     }
 
@@ -3931,7 +4004,8 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         custom_session_store: Option<Arc<dyn SessionStore>>,
         session_store_kind: &str,
-        custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+        custom_blob_store: Option<BlobStoreInjection>,
+        schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -3939,6 +4013,7 @@ impl MobBootstrapSpec {
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = agent_config.unwrap_or_default();
+        let has_custom_session_store = custom_session_store.is_some();
         let session_store: Arc<dyn SessionStore> = custom_session_store
             .clone()
             .unwrap_or_else(|| Arc::new(meerkat_store::MemoryStore::new()));
@@ -3952,9 +4027,8 @@ impl MobBootstrapSpec {
             Arc<dyn BinaryBlobStore>,
             Arc<dyn meerkat_core::BlobStore>,
             BlobDurability,
-        ) = if let Some(blob_store) = custom_blob_store {
-            let binary_blob_store: Arc<dyn BinaryBlobStore> =
-                Arc::new(BinaryBlobStoreAdapter::new(blob_store.clone()));
+        ) = if let Some(injection) = custom_blob_store {
+            let (binary_blob_store, blob_store) = injection.into_pair();
             let persistent = binary_blob_store.is_persistent();
             (
                 binary_blob_store,
@@ -4014,6 +4088,18 @@ impl MobBootstrapSpec {
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+        // Injected schedule store (M4 builder seam): the ob3 shape — an
+        // otherwise-ephemeral local runtime whose durable schedule rows live
+        // in a caller-supplied remote store. Library mode wires no firing
+        // host (see `UnifiedRuntimeBuilder::schedule_store`).
+        let schedule_slot = schedule_store.map(|store| {
+            let _attached =
+                crate::schedule_wiring::attach_schedule_tools_with_store(&builder, store);
+            StorageSlotSummary::persistent("schedule", "custom schedule store").with_detail(
+                "caller-injected store; durability rides with the injector. Library mode \
+                 attaches schedule tools without a firing host",
+            )
+        });
         let (workgraph_service, workgraph_admission_slot) =
             crate::workgraph_wiring::attach_workgraph_tools_ephemeral(
                 &builder,
@@ -4095,10 +4181,37 @@ impl MobBootstrapSpec {
         spec.workgraph_service = Some(workgraph_service);
         spec.workgraph_admission_slots
             .push(workgraph_admission_slot);
-        spec.resolved_storage = Some(ResolvedStorageSummary {
-            blob_durability,
-            session_store_incremental,
-        });
+        let mut slots = vec![
+            if has_custom_session_store {
+                StorageSlotSummary::persistent("sessions", session_store_kind)
+                    .with_detail("caller-injected store; durability rides with the injector")
+            } else {
+                StorageSlotSummary::declared_ephemeral(
+                    "sessions",
+                    "MemoryStore",
+                    "declared by the ephemeral launch mode",
+                )
+            },
+            StorageSlotSummary::declared_ephemeral(
+                "runtime",
+                "InMemoryRuntimeStore",
+                "declared by the ephemeral launch mode",
+            ),
+            blob_slot_summary(blob_durability),
+            StorageSlotSummary::declared_ephemeral(
+                "workgraph",
+                "MemoryWorkGraphStore",
+                "declared by the ephemeral launch mode",
+            ),
+        ];
+        if let Some(slot) = schedule_slot {
+            slots.push(slot);
+        }
+        slots.extend(scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            ResolvedStorageSummary::new(blob_durability, session_store_incremental)
+                .with_slots(slots),
+        );
         spec
     }
 }
@@ -4601,7 +4714,7 @@ impl MobRuntime {
     /// bootstrap spec. `None` for externally-composed specs that did not
     /// declare it (see [`MobBootstrapSpec::resolved_storage`]).
     pub fn resolved_storage(&self) -> Option<ResolvedStorageSummary> {
-        self.resolved_storage
+        self.resolved_storage.clone()
     }
 }
 
@@ -7016,7 +7129,10 @@ realm_profile = "worker-v2"
             4,
             session_store,
         ) {
-            Err(BlobStoreResolutionError::OpenFailed { path, .. }) => {
+            Err(StorageResolutionError::Blob(BlobStoreResolutionError::OpenFailed {
+                path,
+                ..
+            })) => {
                 assert_eq!(path, store_path.join("blobs"));
             }
             Err(other) => panic!("expected OpenFailed, got: {other}"),
@@ -7024,6 +7140,79 @@ realm_profile = "worker-v2"
                 panic!("blob-dir open failure must fail closed, not fall back to in-memory blobs")
             }
         }
+    }
+
+    /// M4: a persistent-mode runtime-store open failure is a startup error —
+    /// never the former silent `InMemoryRuntimeStore` twin. The in-memory
+    /// form composes only as the explicit declaration and is census-visible.
+    #[test]
+    fn persistent_spec_fails_closed_when_runtime_store_unopenable() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        // A DIRECTORY at <store_path>/runtime.sqlite makes the SQLite open fail.
+        std::fs::create_dir_all(store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
+                .unwrap_or_else(|e| panic!("{e}")),
+        );
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        match MobBootstrapSpec::persistent(
+            definition.clone(),
+            meerkat_mob::MobStorage::in_memory(),
+            store_path.clone(),
+            4,
+            session_store.clone(),
+        ) {
+            Err(StorageResolutionError::RuntimeStore(error)) => {
+                assert_eq!(
+                    error.path,
+                    store_path.join(crate::storage_layout::RUNTIME_DB_FILE_NAME)
+                );
+                assert!(
+                    error.to_string().contains("ephemeral_runtime_store"),
+                    "the error must name the declaration remediation: {error}"
+                );
+            }
+            Err(other) => panic!("expected a runtime-store resolution error, got: {other}"),
+            Ok(_) => panic!(
+                "runtime-store open failure must fail closed, not fall back to \
+                 InMemoryRuntimeStore"
+            ),
+        }
+
+        // The explicit declaration composes over the same broken file and is
+        // recorded in the per-slot census.
+        let spec = MobBootstrapSpec::persistent_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            session_store,
+            "SqliteSessionStore",
+            None,
+            false,
+            true,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("declared ephemeral runtime store must compose: {e}"));
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
+        let runtime_slot = summary
+            .slots
+            .iter()
+            .find(|slot| slot.declaration.domain == "runtime")
+            .unwrap_or_else(|| panic!("runtime slot recorded"));
+        assert_eq!(
+            runtime_slot.declaration.resolution,
+            meerkat_core::DurabilityResolution::DeclaredEphemeral
+        );
+        assert_eq!(runtime_slot.backend, "InMemoryRuntimeStore");
     }
 
     /// H1: the happy persistent path reports disk-backed blobs and the
@@ -7047,13 +7236,37 @@ realm_profile = "worker-v2"
             session_store,
         )
         .unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(
-            spec.resolved_storage,
-            Some(ResolvedStorageSummary {
-                blob_durability: BlobDurability::PersistentDisk,
-                session_store_incremental: Some(true),
-            })
-        );
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
+        assert_eq!(summary.blob_durability, BlobDurability::PersistentDisk);
+        assert_eq!(summary.session_store_incremental, Some(true));
+        // The M4 per-slot census: durable slots persistent, the ring buffers
+        // classified Scratch explicitly.
+        for (domain, backend) in [
+            ("runtime", "SqliteRuntimeStore"),
+            ("workgraph", "SqliteWorkGraphStore"),
+        ] {
+            let slot = summary
+                .slots
+                .iter()
+                .find(|slot| slot.declaration.domain == domain)
+                .unwrap_or_else(|| panic!("{domain} slot recorded"));
+            assert_eq!(slot.backend, backend);
+            assert_eq!(
+                slot.declaration.resolution,
+                meerkat_core::DurabilityResolution::Persistent
+            );
+        }
+        for domain in ["gating_audit", "delivery_history", "routing_resolutions"] {
+            let slot = summary
+                .slots
+                .iter()
+                .find(|slot| slot.declaration.domain == domain)
+                .unwrap_or_else(|| panic!("{domain} ring buffer classified"));
+            assert_eq!(
+                slot.declaration.class,
+                meerkat_core::DurabilityClass::Scratch
+            );
+        }
     }
 
     /// H1: persistent mode with a custom blob store reporting
@@ -7080,14 +7293,18 @@ realm_profile = "worker-v2"
             4,
             session_store.clone(),
             "SqliteSessionStore",
-            Some(memory_blobs.clone()),
+            Some(BlobStoreInjection::Core(memory_blobs.clone())),
             false,
+            false,
+            None,
             None,
             CapabilityFlags::default(),
             None,
             None,
         ) {
-            Err(BlobStoreResolutionError::NonPersistentUndeclared) => {}
+            Err(StorageResolutionError::Blob(
+                BlobStoreResolutionError::NonPersistentUndeclared,
+            )) => {}
             Err(other) => panic!("expected NonPersistentUndeclared, got: {other}"),
             Ok(_) => panic!("undeclared non-persistent custom blob store must fail composition"),
         }
@@ -7099,21 +7316,22 @@ realm_profile = "worker-v2"
             4,
             session_store,
             "SqliteSessionStore",
-            Some(memory_blobs),
+            Some(BlobStoreInjection::Core(memory_blobs)),
             true,
+            false,
+            None,
             None,
             CapabilityFlags::default(),
             None,
             None,
         )
         .unwrap_or_else(|e| panic!("declared ephemeral blobs must compose: {e}"));
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
         assert_eq!(
-            spec.resolved_storage,
-            Some(ResolvedStorageSummary {
-                blob_durability: BlobDurability::Custom { persistent: false },
-                session_store_incremental: Some(true),
-            })
+            summary.blob_durability,
+            BlobDurability::Custom { persistent: false }
         );
+        assert_eq!(summary.session_store_incremental, Some(true));
     }
 
     /// H1: `ephemeral_blobs` without a custom store is a declared in-memory
@@ -7138,6 +7356,8 @@ realm_profile = "worker-v2"
             "SqliteSessionStore",
             None,
             true,
+            false,
+            None,
             None,
             CapabilityFlags::default(),
             None,
@@ -7171,17 +7391,27 @@ realm_profile = "worker-v2"
             "test session store",
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
         );
-        assert_eq!(
-            spec.resolved_storage,
-            Some(ResolvedStorageSummary {
-                blob_durability: BlobDurability::DeclaredEphemeral,
-                session_store_incremental: None,
-            })
-        );
+        let summary = spec.resolved_storage.unwrap_or_else(|| panic!("summary"));
+        assert_eq!(summary.blob_durability, BlobDurability::DeclaredEphemeral);
+        assert_eq!(summary.session_store_incremental, None);
+        // Every by-mode in-memory slot is a DECLARED choice in the census.
+        for domain in ["sessions", "runtime", "blobs", "workgraph"] {
+            let slot = summary
+                .slots
+                .iter()
+                .find(|slot| slot.declaration.domain == domain)
+                .unwrap_or_else(|| panic!("{domain} slot recorded"));
+            assert_eq!(
+                slot.declaration.resolution,
+                meerkat_core::DurabilityResolution::DeclaredEphemeral,
+                "{domain} must be a declared ephemeral choice"
+            );
+        }
     }
 
     /// Ephemeral counterpart: runtime-backed ephemeral builds must use a
@@ -7201,6 +7431,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             CapabilityFlags::default(),
@@ -7234,6 +7465,7 @@ realm_profile = "worker-v2"
             4,
             None,
             "test session store",
+            None,
             None,
             None,
             CapabilityFlags::default(),
@@ -7289,6 +7521,7 @@ realm_profile = "worker-v2"
             "test session store",
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -7342,6 +7575,7 @@ realm_profile = "worker-v2"
             "test session store",
             None,
             None,
+            None,
             CapabilityFlags::default(),
             None,
             None,
@@ -7392,6 +7626,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             "test session store",
+            None,
             None,
             None,
             CapabilityFlags::default(),
@@ -7452,6 +7687,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             "test session store",
+            None,
             None,
             None,
             CapabilityFlags::default(),

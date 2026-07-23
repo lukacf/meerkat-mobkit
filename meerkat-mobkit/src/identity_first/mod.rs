@@ -13,8 +13,9 @@ pub mod runtime;
 mod types;
 
 pub use adapters::{
-    ContinuitySessionStoreAdapter, DiscoveryRosterAdapter, EdgeDiscoveryTopologyAdapter,
-    MutableRosterProvider, SessionHookCustomizerAdapter, agent_discovery_to_durable,
+    ContinuityIncrementalSessionStore, ContinuitySessionStoreAdapter, DiscoveryRosterAdapter,
+    EdgeDiscoveryTopologyAdapter, MutableRosterProvider, SessionHookCustomizerAdapter,
+    agent_discovery_to_durable,
 };
 pub use agent_memory::{
     AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryForgetResult,
