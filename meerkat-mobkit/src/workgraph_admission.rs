@@ -188,6 +188,10 @@ impl SidecarLock {
             meerkat_sqlite::ConnectionProfile::Maintenance { write: true },
             meerkat_sqlite::OpenOptions {
                 busy_timeout: Some(Self::BUSY_TIMEOUT),
+                // The admission sidecar is deliberately ledger-exempt
+                // (lock-file bookkeeping, rebuilt not migrated): no
+                // schema preflight applies.
+                ..Default::default()
             },
         )
         .map_err(|error| format!("open admission sidecar {}: {error}", path.display()))?;
