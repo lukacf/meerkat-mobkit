@@ -3913,7 +3913,7 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
 
     #[async_trait]
     impl meerkat::storage_provider::RealmStorageProvider for StubRemoteMeerkatProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub-bundle"
         }
 
@@ -3957,7 +3957,7 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
 
     #[async_trait]
     impl meerkat_mobkit::MobKitStorageProvider for StubBundleProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub-bundle"
         }
 

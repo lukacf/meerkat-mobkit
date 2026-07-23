@@ -633,7 +633,7 @@ mod tests {
 
     #[async_trait]
     impl RealmStorageProvider for StubMeerkatProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "stub-remote"
         }
 
