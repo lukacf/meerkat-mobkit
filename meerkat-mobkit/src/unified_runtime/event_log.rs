@@ -139,8 +139,14 @@ impl Default for EventLogConfig {
     }
 }
 
-/// No-op store for when event logging is not configured.
-struct NullEventLogStore;
+/// No-op store that drops every event and serves empty queries.
+///
+/// A legitimate **declared** choice (tests, demos, gateways answering
+/// `runtime_options.event_log = {"storage": "null"}`), never an unconfigured
+/// default the composition falls back to silently — the silent case is the
+/// absence of event-log configuration, which means no ingestion at all.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullEventLogStore;
 
 impl EventLogStore for NullEventLogStore {
     fn append_batch(
@@ -200,6 +206,11 @@ pub(crate) fn start_event_log(
     // would also defeat batching by triggering an immediate flush per
     // event.
     let batch_size = config.batch_size.max(1);
+    // Clamp flush_interval — `tokio::time::interval` panics on a zero
+    // period, which would kill the ingestion task. The gateway rejects
+    // zero at the wire; this guards embedders constructing
+    // `EventLogConfig` directly.
+    let flush_interval = config.flush_interval.max(Duration::from_millis(1));
     // Buffer capacity: 4x batch size to absorb bursts; floor at 4 so a
     // tiny batch_size doesn't starve.
     let channel_capacity = (batch_size * 4).max(4);
@@ -216,7 +227,7 @@ pub(crate) fn start_event_log(
         seq,
         config.filter,
         batch_size,
-        config.flush_interval,
+        flush_interval,
         error_hook,
     ));
 
@@ -421,6 +432,68 @@ mod tests {
 
         assert_eq!(*flaky.attempts.lock().expect("attempts"), 3);
         assert_eq!(flaky.persisted.lock().expect("persisted").len(), 2);
+    }
+
+    /// Delegating wrapper so a test can hand the engine a boxed store
+    /// while keeping a shared handle for inspection.
+    struct SharedStore(Arc<FlakyStore>);
+
+    impl EventLogStore for SharedStore {
+        fn append_batch(
+            &self,
+            events: Vec<PersistedEvent>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), EventLogError>> + Send + '_>> {
+            self.0.append_batch(events)
+        }
+
+        fn query(
+            &self,
+            query: EventQuery,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, EventLogError>> + Send + '_>>
+        {
+            self.0.query(query)
+        }
+    }
+
+    /// Regression: `tokio::time::interval(Duration::ZERO)` panics, which
+    /// killed the ingestion task before it processed a single event. The
+    /// engine clamps the interval, so a zero-interval config still flushes.
+    #[tokio::test]
+    async fn zero_flush_interval_does_not_kill_the_flush_loop() {
+        let flaky = Arc::new(FlakyStore {
+            failures_remaining: Mutex::new(0),
+            persisted: Mutex::new(Vec::new()),
+            attempts: Mutex::new(0),
+        });
+        // batch_size > 1 so only the interval tick can flush the single
+        // ingested event — the path the zero interval used to kill.
+        let handle = start_event_log(
+            EventLogConfig {
+                store: Box::new(SharedStore(flaky.clone())),
+                filter: None,
+                batch_size: 64,
+                flush_interval: Duration::ZERO,
+            },
+            None,
+        );
+        handle.ingest(EventEnvelope {
+            event_id: "evt-zero-interval".to_string(),
+            source: "test".to_string(),
+            timestamp_ms: 0,
+            event: UnifiedEvent::Module(crate::types::ModuleEvent {
+                module: "test-module".into(),
+                event_type: "x".into(),
+                payload: serde_json::Value::Null,
+            }),
+        });
+
+        for _ in 0..400 {
+            if !flaky.persisted.lock().expect("persisted").is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("event never flushed: zero flush_interval killed the ingestion task");
     }
 
     #[test]

@@ -96,10 +96,10 @@ pub struct ConsoleJsonState {
     /// Optional ABAC enforcement. `None` (or a disabled config) keeps every
     /// console surface byte-for-byte compatible with the pre-access world.
     pub(crate) access: Option<AccessController>,
-    /// Optional bundled-store handle for the console Memory panel's
-    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (markdown
-    /// store, no memory configured) leaves those methods unadvertised.
-    pub(crate) memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    /// Optional panel-capable store handle for the console Memory panel's
+    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (recall-only
+    /// provider, no memory configured) leaves those methods unadvertised.
+    pub(crate) memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     /// §16 Q1 provisional operator keying: the console send path notes
     /// "authenticated principal P addressed identity I" through this
     /// resolver; the memory coordinator reads it for operator-scope recall.
@@ -379,7 +379,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     access: Option<AccessController>,
-    memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<meerkat::WorkGraphService>,
@@ -644,7 +644,7 @@ pub async fn console_rpc_handler(
         auth_context.principal.as_deref(),
         state.access.as_ref(),
         auth_context.access_view.as_ref(),
-        state.memory_panel.as_ref(),
+        state.memory_panel.as_deref(),
         state.identity_roster.clone(),
         state.workgraph.as_ref(),
         state.topology.as_ref(),
@@ -1781,7 +1781,10 @@ fn console_rpc_access_requirements(
         | "mobkit/cross_mob/directory"
         | "mobkit/cross_mob/peer_info"
         | "mobkit/mob_labels/get"
-        | "mobkit/run_labels/get" => one(ACTION_RUNTIME_ADMIN, None),
+        | "mobkit/run_labels/get"
+        // Read-only, but it enumerates every database and identity in a
+        // state directory the caller names, so it sits in the admin tier.
+        | "mobkit/storage/doctor" => one(ACTION_RUNTIME_ADMIN, None),
         "mobkit/get_member"
         | "mobkit/member_status"
         | "mobkit/identity/resolved_tools"
@@ -2024,7 +2027,7 @@ fn memory_panel_record_json(
 /// Resolve the realms a panel read spans: the explicit `realm` param, or
 /// every realm with a store file.
 async fn memory_panel_realms(
-    store: &crate::memory::sqlite_store::SqliteAgentMemoryStore,
+    store: &dyn crate::memory::capabilities::MemoryPanelStore,
     params: &Value,
 ) -> Result<Vec<String>, crate::identity_first::agent_memory::AgentMemoryError> {
     match normalized_console_rpc_string_param(params, "realm").filter(|realm| !realm.is_empty()) {
@@ -2034,7 +2037,7 @@ async fn memory_panel_realms(
 }
 
 async fn handle_memory_panel_records(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2134,7 +2137,7 @@ async fn handle_memory_panel_records(
 }
 
 async fn handle_memory_panel_record(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2235,7 +2238,7 @@ async fn handle_memory_panel_record(
 }
 
 async fn handle_memory_panel_quarantine(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2307,7 +2310,7 @@ async fn handle_memory_panel_quarantine(
 }
 
 async fn handle_memory_panel_dreams(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2356,7 +2359,7 @@ async fn handle_memory_panel_dreams(
 /// counters, skips, and partition label per run — survives restarts, unlike
 /// the audit-trail reconstruction served by `panel/dreams`.
 async fn handle_memory_panel_dream_runs(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2404,7 +2407,7 @@ async fn handle_memory_panel_dream_runs(
 /// The open usage-audit review queue: dead-weight verdicts awaiting operator
 /// action ("memories you might want to correct").
 async fn handle_memory_panel_audit_verdicts(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2450,7 +2453,7 @@ async fn handle_memory_panel_audit_verdicts(
 /// FLOOR verdict tile (floors included so the client renders pressure
 /// without duplicating the thresholds).
 async fn handle_memory_panel_overview(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2497,7 +2500,7 @@ async fn handle_memory_panel_overview(
 /// Pipeline view's inbound lane (bodies withheld: titles only; the record
 /// body stays reachable through panel/record once committed).
 async fn handle_memory_panel_proposals(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2541,7 +2544,7 @@ async fn handle_memory_panel_proposals(
 /// The injection ledger (most recent first): the Knowledge Lens history and
 /// the echo-safety/dup diagnostics feed.
 async fn handle_memory_panel_injections(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2581,7 +2584,7 @@ async fn handle_memory_panel_injections(
 
 /// Pending exit-interview harvests — the Health strip's harvest-queue lane.
 async fn handle_memory_panel_harvests(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -3182,7 +3185,7 @@ pub async fn console_rpc_multipart_handler(
                 auth_context.principal.as_deref(),
                 state.access.as_ref(),
                 auth_context.access_view.as_ref(),
-                state.memory_panel.as_ref(),
+                state.memory_panel.as_deref(),
                 state.identity_roster.clone(),
                 state.workgraph.as_ref(),
                 state.topology.as_ref(),
@@ -5236,7 +5239,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     authenticated_principal: Option<&str>,
     access: Option<&AccessController>,
     access_view: Option<&AccessView>,
-    memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    memory_panel: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<&meerkat::WorkGraphService>,
     topology: Option<&crate::topology_control::TopologyRuntimeHandle>,
@@ -5291,6 +5294,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
                 "mobkit/peer_pubkey",
+                "mobkit/storage/doctor",
             ];
             if identity_runtime.is_some() {
                 methods.extend_from_slice(&["mobkit/status_identity", "mobkit/inspect_identity"]);
@@ -5811,19 +5815,46 @@ async fn handle_console_runtime_rpc_with_visibility(
         "mobkit/memory/panel/harvests" => {
             handle_memory_panel_harvests(memory_panel, &request.params, response_id).await
         }
+        // Read-only state-directory diagnosis (registered as a read method:
+        // allowed in read-only mode, admin-gated in
+        // `console_rpc_access_requirements`).
+        "mobkit/storage/doctor" => {
+            match crate::rpc::storage_methods::parse_storage_doctor_params(&request.params) {
+                Ok(Some(params)) => {
+                    let result = crate::rpc::storage_methods::run_storage_doctor(
+                        &params,
+                        runtime.resolved_storage(),
+                    )
+                    .await;
+                    response_value(response_id, Some(result), None)
+                }
+                Ok(None) => response_value(
+                    response_id,
+                    None,
+                    Some(crate::rpc::storage_methods::storage_doctor_state_dir_unavailable_error()),
+                ),
+                Err(reason) => invalid_params(response_id, reason),
+            }
+        }
         "mobkit/status" => {
             let mob_state = runtime.handle().status_observation_snapshot();
-            response_value(
-                response_id,
-                Some(serde_json::json!({
-                    "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                    "running": matches!(mob_state, MobState::Creating | MobState::Running),
-                    // Console routes to MobRuntime directly — no module runtime available.
-                    // Return [] to keep StatusResult.loaded_modules schema-consistent.
-                    "loaded_modules": serde_json::json!([]),
-                })),
-                None,
-            )
+            let mut result = serde_json::json!({
+                "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
+                "running": matches!(mob_state, MobState::Creating | MobState::Running),
+                // Console routes to MobRuntime directly — no module runtime available.
+                // Return [] to keep StatusResult.loaded_modules schema-consistent.
+                "loaded_modules": serde_json::json!([]),
+            });
+            // H1/H2 storage durability resolution, same object as the
+            // unified `mobkit/status` shape.
+            if let Some(storage) = runtime.resolved_storage() {
+                result["storage"] = storage.status_json();
+            }
+            // The console's storage/doctor read method is always dispatchable
+            // (auto-creates the storage object on runtimes without a
+            // composition-time resolution summary).
+            result["storage"]["doctor_available"] = serde_json::json!(true);
+            response_value(response_id, Some(result), None)
         }
         "mobkit/console/list_identities" => {
             let Some(aggregator) = &console_aggregator else {
@@ -10393,6 +10424,93 @@ comms = true
             method: method.to_string(),
             params,
         }
+    }
+
+    #[tokio::test]
+    async fn console_storage_doctor_is_a_read_method_and_status_advertises_it()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-storage-doctor").await?;
+
+        let doctor_rpc = |params: Value| {
+            Box::pin(handle_console_runtime_rpc(
+                &runtime,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                rpc_request_with_params("mobkit/storage/doctor", params),
+                true,
+            ))
+        };
+
+        // The status payload advertises the doctor affordance.
+        let status = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            rpc_request_with_params("mobkit/status", json!({})),
+            true,
+        ))
+        .await;
+        assert_eq!(
+            status["result"]["storage"]["doctor_available"],
+            json!(true),
+            "{status:#?}"
+        );
+
+        // Advertised on the console capabilities list.
+        let caps = Box::pin(handle_console_runtime_rpc(
+            &runtime,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            rpc_request_with_params("mobkit/capabilities", json!({})),
+            true,
+        ))
+        .await;
+        let methods = caps["result"]["methods"].as_array().expect("methods");
+        assert!(
+            methods
+                .iter()
+                .any(|m| m.as_str() == Some("mobkit/storage/doctor")),
+            "{methods:?}"
+        );
+
+        // Missing state_dir → the typed capability error.
+        let missing = doctor_rpc(json!({})).await;
+        assert_eq!(missing["error"]["code"], json!(-32004), "{missing:#?}");
+
+        // A fixture directory with a filename twin diagnoses over the wire.
+        let fixture = tempfile::tempdir()?;
+        std::fs::write(fixture.path().join("sessions.db"), b"")?;
+        std::fs::write(fixture.path().join("sessions.sqlite"), b"")?;
+        let resp = doctor_rpc(json!({ "state_dir": fixture.path() })).await;
+        let findings = resp["result"]["diagnosis"]["findings"]
+            .as_array()
+            .expect("findings array");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f["code"] == "file-name-twins" && f["severity"] == "error"),
+            "{findings:#?}"
+        );
+        Ok(())
     }
 
     #[tokio::test]

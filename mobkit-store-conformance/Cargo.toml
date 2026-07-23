@@ -1,0 +1,38 @@
+[package]
+name = "mobkit-store-conformance"
+description = "Storage conformance harness for MobKit store backends (continuity, console timeline, event log, binary blobs, agent memory)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+meerkat-core = "=0.8.4"
+# The one-remote-bundle reference provider (M4b) implements both levels of
+# the composite seam: meerkat's RealmStorageProvider (facade storage_provider
+# module + in-memory store implementations) next to MobKit's realm store set.
+meerkat = { version = "=0.8.4", features = ["session-store", "memory-store"] }
+meerkat-runtime = "=0.8.4"
+meerkat-store = { version = "=0.8.4", features = ["memory"] }
+meerkat-store-conformance = "=0.8.4"
+meerkat-mobkit = { path = "../meerkat-mobkit" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

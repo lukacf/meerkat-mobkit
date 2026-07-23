@@ -80,12 +80,14 @@ export {
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
   LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
+  STORAGE_RESOLUTION_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
   ConsoleTimelineReplayUnavailableError,
   LeaseLostError,
   MemoryBackendUnavailableError,
+  StorageResolutionError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
   ContractMismatchError,
@@ -105,6 +107,8 @@ export {
   MEMBER_STATE_UNKNOWN,
   ErrorCategory,
   parseStatusResult,
+  parseStorageDoctorResult,
+  parseStorageSummary,
   parseCapabilitiesResult,
   parseReconcileResult,
   parseSpawnResult,
@@ -232,6 +236,10 @@ export {
 
 export type {
   StatusResult,
+  StorageDoctorResult,
+  StorageDoctorFinding,
+  StorageSummary,
+  StorageSlotSummary,
   CapabilitiesResult,
   ReconcileResult,
   SpawnResult,
@@ -412,7 +420,7 @@ export type {
 
 // -- Config modules -------------------------------------------------------
 
-export { auth, memory, sessionStore } from "./config/index.js";
+export { auth, eventLog, memory, runtimeStore, sessionStore } from "./config/index.js";
 
 // -- Module authoring helpers ---------------------------------------------
 

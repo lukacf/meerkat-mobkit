@@ -24,6 +24,7 @@ use crate::mob_handle_runtime::{
 use crate::runtime::{
     InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
 };
+use crate::storage_layout::MobKitStorageLayout;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -78,6 +79,16 @@ pub struct UnifiedRuntimeBuilder {
     identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+    binary_blob_store: Option<Arc<dyn crate::blob_store::BinaryBlobStore>>,
+    ephemeral_blobs: bool,
+    ephemeral_runtime_store: bool,
+    schedule_store: Option<Arc<dyn meerkat::ScheduleStore>>,
+    storage_provider: Option<Arc<dyn crate::storage_provider::MobKitStorageProvider>>,
+    // Materialized from `storage_provider` (M4b): the meerkat-level bundle
+    // opened through `meerkat_provider()` for non-disk backends, and the
+    // provider's per-slot durability declarations retained for the census.
+    provider_meerkat_stores: Option<crate::storage_provider::ProviderMeerkatStores>,
+    provider_slot_census: Vec<crate::storage_health::StorageSlotSummary>,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
     // --- Common fields ---
@@ -170,7 +181,11 @@ impl UnifiedRuntimeBuilder {
 
     /// Set an external `ContinuityStore` for the identity-first path.
     ///
-    /// Mutually exclusive with `persistent_state()`.
+    /// Supply [`lease_provider`](Self::lease_provider) with it — the pair is
+    /// one substrate (fencing floors are store-coupled). May coexist with
+    /// `persistent_state()` (M4): the external substrate stays the identity
+    /// and session authority while the state directory supplies the
+    /// meerkat-shared local stores.
     pub fn continuity_store(
         mut self,
         store: Arc<dyn crate::identity_first::contracts::ContinuityStore>,
@@ -181,7 +196,8 @@ impl UnifiedRuntimeBuilder {
 
     /// Set an external `LeaseProvider` for the identity-first path.
     ///
-    /// Mutually exclusive with `persistent_state()`.
+    /// Supply [`continuity_store`](Self::continuity_store) with it; see
+    /// there for the `persistent_state()` coexistence semantics.
     pub fn lease_provider(
         mut self,
         provider: Arc<dyn crate::identity_first::contracts::LeaseProvider>,
@@ -230,8 +246,10 @@ impl UnifiedRuntimeBuilder {
     /// Enable the FULL agent-memory stack (bundled SQLite store + the taint
     /// firewall + the enabled judgment-plane engines) — the same stack the
     /// rpc gateway assembles, reachable from the Rust builder (the OB3
-    /// deployment shape). Requires `persistent_state()`; the store lives at
-    /// `<persistent_state>/agent-memory-sqlite`.
+    /// deployment shape). Requires `persistent_state()`; the store lives
+    /// under the layout's agent-memory root (canonical
+    /// `<persistent_state>/agent-memory`, with a legacy
+    /// `agent-memory-sqlite/` corpus honored where it lies).
     ///
     /// v1 boundaries (documented in `memory_wiring`): the Hygienist stays
     /// gateway-only; engines are driven by the member-event observe stream
@@ -307,6 +325,85 @@ impl UnifiedRuntimeBuilder {
     /// `/blobs/{id}` and `mobkit/blob/*` serving/upload paths.
     pub fn blob_store(mut self, store: Arc<dyn meerkat_core::BlobStore>) -> Self {
         self.blob_store = Some(store);
+        self
+    }
+
+    /// Set an optional blob store in its raw-bytes [`BinaryBlobStore`] form
+    /// (M4). Like [`blob_store`](Self::blob_store) but without the base64
+    /// adapter round-trip on the HTTP `/blobs/{id}` and `mobkit/blob/*`
+    /// byte-serving paths; the meerkat `BlobStore` face is adapted from it.
+    /// Mutually exclusive with `blob_store()` — inject exactly one form.
+    pub fn binary_blob_store(mut self, store: Arc<dyn crate::blob_store::BinaryBlobStore>) -> Self {
+        self.binary_blob_store = Some(store);
+        self
+    }
+
+    /// Declare that blobs are intentionally ephemeral (in-memory).
+    ///
+    /// Persistent-state builds fail closed when the blob slot resolves to a
+    /// store that does not survive restart — a failed open of the local blob
+    /// directory or an injected [`blob_store`](Self::blob_store) reporting
+    /// `!is_persistent()`. This declaration makes in-memory blobs a
+    /// configuration instead of an error (tests, demos), and is reported as
+    /// `declared_ephemeral` on the health surfaces. Ephemeral launch modes
+    /// (scratch/temp-dir) declare it implicitly.
+    pub fn ephemeral_blobs(mut self, enabled: bool) -> Self {
+        self.ephemeral_blobs = enabled;
+        self
+    }
+
+    /// Declare that the runtime store is intentionally ephemeral
+    /// (in-memory) on a persistent-state build.
+    ///
+    /// Persistent-state builds fail closed when `runtime.sqlite` cannot be
+    /// opened — the former silent `InMemoryRuntimeStore` fallback (in which
+    /// resume across restart and archive operations fail) is gone. This
+    /// declaration makes the in-memory runtime store a configuration
+    /// instead of an error (tests, demos), reported as `declared_ephemeral`
+    /// in the per-slot storage census. Ephemeral launch modes declare it
+    /// implicitly; without `persistent_state()` this is a no-op.
+    pub fn ephemeral_runtime_store(mut self, enabled: bool) -> Self {
+        self.ephemeral_runtime_store = enabled;
+        self
+    }
+
+    /// Set an external [`ScheduleStore`](meerkat::ScheduleStore) (M4): the
+    /// agent-facing schedule tools attach over the caller's store instead of
+    /// the bundled SQLite file. Library mode wires no firing host — authored
+    /// schedules become durable rows the embedder's own driver (or a gateway
+    /// pointed at the same store) fires. Injection is a *foundation*: any
+    /// shadow-scheduler deletion downstream requires a feature-parity audit
+    /// first (multi-replica claims, timezone cron, jitter, delivery-policy
+    /// handoffs).
+    pub fn schedule_store(mut self, store: Arc<dyn meerkat::ScheduleStore>) -> Self {
+        self.schedule_store = Some(store);
+        self
+    }
+
+    /// Install a composite [`MobKitStorageProvider`] — the one-remote-bundle
+    /// seam (M4). The provider's realm store set supplies the identity
+    /// substrate (continuity + lease authority), console timeline, metadata,
+    /// blobs, schedule store, and (when configured) the event log and agent
+    /// memory, replacing the per-slot builder seams; supplying both the
+    /// provider and an individual seam is a conflict. For a non-disk backend
+    /// the composition also opens the provider's meerkat-level bundle
+    /// through
+    /// [`meerkat_provider`](crate::storage_provider::MobKitStorageProvider::meerkat_provider)
+    /// (M4b), so runtime and workgraph authority land in the same backend
+    /// instead of local files; the built-in disk backend keeps the flat
+    /// local composition.
+    ///
+    /// Requires an identity-first configuration (`roster_provider()`): the
+    /// provider's continuity store is the session authority. The realm root
+    /// comes from `persistent_state()` or `scratch_dir()` (ephemeral local
+    /// disk — the ob3 shape).
+    ///
+    /// [`MobKitStorageProvider`]: crate::storage_provider::MobKitStorageProvider
+    pub fn storage_provider(
+        mut self,
+        provider: Arc<dyn crate::storage_provider::MobKitStorageProvider>,
+    ) -> Self {
+        self.storage_provider = Some(provider);
         self
     }
 
@@ -490,6 +587,24 @@ impl UnifiedRuntimeBuilder {
             .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
 
         let has_persistent_state = self.persistent_state_path.is_some();
+        // One path root per realm: the state directory and a scratch root
+        // are competing path authorities.
+        if has_persistent_state && self.scratch_dir.is_some() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_state() and scratch_dir() are mutually exclusive — one path root \
+                 per realm"
+                    .to_string(),
+            ));
+        }
+        if self.blob_store.is_some() && self.binary_blob_store.is_some() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "blob_store() and binary_blob_store() are mutually exclusive — inject the one \
+                 typed form you have"
+                    .to_string(),
+            ));
+        }
+        self.materialize_storage_provider().await?;
+
         let has_continuity_store = self.continuity_store.is_some();
         let has_lease_provider = self.lease_provider.is_some();
         let has_roster_provider = self.roster_provider.is_some();
@@ -525,13 +640,18 @@ impl UnifiedRuntimeBuilder {
             ));
         }
 
-        // REQ-23: persistent_state and explicit continuity/lease/scratch
-        // providers are mutually exclusive. Roster/topology/customizers are
-        // identity inputs and can use the bundled persistent identity store.
-        if has_persistent_state && has_external_identity_storage {
+        // REQ-23, lifted (M4): an external continuity/lease pair may coexist
+        // with persistent_state() — the external substrate stays the
+        // identity and session authority while the state directory supplies
+        // the meerkat-shared local stores (runtime, workgraph, blobs, ...).
+        // The genuinely contradictory combination keeps a typed error: half
+        // an external substrate. The bundled store cannot split authority
+        // with an external half — the lease provider's fencing floor is
+        // coupled to its continuity store's persisted high-water.
+        if has_persistent_state && (has_continuity_store != has_lease_provider) {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_state() and identity-first continuity_store()/lease_provider()/scratch_dir() setters \
-                 are mutually exclusive — use one storage authority"
+                "continuity_store() and lease_provider() must be supplied together — the lease \
+                 authority's fencing floor is coupled to its continuity store"
                     .to_string(),
             ));
         }
@@ -572,10 +692,15 @@ impl UnifiedRuntimeBuilder {
             ));
         }
 
-        let continuity_session_store = self
-            .continuity_store
-            .as_ref()
-            .map(|store| Arc::new(ContinuitySessionStoreAdapter::new(store.clone())));
+        // Lazy checkpoint adoption ON for the external-authoritative arm: the
+        // continuity store is the session authority here, and a 0.7.x-era
+        // snapshot would otherwise hard-fail every resume (H3).
+        let continuity_session_store = self.continuity_store.as_ref().map(|store| {
+            Arc::new(
+                ContinuitySessionStoreAdapter::new(store.clone())
+                    .with_lazy_checkpoint_adoption(true),
+            )
+        });
         if let Some(store) = continuity_session_store.as_ref() {
             self.custom_session_store = Some(store.clone());
         }
@@ -600,6 +725,23 @@ impl UnifiedRuntimeBuilder {
             None => self.resolve_mob_spec().await?,
         };
 
+        // Provider-declared durability flows to the census verbatim (M4b):
+        // replace the locally-labeled slots for the domains the provider
+        // declared and add the slots the local composition has no
+        // equivalent record for (continuity, event_log, console, metadata,
+        // agent_memory).
+        if !self.provider_slot_census.is_empty()
+            && let Some(summary) = mob_spec.resolved_storage.as_mut()
+        {
+            let provider_census = std::mem::take(&mut self.provider_slot_census);
+            summary.slots.retain(|slot| {
+                !provider_census.iter().any(|provider_slot| {
+                    provider_slot.declaration.domain == slot.declaration.domain
+                })
+            });
+            summary.slots.extend(provider_census);
+        }
+
         let module_config = self.module_config.take().unwrap_or_else(|| MobKitConfig {
             modules: Vec::new(),
             discovery: crate::types::DiscoverySpec {
@@ -617,14 +759,21 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
         }
+        // The path authority for every state-dir file name below:
+        // canonical-name-first probing keeps legacy spellings working where
+        // they lie; twin spellings refuse loudly instead of forking history.
+        let storage_layout = self
+            .persistent_state_path
+            .as_ref()
+            .map(|path| MobKitStorageLayout::with_injected_roots(path.clone(), None));
         let persistent_agent_memory_provider: Option<Arc<dyn AgentMemoryProvider>> =
             if self.agent_memory_from_persistent_state {
-                let Some(state_path) = self.persistent_state_path.as_ref() else {
+                let Some(layout) = storage_layout.as_ref() else {
                     return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                         "persistent_agent_memory() requires persistent_state()".to_string(),
                     ));
                 };
-                let memory_path = state_path.join("agent-memory");
+                let memory_path = layout.agent_memory_root()?.path;
                 Some(Arc::new(
                     MarkdownAgentMemoryStore::open(&memory_path).map_err(|e| {
                         UnifiedRuntimeBuilderError::Io(format!(
@@ -636,38 +785,45 @@ impl UnifiedRuntimeBuilder {
             } else {
                 None
             };
-        // Full-stack path: the bundled SQLite store is opened pre-runtime so
-        // it can serve as the provider (recorder + recall) from the first
-        // spawn; the firewall + engines attach post-construction, when the
-        // memory event sink and mob handle exist.
-        let stack_sqlite_store = if self.agent_memory_engines.is_some() {
-            let Some(state_path) = self.persistent_state_path.as_ref() else {
-                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                    "persistent_agent_memory_stack() requires persistent_state()".to_string(),
-                ));
+        // Full-stack path: the stack provider exists pre-runtime so it can
+        // serve as the provider (recorder + recall) from the first spawn;
+        // the firewall + engines attach post-construction, when the memory
+        // event sink and mob handle exist. An explicit `agent_memory()`
+        // provider is used as-is — `attach_memory_engines` capability-checks
+        // it; otherwise the bundled SQLite store opens under the layout root.
+        let stack_provider: Option<Arc<dyn AgentMemoryProvider>> =
+            if self.agent_memory_engines.is_some() {
+                if let Some(provider) = self.agent_memory_provider.clone() {
+                    Some(provider)
+                } else {
+                    let Some(layout) = storage_layout.as_ref() else {
+                        return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                            "persistent_agent_memory_stack() requires persistent_state()"
+                                .to_string(),
+                        ));
+                    };
+                    // One slot for both store kinds: a legacy
+                    // `agent-memory-sqlite/` corpus keeps being used where it
+                    // lies; fresh deployments get the canonical
+                    // `agent-memory/` root.
+                    let memory_path = layout.agent_memory_root()?.path;
+                    Some(Arc::new(
+                        crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path)
+                            .map_err(|e| {
+                                UnifiedRuntimeBuilderError::Io(format!(
+                                    "failed to open agent memory store at {}: {e}",
+                                    memory_path.display()
+                                ))
+                            })?,
+                    ))
+                }
+            } else {
+                None
             };
-            let memory_path = state_path.join("agent-memory-sqlite");
-            Some(
-                crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path).map_err(
-                    |e| {
-                        UnifiedRuntimeBuilderError::Io(format!(
-                            "failed to open agent memory store at {}: {e}",
-                            memory_path.display()
-                        ))
-                    },
-                )?,
-            )
-        } else {
-            None
-        };
         let agent_memory_provider = self
             .agent_memory_provider
             .clone()
-            .or_else(|| {
-                stack_sqlite_store
-                    .clone()
-                    .map(|store| Arc::new(store) as Arc<dyn AgentMemoryProvider>)
-            })
+            .or_else(|| stack_provider.clone())
             .or(persistent_agent_memory_provider);
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
@@ -707,11 +863,11 @@ impl UnifiedRuntimeBuilder {
         let persistent_metadata: Arc<dyn PersistentMetadataStore> =
             if let Some(store) = self.persistent_metadata.clone() {
                 store
-            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let metadata_path = state_path.join("mobkit_metadata.sqlite");
+            } else if let Some(layout) = storage_layout.as_ref() {
+                let metadata_path = layout.metadata_db()?.path;
                 Arc::new(SqliteMetadataStore::open(&metadata_path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open mobkit_metadata.sqlite at {}: {e}",
+                        "failed to open the mobkit metadata store at {}: {e}",
                         metadata_path.display()
                     ))
                 })?)
@@ -721,11 +877,11 @@ impl UnifiedRuntimeBuilder {
         let console_log_store: Arc<dyn ConsoleLogStore> =
             if let Some(store) = self.console_log_store.clone() {
                 store
-            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let console_log_path = state_path.join("mobkit_console.sqlite");
+            } else if let Some(layout) = storage_layout.as_ref() {
+                let console_log_path = layout.console_db()?.path;
                 Arc::new(SqliteConsoleLogStore::open(&console_log_path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open mobkit_console.sqlite at {}: {e}",
+                        "failed to open the mobkit console store at {}: {e}",
                         console_log_path.display()
                     ))
                 })?)
@@ -808,14 +964,21 @@ impl UnifiedRuntimeBuilder {
             let (continuity_store, lease_provider): (
                 Arc<dyn crate::identity_first::contracts::ContinuityStore>,
                 Arc<dyn crate::identity_first::contracts::LeaseProvider>,
-            ) = if let Some(state_path) = self.persistent_state_path.as_ref() {
-                let continuity_path = state_path.join("identity_continuity.sqlite");
+            ) = if let (Some(continuity_store), Some(lease_provider)) =
+                (self.continuity_store.clone(), self.lease_provider.clone())
+            {
+                // An explicit external pair (or a storage provider's realm
+                // set) is the identity authority even alongside
+                // persistent_state() — the REQ-23 lift (M4).
+                (continuity_store, lease_provider)
+            } else if let Some(layout) = storage_layout.as_ref() {
+                let continuity_path = layout.continuity_db()?.path;
                 let (local_store, high_water) =
                     LocalContinuityStore::open_with_fencing_floor(continuity_path.clone())
                         .await
                         .map_err(|e| {
                             UnifiedRuntimeBuilderError::Io(format!(
-                                "failed to open identity_continuity.sqlite and read its fencing high-water at {}: {e}",
+                                "failed to open the identity continuity store and read its fencing high-water at {}: {e}",
                                 continuity_path.display()
                             ))
                         })?;
@@ -942,54 +1105,73 @@ impl UnifiedRuntimeBuilder {
             serde_json::Value::Null
         };
 
-        // Classic-path bundled-store wiring: the console Memory panel (§9.3),
-        // the §10.1 posture write gate (only when the embedder did not
-        // install a taint-tracking gate already), and the §9.3 timeline sink
-        // for quarantined writes. Providers other than the bundled SQLite
-        // store keep injection + recorder without a panel.
-        if let Some(store) = classic_agent_memory
-            .as_ref()
-            .and_then(|provider| provider.as_sqlite_store())
-        {
-            let llm_writes = self
-                .agent_memory_config
-                .as_ref()
-                .map(|config| config.llm_writes)
-                .unwrap_or_default();
-            store.set_llm_write_gate_if_absent(Arc::new(
-                crate::memory::taint::TaintLlmWriteGate::new(None, llm_writes),
-            ));
-            store.set_event_sink_if_absent(runtime.memory_event_sink());
-            runtime.set_memory_panel_store(store.clone());
+        // Classic-path capability wiring (M4 de-weld): the §10.1 posture
+        // write gate and the §9.3 timeline sink install on any provider
+        // advertising the firewall controls (only when the embedder did not
+        // install a taint-tracking gate already), and the console Memory
+        // panel (§9.3) registers for any provider advertising the panel
+        // read API. Recall-only providers keep injection + recorder
+        // without a panel — by their capability flags, not by type.
+        if let Some(provider) = classic_agent_memory.as_ref() {
+            if let Some(taintable) = provider.as_taintable() {
+                let llm_writes = self
+                    .agent_memory_config
+                    .as_ref()
+                    .map(|config| config.llm_writes)
+                    .unwrap_or_default();
+                taintable.set_llm_write_gate_if_absent(Arc::new(
+                    crate::memory::taint::TaintLlmWriteGate::new(None, llm_writes),
+                ));
+                taintable.set_event_sink_if_absent(runtime.memory_event_sink());
+            }
+            if let Some(panel) = provider.as_memory_panel_store() {
+                runtime.set_memory_panel_store(panel);
+            }
         }
 
         // Full-stack path (persistent_agent_memory_stack): firewall + engines
-        // + observer over the pre-opened SQLite store.
-        if let (Some(store), Some(engines)) =
-            (stack_sqlite_store, self.agent_memory_engines.as_ref())
+        // + observer over the pre-opened stack provider.
+        if let (Some(provider), Some(engines)) =
+            (stack_provider, self.agent_memory_engines.as_ref())
         {
             let config = self.agent_memory_config.clone().unwrap_or_default();
-            let persistent_state = self.persistent_state_path.clone();
+            // Engine factory state and the HNSW discard source live under
+            // the realm's path root — the state directory, or the scratch
+            // root on the remote-authoritative (scratch_dir) shape.
+            let persistent_state = self
+                .persistent_state_path
+                .clone()
+                .or_else(|| self.scratch_dir.clone());
             let transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
                 if engines.distiller.enabled || engines.steward.enabled {
-                    let state = persistent_state.as_ref().ok_or_else(|| {
-                        UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                            "agent memory engines require persistent_state()".to_string(),
-                        )
-                    })?;
-                    Some(Arc::new(
-                        meerkat_store::SqliteSessionStore::open(state.join("sessions.db"))
-                            .map_err(|e| {
-                                UnifiedRuntimeBuilderError::Io(format!(
-                                    "agent memory session store: {e}"
-                                ))
-                            })?,
-                    ))
+                    if let Some(store) = self.custom_session_store.clone() {
+                        // The ACTIVE session authority — the provider/
+                        // continuity adapter or a caller-injected store. The
+                        // engines must read the transcripts the runtime
+                        // actually persists; opening the local session
+                        // database here would hand them an empty or stale
+                        // parallel history.
+                        Some(store)
+                    } else {
+                        let layout = storage_layout.as_ref().ok_or_else(|| {
+                            UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                                "agent memory engines require persistent_state()".to_string(),
+                            )
+                        })?;
+                        Some(Arc::new(
+                            meerkat_store::SqliteSessionStore::open(layout.session_db()?.path)
+                                .map_err(|e| {
+                                    UnifiedRuntimeBuilderError::Io(format!(
+                                        "agent memory session store: {e}"
+                                    ))
+                                })?,
+                        ))
+                    }
                 } else {
                     None
                 };
             let stack = crate::memory_wiring::attach_memory_engines(
-                store,
+                provider,
                 &config,
                 engines,
                 crate::memory_wiring::MemoryStackSeams {
@@ -1000,7 +1182,9 @@ impl UnifiedRuntimeBuilder {
                 },
             )
             .map_err(UnifiedRuntimeBuilderError::Io)?;
-            runtime.set_memory_panel_store(stack.store.clone());
+            if let Some(panel) = stack.panel.clone() {
+                runtime.set_memory_panel_store(panel);
+            }
             // Runtime ownership makes both infinite supervisors visible to
             // normal shutdown and to the identity-bootstrap failure cleanup
             // path below. Leaking either handle here would leave ghost memory
@@ -1088,6 +1272,177 @@ impl UnifiedRuntimeBuilder {
         Ok(runtime)
     }
 
+    /// Health-surface label for the store behind `custom_session_store`; the
+    /// H2 probe warning names the concrete store the builder composed
+    /// (`build()` installs a `ContinuitySessionStoreAdapter` there when a
+    /// continuity store is configured).
+    fn custom_session_store_kind(&self) -> &'static str {
+        if self.continuity_store.is_some() {
+            "ContinuitySessionStoreAdapter"
+        } else {
+            "custom session store"
+        }
+    }
+
+    /// Resolve the caller's blob injection into its typed form. `build()`
+    /// rejects supplying both forms up front; this keeps direct
+    /// `resolve_mob_spec` users honest too.
+    fn blob_injection(
+        &self,
+    ) -> Result<Option<crate::blob_store::BlobStoreInjection>, UnifiedRuntimeBuilderError> {
+        match (self.blob_store.clone(), self.binary_blob_store.clone()) {
+            (Some(_), Some(_)) => Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "blob_store() and binary_blob_store() are mutually exclusive — inject the one \
+                 typed form you have"
+                    .to_string(),
+            )),
+            (Some(core), None) => Ok(Some(crate::blob_store::BlobStoreInjection::Core(core))),
+            (None, Some(binary)) => Ok(Some(crate::blob_store::BlobStoreInjection::Binary(binary))),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Open the composite [`crate::storage_provider::MobKitStorageProvider`]
+    /// realm (when one is installed) and materialize its slots into the
+    /// per-slot builder seams, so the rest of `build()` composes through one
+    /// code path. Conflicts between the provider and explicit per-slot seams
+    /// are typed errors; the provider's set was validated fail-closed at
+    /// `open_realm`.
+    async fn materialize_storage_provider(&mut self) -> Result<(), UnifiedRuntimeBuilderError> {
+        let Some(provider) = self.storage_provider.take() else {
+            return Ok(());
+        };
+        let conflicting: Vec<&str> = [
+            // A caller-supplied mob spec routes composition through the
+            // legacy spec path, silently bypassing the provider's meerkat
+            // bundle and the session-authority rewiring — both P1 classes
+            // this seam exists to prevent.
+            ("mob_spec()", self.mob_spec.is_some()),
+            ("continuity_store()", self.continuity_store.is_some()),
+            ("lease_provider()", self.lease_provider.is_some()),
+            ("blob_store()", self.blob_store.is_some()),
+            ("binary_blob_store()", self.binary_blob_store.is_some()),
+            ("schedule_store()", self.schedule_store.is_some()),
+            ("with_console_log_store()", self.console_log_store.is_some()),
+            ("persistent_metadata()", self.persistent_metadata.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect();
+        if !conflicting.is_empty() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                format!(
+                    "storage_provider() supplies the realm store set; the per-slot seams it \
+                 subsumes cannot also be set: {}",
+                    conflicting.join(", ")
+                ),
+            ));
+        }
+        if self.roster_provider.is_none() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "storage_provider() requires roster_provider(): the provider's continuity \
+                 store is the identity-first session authority"
+                    .to_string(),
+            ));
+        }
+        let (state_dir, layout) = if let Some(state_path) = self.persistent_state_path.clone() {
+            (
+                state_path.clone(),
+                MobKitStorageLayout::with_injected_roots(state_path, None),
+            )
+        } else if let Some(scratch) = self.scratch_dir.clone() {
+            (
+                scratch.clone(),
+                MobKitStorageLayout::declared_ephemeral(scratch),
+            )
+        } else {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "storage_provider() requires persistent_state() or scratch_dir() as the \
+                 realm's path root"
+                    .to_string(),
+            ));
+        };
+        let mut declared_ephemeral_domains = Vec::new();
+        if self.ephemeral_blobs {
+            declared_ephemeral_domains.push("blobs".to_string());
+        }
+        if self.ephemeral_runtime_store {
+            declared_ephemeral_domains.push("runtime".to_string());
+        }
+        let ctx = crate::storage_provider::MobKitRealmOpenContext {
+            layout,
+            state_dir,
+            declared_ephemeral_domains,
+        };
+        let set = provider.open_realm(&ctx).await?;
+        // Providers are contracted to enforce this before returning; the
+        // composition re-checks because the rule is the composition's.
+        crate::storage_provider::enforce_fail_closed_store_set(&set, &ctx)?;
+
+        // M4b: the single-bundle contract covers the meerkat-shared level
+        // too. The built-in disk backend IS the local composition the spec
+        // opens (M2 layout compatibility — runtime.sqlite/workgraph.sqlite3
+        // stay flat under the state dir), so only a non-disk backend routes
+        // the meerkat-level slots through the provider's realm bundle;
+        // runtime and workgraph authority then land in the same backend as
+        // continuity, fail-closed at the seam instead of a silent local
+        // split.
+        let meerkat_provider = provider.meerkat_provider();
+        self.provider_meerkat_stores = if meerkat_provider.name() == "disk" {
+            None
+        } else {
+            Some(
+                crate::storage_provider::open_provider_meerkat_stores(meerkat_provider, &ctx)
+                    .await?,
+            )
+        };
+        // Retain the provider's per-slot durability declarations for the
+        // census: the health surfaces must report the provider-declared
+        // resolutions verbatim, not the local defaults those declarations
+        // replaced (an explicitly-ephemeral schedule must not read as
+        // persistent).
+        self.provider_slot_census = set
+            .durability
+            .iter()
+            .map(|declaration| crate::storage_health::StorageSlotSummary {
+                declaration: declaration.clone(),
+                backend: format!("storage provider '{}'", provider.name()),
+                detail: Some(
+                    "provider-declared durability (composite realm store set)".to_string(),
+                ),
+                degraded: false,
+            })
+            .collect();
+
+        self.continuity_store = Some(set.continuity_store);
+        self.lease_provider = Some(match set.lease_authority {
+            crate::storage_provider::MobKitLeaseAuthority::Provider(provider) => provider,
+            crate::storage_provider::MobKitLeaseAuthority::FencingFloor(floor) => {
+                Arc::new(LocalLeaseProvider::with_floor(floor))
+            }
+        });
+        self.binary_blob_store = Some(set.blob_store);
+        self.schedule_store = Some(set.schedule_store);
+        self.console_log_store = Some(set.console_log_store);
+        self.persistent_metadata = Some(set.metadata_store);
+        if self.event_log_config.is_none()
+            && let Some(store) = set.event_log_store
+        {
+            self.event_log_config = Some(EventLogConfig {
+                store,
+                ..EventLogConfig::default()
+            });
+        }
+        if self.agent_memory_provider.is_none()
+            && !self.agent_memory_from_persistent_state
+            && (self.agent_memory_config.is_some() || self.agent_memory_engines.is_some())
+            && let Some(memory) = set.agent_memory_provider
+        {
+            self.agent_memory_provider = Some(memory);
+        }
+        Ok(())
+    }
+
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
@@ -1158,11 +1513,19 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
 
+            let session_store_kind = if self.custom_session_store.is_some() {
+                self.custom_session_store_kind()
+            } else {
+                "SqliteSessionStore"
+            };
             let session_store: Arc<dyn meerkat::SessionStore> =
                 if let Some(ref store) = self.custom_session_store {
                     store.clone()
                 } else {
-                    let sqlite_path = state_path.join("sessions.db");
+                    let sqlite_path =
+                        MobKitStorageLayout::with_injected_roots(state_path.clone(), None)
+                            .session_db()?
+                            .path;
                     Arc::new(
                         meerkat_store::SqliteSessionStore::open(sqlite_path).map_err(|e| {
                             UnifiedRuntimeBuilderError::Io(format!(
@@ -1173,18 +1536,34 @@ impl UnifiedRuntimeBuilder {
                 };
             let mob_storage = MobStorage::in_memory();
 
-            MobBootstrapSpec::persistent_inner(
+            MobBootstrapSpec::persistent_inner_with_provider_stores(
                 definition,
                 mob_storage,
                 state_path.clone(),
                 max_sessions,
                 session_store,
-                self.blob_store.clone(),
+                session_store_kind,
+                self.blob_injection()?,
+                self.ephemeral_blobs,
+                self.ephemeral_runtime_store,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook.clone(),
                 self.meerkat_config.clone(),
+                self.provider_meerkat_stores.clone(),
             )
+            .map_err(|error| match error {
+                crate::storage_health::StorageResolutionError::Blob(
+                    crate::storage_health::BlobStoreResolutionError::NonPersistentUndeclared,
+                ) => UnifiedRuntimeBuilderError::ConflictingConfiguration(error.to_string()),
+                crate::storage_health::StorageResolutionError::Blob(
+                    crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
+                )
+                | crate::storage_health::StorageResolutionError::RuntimeStore(_) => {
+                    UnifiedRuntimeBuilderError::Io(error.to_string())
+                }
+            })?
         } else if let Some(ref scratch_dir) = self.scratch_dir {
             std::fs::create_dir_all(scratch_dir).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!(
@@ -1193,17 +1572,20 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
 
-            MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            MobBootstrapSpec::ephemeral_runtime_backed_with_provider_stores(
                 definition,
                 MobStorage::in_memory(),
                 scratch_dir.clone(),
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.blob_store.clone(),
+                self.custom_session_store_kind(),
+                self.blob_injection()?,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook,
                 self.meerkat_config.clone(),
+                self.provider_meerkat_stores.clone(),
             )
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.
@@ -1218,7 +1600,9 @@ impl UnifiedRuntimeBuilder {
                 store_path,
                 max_sessions,
                 self.custom_session_store.clone(),
-                self.blob_store.clone(),
+                self.custom_session_store_kind(),
+                self.blob_injection()?,
+                self.schedule_store.clone(),
                 hook,
                 caps,
                 after_hook,
@@ -1239,12 +1623,58 @@ impl UnifiedRuntimeBuilder {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use meerkat_core::service::{
         CreateSessionRequest, DeferredPromptPolicy, InitialTurnPolicy, SessionService,
     };
+
+    /// H1: a persistent-state build with an injected blob store that reports
+    /// `!is_persistent()` fails composition unless `ephemeral_blobs(true)`
+    /// declares the choice — declared, it composes and reports a
+    /// non-persistent custom blob slot.
+    #[tokio::test]
+    async fn persistent_state_gates_non_persistent_blob_store_on_declaration() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let memory_blobs: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(crate::blob_store::Base64BlobStoreAdapter::new(Arc::new(
+                crate::blob_store::ObjectStoreBlobStore::memory(),
+            )));
+        let definition = || {
+            MobDefinition::from_toml("[mob]\nid = \"blob-declaration-test\"\n")
+                .expect("parse test mob definition")
+        };
+
+        let undeclared = UnifiedRuntimeBuilder::default()
+            .definition(definition())
+            .persistent_state(dir.path())
+            .blob_store(memory_blobs.clone());
+        match undeclared.resolve_mob_spec().await {
+            Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(message)) => {
+                assert!(
+                    message.contains("ephemeral_blobs"),
+                    "the error must name the remediation, got: {message}"
+                );
+            }
+            Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
+            Ok(_) => panic!("undeclared non-persistent blob store must fail composition"),
+        }
+
+        let declared = UnifiedRuntimeBuilder::default()
+            .definition(definition())
+            .persistent_state(dir.path())
+            .blob_store(memory_blobs)
+            .ephemeral_blobs(true);
+        let spec = declared
+            .resolve_mob_spec()
+            .await
+            .unwrap_or_else(|e| panic!("declared ephemeral blobs must compose: {e}"));
+        assert_eq!(
+            spec.resolved_storage.map(|summary| summary.blob_durability),
+            Some(crate::storage_health::BlobDurability::Custom { persistent: false })
+        );
+    }
 
     fn deferred_capacity_request(prompt: impl Into<String>) -> CreateSessionRequest {
         let build = meerkat_core::service::SessionBuildOptions {

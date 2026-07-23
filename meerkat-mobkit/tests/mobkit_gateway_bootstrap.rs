@@ -381,8 +381,10 @@ fn mobkit_gateway_bootstraps_identity_first_runtime() {
         response["result"]["http_base_url"].is_string(),
         "init response carries the http base url: {response}"
     );
-    // The identity substrate is durable: continuity.db exists in the store.
-    let continuity = store.path().join("store").join("continuity.db");
+    // The identity substrate is durable: the canonical continuity store
+    // exists in the store dir (M2 spelling on a fresh dir; a legacy
+    // `continuity.db` would keep being used where it lies instead).
+    let continuity = store.path().join("store").join("continuity.sqlite3");
     assert!(
         continuity.exists(),
         "identity-first boot must create {}",
@@ -442,10 +444,12 @@ fn mobkit_gateway_identity_first_opt_out_skips_the_substrate() {
         response.get("error").is_none(),
         "opt-out init must succeed: {response}"
     );
-    let continuity = store.path().join("store").join("continuity.db");
-    assert!(
-        !continuity.exists(),
-        "identity_first: false must not create {}",
-        continuity.display()
-    );
+    for name in ["continuity.sqlite3", "continuity.db"] {
+        let continuity = store.path().join("store").join(name);
+        assert!(
+            !continuity.exists(),
+            "identity_first: false must not create {}",
+            continuity.display()
+        );
+    }
 }

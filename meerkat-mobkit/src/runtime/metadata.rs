@@ -12,7 +12,7 @@
 //! [`MetadataScope`] so the same surface can serve mobs and runs uniformly.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -281,8 +281,11 @@ impl PersistentMetadataStore for InMemoryMetadataStore {
 /// the same path the mob's `MobStorage` uses, but with a separate handle.
 /// Cross-handle access is safe; meerkat #445's `notify`-based event-store
 /// watcher already runs in this configuration. The `mobkit_metadata`
-/// table is created on init and is independent of meerkat-mob's own
-/// schema, so opening order doesn't matter.
+/// table is independent of meerkat-mob's own schema, so opening order
+/// doesn't matter; in the shared file's migration ledger the table lives
+/// under mobkit's own `mobkit-metadata` domain, co-tenanting meerkat-mob's
+/// `mob` domain (the ledger keys strictly by domain name, so the two
+/// crates stamp and migrate independently).
 ///
 /// Schema:
 /// ```text
@@ -299,9 +302,34 @@ impl PersistentMetadataStore for InMemoryMetadataStore {
 /// metadata fields land here under their own keys.
 pub struct SqliteMetadataStore {
     conn: Mutex<Connection>,
+    /// Database file path; `:memory:` for in-memory stores (where the
+    /// per-operation fence guard degrades to a no-op).
+    db_path: PathBuf,
 }
 
 const SUBSCRIPTION_CURSOR_KEY: &str = "subscription_cursor";
+
+/// The runtime-metadata store's schema domain in the per-file migration
+/// ledger. Migration 0001 is the historical one-table DDL.
+const MOBKIT_METADATA_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
+    name: "mobkit-metadata",
+    migrations: &[meerkat_sqlite::Migration {
+        version: 1,
+        name: "base-schema",
+        apply: migration_0001_metadata_schema,
+    }],
+};
+
+fn migration_0001_metadata_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mobkit_metadata (
+            mob_id TEXT NOT NULL,
+            key    TEXT NOT NULL,
+            value  TEXT NOT NULL,
+            PRIMARY KEY (mob_id, key)
+        );",
+    )
+}
 
 impl SqliteMetadataStore {
     /// Open (or create) a SQLite metadata store at `path`.
@@ -310,40 +338,35 @@ impl SqliteMetadataStore {
     /// uses; the table is `mobkit_metadata` and won't collide with
     /// meerkat-mob's own tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MetadataStoreError> {
-        let conn =
-            Connection::open(path).map_err(|err| MetadataStoreError::Io(format!("open: {err}")))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|err| MetadataStoreError::Io(format!("pragma: {err}")))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS mobkit_metadata (
-                mob_id TEXT NOT NULL,
-                key    TEXT NOT NULL,
-                value  TEXT NOT NULL,
-                PRIMARY KEY (mob_id, key)
-            );",
-        )
-        .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
+        let path = path.as_ref().to_path_buf();
+        let mut conn = meerkat_sqlite::open(&path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+            .map_err(|err| MetadataStoreError::Io(format!("open: {err}")))?;
+        meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_METADATA_DOMAIN)
+            .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
         Ok(Self {
             conn: Mutex::new(conn),
+            db_path: path,
         })
     }
 
     /// Open an in-memory SQLite store (for tests).
     pub fn in_memory() -> Result<Self, MetadataStoreError> {
-        let conn = Connection::open_in_memory()
+        let mut conn = Connection::open_in_memory()
             .map_err(|err| MetadataStoreError::Io(format!("in-memory open: {err}")))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS mobkit_metadata (
-                mob_id TEXT NOT NULL,
-                key    TEXT NOT NULL,
-                value  TEXT NOT NULL,
-                PRIMARY KEY (mob_id, key)
-            );",
-        )
-        .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
+        meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_METADATA_DOMAIN)
+            .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
         Ok(Self {
             conn: Mutex::new(conn),
+            db_path: PathBuf::from(":memory:"),
         })
+    }
+
+    /// Per-operation maintenance-fence guard: the connection is held for
+    /// the store's lifetime, so the fence cannot ride the open — every
+    /// operation takes its own shared guard.
+    fn operation_fence(&self) -> Result<meerkat_sqlite::OperationGuard, MetadataStoreError> {
+        meerkat_sqlite::OperationGuard::for_database(&self.db_path)
+            .map_err(|err| MetadataStoreError::Io(format!("operation fence: {err}")))
     }
 
     fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, MetadataStoreError> {
@@ -359,6 +382,7 @@ impl PersistentMetadataStore for SqliteMetadataStore {
         &self,
         mob_id: &str,
     ) -> Result<Option<u64>, MetadataStoreError> {
+        let _fence = self.operation_fence()?;
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare_cached(
@@ -388,6 +412,7 @@ impl PersistentMetadataStore for SqliteMetadataStore {
         mob_id: &str,
         cursor: u64,
     ) -> Result<(), MetadataStoreError> {
+        let _fence = self.operation_fence()?;
         let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO mobkit_metadata (mob_id, key, value) VALUES (?1, ?2, ?3) \
@@ -552,6 +577,80 @@ mod tests {
             store.get_subscription_cursor("mob-x").await.unwrap(),
             Some(7777),
             "cursor should survive handle drop",
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_store_stamps_mobkit_metadata_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mobkit-metadata.sqlite");
+        let store = SqliteMetadataStore::open(&path).unwrap();
+        store.set_subscription_cursor("mob-a", 1).await.unwrap();
+        let probe = Connection::open(&path).unwrap();
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-metadata").unwrap(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_metadata_file_converges_and_preserves_cursor() {
+        // A pre-ledger file (bare mobkit_metadata table, no meerkat_schema
+        // row) opens, is stamped, and keeps its rows.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mobkit-metadata.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE mobkit_metadata (
+                    mob_id TEXT NOT NULL,
+                    key    TEXT NOT NULL,
+                    value  TEXT NOT NULL,
+                    PRIMARY KEY (mob_id, key)
+                );
+                INSERT INTO mobkit_metadata (mob_id, key, value)
+                    VALUES ('mob-legacy', 'subscription_cursor', '314');",
+            )
+            .unwrap();
+        }
+        let store = SqliteMetadataStore::open(&path).unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-legacy").await.unwrap(),
+            Some(314),
+            "legacy cursor must survive the port"
+        );
+        let probe = Connection::open(&path).unwrap();
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-metadata").unwrap(),
+            Some(1)
+        );
+    }
+
+    /// The metadata table co-tenants the same database file as meerkat-mob's
+    /// MobStorage. The per-file ledger keys strictly by domain, so the two
+    /// crates' domains (`mob` and `mobkit-metadata`) must coexist in one
+    /// `meerkat_schema` table without clobbering each other.
+    #[tokio::test]
+    async fn metadata_and_mob_domains_cotenant_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mob.sqlite3");
+        let _mob = meerkat_mob::MobStorage::persistent(&path).expect("mob storage");
+        let store = SqliteMetadataStore::open(&path).expect("metadata store");
+        store.set_subscription_cursor("mob-a", 42).await.unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            Some(42)
+        );
+        let probe = Connection::open(&path).unwrap();
+        let mob_version = meerkat_sqlite::domain_version(&probe, "mob").unwrap();
+        assert!(
+            mob_version.is_some_and(|version| version >= 1),
+            "meerkat-mob's own domain row must be present: {mob_version:?}"
+        );
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-metadata").unwrap(),
+            Some(1),
+            "mobkit's domain row must coexist with meerkat-mob's"
         );
     }
 

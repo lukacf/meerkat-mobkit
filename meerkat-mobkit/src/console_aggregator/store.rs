@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -451,32 +451,99 @@ where
 pub struct SqliteConsoleLogStore {
     conn: Arc<Mutex<Connection>>,
     watermarks: Arc<Mutex<HashMap<(String, String), String>>>,
+    /// Database file path; `:memory:` for in-memory stores (where the
+    /// per-operation fence guard degrades to a no-op).
+    db_path: PathBuf,
+}
+
+/// The console aggregator's schema domain in the per-file migration
+/// ledger. Migration 0001 is the historical two-table + two-index DDL.
+const MOBKIT_CONSOLE_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
+    name: "mobkit-console",
+    migrations: &[meerkat_sqlite::Migration {
+        version: 1,
+        name: "base-schema",
+        apply: migration_0001_console_schema,
+    }],
+};
+
+fn migration_0001_console_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS console_frames (
+            cursor_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            timestamp_ms INTEGER NOT NULL,
+            runtime_key TEXT NOT NULL,
+            identity TEXT NOT NULL,
+            conversation_id TEXT,
+            session_id TEXT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            frame_version INTEGER NOT NULL DEFAULT 1,
+            updated_at_ms INTEGER,
+            payload_json TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_cursor TEXT,
+            source_event_id TEXT,
+            interaction_id TEXT,
+            parent_frame_id TEXT,
+            caused_by_frame_id TEXT,
+            turn_id TEXT,
+            run_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS console_source_watermarks (
+            runtime_key TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_cursor TEXT NOT NULL,
+            last_ingested_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(runtime_key, source_kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_console_frames_identity_cursor
+            ON console_frames(identity, cursor_seq);
+        CREATE INDEX IF NOT EXISTS idx_console_frames_conversation_cursor
+            ON console_frames(conversation_id, cursor_seq);",
+    )
 }
 
 impl SqliteConsoleLogStore {
     pub fn open(path: impl AsRef<Path>) -> ConsoleLogResult<Self> {
-        let conn = Connection::open(path).map_err(into_boxed)?;
-        Self::from_connection(conn)
+        let path = path.as_ref().to_path_buf();
+        let mut conn = meerkat_sqlite::open(&path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+            .map_err(into_boxed)?;
+        meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_CONSOLE_DOMAIN)
+            .map_err(into_boxed)?;
+        Self::from_connection(conn, path)
     }
 
     pub fn in_memory() -> ConsoleLogResult<Self> {
-        let conn = Connection::open_in_memory().map_err(into_boxed)?;
-        Self::from_connection(conn)
+        let mut conn = Connection::open_in_memory().map_err(into_boxed)?;
+        meerkat_sqlite::apply_domain_migrations(&mut conn, &MOBKIT_CONSOLE_DOMAIN)
+            .map_err(into_boxed)?;
+        Self::from_connection(conn, PathBuf::from(":memory:"))
     }
 
-    fn from_connection(conn: Connection) -> ConsoleLogResult<Self> {
-        initialize_schema(&conn)?;
+    fn from_connection(conn: Connection, db_path: PathBuf) -> ConsoleLogResult<Self> {
         let watermarks = load_source_watermarks(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             watermarks: Arc::new(Mutex::new(watermarks)),
+            db_path,
         })
+    }
+
+    /// Per-operation maintenance-fence guard: the connection is held for
+    /// the store's lifetime, so the fence cannot ride the open — every
+    /// database-touching operation takes its own shared guard.
+    fn operation_fence(&self) -> ConsoleLogResult<meerkat_sqlite::OperationGuard> {
+        meerkat_sqlite::OperationGuard::for_database(&self.db_path).map_err(into_boxed)
     }
 }
 
 #[async_trait::async_trait]
 impl ConsoleLogStore for SqliteConsoleLogStore {
     async fn append_if_absent(&self, frame: NewConsoleFrame) -> ConsoleLogResult<AppendOutcome> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -535,6 +602,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         frame_id: &str,
         status: ConsoleFrameStatus,
     ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -566,6 +634,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         let before_seq = query.before.as_ref().map(cursor_seq_i64).transpose()?;
         let limit = normalize_limit(query.limit);
         let scan_limit = limit.saturating_add(1);
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -640,6 +709,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         &self,
         dedupe_key: &str,
     ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -648,6 +718,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
     }
 
     async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -664,6 +735,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
     }
 
     async fn clear_frames(&self) -> ConsoleLogResult<()> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -684,6 +756,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         source_kind: ConsoleFrameSourceKind,
         source_cursor: &str,
     ) -> ConsoleLogResult<()> {
+        let _fence = self.operation_fence()?;
         let conn = self
             .conn
             .lock()
@@ -751,46 +824,6 @@ fn load_source_watermarks(
         watermarks.insert(key, cursor);
     }
     Ok(watermarks)
-}
-
-fn initialize_schema(conn: &Connection) -> ConsoleLogResult<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS console_frames (
-            cursor_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            id TEXT NOT NULL UNIQUE,
-            dedupe_key TEXT NOT NULL UNIQUE,
-            timestamp_ms INTEGER NOT NULL,
-            runtime_key TEXT NOT NULL,
-            identity TEXT NOT NULL,
-            conversation_id TEXT,
-            session_id TEXT,
-            kind TEXT NOT NULL,
-            status TEXT NOT NULL,
-            frame_version INTEGER NOT NULL DEFAULT 1,
-            updated_at_ms INTEGER,
-            payload_json TEXT NOT NULL,
-            source_kind TEXT NOT NULL,
-            source_cursor TEXT,
-            source_event_id TEXT,
-            interaction_id TEXT,
-            parent_frame_id TEXT,
-            caused_by_frame_id TEXT,
-            turn_id TEXT,
-            run_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS console_source_watermarks (
-            runtime_key TEXT NOT NULL,
-            source_kind TEXT NOT NULL,
-            source_cursor TEXT NOT NULL,
-            last_ingested_at_ms INTEGER NOT NULL,
-            PRIMARY KEY(runtime_key, source_kind)
-        );
-        CREATE INDEX IF NOT EXISTS idx_console_frames_identity_cursor
-            ON console_frames(identity, cursor_seq);
-        CREATE INDEX IF NOT EXISTS idx_console_frames_conversation_cursor
-            ON console_frames(conversation_id, cursor_seq);",
-    )
-    .map_err(into_boxed)
 }
 
 fn query_sql_frames<P: rusqlite::Params>(
@@ -1048,6 +1081,134 @@ mod tests {
             parent_frame_id: None,
             caused_by_frame_id: None,
         }
+    }
+
+    /// M3: the console store — previously opened with zero PRAGMAs — now
+    /// runs under the `Primary` profile (WAL + synchronous=FULL + shared
+    /// busy timeout) and stamps the `mobkit-console` ledger domain, and the
+    /// hot paths (append_if_absent, watermarks) still round-trip.
+    #[tokio::test]
+    async fn fresh_console_store_stamps_domain_gains_wal_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mobkit_console.sqlite3");
+        let store = SqliteConsoleLogStore::open(&path).expect("open");
+
+        let appended = store
+            .append_if_absent(sample_frame("dedupe-1", "identity:a"))
+            .await
+            .expect("append");
+        assert_eq!(appended.disposition, AppendDisposition::Inserted);
+        let replay = store
+            .append_if_absent(sample_frame("dedupe-1", "identity:a"))
+            .await
+            .expect("replay");
+        assert_eq!(replay.disposition, AppendDisposition::Existing);
+        assert_eq!(replay.frame.id, appended.frame.id);
+
+        store
+            .record_source_watermark("runtime-a", ConsoleFrameSourceKind::ConsoleEvent, "42")
+            .await
+            .expect("watermark write");
+        assert_eq!(
+            store
+                .source_watermark("runtime-a", ConsoleFrameSourceKind::ConsoleEvent)
+                .await
+                .expect("watermark read"),
+            Some("42".to_string())
+        );
+
+        let probe = Connection::open(&path).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-console").expect("ledger"),
+            Some(1)
+        );
+        let journal: String = probe
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .expect("journal_mode");
+        assert_eq!(journal, "wal", "console store gains WAL for the first time");
+    }
+
+    /// A pre-ledger console database (historical DDL, no meerkat_schema)
+    /// opens, converges, is stamped, and keeps its frames and watermarks —
+    /// including the AUTOINCREMENT cursor sequence continuing past the
+    /// preserved rows.
+    #[tokio::test]
+    async fn legacy_console_file_converges_and_preserves_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mobkit_console.sqlite3");
+        {
+            let conn = Connection::open(&path).expect("legacy create");
+            conn.execute_batch(
+                "CREATE TABLE console_frames (
+                    cursor_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    timestamp_ms INTEGER NOT NULL,
+                    runtime_key TEXT NOT NULL,
+                    identity TEXT NOT NULL,
+                    conversation_id TEXT,
+                    session_id TEXT,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    frame_version INTEGER NOT NULL DEFAULT 1,
+                    updated_at_ms INTEGER,
+                    payload_json TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_cursor TEXT,
+                    source_event_id TEXT,
+                    interaction_id TEXT,
+                    parent_frame_id TEXT,
+                    caused_by_frame_id TEXT,
+                    turn_id TEXT,
+                    run_id TEXT
+                );
+                CREATE TABLE console_source_watermarks (
+                    runtime_key TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_cursor TEXT NOT NULL,
+                    last_ingested_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(runtime_key, source_kind)
+                );
+                INSERT INTO console_frames (id, dedupe_key, timestamp_ms, runtime_key, \
+                 identity, kind, status, payload_json, source_kind)
+                    VALUES ('frame-legacy', 'dedupe-legacy', 5, 'runtime-a', 'identity:a', \
+                            'text_delta', 'delivered', '{}', 'console_event');
+                INSERT INTO console_source_watermarks (runtime_key, source_kind, \
+                 source_cursor, last_ingested_at_ms)
+                    VALUES ('runtime-a', 'console_event', '7', 5);",
+            )
+            .expect("legacy rows");
+        }
+
+        let store = SqliteConsoleLogStore::open(&path).expect("open legacy");
+        let legacy = store
+            .frame_by_dedupe_key("dedupe-legacy")
+            .await
+            .expect("query")
+            .expect("legacy frame preserved");
+        assert_eq!(legacy.id, "frame-legacy");
+        assert_eq!(
+            store
+                .source_watermark("runtime-a", ConsoleFrameSourceKind::ConsoleEvent)
+                .await
+                .expect("watermark"),
+            Some("7".to_string()),
+            "legacy watermark must hydrate the open-time cache"
+        );
+        let appended = store
+            .append_if_absent(sample_frame("dedupe-new", "identity:a"))
+            .await
+            .expect("append after convergence");
+        assert!(
+            cursor_seq(&appended.frame.cursor).expect("cursor")
+                > cursor_seq(&legacy.cursor).expect("legacy cursor"),
+            "cursor sequence must continue past preserved rows"
+        );
+        let probe = Connection::open(&path).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-console").expect("ledger"),
+            Some(1)
+        );
     }
 
     #[tokio::test]

@@ -43,10 +43,11 @@ use meerkat_mobkit::memory::records::{
 use meerkat_mobkit::memory::staged::StagedBatchKind;
 use meerkat_mobkit::{
     AccessControlConfig, AccessController, AccessEffect, AccessRule, AgentMemoryProvider,
-    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MemoryScope, MobKitConfig,
-    NewMemoryRecord, PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy, SqliteAgentMemoryStore,
-    StagedMemoryStore, StagedMutationBatch, StagedOp, TrustTier, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, build_runtime_decision_state,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MemoryPanelStore, MemoryScope,
+    MobKitConfig, NewMemoryRecord, PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp, StewardStore,
+    TaintableStore, TrustTier, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    build_runtime_decision_state,
 };
 use serde_json::json;
 
@@ -160,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("memory e2e fixture: access mode '{access_mode}'");
 
-    runtime.set_memory_panel_store(store.clone());
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
     emit_timeline_events(&runtime, &ids);
 
     let decisions = build_runtime_decision_state(RuntimeDecisionInputs {

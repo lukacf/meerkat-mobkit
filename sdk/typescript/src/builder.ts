@@ -99,7 +99,8 @@ export interface MobKitBuilderConfig {
   discoveryCallback: unknown;
   preSpawnCallback: unknown;
   errorCallback: ErrorCallback | null;
-  eventLog: Record<string, unknown> | null;
+  eventLog: unknown;
+  runtimeStore: unknown;
   consoleConfigPath: string | null;
   accessConfigPath: string | null;
   consoleRequireAppAuth: boolean | null;
@@ -137,6 +138,7 @@ function defaultConfig(): MobKitBuilderConfig {
     preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
+    runtimeStore: null,
     consoleConfigPath: null,
     accessConfigPath: null,
     consoleRequireAppAuth: null,
@@ -204,8 +206,49 @@ export class MobKitBuilder {
     return this;
   }
 
-  eventLog(options: { storage: unknown; [key: string]: unknown }): this {
-    this._config.eventLog = { ...options };
+  /**
+   * Configure the operational event log. Preferred form — a typed
+   * declaration from the `eventLog` config module:
+   *
+   * ```ts
+   * import { eventLog } from "@rkat/mobkit-sdk";
+   * MobKit.builder().eventLog(eventLog.memory({ batchSize: 64 }));
+   * MobKit.builder().eventLog(eventLog.nullStore());
+   * ```
+   *
+   * The gateway accepts only the declared ephemeral storage kinds
+   * (`"memory"` — bounded queryable in-process store; `"null"` — events
+   * dropped) and rejects anything else at startup. Without this call no
+   * events are ingested at all. The legacy raw form
+   * `eventLog({ storage: ..., batch_size: ... })` keeps working.
+   */
+  eventLog(
+    options: { toDict(): Record<string, unknown> } | { storage: unknown; [key: string]: unknown },
+  ): this {
+    this._config.eventLog = "toDict" in options ? options : { ...options };
+    return this;
+  }
+
+  /**
+   * Declare the runtime store's durability explicitly. The gateway's
+   * runtime store (session resume/archive/retire) is persistent SQLite by
+   * default; a failed open is a startup error, not a silent in-memory
+   * fallback. The only declarable alternative is the explicit in-memory
+   * form:
+   *
+   * ```ts
+   * import { runtimeStore } from "@rkat/mobkit-sdk";
+   * MobKit.builder().runtimeStore(runtimeStore.memory());
+   * ```
+   *
+   * Sessions then do not survive gateway restart, and the choice shows up
+   * in the storage census (`mobkit/status` → `storage.slots`). Accepts the
+   * typed config or the raw wire dict `{ storage: "memory" }`.
+   */
+  runtimeStore(
+    config: { toDict(): Record<string, unknown> } | { storage: unknown },
+  ): this {
+    this._config.runtimeStore = config;
     return this;
   }
 

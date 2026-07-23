@@ -13,9 +13,9 @@ use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
     ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata,
-    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    load_console_ui_config_from_path_for_realm,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitStorageLayout, ObjectStoreBlobStore,
+    ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
@@ -50,6 +50,7 @@ type PersistentSessionServiceParts = (
     Arc<dyn BinaryBlobStore>,
     Option<ScheduleHostInputs>,
     Option<WorkGraphParts>,
+    meerkat_mobkit::storage_health::ResolvedStorageSummary,
 );
 
 #[derive(Debug, Deserialize)]
@@ -99,24 +100,6 @@ fn current_time_ms() -> u64 {
 
 fn short_hash(value: &str) -> String {
     value.chars().take(8).collect()
-}
-
-fn state_dir() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("XDG_STATE_HOME")
-        && !path.trim().is_empty()
-    {
-        return Ok(PathBuf::from(path).join("meerkat-mobkit"));
-    }
-
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home)
-        .join(".local")
-        .join("state")
-        .join("meerkat-mobkit"))
-}
-
-fn registry_path() -> anyhow::Result<PathBuf> {
-    Ok(state_dir()?.join("tux-runtimes.json"))
 }
 
 fn load_registry(path: &Path) -> RuntimeRegistry {
@@ -376,22 +359,6 @@ fn load_definition(
     Ok((minimal_definition(&runtime_id)?, false))
 }
 
-fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
-    let store_dir = if store_path.extension().is_some() {
-        store_path
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-    } else {
-        store_path.to_path_buf()
-    };
-    let sqlite_path = if store_path.extension().is_some() {
-        store_path.to_path_buf()
-    } else {
-        store_dir.join("sessions.sqlite")
-    };
-    (store_dir, sqlite_path)
-}
-
 /// Returns (session_service, runtime_adapter, binary_blob_store).
 ///
 /// The runtime adapter is supplied separately from the session service so
@@ -399,45 +366,54 @@ fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
 /// StoreCheckpointer enabled.  The adapter is wired into MobBuilder
 /// directly via `with_runtime_adapter()`.
 fn build_persistent_session_service(
-    store_path: &Path,
+    layout: &MobKitStorageLayout,
     runtime_root: PathBuf,
     project_root: PathBuf,
     context_root: Option<PathBuf>,
     image_generation: bool,
     realm_id: &str,
 ) -> anyhow::Result<PersistentSessionServiceParts> {
-    let (store_dir, sqlite_path) = resolve_store_dir(store_path);
+    let store_dir = layout.state_dir().to_path_buf();
     fs::create_dir_all(&store_dir)
         .with_context(|| format!("failed to create {}", store_dir.display()))?;
+    let sqlite_path = layout.session_db().map_err(|e| anyhow!("{e}"))?.path;
     let session_store = Arc::new(
         SqliteSessionStore::open(sqlite_path.clone())
             .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
     );
+    // H2: probe the incremental capability on the same store the session
+    // service receives below, so whole-blob degradation is loud and
+    // health-visible.
+    let session_store_incremental = meerkat_mobkit::storage_health::probe_session_store_incremental(
+        &(session_store.clone() as Arc<dyn meerkat::SessionStore>),
+        "SqliteSessionStore",
+    );
 
     let binary_blob_store: Arc<dyn BinaryBlobStore> =
-        Arc::new(ObjectStoreBlobStore::local(store_dir.join("blobs"))?);
+        Arc::new(ObjectStoreBlobStore::local(layout.blob_root())?);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-    // Persistent runtime store at <store_dir>/runtime.sqlite — same path
-    // chosen by `MobBootstrapSpec::persistent_inner`, so a gateway and a
-    // library-mode runtime pointed at the same dir share state.
-    let runtime_db_path = sqlite_path
-        .parent()
-        .map(|p| p.join("runtime.sqlite"))
-        .unwrap_or_else(|| std::path::PathBuf::from("runtime.sqlite"));
-    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-        match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
-            Ok(store) => Arc::new(store),
-            Err(err) => {
-                tracing::warn!(
-                    path = %runtime_db_path.display(),
-                    error = %err,
-                    "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
-                     Sessions will not survive process restart and archive operations may fail.",
-                );
-                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
-            }
-        };
+    // Persistent runtime store — same path chosen by
+    // `MobBootstrapSpec::persistent_inner`, so a gateway and a library-mode
+    // runtime pointed at the same dir share state.
+    //
+    // Fail-closed (M4): an open failure is a startup error — the former
+    // silent `InMemoryRuntimeStore` fallback left resume and archive broken
+    // long after boot. This surface has no ephemeral-runtime-store
+    // declaration; its ephemeral launch mode (persistent_sessions = false)
+    // is the declared in-memory path.
+    let runtime_db_path = layout.runtime_db();
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path).map_err(|err| {
+            anyhow!(
+                "{}",
+                meerkat_mobkit::storage_health::RuntimeStoreResolutionError {
+                    path: runtime_db_path.clone(),
+                    message: err.to_string(),
+                }
+            )
+        })?,
+    );
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),
         Arc::clone(&blob_store),
@@ -464,27 +440,52 @@ fn build_persistent_session_service(
     // Attach meerkat's per-session schedule tools so members whose profile sets
     // tools.schedule=true get the meerkat_schedule_* surface; the returned
     // service backs the firing host spawned once the runtime has booted.
-    let schedule_tools =
-        meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets(
+    let (schedule_tools, schedule_slot) =
+        match meerkat_mobkit::schedule_wiring::attach_schedule_tools_with_identity_targets_reporting(
             &builder,
-            runtime_db_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
-        );
+            layout.state_dir(),
+        ) {
+            Ok(tools) => (
+                Some(tools),
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "schedule",
+                    "SqliteScheduleStore",
+                ),
+            ),
+            Err(error) => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                    "schedule",
+                    format!("schedule store failed to open; schedule tools disabled: {error}"),
+                ),
+            ),
+        };
     // WorkGraph: durable store beside the schedule store, realm scoped to
     // the mob definition id (member tools + overlays + console RPCs). The
     // state dir travels along so the bootstrap spec can place the
     // cross-process admission sidecar beside the store.
-    let workgraph_state_dir = runtime_db_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let workgraph = meerkat_mobkit::workgraph_wiring::attach_workgraph_tools(
-        &builder,
-        &workgraph_state_dir,
-        realm_id,
-    )
-    .map(|(service, admission_slot)| (service, admission_slot, workgraph_state_dir));
+    let workgraph_state_dir = layout.state_dir().to_path_buf();
+    let (workgraph, workgraph_slot) =
+        match meerkat_mobkit::workgraph_wiring::attach_workgraph_tools_reporting(
+            &builder,
+            &workgraph_state_dir,
+            realm_id,
+        ) {
+            Ok((service, admission_slot)) => (
+                Some((service, admission_slot, workgraph_state_dir)),
+                meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                    "workgraph",
+                    "SqliteWorkGraphStore",
+                ),
+            ),
+            Err(error) => (
+                None,
+                meerkat_mobkit::storage_health::StorageSlotSummary::degraded(
+                    "workgraph",
+                    format!("workgraph store failed to open; workgraph disabled: {error}"),
+                ),
+            ),
+        };
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -492,24 +493,58 @@ fn build_persistent_session_service(
         Arc::clone(&runtime_store),
         blob_store,
     ));
-    let schedule_store_dir = runtime_db_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
     let schedule_host_inputs = schedule_tools.map(|tools| {
         (
             tools.service,
             tools.mob_target_registry,
             Arc::clone(&service),
-            schedule_store_dir.join(meerkat_mobkit::schedule_wiring::SCHEDULE_STORE_FILE),
+            layout.schedule_db(),
         )
     });
+    // Blob slot resolved fail-closed above (local disk under
+    // <store_dir>/blobs). The console timeline and metadata cursor of this
+    // surface are in-memory by contract (`UnifiedRuntime::bootstrap` keeps
+    // its defaults) — a declared default, documented and health-visible
+    // (M4), not an error.
+    let mut slots = vec![
+        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+            "sessions",
+            "SqliteSessionStore",
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+            "runtime",
+            "SqliteRuntimeStore",
+        ),
+        meerkat_mobkit::storage_health::blob_slot_summary(
+            meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "console",
+            "InMemoryConsoleLogStore",
+            "declared default of this surface (UnifiedRuntime::bootstrap keeps in-memory \
+             console/metadata)",
+        ),
+        meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+            "metadata",
+            "InMemoryMetadataStore",
+            "declared default of this surface (UnifiedRuntime::bootstrap keeps in-memory \
+             console/metadata)",
+        ),
+        schedule_slot,
+        workgraph_slot,
+    ];
+    slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
     Ok((
         service,
         adapter,
         binary_blob_store,
         schedule_host_inputs,
         workgraph,
+        meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+            meerkat_mobkit::storage_health::BlobDurability::PersistentDisk,
+            Some(session_store_incremental),
+        )
+        .with_slots(slots),
     ))
 }
 
@@ -608,16 +643,403 @@ fn init_error(request_id: Value, code: i64, message: String) -> Value {
     })
 }
 
+const STORAGE_ADOPT_CHECKPOINTS_USAGE: &str = "usage: mobkit_gateway storage-adopt-checkpoints \
+     (--db <path> | --state-dir <dir>) [--apply] [--json]\n\
+     Adopt legacy (pre-typed) session documents inside continuity snapshots \
+     into typed checkpoint authority (storage-unification H3).\n\
+     Dry-run by default; --apply rewrites legacy rows in place under the \
+     exclusive maintenance fence.\n\
+     Exit codes: 0 clean, 1 refusals or fence/database failure, 2 usage error.";
+
+/// Maintenance verb: `mobkit_gateway storage-adopt-checkpoints`. Runs the H3
+/// continuity-snapshot adoption walk and prints the report. Deliberately a
+/// standalone argv verb that bypasses the stdin init handshake — adoption is
+/// never an eager side effect of ordinary gateway startup.
+fn run_storage_adopt_checkpoints(args: &[String]) -> i32 {
+    let mut db: Option<PathBuf> = None;
+    let mut state_dir: Option<PathBuf> = None;
+    let mut apply = false;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--db" => match iter.next() {
+                Some(value) => db = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--db requires a path\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
+                    return 2;
+                }
+            },
+            "--state-dir" => match iter.next() {
+                Some(value) => state_dir = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!(
+                        "--state-dir requires a directory\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
+                    );
+                    return 2;
+                }
+            },
+            "--apply" => apply = true,
+            "--json" => json = true,
+            other => {
+                eprintln!("unknown argument {other:?}\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let db_path = match (db, state_dir) {
+        (Some(db), None) => db,
+        (None, Some(dir)) => {
+            // Standalone canonical-name-first probing over the state
+            // directory. The gateway home (runtime registry + peer key)
+            // plays no role in continuity resolution, so the layout is
+            // constructed with injected roots instead of reading XDG state
+            // in a maintenance verb.
+            let layout = MobKitStorageLayout::with_injected_roots(dir, None);
+            match layout.continuity_db() {
+                Ok(resolved) => resolved.path,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return 1;
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "exactly one of --db / --state-dir is required\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
+            );
+            return 2;
+        }
+    };
+    let mode = if apply {
+        meerkat_mobkit::identity_first::AdoptionMode::Apply
+    } else {
+        meerkat_mobkit::identity_first::AdoptionMode::DryRun
+    };
+    match meerkat_mobkit::identity_first::adopt_continuity_snapshots_blocking(&db_path, mode) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => {
+                        eprintln!("failed to serialize adoption report: {error}");
+                        return 1;
+                    }
+                }
+            } else {
+                println!(
+                    "continuity checkpoint adoption ({}) at {}",
+                    if apply { "apply" } else { "dry-run" },
+                    db_path.display()
+                );
+                println!("{report}");
+            }
+            i32::from(!report.is_clean())
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
+
+const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --state-dir <dir> \
+     [--apply] [--adopt <path>] [--json]\n\
+     Fenced offline migration of one MobKit state directory \
+     (storage-unification M6): ledger baseline, legacy-spelling renames, \
+     twin reconciliation, continuity checkpoint adoption, leftover census.\n\
+     Dry-run by default; --apply mutates under the exclusive maintenance \
+     fence. --adopt <path> resolves a divergent file-name twin by adopting \
+     that copy and archiving the rest read-only (requires --apply).\n\
+     Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
+
+/// Maintenance verb: `mobkit_gateway storage-migrate`. Runs the five-case
+/// M6 migration pass and prints the report. Like the H3 verb, it is a
+/// standalone argv verb bypassing the stdin init handshake — migration is
+/// never an eager side effect of ordinary gateway startup.
+fn run_storage_migrate(args: &[String]) -> i32 {
+    let mut state_dir: Option<PathBuf> = None;
+    let mut adopt: Option<PathBuf> = None;
+    let mut apply = false;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--state-dir" => match iter.next() {
+                Some(value) => state_dir = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--state-dir requires a directory\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--adopt" => match iter.next() {
+                Some(value) => adopt = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--adopt requires a path\n{STORAGE_MIGRATE_USAGE}");
+                    return 2;
+                }
+            },
+            "--apply" => apply = true,
+            "--json" => json = true,
+            other => {
+                eprintln!("unknown argument {other:?}\n{STORAGE_MIGRATE_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(state_dir) = state_dir else {
+        eprintln!("--state-dir is required\n{STORAGE_MIGRATE_USAGE}");
+        return 2;
+    };
+    if adopt.is_some() && !apply {
+        eprintln!("--adopt requires --apply\n{STORAGE_MIGRATE_USAGE}");
+        return 2;
+    }
+    let mode = if apply {
+        meerkat_mobkit::MigrateMode::Apply
+    } else {
+        meerkat_mobkit::MigrateMode::DryRun
+    };
+    let report = meerkat_mobkit::migrate_state_dir(&state_dir, mode, adopt.as_deref());
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("failed to serialize migrate report: {error}");
+                return 1;
+            }
+        }
+    } else {
+        print_migrate_report_text(&report);
+    }
+    i32::from(report.has_errors())
+}
+
+fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
+    let mode = match report.mode {
+        meerkat_mobkit::MigrateMode::Apply => "apply",
+        _ => "dry-run",
+    };
+    println!(
+        "Storage migrate ({mode}) over {} ({} database(s) fenced):",
+        report.state_dir.display(),
+        report.fenced_databases.len()
+    );
+    for twin in &report.twins {
+        println!("twin [{}]:", twin.slot);
+        for path in &twin.paths {
+            println!("  copy: {}", path.display());
+        }
+        println!(
+            "  rows: {} equal across all copies; byte-identical: {}",
+            twin.rows_equal, twin.byte_identical
+        );
+        for row in &twin.rows {
+            let status = match &row.status {
+                meerkat_mobkit::DivergenceStatus::Equal => "equal".to_string(),
+                meerkat_mobkit::DivergenceStatus::Divergent => "divergent".to_string(),
+                meerkat_mobkit::DivergenceStatus::OnlyIn { location } => {
+                    format!("only in {}", location.display())
+                }
+                _ => "unknown".to_string(),
+            };
+            println!("    {}: {status}", row.key);
+        }
+        match &twin.resolution {
+            meerkat_mobkit::TwinResolution::Refused { reason } => {
+                println!("  resolution: REFUSED — {reason}");
+            }
+            meerkat_mobkit::TwinResolution::Deduped { kept, archived } => {
+                println!("  resolution: deduped, kept {}", kept.display());
+                for archive in archived {
+                    println!("    archived read-only: {}", archive.display());
+                }
+            }
+            meerkat_mobkit::TwinResolution::Adopted { adopted, archived } => {
+                println!("  resolution: adopted {}", adopted.display());
+                for archive in archived {
+                    println!("    archived read-only: {}", archive.display());
+                }
+            }
+            _ => println!("  resolution: unknown"),
+        }
+        for note in &twin.notes {
+            println!("  note: {note}");
+        }
+        for error in &twin.errors {
+            println!("  error: {error}");
+        }
+    }
+    for rename in &report.renames {
+        let action = match rename.action {
+            meerkat_mobkit::RenameAction::WouldRename => "would rename",
+            meerkat_mobkit::RenameAction::Renamed => "renamed",
+            meerkat_mobkit::RenameAction::Refused => "REFUSED",
+            _ => "unknown",
+        };
+        println!(
+            "rename [{}]: {} -> {} ({action}, {} sibling(s), wal checkpointed: {})",
+            rename.slot,
+            rename.from.display(),
+            rename.to.display(),
+            rename.siblings.len(),
+            rename.wal_checkpointed
+        );
+    }
+    for entry in &report.ledger {
+        let action = match entry.action {
+            meerkat_mobkit::LedgerBaselineAction::WouldStamp => "would-stamp",
+            meerkat_mobkit::LedgerBaselineAction::Recorded => "recorded",
+            meerkat_mobkit::LedgerBaselineAction::Stamped => "stamped",
+            meerkat_mobkit::LedgerBaselineAction::AlreadyCurrent => "already-current",
+            meerkat_mobkit::LedgerBaselineAction::ReportOnly => "report-only",
+            meerkat_mobkit::LedgerBaselineAction::Exempt => "exempt",
+            _ => "unknown",
+        };
+        let describe =
+            |version: Option<i64>| version.map_or_else(|| "none".to_string(), |v| v.to_string());
+        println!(
+            "ledger {} [{}]: {} -> {} ({action})",
+            entry.database.display(),
+            entry.domain,
+            describe(entry.before),
+            describe(entry.after)
+        );
+    }
+    if let Some(adoption) = &report.adoption {
+        match (&adoption.skipped, &adoption.report) {
+            (Some(skipped), _) => println!("adoption: {skipped}"),
+            (None, Some(walk)) => {
+                println!("adoption at {}:\n{walk}", adoption.database.display());
+            }
+            (None, None) => {}
+        }
+    }
+    for finding in &report.findings {
+        let path = finding
+            .path
+            .as_ref()
+            .map(|path| format!(" at {}", path.display()))
+            .unwrap_or_default();
+        println!("leftover [{}] {}{path}", finding.code, finding.message);
+    }
+    for note in &report.notes {
+        println!("note: {note}");
+    }
+    for error in &report.errors {
+        println!("error: {error}");
+    }
+    println!("storage migrate: {} error(s)", report.errors.len());
+}
+
+const STORAGE_PRUNE_USAGE: &str = "usage: mobkit_gateway storage-prune --state-dir <dir> \
+     [--apply] [--older-than-days N] [--json]\n\
+     Lifecycle of registered maintenance artifacts (`*.pre-*` backups, \
+     `*.corrupt-*` quarantines) under one MobKit state directory. Never \
+     touches anything outside those naming patterns.\n\
+     Dry-run by default; --apply deletes artifacts at least \
+     --older-than-days old (default 30; 0 = all).\n\
+     Exit codes: 0 clean, 1 delete failures, 2 usage error.";
+
+/// Maintenance verb: `mobkit_gateway storage-prune`.
+fn run_storage_prune(args: &[String]) -> i32 {
+    let mut state_dir: Option<PathBuf> = None;
+    let mut older_than_days: u64 = 30;
+    let mut apply = false;
+    let mut json = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--state-dir" => match iter.next() {
+                Some(value) => state_dir = Some(PathBuf::from(value)),
+                None => {
+                    eprintln!("--state-dir requires a directory\n{STORAGE_PRUNE_USAGE}");
+                    return 2;
+                }
+            },
+            "--older-than-days" => match iter.next().map(|value| value.parse::<u64>()) {
+                Some(Ok(days)) => older_than_days = days,
+                _ => {
+                    eprintln!("--older-than-days requires a number\n{STORAGE_PRUNE_USAGE}");
+                    return 2;
+                }
+            },
+            "--apply" => apply = true,
+            "--json" => json = true,
+            other => {
+                eprintln!("unknown argument {other:?}\n{STORAGE_PRUNE_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(state_dir) = state_dir else {
+        eprintln!("--state-dir is required\n{STORAGE_PRUNE_USAGE}");
+        return 2;
+    };
+    let mode = if apply {
+        meerkat_mobkit::MigrateMode::Apply
+    } else {
+        meerkat_mobkit::MigrateMode::DryRun
+    };
+    let report = meerkat_mobkit::prune_state_dir(&state_dir, older_than_days, mode);
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("failed to serialize prune report: {error}");
+                return 1;
+            }
+        }
+    } else {
+        let mode = if apply { "apply" } else { "dry-run" };
+        println!(
+            "Storage prune ({mode}, older than {} day(s)) over {}:",
+            report.older_than_days,
+            report.state_dir.display()
+        );
+        if report.artifacts.is_empty() {
+            println!("No registered maintenance artifacts found.");
+        }
+        for artifact in &report.artifacts {
+            let action = match artifact.action {
+                meerkat_mobkit::PruneAction::WouldDelete => "would delete",
+                meerkat_mobkit::PruneAction::Deleted => "deleted",
+                meerkat_mobkit::PruneAction::Kept => "kept (younger than threshold)",
+                meerkat_mobkit::PruneAction::DeleteFailed => "DELETE FAILED",
+                _ => "unknown",
+            };
+            println!(
+                "  {}  {} bytes, {} day(s) old — {action}",
+                artifact.path.display(),
+                artifact.bytes,
+                artifact.age_days
+            );
+        }
+        for error in &report.errors {
+            println!("error: {error}");
+        }
+        println!("storage prune: {} error(s)", report.errors.len());
+    }
+    i32::from(report.has_errors())
+}
+
 fn main() {
-    if std::env::args()
-        .skip(1)
-        .any(|a| a == "--version" || a == "-V")
-    {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
         println!(
             "mobkit_gateway {} (meerkat-mobkit console/HTTP gateway)",
             env!("CARGO_PKG_VERSION")
         );
         return;
+    }
+    if args.first().map(String::as_str) == Some("storage-adopt-checkpoints") {
+        std::process::exit(run_storage_adopt_checkpoints(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("storage-migrate") {
+        std::process::exit(run_storage_migrate(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("storage-prune") {
+        std::process::exit(run_storage_prune(&args[1..]));
     }
     // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
     // every tracing event in the process is silently dropped: runtime
@@ -695,6 +1117,12 @@ async fn run() -> anyhow::Result<()> {
         .store_path
         .unwrap_or_else(|| runtime_root.join("state"));
     let store_path = store_path.canonicalize().unwrap_or(store_path);
+    // The path authority for this boot: the state dir (a `store_path` with a
+    // file extension is the explicit session-DB override escape hatch) plus
+    // the XDG gateway home (runtime registry + peer key).
+    let gateway_home = meerkat_mobkit::storage_layout::default_gateway_home()
+        .context("resolve gateway state directory")?;
+    let layout = MobKitStorageLayout::standalone_from_store_path(&store_path, gateway_home.clone());
     let persistent_sessions = params.persistent_sessions.unwrap_or(false);
     // Doctrine default: the identity substrate is ON. `identity_first: false`
     // remains as a one-release opt-out for deployments that need the pure
@@ -726,7 +1154,9 @@ async fn run() -> anyhow::Result<()> {
         context_root.as_deref(),
         &paths,
     )?;
-    let registry_file = registry_path()?;
+    let registry_file = layout
+        .registry_file()
+        .ok_or_else(|| anyhow!("gateway storage layout carries no gateway home"))?;
     let mut registry = load_registry(&registry_file);
 
     let mut live_entries = Vec::new();
@@ -763,15 +1193,21 @@ async fn run() -> anyhow::Result<()> {
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
     let (session_spec, schedule_host_inputs, workgraph_service) = if persistent_sessions {
-        let (service, adapter, binary_blob_store, schedule_host_inputs, workgraph) =
-            build_persistent_session_service(
-                &store_path,
-                runtime_root.clone(),
-                project_root.clone(),
-                context_root.clone(),
-                image_generation,
-                &runtime_id,
-            )?;
+        let (
+            service,
+            adapter,
+            binary_blob_store,
+            schedule_host_inputs,
+            workgraph,
+            resolved_storage,
+        ) = build_persistent_session_service(
+            &layout,
+            runtime_root.clone(),
+            project_root.clone(),
+            context_root.clone(),
+            image_generation,
+            &runtime_id,
+        )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
         let schedule_host_inputs = schedule_host_inputs
@@ -795,6 +1231,7 @@ async fn run() -> anyhow::Result<()> {
         }
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        spec.resolved_storage = Some(resolved_storage);
         (spec, schedule_host_inputs, workgraph_service)
     } else {
         // Build the ephemeral path manually to thread project/context roots
@@ -848,6 +1285,46 @@ async fn run() -> anyhow::Result<()> {
             .with_workgraph_admission_slot(workgraph_admission_slot);
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
+        // In-memory blobs are the declared choice of the default ephemeral
+        // launch; no persistent session service, so no H2 flag.
+        let mut slots = vec![
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "sessions",
+                "EphemeralSessionService",
+                "declared by the default ephemeral launch (persistent_sessions = false)",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "runtime",
+                "InMemoryRuntimeStore",
+                "declared by the default ephemeral launch",
+            ),
+            meerkat_mobkit::storage_health::blob_slot_summary(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "console",
+                "InMemoryConsoleLogStore",
+                "declared default of this surface",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "metadata",
+                "InMemoryMetadataStore",
+                "declared default of this surface",
+            ),
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "workgraph",
+                "MemoryWorkGraphStore",
+                "declared by the default ephemeral launch",
+            ),
+        ];
+        slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+        spec.resolved_storage = Some(
+            meerkat_mobkit::storage_health::ResolvedStorageSummary::new(
+                meerkat_mobkit::storage_health::BlobDurability::DeclaredEphemeral,
+                None,
+            )
+            .with_slots(slots),
+        );
         // Ephemeral sessions have no persistent service; the runtime-backed
         // schedule firing host (and thus schedule tools) is persistent-only.
         (spec, None, workgraph_service)
@@ -899,11 +1376,10 @@ async fn run() -> anyhow::Result<()> {
     // already survives across runs. Cross-process peers fetch the
     // resulting pubkey via `mobkit/peer_pubkey`; inproc-only deployments
     // never use it but it's cheap to keep one ready.
-    let gateway_state_dir = state_dir().context("resolve gateway state directory")?;
-    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_state_dir).with_context(|| {
+    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_home).with_context(|| {
         format!(
             "failed to load or mint gateway peer key under {}",
-            gateway_state_dir.display()
+            gateway_home.display()
         )
     })?;
     runtime.set_gateway_peer_keys(peer_keys);
@@ -939,10 +1415,10 @@ async fn run() -> anyhow::Result<()> {
             IdentityRuntimeConfig, MobSessionBridge, MutableRosterProvider, restore_flow,
         };
 
-        let (store_dir, _) = resolve_store_dir(&store_path);
-        fs::create_dir_all(&store_dir)
+        let store_dir = layout.state_dir();
+        fs::create_dir_all(store_dir)
             .with_context(|| format!("failed to create {}", store_dir.display()))?;
-        let continuity_db = store_dir.join("continuity.db");
+        let continuity_db = layout.continuity_db().map_err(|e| anyhow!("{e}"))?.path;
         let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&continuity_db)
             .await
             .map_err(|e| anyhow!("{e}"))?;

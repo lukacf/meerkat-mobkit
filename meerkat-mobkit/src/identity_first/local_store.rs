@@ -34,6 +34,55 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS continuity_records (
         data           BLOB NOT NULL
     );";
 
+/// The continuity store's schema domain in the per-file migration ledger.
+/// Migration 0001 is the historical two-table DDL (all `CREATE ... IF NOT
+/// EXISTS`, so a pre-ledger file converges without its rows being touched).
+pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
+    meerkat_sqlite::SchemaDomain {
+        name: "mobkit-continuity",
+        migrations: &[meerkat_sqlite::Migration {
+            version: 1,
+            name: "base-schema",
+            apply: migration_0001_continuity_schema,
+        }],
+    };
+
+fn migration_0001_continuity_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
+    tx.execute_batch(SCHEMA)
+}
+
+/// Classify a raw SQLite failure at the store boundary: busy/locked is
+/// transient, corruption is corrupt, everything else keeps the historical
+/// `Io` shape. Staleness (fencing-token / checkpoint CAS conflicts) is a
+/// store-contract concept decided above this layer, never here.
+fn sqlite_err(context: &str, error: rusqlite::Error) -> ContinuityStoreError {
+    match meerkat_sqlite::classify_sqlite_error(&error) {
+        meerkat_sqlite::SqliteErrorClass::Transient => {
+            ContinuityStoreError::Transient(format!("{context}: {error}"))
+        }
+        meerkat_sqlite::SqliteErrorClass::Corrupt => {
+            ContinuityStoreError::Corruption(format!("{context}: {error}"))
+        }
+        meerkat_sqlite::SqliteErrorClass::Other => {
+            ContinuityStoreError::Io(format!("{context}: {error}"))
+        }
+    }
+}
+
+/// Map a shared-mechanics error into the typed store error, routing the
+/// wrapped raw SQLite failures through [`sqlite_err`]'s classification. A
+/// held maintenance fence is transient by nature (storage is under offline
+/// maintenance; the operation may be retried once it lifts).
+fn mechanics_err(context: &str, error: meerkat_sqlite::SqliteStoreError) -> ContinuityStoreError {
+    match error {
+        meerkat_sqlite::SqliteStoreError::Sqlite(sql) => sqlite_err(context, sql),
+        meerkat_sqlite::SqliteStoreError::MaintenanceFenceHeld { .. } => {
+            ContinuityStoreError::Transient(format!("{context}: {error}"))
+        }
+        other => ContinuityStoreError::Io(format!("{context}: {other}")),
+    }
+}
+
 struct ReadConnectionPool {
     available: Mutex<Vec<Connection>>,
     ready: Condvar,
@@ -112,15 +161,29 @@ enum ReadConnections {
 }
 
 struct LocalContinuityStoreInner {
+    /// Database file path; `:memory:` for in-memory stores (where the
+    /// per-operation fence guard degrades to a no-op).
+    db_path: PathBuf,
     writer: Mutex<Connection>,
     readers: ReadConnections,
 }
 
 impl LocalContinuityStoreInner {
+    /// Per-operation maintenance-fence guard: the writer and reader pool
+    /// hold their connections for the store's lifetime, so the fence
+    /// cannot ride the open — every operation takes its own shared guard,
+    /// and offline maintenance drains in-flight guards before touching the
+    /// file.
+    fn operation_fence(&self) -> Result<meerkat_sqlite::OperationGuard, ContinuityStoreError> {
+        meerkat_sqlite::OperationGuard::for_database(&self.db_path)
+            .map_err(|e| mechanics_err("operation fence", e))
+    }
+
     fn with_reader<T>(
         &self,
         operation: impl FnOnce(&Connection) -> Result<T, ContinuityStoreError>,
     ) -> Result<T, ContinuityStoreError> {
+        let _fence = self.operation_fence()?;
         match &self.readers {
             ReadConnections::Writer => {
                 let connection = self
@@ -137,6 +200,7 @@ impl LocalContinuityStoreInner {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, ContinuityStoreError>,
     ) -> Result<T, ContinuityStoreError> {
+        let _fence = self.operation_fence()?;
         let mut connection = self
             .writer
             .lock()
@@ -169,29 +233,25 @@ impl LocalContinuityStore {
             return Self::in_memory();
         }
 
-        let writer = Connection::open(path)
-            .map_err(|e| ContinuityStoreError::Io(format!("open writer: {e}")))?;
-        writer
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|e| ContinuityStoreError::Io(format!("pragma: {e}")))?;
-        writer
-            .execute_batch(SCHEMA)
-            .map_err(|e| ContinuityStoreError::Io(format!("schema: {e}")))?;
+        let mut writer = meerkat_sqlite::open(path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+            .map_err(|e| mechanics_err("open writer", e))?;
+        meerkat_sqlite::apply_domain_migrations(&mut writer, &MOBKIT_CONTINUITY_DOMAIN)
+            .map_err(|e| mechanics_err("apply schema", e))?;
 
         let mut readers = Vec::with_capacity(READ_POOL_SIZE);
         for index in 0..READ_POOL_SIZE {
-            let reader = Connection::open(path)
-                .map_err(|e| ContinuityStoreError::Io(format!("open reader {index}: {e}")))?;
-            reader
-                .execute_batch(
-                    "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA query_only=ON;",
-                )
-                .map_err(|e| ContinuityStoreError::Io(format!("configure reader {index}: {e}")))?;
+            // `ReadOnly` (SQLITE_OPEN_READ_ONLY) is the honest form of the
+            // historical `PRAGMA query_only=ON` reader configuration: the
+            // connection itself cannot write, and a reader never converts
+            // the file's journal mode.
+            let reader = meerkat_sqlite::open(path, meerkat_sqlite::ConnectionProfile::ReadOnly)
+                .map_err(|e| mechanics_err(&format!("open reader {index}"), e))?;
             readers.push(reader);
         }
 
         Ok(Self {
             inner: Arc::new(LocalContinuityStoreInner {
+                db_path: path.to_path_buf(),
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Pool(ReadConnectionPool::new(readers)),
             }),
@@ -225,13 +285,13 @@ impl LocalContinuityStore {
     ///
     /// Returns `ContinuityStoreError::Io` if initialization fails.
     pub fn in_memory() -> Result<Self, ContinuityStoreError> {
-        let writer = Connection::open_in_memory()
-            .map_err(|e| ContinuityStoreError::Io(format!("in-memory open: {e}")))?;
-        writer
-            .execute_batch(SCHEMA)
-            .map_err(|e| ContinuityStoreError::Io(format!("schema: {e}")))?;
+        let mut writer =
+            Connection::open_in_memory().map_err(|e| sqlite_err("in-memory open", e))?;
+        meerkat_sqlite::apply_domain_migrations(&mut writer, &MOBKIT_CONTINUITY_DOMAIN)
+            .map_err(|e| mechanics_err("apply schema", e))?;
         Ok(Self {
             inner: Arc::new(LocalContinuityStoreInner {
+                db_path: PathBuf::from(":memory:"),
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Writer,
             }),
@@ -263,7 +323,7 @@ impl LocalContinuityStore {
                     [],
                     |row| row.get::<_, u64>(0),
                 )
-                .map_err(|e| ContinuityStoreError::Io(format!("max_fencing_token: {e}")))
+                .map_err(|e| sqlite_err("max_fencing_token", e))
         })
     }
 
@@ -302,7 +362,7 @@ impl ContinuityStore for LocalContinuityStore {
                             "SELECT agent_runtime_id, session_id, generation, checkpoint_version
                              FROM continuity_records WHERE identity = ?1",
                         )
-                        .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
+                        .map_err(|e| sqlite_err("prepare", e))?;
                     let row = stmt
                         .query_row(rusqlite::params![id.as_str()], |row| {
                             Ok((
@@ -313,7 +373,7 @@ impl ContinuityStore for LocalContinuityStore {
                             ))
                         })
                         .optional()
-                        .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
+                        .map_err(|e| sqlite_err("query", e))?;
                     match row {
                         Some((runtime_id, session_id_str, generation, cpv)) => {
                             let record = ContinuityRecord {
@@ -356,13 +416,13 @@ impl ContinuityStore for LocalContinuityStore {
             inner.with_reader(|connection| {
                 let mut stmt = connection
                     .prepare_cached("SELECT data FROM session_snapshots WHERE session_id = ?1")
-                    .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
+                    .map_err(|e| sqlite_err("prepare", e))?;
                 let row = stmt
                     .query_row(rusqlite::params![session_id.to_string()], |row| {
                         row.get::<_, Vec<u8>>(0)
                     })
                     .optional()
-                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
+                    .map_err(|e| sqlite_err("query", e))?;
                 Ok(row.map(|data| SessionSnapshot { data }))
             })
         })
@@ -403,7 +463,7 @@ impl ContinuityStore for LocalContinuityStore {
                         ],
                         |row| row.get::<_, bool>(0),
                     )
-                    .map_err(|e| ContinuityStoreError::Io(format!("match session snapshot: {e}")))
+                    .map_err(|e| sqlite_err("match session snapshot", e))
             })
         })
         .await
@@ -422,7 +482,7 @@ impl ContinuityStore for LocalContinuityStore {
                 inner.with_writer(|connection| {
                     let tx = connection
                         .transaction()
-                        .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+                        .map_err(|e| sqlite_err("begin tx", e))?;
 
                     let data = tx
                         .query_row(
@@ -431,7 +491,7 @@ impl ContinuityStore for LocalContinuityStore {
                             |row| row.get::<_, Vec<u8>>(0),
                         )
                         .optional()
-                        .map_err(|e| ContinuityStoreError::Io(format!("query snapshot: {e}")))?;
+                        .map_err(|e| sqlite_err("query snapshot", e))?;
 
                     let Some(data) = data else {
                         return Ok(false);
@@ -454,10 +514,9 @@ impl ContinuityStore for LocalContinuityStore {
                             "DELETE FROM session_snapshots WHERE session_id = ?1",
                             rusqlite::params![session_id.to_string()],
                         )
-                        .map_err(|e| ContinuityStoreError::Io(format!("delete snapshot: {e}")))?;
-                    tx.commit().map_err(|e| {
-                        ContinuityStoreError::Io(format!("commit snapshot delete: {e}"))
-                    })?;
+                        .map_err(|e| sqlite_err("delete snapshot", e))?;
+                    tx.commit()
+                        .map_err(|e| sqlite_err("commit snapshot delete", e))?;
                     Ok(deleted > 0)
                 })
             },
@@ -500,14 +559,14 @@ impl ContinuityStore for LocalContinuityStore {
                 // advance in one writer transaction.
                 let tx = connection
                     .unchecked_transaction()
-                    .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+                    .map_err(|e| sqlite_err("begin tx", e))?;
 
                 let mut stmt = tx
                     .prepare_cached(
                         "SELECT session_id, generation, fencing_token, checkpoint_version
                          FROM continuity_records WHERE identity = ?1",
                     )
-                    .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
+                    .map_err(|e| sqlite_err("prepare", e))?;
                 let existing = stmt
                     .query_row(rusqlite::params![identity.as_str()], |row| {
                         Ok((
@@ -518,7 +577,7 @@ impl ContinuityStore for LocalContinuityStore {
                         ))
                     })
                     .optional()
-                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
+                    .map_err(|e| sqlite_err("query", e))?;
                 drop(stmt);
 
                 let record_was_present = existing.is_some();
@@ -559,9 +618,7 @@ impl ContinuityStore for LocalContinuityStore {
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
                     )
                     .optional()
-                    .map_err(|e| {
-                        ContinuityStoreError::Io(format!("query snapshot owner: {e}"))
-                    })?;
+                    .map_err(|e| sqlite_err("query snapshot owner", e))?;
                 if let Some((snapshot_identity, snapshot_generation)) = existing_snapshot_owner
                     && (snapshot_identity != identity.as_str()
                         || snapshot_generation != generation.get())
@@ -590,7 +647,7 @@ impl ContinuityStore for LocalContinuityStore {
                         &snapshot.data,
                     ],
                 )
-                .map_err(|e| ContinuityStoreError::Io(format!("upsert snapshot: {e}")))?;
+                .map_err(|e| sqlite_err("upsert snapshot", e))?;
 
                 tx.execute(
                     "UPDATE continuity_records
@@ -604,11 +661,7 @@ impl ContinuityStore for LocalContinuityStore {
                         generation.get(),
                     ],
                 )
-                .map_err(|e| {
-                    ContinuityStoreError::Io(format!(
-                        "update continuity after snapshot: {e}"
-                    ))
-                })?;
+                .map_err(|e| sqlite_err("update continuity after snapshot", e))?;
                 if record_was_present && tx.changes() == 0 {
                     return Err(ContinuityStoreError::NotFound {
                         identity: identity.clone(),
@@ -616,7 +669,7 @@ impl ContinuityStore for LocalContinuityStore {
                 }
 
                 tx.commit()
-                    .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
+                    .map_err(|e| sqlite_err("commit tx", e))?;
                 Ok(())
             })
         })
@@ -635,13 +688,13 @@ impl ContinuityStore for LocalContinuityStore {
                     .prepare_cached(
                         "SELECT fencing_token, generation FROM continuity_records WHERE identity = ?1",
                     )
-                    .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
+                    .map_err(|e| sqlite_err("prepare", e))?;
                 let existing = stmt
                     .query_row(rusqlite::params![record.identity.as_str()], |row| {
                         Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
                     })
                     .optional()
-                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
+                    .map_err(|e| sqlite_err("query", e))?;
                 drop(stmt);
 
                 if let Some((current_token, current_generation)) = existing {
@@ -684,7 +737,7 @@ impl ContinuityStore for LocalContinuityStore {
                             fencing_token.get(),
                         ],
                     )
-                    .map_err(|e| ContinuityStoreError::Io(format!("upsert record: {e}")))?;
+                    .map_err(|e| sqlite_err("upsert record", e))?;
                 Ok(())
             })
         })
@@ -717,7 +770,7 @@ impl ContinuityStore for LocalContinuityStore {
 
                 let tx = connection
                     .unchecked_transaction()
-                    .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+                    .map_err(|e| sqlite_err("begin tx", e))?;
                 let current = tx
                     .query_row(
                         "SELECT agent_runtime_id, session_id, generation, fencing_token
@@ -733,7 +786,7 @@ impl ContinuityStore for LocalContinuityStore {
                         },
                     )
                     .optional()
-                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?
+                    .map_err(|e| sqlite_err("query", e))?
                     .ok_or_else(|| ContinuityStoreError::NotFound {
                         identity: expected_attempt.identity.clone(),
                     })?;
@@ -769,9 +822,7 @@ impl ContinuityStore for LocalContinuityStore {
                         expected_attempt.generation.get(),
                     ],
                 )
-                .map_err(|e| {
-                    ContinuityStoreError::Io(format!("delete attempted snapshots: {e}"))
-                })?;
+                .map_err(|e| sqlite_err("delete attempted snapshots", e))?;
 
                 if let Some(previous) = previous {
                     tx.execute(
@@ -791,25 +842,44 @@ impl ContinuityStore for LocalContinuityStore {
                             expected_attempt.identity.as_str(),
                         ],
                     )
-                    .map_err(|e| {
-                        ContinuityStoreError::Io(format!("restore previous record: {e}"))
-                    })?;
+                    .map_err(|e| sqlite_err("restore previous record", e))?;
                 } else {
                     tx.execute(
                         "DELETE FROM continuity_records WHERE identity = ?1",
                         rusqlite::params![expected_attempt.identity.as_str()],
                     )
-                    .map_err(|e| {
-                        ContinuityStoreError::Io(format!("delete attempted record: {e}"))
-                    })?;
+                    .map_err(|e| sqlite_err("delete attempted record", e))?;
                 }
 
-                tx.commit()
-                    .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
+                tx.commit().map_err(|e| sqlite_err("commit tx", e))?;
                 Ok(())
             })
         })
         .await
+    }
+
+    /// M4b deferral (deliberate `None`): the bundled store does NOT ship the
+    /// incremental session-delta channel yet.
+    ///
+    /// Shipping it honestly requires making head+rows the canonical durable
+    /// representation of a session in this database, which conflicts with
+    /// everything that treats `session_snapshots.data` as the byte authority
+    /// today: the exact-match no-op probe and the parse-derived CAS revision
+    /// tokens (`session_snapshot_matches_current`,
+    /// `delete_session_snapshot_if_current_revision`), explicit whole-document
+    /// checkpoints (`checkpoint_session`), and H3's lazy checkpoint adoption,
+    /// which takes byte custody of the stored BLOB at restore. A delta channel
+    /// bolted beside the blob would create two write authorities over one
+    /// session in one store with no reconciliation rule — the
+    /// "independently-adopted byte-divergent pair" failure class. The
+    /// capability seam ([`ContinuityStore::as_incremental_sessions`]) and the
+    /// adapter forwarding are in place; the store-side channel lands when the
+    /// snapshot representation itself moves to head+rows, gated by the
+    /// meerkat-store-conformance incremental profile.
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
+        None
     }
 
     async fn delete_continuity_record(
@@ -824,19 +894,19 @@ impl ContinuityStore for LocalContinuityStore {
                 // failures cannot leave a half-deleted identity.
                 let tx = connection
                     .unchecked_transaction()
-                    .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+                    .map_err(|e| sqlite_err("begin tx", e))?;
 
                 let mut stmt = tx
                     .prepare_cached(
                         "SELECT fencing_token FROM continuity_records WHERE identity = ?1",
                     )
-                    .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
+                    .map_err(|e| sqlite_err("prepare", e))?;
                 let existing_token = stmt
                     .query_row(rusqlite::params![identity.as_str()], |row| {
                         row.get::<_, u64>(0)
                     })
                     .optional()
-                    .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
+                    .map_err(|e| sqlite_err("query", e))?;
                 drop(stmt);
 
                 if let Some(current) = existing_token
@@ -853,14 +923,13 @@ impl ContinuityStore for LocalContinuityStore {
                     "DELETE FROM session_snapshots WHERE identity = ?1",
                     rusqlite::params![identity.as_str()],
                 )
-                .map_err(|e| ContinuityStoreError::Io(format!("delete snapshots: {e}")))?;
+                .map_err(|e| sqlite_err("delete snapshots", e))?;
                 tx.execute(
                     "DELETE FROM continuity_records WHERE identity = ?1",
                     rusqlite::params![identity.as_str()],
                 )
-                .map_err(|e| ContinuityStoreError::Io(format!("delete record: {e}")))?;
-                tx.commit()
-                    .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
+                .map_err(|e| sqlite_err("delete record", e))?;
+                tx.commit().map_err(|e| sqlite_err("commit tx", e))?;
                 Ok(())
             })
         })
@@ -884,6 +953,69 @@ mod tests {
             generation: ContinuityGeneration::new(0),
             checkpoint_version: CheckpointVersion::new(0),
         }
+    }
+
+    #[tokio::test]
+    async fn fresh_store_stamps_mobkit_continuity_domain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let store = LocalContinuityStore::open(&path).expect("open");
+        // The store must stay usable while we inspect the ledger.
+        assert_eq!(store.max_fencing_token().expect("floor"), 0);
+        let probe = Connection::open(&path).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_file_opens_converges_and_preserves_rows() {
+        // A pre-ledger file (historical two-table DDL, no meerkat_schema
+        // table) must open, be stamped, and keep its rows readable.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        {
+            let conn = Connection::open(&path).expect("legacy create");
+            conn.execute_batch(SCHEMA).expect("legacy ddl");
+            conn.execute(
+                "INSERT INTO continuity_records (identity, agent_runtime_id, session_id, \
+                 generation, checkpoint_version, fencing_token) VALUES (?1, 'rt-001', ?2, 3, 5, 7)",
+                rusqlite::params![identity.as_str(), session_id.to_string()],
+            )
+            .expect("legacy record");
+            conn.execute(
+                "INSERT INTO session_snapshots (session_id, identity, generation, \
+                 checkpoint_version, fencing_token, data) VALUES (?1, ?2, 3, 5, 9, X'010203')",
+                rusqlite::params![session_id.to_string(), identity.as_str()],
+            )
+            .expect("legacy snapshot");
+        }
+
+        let store = LocalContinuityStore::open(&path).expect("open legacy");
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .expect("resolve");
+        match resolved.get(&identity) {
+            Some(ContinuityResolveState::Ready { record }) => {
+                assert_eq!(record.generation.get(), 3);
+                assert_eq!(record.checkpoint_version.get(), 5);
+            }
+            other => panic!("legacy record must survive the port: {other:?}"),
+        }
+        assert_eq!(
+            store.max_fencing_token().expect("floor"),
+            9,
+            "fencing floor spans both legacy tables"
+        );
+        let probe = Connection::open(&path).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
+            Some(1)
+        );
     }
 
     #[tokio::test]

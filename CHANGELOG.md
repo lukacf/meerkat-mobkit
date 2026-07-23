@@ -7,6 +7,456 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Durability declaration completeness is enforced at the storage seam.**
+  `enforce_fail_closed_store_set` now requires exactly one
+  `DurabilityDeclaration` for every slot in the new
+  `REQUIRED_MOBKIT_DURABILITY_DOMAINS` (`continuity`, `event_log`, `console`,
+  `metadata`, `blobs`, `agent_memory`, `schedule`); a provider that omits or
+  duplicates a domain is refused at composition instead of silently passing
+  the fail-closed durability rule. Mirrors the meerkat-level
+  `REQUIRED_DURABILITY_DOMAINS` hardening.
+
+- **`mobkit_gateway storage-migrate` / `storage-prune` — MobKit migration
+  participation (storage-unification Phase M6).** New library module
+  `meerkat_mobkit::storage_migrate` plus two offline maintenance verbs on
+  the gateway binary (argv verbs beside `storage-adopt-checkpoints`; no RPC
+  method — migration is never an eager side effect of gateway startup).
+  `storage-migrate --state-dir <dir> [--apply] [--adopt <path>] [--json]`
+  runs the five migration cases under `MobKitMaintenanceFence` — one
+  `meerkat_sqlite::ExclusiveFence` per materialized database (meerkat's
+  Phase 6 primitive; MobKit builds no second fence), sorted acquisition
+  order, all-or-nothing RAII:
+  1. **Ledger baseline (auto-safe):** every existing MobKit-owned database
+     opens through its normal M3 constructor so `meerkat_schema` domains
+     stamp (continuity, metadata, console, per-realm agent-memory files);
+     dry-run is a read-only version matrix. The workgraph admission sidecar
+     is exempt by design (no ledger — M3 decision, noted in the report);
+     meerkat-shared databases (sessions/runtime/schedule/workgraph) are
+     report-only and converge through the owning meerkat store's next open.
+  2. **File-name unification (auto-safe, rename-only):** a lone legacy
+     spelling (`sessions.db`, `sessions.sqlite`, `continuity.db`,
+     `identity_continuity.sqlite`, `mobkit_metadata.sqlite`,
+     `mobkit_console.sqlite`, `agent-memory-sqlite/`) renames to its M2
+     canonical name **only here, under the fence** (the resolver never
+     renames at open), moving `-wal`/`-shm` siblings with the database — a
+     non-empty WAL is checkpointed first and the move refuses if it cannot
+     be. Every rename writes a registered marker
+     (`<legacy>.pre-<version>-<ts>.renamed`) so doctor lists it and
+     retention tooling recognizes the transition.
+  3. **Twin reconciliation (manual, fail-closed):** both spellings
+     populated → per-domain divergence report (row-level by primary key +
+     content digest for continuity/metadata/console; file-digest for the
+     rest) and a typed refusal that fails the whole run closed.
+     Byte-identical twins dedup under plain `--apply`; divergent twins
+     resolve only with `--apply --adopt <path>` — the adopted copy keeps
+     its place (renamed to canonical if legacy-named), the rest archived
+     read-only. **No synthesis**: continuity fencing tokens and console
+     `AUTOINCREMENT` cursors are per-database sequences.
+  4. **Continuity checkpoint adoption:** H3's snapshot-adoption walk runs
+     under the same fence pass (new
+     `adopt_continuity_snapshots_already_fenced` composition seam) and its
+     report merges into the migrate report.
+  5. **Leftovers (report-only):** legacy sharded-FS blob files, the
+     admission sidecar, `*.pre-*`/`*.corrupt-*` artifacts, and dead
+     `tux-runtimes.json` entries (recorded pid no longer alive).
+  `storage-prune --state-dir <dir> [--apply] [--older-than-days N]
+  [--json]` owns the registered-artifact lifecycle (`*.pre-*` backups,
+  `*.corrupt-*` quarantines; default threshold 30 days; deletion refuses
+  anything outside the registered naming). Backup naming is shared with
+  meerkat verbatim (`<original>.pre-<version>-<timestamp>[.<purpose>]`,
+  reusing `meerkat_store::migrate`'s helpers), so HomeCore-class
+  generation-cloning recognizes MobKit artifacts the same way — but
+  recognition validates the COMPLETE generated shape
+  (`is_registered_backup_artifact_name` /
+  `is_registered_quarantine_artifact_name`: dotted numeric version,
+  all-digit timestamp, exact `.corrupt-<digits>` suffix), never a loose
+  `.pre-` substring, so prune and doctor can never claim user files like
+  `notes.pre-release`. Exit codes:
+  0 clean, 1 refusals/fence/store failures, 2 usage errors; dry-run
+  default. `MobKitStorageMigrator` gains concrete `migrate`/`prune`
+  methods (the meerkat-owned `StorageMigrator` trait stays diagnose-only).
+- **`MobKitStorageProvider` — the composite storage-provider seam
+  (storage-unification Phase M4b, the "one remote bundle").** New module
+  `meerkat_mobkit::storage_provider`: a downstream backend (BigQuery,
+  Postgres, object stores) implements ONE provider that wraps or references
+  a meerkat `RealmStorageProvider` (`meerkat_provider()`, the
+  meerkat-shared stores) and opens the realm-wide MobKit store set
+  (`open_realm(&MobKitRealmOpenContext) -> MobKitRealmStoreSet`:
+  continuity, lease authority — a `LeaseProvider` or the fencing floor to
+  seed one — event log, console timeline, metadata, binary blobs, agent
+  memory, schedule), each slot paired with a machine-readable
+  `meerkat_core::DurabilityDeclaration`; `migrator()` exposes the storage
+  maintenance hook. Composition is fail-closed
+  (`enforce_fail_closed_store_set`): a `Durable` slot resolving
+  non-persistent without an explicit ephemeral declaration is a typed
+  startup error, never a silent in-memory fallback. The built-in
+  `DiskMobKitStorageProvider` reproduces today's SQLite/object-store layout
+  through the M2 layout locators and M3 ledgered openers, and returns
+  `MobKitStorageMigrator` as its maintenance hook.
+  `UnifiedRuntimeBuilder::storage_provider(...)` installs a provider for
+  identity-first builds (requires `roster_provider()`; the provider's
+  continuity store is the session authority; realm root from
+  `persistent_state()` or `scratch_dir()`); supplying the provider together
+  with a per-slot seam it subsumes is a typed conflict. The acceptance
+  proof lives in `mobkit-store-conformance`
+  (`tests/one_remote_bundle.rs`): an in-crate, in-memory-declared reference
+  provider (`ReferenceMemoryBundleProvider`) passes the full MobKit
+  conformance suite through the single seam and the meerkat conformance
+  profiles (baseline, append-only, incremental, blobs, artifacts) through
+  its `meerkat_provider()`.
+- **New `UnifiedRuntimeBuilder` seams:** `schedule_store(Arc<dyn
+  ScheduleStore>)` (the public schedule-store seam ob3 lacked — schedule
+  tools attach over the caller's store on both the persistent and the
+  ephemeral/scratch paths; library mode wires no firing host, and injection
+  is a foundation: shadow-scheduler deletion downstream still requires a
+  feature-parity audit), `binary_blob_store(Arc<dyn BinaryBlobStore>)`
+  (typed raw-bytes blob injection that skips the base64 adapter round-trip
+  on the byte-serving paths; mutually exclusive with `blob_store()`), and
+  `ephemeral_runtime_store(bool)` (the explicit in-memory runtime-store
+  declaration; see the fail-closed change below).
+  `schedule_wiring::attach_schedule_tools_with_store` and the
+  `*_reporting` variants of the schedule/workgraph attach functions are
+  public for gateway-grade composition.
+- **Per-slot storage census on the health surfaces.**
+  `ResolvedStorageSummary` grows a `slots` array (additive wire change on
+  the `"storage"` object of `mobkit/status` / `mobkit/capabilities` /
+  `mobkit/storage/doctor`): every composed slot reports its domain,
+  durability class, resolution (`persistent` / `declared_ephemeral` /
+  `non_persistent`), backend, degradation flag, and detail. Declared
+  defaults are now visible instead of silent (the ephemeral gateway's
+  in-memory console/metadata, `mobkit_gateway`'s in-memory console/metadata
+  contract, an unconfigured event log = "events are not ingested"), the
+  schedule/workgraph boot-without posture is a health-visible degraded slot
+  entry instead of a warn line alone, and the three in-process ring buffers
+  (gating audit 512 / delivery history 200 / routing resolutions 512) are
+  classified `Scratch` explicitly — a documented decision; a durable
+  gating-audit slot remains a flagged follow-up, not part of this arc.
+- **Incremental-continuity capability seam (typed, discoverable —
+  deliberately deferred for the bundled store).** `ContinuityStore` gains
+  `as_incremental_sessions() -> Option<Arc<dyn IncrementalSessionStore>>`
+  (default `None`), and `ContinuitySessionStoreAdapter::as_incremental`
+  genuinely forwards it: `Some` exactly when the substrate advertises the
+  session-delta channel, wrapped so every delta mutation preserves the
+  adapter's registration/suspension/supersede discipline under the same
+  per-session lock as the whole-blob paths (H3 lazy adoption included).
+  The bundled `LocalContinuityStore` deliberately returns `None`: shipping
+  a delta channel beside today's whole-snapshot byte authority (exact-match
+  probes, parse-derived CAS revision tokens, `checkpoint_session`, H3's
+  adoption byte custody) would create two write authorities over one
+  session in one store with no reconciliation rule. The store-side channel
+  lands when the snapshot representation itself moves to head+rows, gated
+  by the meerkat-store-conformance incremental profile; the H2 whole-blob
+  health flag and the M0 canary stay pinned `false` accordingly.
+  `GatewayContinuityStore` cannot advertise the capability (its callback
+  wire protocol has only whole-snapshot verbs).
+- `runtime_options` (rpc_gateway) wire additions: `event_log.storage`
+  accepts `"null"` (explicitly declared dropped events; the existing
+  `"memory"` form keeps working), and the new `runtime_store` key accepts
+  `{"storage": "memory"}` — the explicit ephemeral runtime-store
+  declaration. Unknown keys still reject.
+- **SDK storage durability vocabulary (storage-unification Phase M5).**
+  Python gains the `config.runtime_store` (`runtime_store.memory()`) and
+  `config.event_log` (`event_log.memory(batch_size, flush_interval_ms)` /
+  `event_log.null()`) modules plus the builder methods
+  `.runtime_store(config)` and the extended `.event_log(config)` (the
+  legacy `event_log(storage=..., **kwargs)` keyword form keeps working);
+  TypeScript mirrors them as the `runtimeStore` / `eventLog` config
+  modules (`eventLog.nullStore()` — `null` is reserved) and
+  `.runtimeStore(config)` / the extended `.eventLog(...)`. Both SDKs now
+  parse the storage census: `StatusResult.storage` /
+  `CapabilitiesResult.storage` carry a typed `StorageSummary` (H1 blob
+  durability, the H2 incremental probe, and the M4 per-slot
+  `StorageSlotSummary` census), with forward-tolerant parsing;
+  TypeScript additionally exports `parseStorageSummary` for the raw
+  `mobkit/storage/doctor` `storage` record. Blob-store durability
+  remains embedder-only (no wire declaration; census-visible read-only).
+- **Typed fail-closed storage refusals: JSON-RPC error `-32014`
+  (`STORAGE_RESOLUTION_CODE`).** The `rpc_gateway` init storage refusals
+  — file-name twins the layout refuses to pick between, a
+  session/runtime/blob/metadata/console store that failed to open where
+  the silent in-memory fallback used to be, an uncreatable state root —
+  now answer `mobkit/init` with `-32014` instead of generic `-32603`,
+  and both SDKs reify it as the new `StorageResolutionError`
+  (`RpcError` subclass). Both SDK bootstraps also stop rewrapping a
+  received structured init error as a transport failure when the gateway
+  exits after writing it (the fail-closed refusals do exactly that).
+  Refusals raised inside `UnifiedRuntime::bootstrap` (Rust builder
+  surfaces) still surface as `-32603` with the typed message text.
+- **M5 storage anti-regression gate** (`meerkat-mobkit/tests/storage_gate.rs`,
+  default test lane): production code may not resolve ambient roots
+  (`$HOME`/`$XDG_*`/`$LOCALAPPDATA`/`$TMPDIR` reads, `env::temp_dir`,
+  `dirs::`-style derivations) or spell the canonical database file names
+  outside `src/storage_layout.rs`; legitimate uses are allowlisted with
+  documented reasons (mobpack's skill/MCP-config home discovery and
+  scratch outputs, the feature-owned schedule/workgraph constants, the
+  doctor's legacy-spelling census). The sweep it enforces moved the
+  mobpack flow-editor draft-store default off its private
+  `$XDG_STATE_HOME`/`$HOME` derivation onto
+  `storage_layout::default_gateway_home()` (same resulting path).
+
+### Fixed
+
+- **BREAKING for external `ContinuityStore` implementors relying on the
+  old default: `rollback_continuity_record`'s compatibility implementation
+  now actually restores.** The previous default restored the pre-reset
+  record via `upsert_continuity_record`, which the trait requires to be
+  generation-monotonic — so on every conforming store the restore path
+  failed with `StaleContinuityGeneration` and only the delete arm
+  compensated. The default now validates the attempt row, deletes it under
+  the fence CAS, and re-upserts the previous record as a fresh insert —
+  semantics a conforming store CAN satisfy. Documented caveats (why stores
+  should still override with one atomic CAS transaction, as
+  `LocalContinuityStore` does): the path is non-atomic, and
+  `delete_continuity_record` removes the identity's session snapshots —
+  including the previous generation's rollback-authority snapshots, which
+  the atomic override retains. The
+  `mobkit-store-conformance` `RollbackPath::CompatibilityDefault` chapter
+  pins the fixed behavior (working restore + the snapshot-loss caveat);
+  external stores that rely on the default and depended on the old
+  always-fail behavior must re-run the suite.
+
+### Changed
+
+- **BREAKING / fail-closed (M4): the runtime store no longer silently falls
+  back to in-memory.** All three composition surfaces
+  (`MobBootstrapSpec::persistent*` and the builder's `persistent_state()`
+  path, `rpc_gateway`, `mobkit_gateway`) previously answered a failed
+  `runtime.sqlite` open with a `tracing::warn!` plus a silent
+  `InMemoryRuntimeStore` — a degraded mode in which resume across restart
+  and archive operations fail long after boot (the fifth silent fallback of
+  the storage-unification recon). A failed open is now a startup error
+  whose message names the remediation (fix the database file, or declare
+  the ephemeral choice explicitly via
+  `UnifiedRuntimeBuilder::ephemeral_runtime_store(true)` /
+  `runtime_options.runtime_store = {"storage": "memory"}`).
+  `InMemoryRuntimeStore` remains constructible by declaration only.
+  Signature note: `MobBootstrapSpec::persistent` /
+  `persistent_with_hook` now return
+  `Result<Self, StorageResolutionError>` (a composite of the H1 blob error
+  and the new runtime-store error) instead of
+  `Result<Self, BlobStoreResolutionError>`.
+- **REQ-23 lifted (M4): `persistent_state()` and an external
+  continuity/lease pair may coexist.** The external substrate (or a
+  `storage_provider()`) stays the identity and session authority —
+  `ContinuitySessionStoreAdapter` remains the session store — while the
+  state directory supplies the meerkat-shared local stores (runtime,
+  workgraph, blobs, topology control). The genuinely contradictory
+  combinations keep typed errors: `persistent_state()` + `scratch_dir()`
+  (two path roots for one realm), and half an external substrate
+  (`continuity_store()` without `lease_provider()` or vice versa alongside
+  `persistent_state()` — fencing floors are store-coupled).
+
+- **BREAKING (pre-1.0): the judgment plane is de-welded onto capability
+  traits (storage-unification Phase M4).** The taint firewall controls, the
+  Steward's dream read/write surface, and the console Memory panel's read
+  API — previously inherent methods on the concrete
+  `SqliteAgentMemoryStore` — are now capability traits in
+  `meerkat_mobkit::memory::capabilities`: `TaintableStore` (the five
+  firewall setters `set_llm_write_gate`, `set_llm_write_gate_if_absent`,
+  `set_evidence_resolver`, `set_event_sink`, `set_event_sink_if_absent`),
+  `StewardStore: StagedMemoryStore + TombstoneSource` (the nineteen steward
+  read/write methods, including the dream ledger writers), and
+  `MemoryPanelStore: StewardStore` (the eight panel-only reads). The full
+  plane — firewall, Steward, Hygienist span source, Selector fetch, console
+  panel — now runs against ANY `AgentMemoryProvider` advertising the
+  matching capability accessors (`as_taintable`, `as_steward_store`,
+  `as_memory_panel_store`, `as_selected_record_fetch`,
+  `as_tombstone_source`; all default `None`). Breaking API notes for
+  embedders under the pre-1.0 policy:
+  - `AgentMemoryProvider::as_sqlite_store()` is **deleted** (the trait no
+    longer names its own implementation); probe the capability accessors
+    instead.
+  - The promoted store methods moved from inherent impls to the trait
+    impls: call sites on the concrete `SqliteAgentMemoryStore` now need the
+    corresponding trait in scope (`TaintableStore`, `StewardStore`,
+    `MemoryPanelStore` — all re-exported from `meerkat_mobkit`).
+  - `memory_wiring::attach_memory_engines` takes
+    `Arc<dyn AgentMemoryProvider>` instead of the concrete store, and
+    `AgentMemoryStack` carries `steward_store: Option<Arc<dyn StewardStore>>`
+    and `panel: Option<Arc<dyn MemoryPanelStore>>` instead of the concrete
+    `store` field. Missing capabilities are named errors, never silent
+    downgrades.
+  - `UnifiedRuntime::{set_memory_panel_store, memory_panel_store}` and the
+    console router plumbing carry `Arc<dyn MemoryPanelStore>` instead of
+    the concrete store by value.
+  - `StewardEngine::new` and `StoreSpanReferenceSource::new` take
+    `Arc<dyn StewardStore>`; `EvidenceRefResolver` moved to
+    `memory::capabilities` (re-exported from the old `sqlite_store` path,
+    together with the promoted row types).
+  Behavior notes: the gateway's Selector wiring now fails with "requires a
+  provider with selected-record fetch support (SelectedRecordFetch)"
+  instead of "requires the sqlite agent-memory store", and reuses the
+  configured provider's fetch handle instead of opening a second concrete
+  store on the same files; the Markdown provider stays recall-only *by its
+  capability flags* (it advertises none), and explicitly configuring
+  distiller/steward/hygienist against a recall-only provider now fails
+  init loudly instead of silently constructing nothing.
+
+- **BREAKING / fail-closed (H1): persistent-mode blob storage no longer
+  silently falls back to in-memory blobs.** Previously, when a
+  persistent-mode runtime (`MobBootstrapSpec::persistent*`,
+  `UnifiedRuntimeBuilder::persistent_state()`) failed to open the local blob
+  directory (`<state>/blobs`), it logged one warning and continued on an
+  in-memory blob store — every blob written after that point silently
+  vanished on restart (the cause of a month-long silently-broken production
+  deployment). **Deployments that are unknowingly running on this fallback
+  today will now fail to boot.** That is deliberate: the failure was always
+  there, it is now visible at startup instead of at data-loss time.
+  Remediation: fix the blob directory (permissions, mount, read-only
+  filesystem), or — if in-memory blobs are genuinely intended (tests,
+  demos) — declare the choice explicitly with the new
+  `UnifiedRuntimeBuilder::ephemeral_blobs(true)`.
+  `MobBootstrapSpec::persistent` / `persistent_with_hook` now return
+  `Result<_, BlobStoreResolutionError>`. Additionally, persistent mode now
+  asserts `is_persistent()` on the *resolved* blob store at composition
+  time, so a custom-injected non-persistent store also requires the
+  `ephemeral_blobs(true)` declaration. Ephemeral launch modes (scratch or
+  temp-dir) are unchanged — their in-memory blobs are the declared choice of
+  the mode itself.
+
+### Added
+
+- **Continuity snapshot checkpoint adoption (storage-unification H3).**
+  Session bytes written by 0.7.x-era MobKit live inside continuity
+  `session_snapshots` rows; on 0.8.x they decode as legacy-unverified and
+  hard-fail every resume through the identity-first path (the bridge
+  correctly refuses fresh-spawn, so the identity stays `Broken` on every
+  reconcile retry). Meerkat ≥0.8.3 auto-migrates the documents *it* reads
+  (session store, runtime snapshots); continuity snapshots are the copies
+  meerkat never sees, and this release heals them via the exported
+  `meerkat_core::adopt_legacy_session` helper with the **observed cursor**
+  (generation / checkpoint version) from the matching continuity record.
+  Two sanctioned shapes:
+  - **Batch, in a deploy/maintenance window**:
+    `meerkat_mobkit::identity_first::adopt_continuity_snapshots` (library
+    entry) and the new `mobkit_gateway storage-adopt-checkpoints
+    (--db <path> | --state-dir <dir>) [--apply] [--json]` maintenance
+    subcommand (never an eager side effect of gateway startup; dry-run by
+    default and byte-identical without `--apply`; exit 1 on refusals or an
+    unacquirable fence). The walk holds the exclusive maintenance fence on
+    the database file, enumerates rows by direct SQL (the `ContinuityStore`
+    trait has no enumeration API and cannot rewrite in place at the same
+    `CheckpointVersion`), rewrites each legacy row's bytes in place, and
+    deliberately leaves the row's `generation` / `checkpoint_version` /
+    `fencing_token` columns untouched — the stamp binds to the observed
+    cursor the row already records. Stale rows (record rebound away or
+    generation superseded) are classified and reported, never adopted and
+    never an error; a re-run is a byte-identical no-op.
+  - **Lazy, at restore** (always-on single-replica deployments, where the
+    pod restart is the window): `ContinuitySessionStoreAdapter` adopts a
+    legacy snapshot at first load under the registered continuity cursor
+    and persists the adopted bytes through the store's own CAS at the next
+    checkpoint version. Named opt-in
+    (`with_lazy_checkpoint_adoption(true)`), enabled on the identity-first
+    gateway wirings (`rpc_gateway`, the builder's external-authoritative
+    arm) — it is the fleet-unbrick behavior. Downstream lazy shims that
+    stamped continuity copies by hand can retire on this release (retirement
+    chain: meerkat #909 → this H3 → shim removal).
+
+  **Ordering constraint:** meerkat's own lazy path seeds `INITIAL` cursors
+  and a verified document never re-migrates, so on any fleet whose
+  continuity rows record a **nonzero generation floor**, run H3 (batch verb,
+  or restore through the lazy-enabled adapter) **before** meerkat's lazy
+  path first touches those sessions. Generation-0 fleets are unaffected.
+- **`MobKitStorageLayout` path authority + canonical-name-first probing
+  (storage-unification Phase M2).** One module,
+  `meerkat_mobkit::storage_layout`, now owns every storage root and
+  canonical top-level database locator; `UnifiedRuntimeBuilder`,
+  `mobkit_gateway`, and `rpc_gateway` all consume the layout instead of
+  deriving file names inline (the three-way derivation duplication is
+  deleted). Canonical spellings, decided once: stores shared with Meerkat
+  keep Meerkat's names — sessions `sessions.sqlite3`, runtime
+  `runtime.sqlite`, schedule `schedule.sqlite`, workgraph
+  `workgraph.sqlite3` — and MobKit-owned files converge on `*.sqlite3`:
+  continuity `continuity.sqlite3` (was `continuity.db` on the gateways,
+  `identity_continuity.sqlite` in the builder), metadata
+  `mobkit_metadata.sqlite3`, console `mobkit_console.sqlite3`, agent-memory
+  root `agent-memory/` (was `agent-memory-sqlite/` for the builder's SQLite
+  stack), blob root `blobs/`, and gateway-home files `peer_key.ed25519` /
+  `tux-runtimes.json`.
+  **Existing deployments keep working unchanged:** every locator resolves
+  canonical-name-first and then probes the known legacy spellings in the
+  same directory — exactly one spelling present means it is used *where it
+  lies* (no rename at open; physical renames to canonical names arrive only
+  with the Phase M6 migration verb, under the maintenance fence). Only
+  *fresh* directories get the canonical names. When both the canonical and
+  a legacy spelling (or two legacy spellings) of the same store exist, boot
+  refuses with the typed `StorageLayoutError::FileNameTwins` pointing at
+  the storage doctor — previously the surfaces would silently open one of
+  the two and fork history. A gateway `store_path` with a file extension
+  remains an explicit session-database override (now an explicit layout
+  input instead of call-site extension sniffing). This also heals the
+  cross-surface agent-memory hazard: `rpc_gateway` now finds and reuses a
+  builder-created `agent-memory-sqlite/` corpus instead of silently
+  starting an empty `agent-memory/` beside it.
+- **Declared-ephemeral scratch layout for `rpc_gateway`.** With no
+  `persistent_state`, the locally hosted identity substrate no longer lands
+  on a silent pid-suffixed `$TMPDIR/mobkit-continuity-<pid>.db` at the call
+  site; the gateway constructs the layout in explicit scratch mode rooted
+  at `$TMPDIR/mobkit-scratch-<pid>/` and the choice is recorded in the
+  serializable `layout_summary()` (`durability: declared_ephemeral`), which
+  the Phase M1 storage doctor consumes.
+
+- **Storage doctor (M1): `mobkit/storage/doctor` RPC + console read
+  method.** A read-only diagnosis of a MobKit state directory, safe against
+  a live gateway (read-only SQLite opens, no file creation, no leases, no
+  schema-ledger runs), exposed on the module-only and unified stdin RPC
+  surfaces and on `POST /console/rpc` (read method, `runtime.admin` grant;
+  the console `mobkit/status` payload now advertises
+  `storage.doctor_available: true`). Reports: the per-directory database
+  inventory across every historical filename spelling, with schema-ledger
+  domain versions (`no-schema-ledger` on pre-M3 files,
+  `empty-database-shell` on table-less files); **file-name twins** as
+  errors (`file-name-twins`) for `sessions.db`/`sessions.sqlite`/
+  `sessions.sqlite3`, `continuity.db`/`identity_continuity.sqlite`/
+  `continuity.sqlite3`, `mobkit_metadata.sqlite`/`.sqlite3`,
+  `mobkit_console.sqlite`/`.sqlite3`, and `agent-memory/`/
+  `agent-memory-sqlite/`; the continuity checkpoint-evidence census per
+  identity (`legacy-unverified-continuity-snapshots`,
+  `checkpoint-metadata-invalid`, `continuity-snapshot-undecodable`) that
+  H3's adoption dry-run consumes; dangling console-frame blob references
+  (`dangling-console-blob-reference`); blob-root inventory (`blob-root`,
+  `legacy-fs-blobs`); gateway-home artifacts when scoped
+  (`peer-key-file`, `runtime-registry`); the workgraph admission sidecar
+  (`workgraph-admission-sidecar`); filesystem artifacts
+  (`maintenance-fence-lock`, `backup-artifact`, `quarantine-artifact`); and
+  the live H1/H2 durability resolution (`blob-durability`,
+  `session-store-incremental`) when invoked through a live gateway, or
+  `durability-census-unavailable` on a cold directory. `params.state_dir`
+  is required until the Phase M2 layout authority lets the runtime report
+  its own state directory — runtime-backed surfaces answer a missing
+  `state_dir` with error `-32004`. New public seam
+  `meerkat_mobkit::storage_doctor` (`diagnose_state_dir`,
+  `MobKitStorageMigrator` implementing
+  `meerkat_core::storage_diagnostics::StorageMigrator`) plus
+  `storage_doctor(...)` / `storageDoctor(...)` wrappers in the Python and
+  TypeScript SDKs. Additive method: `MOBKIT_CONTRACT_VERSION` stays at
+  `0.4.0`.
+- **Storage durability health surface (H1/H2).** `mobkit/status` (unified
+  and console shapes) and the unified `mobkit/capabilities` now carry a
+  `storage` object: `blob_durability`
+  (`persistent_disk` | `declared_ephemeral` | `custom`),
+  `blob_store_persistent` (bool), and `session_store_incremental`
+  (bool, or null when no session persistence exists). New public vocabulary
+  in `meerkat_mobkit::storage_health` (`ResolvedStorageSummary`,
+  `BlobDurability`, `BlobStoreResolutionError`,
+  `probe_session_store_incremental`), carried on
+  `MobBootstrapSpec::resolved_storage` and readable via
+  `UnifiedRuntime::resolved_storage()`.
+- **Loud whole-blob degradation (H2).** At every composition site that
+  builds a `PersistentSessionService`, MobKit now probes the session store's
+  incremental-persistence capability (`as_incremental`) and logs a startup
+  warning when it is absent, naming the store kind and the consequence
+  (session persistence degrades to whole-blob saves on every turn). This
+  makes the identity-first gateway shape — where `ContinuitySessionStoreAdapter`
+  is the session authority and persists O(session) per turn — visible at
+  startup and on the health surfaces (`session_store_incremental: false`)
+  instead of silent. The structural fix (a genuine incremental channel on
+  the continuity contract) is tracked as storage-unification Phase M4; this
+  release makes the degradation honest, not fixed.
+
 ## [0.8.2] - 2026-07-22
 
 ### Changed
@@ -28,6 +478,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   output consumption.
 - Quarantined or torn-down identity sessions transition to `Broken` and enter
   the normal repair loop instead of remaining permanently `Active` zombies.
+
+- All six in-crate SQLite openers (agent memory, continuity writer + read
+  pool, runtime metadata, console aggregator, workgraph admission sidecar,
+  schedule triage) now flow through the shared `meerkat-sqlite` mechanics
+  crate under named connection profiles; MobKit no longer hand-rolls any
+  PRAGMA setup (storage-unification Phase M3).
+- **Console aggregator store gains WAL journaling, a busy timeout, and
+  `synchronous=FULL` for the first time.** It previously set zero PRAGMAs
+  (rollback journal, no busy handler). This is the highest-write-rate MobKit
+  database: writes now fsync on commit and participate in WAL semantics, so
+  concurrency-heavy deployments should re-run console-load benchmarks.
+- **The continuity store's writer now runs with `synchronous=FULL`** (it
+  previously set only WAL + busy timeout). Continuity writes sit on the
+  identity-first hot path — every checkpoint/fencing CAS now fsyncs on
+  commit. This is a deliberate durability upgrade; latency-sensitive
+  deployments should note the fsync-rate change. The agent-memory and
+  runtime-metadata stores gain the same explicit `synchronous=FULL`.
+- Busy timeouts harmonized on the shared 60s production default (previously
+  5s for memory/continuity/metadata, none for the console store). The
+  admission sidecar keeps its deliberate 30s wait-then-fail-closed policy as
+  a named per-open override.
+- Every MobKit-owned SQLite database now carries a per-file migration ledger
+  (`meerkat_schema` table, domains `mobkit-memory`, `mobkit-continuity`,
+  `mobkit-metadata`, `mobkit-console`) and a `<file>.mfence` maintenance
+  lock file appears next to each database. Files written by a newer MobKit
+  are refused with a typed schema-from-the-future error instead of being
+  mutated. The workgraph admission sidecar is deliberately exempt from the
+  ledger (stamping it would take the very lock it arbitrates). Legacy files
+  (including pre-`ever_quarantined`/`taint` agent-memory stores) converge on
+  first open; the memory store's historical column probes are now versioned
+  migrations.
+- `ContinuityStoreError` gains a `Transient` variant: busy/locked SQLite
+  failures are now classified transient (and corruption classified corrupt)
+  at the store boundary, so identity reconcile can distinguish retry-worthy
+  failures from poison without string-sniffing. Classification does not
+  itself authorize retry; retry policy stays with callers.
 
 ## [0.8.1] - 2026-07-22
 

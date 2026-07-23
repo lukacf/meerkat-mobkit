@@ -27,6 +27,7 @@ use meerkat_mobkit::{
     UnifiedRuntime, build_runtime_decision_state,
     handle_console_rest_json_route_with_snapshot_and_access,
 };
+use meerkat_mobkit::{StewardStore, TaintableStore};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -2348,7 +2349,7 @@ async fn memory_panel_reads_seeded_store_without_access_control() {
     let memory_dir = tempfile::tempdir().expect("memory dir");
     let (store, tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
         seeded_memory_store(memory_dir.path()).await;
-    runtime.set_memory_panel_store(store);
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
     let app = runtime.build_reference_app_router(decision_state(false));
 
     // Capability advertisement follows the provider-dependent pattern.
@@ -2477,7 +2478,7 @@ async fn memory_panel_enforces_scope_actions_end_to_end() {
     let memory_dir = tempfile::tempdir().expect("memory dir");
     let (store, tip_id, quarantined_id, delivery_id, mob_id, operator_id) =
         seeded_memory_store(memory_dir.path()).await;
-    runtime.set_memory_panel_store(store);
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
 
     // Anonymous callers: view + EXPLICIT memory read on "router" only. The
     // config mentions a memory action, so it is taken literally — no
@@ -2723,7 +2724,7 @@ async fn memory_panel_quarantine_queue_filters_rows_per_scope() {
     let memory_dir = tempfile::tempdir().expect("memory dir");
     let (store, _tip_id, quarantined_id, _delivery_id, _mob_id, _operator_id) =
         seeded_memory_store(memory_dir.path()).await;
-    runtime.set_memory_panel_store(store);
+    runtime.set_memory_panel_store(Arc::new(store.clone()));
 
     // Enforcement on, zero rules: the anonymous caller holds no grants.
     let controller = AccessController::new(AccessControlConfig {

@@ -184,6 +184,39 @@ Gateway memory config accepts `{ backend: "local_json" }` with an optional `heal
 
 The builder forwards `consoleConfig(path)` as `runtime_options.console_config_path`, which lets the bundled console consume the same `console_config` contract projected by `/console/experience`. Use `consoleAuthRequired(false)` only for explicit local demos.
 
+## Storage durability declarations
+
+The gateway is fail-closed about durable storage: a store that cannot open
+is a startup error, never a silent in-memory fallback. The `runtimeStore`
+and `eventLog` config modules produce the explicit declarations:
+
+```typescript
+import { MobKit, eventLog, runtimeStore } from "@rkat/mobkit-sdk";
+
+const runtime = await MobKit.builder()
+  .mob("config/mob.toml")
+  .persistentState("state/mobkit")
+  // Declare an in-memory runtime store (sessions do not survive restart).
+  .runtimeStore(runtimeStore.memory())
+  // Declare a bounded queryable in-process event log — or eventLog.nullStore().
+  .eventLog(eventLog.memory({ batchSize: 64 }))
+  .build();
+```
+
+The resolved picture is the typed storage census: `StatusResult.storage` /
+`CapabilitiesResult.storage` parse the gateway's `storage` object into
+`StorageSummary` (blob durability, the H2 incremental probe, and the
+per-slot `StorageSlotSummary` census with `domain`, `durabilityClass`,
+`resolution`, `backend`, `degraded`, `detail`); apply `parseStorageSummary`
+to the raw `storage` record of `mobkit/storage/doctor`. A fail-closed
+startup refusal — file-name twins, a store that failed to open — surfaces
+as the typed `StorageResolutionError` (code `-32014`,
+`STORAGE_RESOLUTION_CODE`), not a `TransportError`; its message names the
+remediation (`mobkit/storage/doctor`, or the explicit ephemeral
+declaration). Blob-store durability has no wire declaration today — it is
+declared by Rust embedders via `ephemeral_blobs(true)` /
+`binary_blob_store(...)` and reported read-only in the census.
+
 ## HTTP transport timeout
 
 `createJsonRpcHttpTransport` defaults to a 60-second timeout (via

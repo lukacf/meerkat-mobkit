@@ -42,12 +42,12 @@ use meerkat_core::event::AgentEvent;
 use meerkat_core::{Message, Provider, SystemNoticeKind, SystemNoticeMessage, UserMessage};
 
 use crate::identity_first::agent_memory::{compact_whitespace, truncate_utf8_boundary};
+use crate::memory::capabilities::StewardStore;
 use crate::memory::distiller::{CompactionFollowUp, DistillOutcome, DistillerEngine};
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{ManifestTier, MemoryScope, RecordStatus};
 use crate::memory::selector::FactorySelectorHandle;
-use crate::memory::sqlite_store::SqliteAgentMemoryStore;
 use crate::memory::taint::MemberAgentEventSink;
 
 /// Embedded prompt bundle (crate-local copy of
@@ -543,18 +543,19 @@ pub trait SpanReferenceSource: Send + Sync {
     ) -> Result<Vec<SpanReference>, String>;
 }
 
-/// Production source over the bundled store's existing readers: the realm's
-/// quarantine queue (hard-block set) plus the identity/realm-scope active
-/// manifests resolved to full records (audit-flag set). Mob-scope records
-/// do not carry session evidence (promotion copies drop evidence refs), so
-/// identity + realm scopes are the complete evidence-citing population.
+/// Production source over any steward-capable store's existing readers: the
+/// realm's quarantine queue (hard-block set) plus the identity/realm-scope
+/// active manifests resolved to full records (audit-flag set). Mob-scope
+/// records do not carry session evidence (promotion copies drop evidence
+/// refs), so identity + realm scopes are the complete evidence-citing
+/// population.
 pub struct StoreSpanReferenceSource {
-    store: Arc<SqliteAgentMemoryStore>,
+    store: Arc<dyn StewardStore>,
     realm: String,
 }
 
 impl StoreSpanReferenceSource {
-    pub fn new(store: Arc<SqliteAgentMemoryStore>, realm: impl Into<String>) -> Self {
+    pub fn new(store: Arc<dyn StewardStore>, realm: impl Into<String>) -> Self {
         Self {
             store,
             realm: realm.into(),
@@ -569,7 +570,6 @@ impl SpanReferenceSource for StoreSpanReferenceSource {
         identity: &str,
         session_key: &str,
     ) -> Result<Vec<SpanReference>, String> {
-        use crate::identity_first::agent_memory::AgentMemoryProvider;
         let mut references = Vec::new();
         let quarantined = self
             .store

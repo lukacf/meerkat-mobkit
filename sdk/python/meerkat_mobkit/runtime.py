@@ -25,6 +25,7 @@ from .errors import (
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
+    STORAGE_RESOLUTION_CODE,
     WORKGRAPH_CONFLICT_CODE,
     WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
@@ -35,6 +36,7 @@ from .errors import (
     MobEventsStaleError,
     NotConnectedError,
     RpcError,
+    StorageResolutionError,
     TransportError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
@@ -159,6 +161,13 @@ def _rpc_error_from_payload(
         return WorkGraphConflictError(
             message,
             detail=(data.get("detail") if isinstance(data, dict) else None),
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == STORAGE_RESOLUTION_CODE:
+        return StorageResolutionError(
+            message,
             request_id=request_id,
             method=method,
             data=data,
@@ -382,12 +391,17 @@ class MobKitRuntime:
                                 "SSE event streaming unavailable"
                             )
                 except Exception as init_err:
+                    # A structured JSON-RPC error response is authoritative
+                    # even though the gateway exits right after writing it
+                    # (fail-closed init refusals such as the typed
+                    # StorageResolutionError do exactly that): re-raise it
+                    # typed instead of reporting a transport failure.
+                    if isinstance(init_err, RpcError):
+                        raise
                     if not transport.is_running():
                         raise TransportError(
                             f"gateway process died during bootstrap: {init_err}"
                         ) from init_err
-                    if isinstance(init_err, RpcError):
-                        raise
                     raise TransportError(
                         f"mobkit/init failed: {init_err}"
                     ) from init_err
@@ -439,6 +453,10 @@ class MobKitRuntime:
             runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
         if self._config.event_log:
             runtime_options["event_log"] = _serialize_config(self._config.event_log)
+        if self._config.runtime_store:
+            runtime_options["runtime_store"] = _serialize_config(
+                self._config.runtime_store
+            )
         if self._config.console_read_only is not None:
             runtime_options["console_read_only"] = self._config.console_read_only
         if self._config.console_fetch_timeout_ms is not None:
@@ -1078,6 +1096,27 @@ class MobHandle:
         """Return the curated model catalog with provider defaults."""
         raw = await self._runtime._rpc("mobkit/models/catalog")
         return ModelsCatalogResult.from_dict(raw)
+
+    async def storage_doctor(
+        self,
+        state_dir: str | None = None,
+        identity: str | None = None,
+    ) -> Any:
+        """Run the read-only storage doctor over a MobKit state directory.
+
+        Returns the raw wire result: ``state_dir``, ``diagnosis`` (with
+        ``findings`` and ``inventory``), and ``storage`` (the live H1/H2
+        durability summary, or ``None``). ``state_dir`` is required until the
+        gateway can report its own persistent state directory (Phase M2);
+        omitting it raises ``CapabilityUnavailableError``. ``identity``
+        narrows the continuity checkpoint census to one identity.
+        """
+        params: dict[str, Any] = {}
+        if state_dir is not None:
+            params["state_dir"] = state_dir
+        if identity is not None:
+            params["identity"] = identity
+        return await self._runtime._rpc("mobkit/storage/doctor", params)
 
     async def tools_catalog(self) -> MobpackToolsCatalogResult:
         """Return the MobKit tool catalog used by mobpack authoring."""

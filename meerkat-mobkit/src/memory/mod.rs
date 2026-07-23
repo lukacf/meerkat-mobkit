@@ -6,6 +6,7 @@
 //! §12 bright-line ratchet (`scripts/check-memory-bright-line`): it must
 //! never grow retrieval-index machinery; that is hub material.
 
+pub mod capabilities;
 pub mod coordinator;
 pub mod distiller;
 pub mod events;
@@ -20,6 +21,11 @@ pub mod staged;
 pub mod steward;
 pub mod taint;
 
+pub use capabilities::{
+    DreamAuditVerdict, DreamRunAudit, EvidenceRefResolver, MemoryPanelStore, PanelRecordsPage,
+    PendingHarvest, PendingPromotion, PendingProposal, PersistedDreamRun, ScopeOverview,
+    StewardStore, TaintableStore,
+};
 pub use coordinator::{
     ConsolePrincipalOperatorResolver, MobScopeResolver, OperatorResolver, RecallCoordinator,
     ScopeBudget, compose_identity_scope_set, compose_identity_scope_set_with_bindings,
@@ -52,10 +58,7 @@ pub use selector::{
     SelectorRuntime, SelectorSpec, SelectorStage, select,
 };
 pub use spawn_customizer::MemorySpawnCustomizer;
-pub use sqlite_store::{
-    EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, ScopeOverview,
-    SqliteAgentMemoryStore,
-};
+pub use sqlite_store::SqliteAgentMemoryStore;
 pub use staged::{
     CommitReceipt, StageToken, StagedBatchError, StagedBatchView, StagedMemoryStore,
     StagedMutationBatch, StagedOp, StagedRecordView, validate_batch,

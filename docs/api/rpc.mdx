@@ -68,6 +68,7 @@ errors. SDKs surface it on `RpcError.data`.
 | `-32010` | `mob_events/{query,subscribe}` `after_seq` past `latest_cursor` (stale cursor) | `{after_cursor, latest_cursor, error: "event_query_stale"}` |
 | `-32012` | `memory/{index,query}` backend unavailable | none |
 | `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
+| `-32014` | `mobkit/init` fail-closed storage refusal: file-name twins the storage layout refuses to pick between, a session/runtime/blob/metadata/console store that failed to open (formerly a silent in-memory fallback), or an uncreatable state root. The message carries the remediation (the storage doctor, or the explicit ephemeral declaration). The gateway writes the error response and exits. | none |
 
 The `-32010` constant is exported from both SDKs as
 `MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
@@ -75,6 +76,13 @@ reify `-32010` errors into `MobEventsStaleError` (a typed subclass of
 `RpcError`) carrying `after_cursor` and `latest_cursor`.
 Console timeline replay failures use `CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE`
 so they are not mistaken for mob-events ledger cursor errors.
+The `-32014` constant is exported as `STORAGE_RESOLUTION_CODE` and reified
+as `StorageResolutionError`, so a deliberate durability refusal at startup
+is a typed init failure, not a transport error. Storage refusals raised by
+the Rust builder surfaces (`UnifiedRuntime::bootstrap`) still surface as
+`-32603` with the typed message text. The `mobkit/init` `runtime_options`
+storage declarations (`runtime_store`, `event_log`) are documented in
+[Configuration → SDK/Gateway runtime options](/reference/configuration#sdk-gateway-runtime-options).
 
 ---
 
@@ -568,6 +576,44 @@ Maximum 256 schedules per request.
 ### `mobkit/session_store/bigquery`
 
 Execute BigQuery-specific session store operations.
+
+---
+
+## Storage methods
+
+### `mobkit/storage/doctor`
+
+Read-only storage diagnosis over a MobKit state directory (the diagnose half
+of Meerkat's `StorageMigrator` seam). Safe against a live gateway: read-only
+SQLite opens, no file creation, no leases, no schema-ledger runs. Reports the
+per-directory database inventory (with schema-ledger versions), file-name
+twins (`sessions.db` beside `sessions.sqlite`, `continuity.db` beside
+`identity_continuity.sqlite`, `agent-memory/` beside `agent-memory-sqlite/`,
+...), the continuity checkpoint-evidence census per identity, dangling
+console-frame blob references, legacy-FS blob objects, and filesystem
+artifacts. On a live persistent gateway the H1/H2 durability resolution
+(`blob-durability`, `session-store-incremental`) is attached as findings; a
+cold directory reports `durability-census-unavailable`.
+
+Available on the module-only, unified, and console (`POST /console/rpc`,
+read method, `runtime.admin` grant) surfaces. Additive method — no
+`contract_version` bump.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `state_dir` | `string` | yes (see note) | The state directory to diagnose. Required until the gateway can report its own persistent state directory (Phase M2): the unified/console surfaces answer a missing `state_dir` with error `-32004` (capability unavailable); the module-only surface with `-32602`. |
+| `identity` | `string` | no | Narrow the continuity checkpoint census to one identity |
+</Accordion>
+
+<Accordion title="Result">
+| Field | Type | Description |
+|-------|------|-------------|
+| `state_dir` | `string` | The diagnosed directory |
+| `diagnosis.findings` | `array` | Findings with `severity` (`info`/`warning`/`error`), stable kebab-case `code`, `message`, optional `path`/`realm`. Consumers must tolerate unknown codes. |
+| `diagnosis.inventory` | `array` | Per-directory database inventory with schema-ledger `domains` (`null` version = no ledger row) |
+| `storage` | `object \| null` | The live storage summary (same object as `mobkit/status` / `mobkit/capabilities`), `null` when the surface has none: `blob_durability` / `blob_store_persistent` (H1), `session_store_incremental` (H2), and the per-slot durability census `slots` (M4) — entries with `domain`, `class` (`durable`/`scratch`), `resolution` (`persistent`/`declared_ephemeral`/`non_persistent`), `backend`, `degraded`, optional `detail`. The SDKs parse it as `StorageSummary` |
+</Accordion>
 
 ---
 

@@ -1239,23 +1239,50 @@ async fn assert_build_err_not_contains(builder: UnifiedRuntimeBuilder, not_a: &s
 }
 
 // ===========================================================================
-// Task 1.12: Builder persistent_state mutual exclusivity (REQ-23)
+// Task 1.12 (re-scoped by the M4 REQ-23 lift): persistent_state may coexist
+// with a COMPLETE external continuity/lease pair (the external substrate
+// stays the identity and session authority); the genuinely contradictory
+// combos keep typed errors — half a substrate, or two path roots.
 // ===========================================================================
 
 #[tokio::test]
-async fn identity_first_builder_persistent_state_conflicts_with_continuity_store() {
+async fn identity_first_builder_persistent_state_rejects_half_an_external_substrate() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .continuity_store(Arc::new(StubContinuityStore));
-    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
-}
+    Box::pin(assert_build_err_contains(
+        builder,
+        "must be supplied together",
+    ))
+    .await;
 
-#[tokio::test]
-async fn identity_first_builder_persistent_state_conflicts_with_lease_provider() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .lease_provider(Arc::new(StubLeaseProvider));
-    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
+    Box::pin(assert_build_err_contains(
+        builder,
+        "must be supplied together",
+    ))
+    .await;
+}
+
+/// The REQ-23 lift: a complete external pair + persistent_state composes
+/// (no conflict error); the build proceeds to the ordinary
+/// missing-definition failure.
+#[tokio::test]
+async fn identity_first_builder_persistent_state_coexists_with_external_pair() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .persistent_state(tmp.path())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])));
+    Box::pin(assert_build_err_not_contains(
+        builder,
+        "mutually exclusive",
+        "must be supplied together",
+    ))
+    .await;
 }
 
 #[tokio::test]
@@ -1400,7 +1427,9 @@ async fn identity_first_builder_persistent_state_accepts_roster_and_agent_memory
         .expect("identity should be active");
 
     assert_eq!(status.profile.unwrap().as_str(), "default");
-    assert!(state_path.join("identity_continuity.sqlite").exists());
+    // M2 canonical spelling on a fresh state dir (a pre-existing legacy
+    // `identity_continuity.sqlite` would keep being used where it lies).
+    assert!(state_path.join("continuity.sqlite3").exists());
     assert!(state_path.join("agent-memory").exists());
 
     let identity = AgentIdentity::parse("agent:alpha").unwrap();
@@ -3748,4 +3777,283 @@ async fn identity_first_external_member_restore_supplies_generated_owner_binding
         err.contains("external backend is not configured"),
         "expected the spawn to pass the owner-binding gate and reach the external-backend check, got: {err}"
     );
+}
+
+// ===========================================================================
+// M4: the composite storage-provider seam (one remote bundle)
+// ===========================================================================
+
+/// `storage_provider()` subsumes the per-slot seams: supplying both is a
+/// typed conflict; it also requires an identity-first roster and a realm
+/// path root.
+#[tokio::test]
+async fn builder_storage_provider_validation_matrix() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])))
+        .persistent_state(tmp.path());
+    Box::pin(assert_build_err_contains(builder, "continuity_store()")).await;
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .persistent_state(tmp.path());
+    Box::pin(assert_build_err_contains(builder, "roster_provider")).await;
+
+    let builder = UnifiedRuntimeBuilder::default()
+        .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![])));
+    Box::pin(assert_build_err_contains(builder, "path root")).await;
+}
+
+/// Injecting both typed blob forms is a conflict — one store, one form.
+#[tokio::test]
+async fn builder_rejects_both_blob_injection_forms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
+            tmp.path().join("blobs"),
+        )))
+        .binary_blob_store(Arc::new(
+            meerkat_mobkit::blob_store::ObjectStoreBlobStore::memory(),
+        ));
+    Box::pin(assert_build_err_contains(builder, "binary_blob_store()")).await;
+}
+
+/// The full provider-backed build: the disk bundle supplies the identity
+/// substrate and every MobKit slot through the single seam, the runtime
+/// boots, and the per-slot census reports the provider's stores.
+#[tokio::test]
+async fn builder_storage_provider_full_build_over_disk_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .storage_provider(Arc::new(meerkat_mobkit::DiskMobKitStorageProvider))
+            .persistent_state(tmp.path())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![])))
+            .identity_runtime_instance_id("builder-storage-provider-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("a provider-backed identity-first build must boot");
+
+    let storage = runtime
+        .resolved_storage()
+        .expect("provider-backed build records the storage census");
+    assert!(
+        storage.slots.iter().any(|slot| {
+            slot.declaration.domain == "schedule"
+                && slot.backend.contains("storage provider 'disk'")
+                && slot.declaration.resolution == meerkat_core::DurabilityResolution::Persistent
+        }),
+        "the provider's schedule declaration must be census-visible verbatim, got: {:?}",
+        storage.slots
+    );
+    assert!(
+        storage.slots.iter().any(|slot| {
+            slot.declaration.domain == "sessions"
+                && slot.backend.contains("ContinuitySessionStoreAdapter")
+        }),
+        "sessions must ride the provider's continuity store, got: {:?}",
+        storage.slots
+    );
+    // The provider-only domains flow into the census instead of vanishing
+    // after fail-closed validation.
+    for domain in [
+        "continuity",
+        "console",
+        "metadata",
+        "event_log",
+        "agent_memory",
+    ] {
+        assert!(
+            storage
+                .slots
+                .iter()
+                .any(|slot| slot.declaration.domain == domain),
+            "provider-declared domain '{domain}' must be census-visible, got: {:?}",
+            storage.slots
+        );
+    }
+    // The disk provider's meerkat level IS the local composition: runtime
+    // and workgraph stay on the flat local files, and no nested meerkat
+    // realm is materialized under the state dir.
+    assert!(
+        storage.slots.iter().any(|slot| {
+            slot.declaration.domain == "runtime" && slot.backend.contains("SqliteRuntimeStore")
+        }),
+        "the disk bundle keeps the local runtime store, got: {:?}",
+        storage.slots
+    );
+    assert!(
+        !tmp.path()
+            .join("mobkit")
+            .join("realm_manifest.json")
+            .exists()
+    );
+
+    runtime.shutdown().await;
+}
+
+/// M4b: a non-disk composite provider's meerkat-level bundle is genuinely
+/// opened through `meerkat_provider()` — runtime and workgraph authority
+/// land in the provider's backend instead of local files — and the
+/// provider's durability declarations flow to the census verbatim (an
+/// explicitly-ephemeral schedule slot must not be labeled persistent).
+#[tokio::test]
+async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
+    struct StubRemoteMeerkatProvider {
+        opened: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl meerkat::storage_provider::RealmStorageProvider for StubRemoteMeerkatProvider {
+        fn name(&self) -> &'static str {
+            "stub-bundle"
+        }
+
+        async fn open(
+            &self,
+            ctx: &meerkat::storage_provider::RealmOpenContext,
+        ) -> Result<meerkat::storage_provider::RealmStoreSet, meerkat::PersistenceError> {
+            self.opened.store(true, Ordering::SeqCst);
+            Ok(meerkat::storage_provider::RealmStoreSet {
+                session_store: Arc::new(meerkat_store::MemoryStore::new()),
+                runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+                schedule_store: Arc::new(meerkat_schedule::MemoryScheduleStore::new()),
+                workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+                blob_store: Arc::new(meerkat_store::MemoryBlobStore::new()),
+                artifact_store: Arc::new(meerkat_store::MemoryArtifactStore::new()),
+                store_path: ctx.paths.root.clone(),
+                projection_root: None,
+                durability: [
+                    "sessions",
+                    "runtime",
+                    "schedule",
+                    "workgraph",
+                    "blobs",
+                    "artifacts",
+                ]
+                .iter()
+                .map(|domain| {
+                    meerkat_core::DurabilityDeclaration::durable(
+                        domain,
+                        meerkat_core::DurabilityResolution::DeclaredEphemeral,
+                    )
+                })
+                .collect(),
+            })
+        }
+    }
+
+    struct StubBundleProvider {
+        meerkat: StubRemoteMeerkatProvider,
+    }
+
+    #[async_trait]
+    impl meerkat_mobkit::MobKitStorageProvider for StubBundleProvider {
+        fn name(&self) -> &'static str {
+            "stub-bundle"
+        }
+
+        async fn open_realm(
+            &self,
+            ctx: &meerkat_mobkit::MobKitRealmOpenContext,
+        ) -> Result<meerkat_mobkit::MobKitRealmStoreSet, meerkat_mobkit::MobKitStorageProviderError>
+        {
+            let set = meerkat_mobkit::MobKitRealmStoreSet {
+                continuity_store: Arc::new(StubContinuityStore),
+                lease_authority: meerkat_mobkit::MobKitLeaseAuthority::FencingFloor(0),
+                event_log_store: None,
+                console_log_store: Arc::new(meerkat_mobkit::InMemoryConsoleLogStore::new()),
+                metadata_store: Arc::new(meerkat_mobkit::InMemoryMetadataStore::new()),
+                blob_store: Arc::new(meerkat_mobkit::blob_store::ObjectStoreBlobStore::memory()),
+                agent_memory_provider: None,
+                schedule_store: Arc::new(meerkat_schedule::MemoryScheduleStore::new()),
+                durability: meerkat_mobkit::REQUIRED_MOBKIT_DURABILITY_DOMAINS
+                    .iter()
+                    .map(|domain| {
+                        meerkat_core::DurabilityDeclaration::durable(
+                            domain,
+                            meerkat_core::DurabilityResolution::DeclaredEphemeral,
+                        )
+                    })
+                    .collect(),
+            };
+            meerkat_mobkit::enforce_fail_closed_store_set(&set, ctx)?;
+            Ok(set)
+        }
+
+        fn meerkat_provider(&self) -> &dyn meerkat::storage_provider::RealmStorageProvider {
+            &self.meerkat
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let opened = Arc::new(AtomicBool::new(false));
+    let provider = Arc::new(StubBundleProvider {
+        meerkat: StubRemoteMeerkatProvider {
+            opened: opened.clone(),
+        },
+    });
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .storage_provider(provider)
+            .scratch_dir(tmp.path())
+            .roster_provider(Arc::new(StubRosterProvider::new(vec![])))
+            .identity_runtime_instance_id("builder-storage-provider-bundle-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("a non-disk provider-backed scratch build must boot");
+
+    assert!(
+        opened.load(Ordering::SeqCst),
+        "the composition must open the provider's meerkat-level bundle"
+    );
+    assert!(
+        tmp.path()
+            .join("mobkit")
+            .join("realm_manifest.json")
+            .exists(),
+        "the meerkat-level realm must be pinned under the provider's name"
+    );
+
+    let storage = runtime
+        .resolved_storage()
+        .expect("provider-backed build records the storage census");
+    let slot = |domain: &str| {
+        storage
+            .slots
+            .iter()
+            .find(|slot| slot.declaration.domain == domain)
+            .unwrap_or_else(|| panic!("{domain} slot missing: {:?}", storage.slots))
+    };
+    let schedule = slot("schedule");
+    assert_eq!(
+        schedule.declaration.resolution,
+        meerkat_core::DurabilityResolution::DeclaredEphemeral,
+        "the provider's explicitly-ephemeral schedule declaration must flow verbatim"
+    );
+    assert!(schedule.backend.contains("stub-bundle"));
+    assert!(
+        slot("runtime").backend.contains("stub-bundle"),
+        "runtime authority must ride the provider bundle, got: {:?}",
+        storage.slots
+    );
+    assert!(
+        slot("workgraph").backend.contains("stub-bundle"),
+        "the workgraph must ride the provider bundle, got: {:?}",
+        storage.slots
+    );
+    assert!(slot("continuity").backend.contains("stub-bundle"));
+
+    runtime.shutdown().await;
 }

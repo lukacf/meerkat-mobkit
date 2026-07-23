@@ -1022,7 +1022,10 @@ impl LeaseProvider for StubLease {
 
 #[tokio::test]
 async fn identity_first_e2e_11_builder_mutual_exclusivity() {
-    // persistent_state + continuity_store → build error
+    // The M4 REQ-23 lift: persistent_state may coexist with a COMPLETE
+    // external pair; HALF a substrate stays a typed build error.
+
+    // persistent_state + continuity_store (no lease provider) → build error
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/e2e-test-state")
         .continuity_store(Arc::new(StubContinuity));
@@ -1030,22 +1033,33 @@ async fn identity_first_e2e_11_builder_mutual_exclusivity() {
         Err(e) => {
             let msg = e.to_string();
             assert!(
-                msg.contains("mutually exclusive"),
-                "error must mention mutual exclusivity: {msg}"
+                msg.contains("must be supplied together"),
+                "error must name the incomplete substrate pair: {msg}"
             );
         }
-        Ok(_) => panic!("expected build error for persistent_state + continuity_store"),
+        Ok(_) => panic!("expected build error for persistent_state + continuity_store alone"),
     }
 
-    // persistent_state + lease_provider → build error
+    // persistent_state + lease_provider (no continuity store) → build error
     let builder2 = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/e2e-test-state")
         .lease_provider(Arc::new(StubLease));
     match Box::pin(builder2.build()).await {
         Err(e) => {
+            assert!(e.to_string().contains("must be supplied together"));
+        }
+        Ok(_) => panic!("expected build error for persistent_state + lease_provider alone"),
+    }
+
+    // persistent_state + scratch_dir → build error (two path roots)
+    let builder3 = UnifiedRuntimeBuilder::default()
+        .persistent_state("/tmp/e2e-test-state")
+        .scratch_dir("/tmp/e2e-test-scratch");
+    match Box::pin(builder3.build()).await {
+        Err(e) => {
             assert!(e.to_string().contains("mutually exclusive"));
         }
-        Ok(_) => panic!("expected build error for persistent_state + lease_provider"),
+        Ok(_) => panic!("expected build error for persistent_state + scratch_dir"),
     }
 }
 

@@ -829,6 +829,34 @@ async def test_member_status_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_storage_doctor_rpc_name_and_params():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/storage/doctor": {
+            "state_dir": "/var/lib/mobkit/state",
+            "diagnosis": {"findings": [], "inventory": []},
+            "storage": None,
+        }
+    })
+    result = await handle.storage_doctor(state_dir="/var/lib/mobkit/state")
+    assert calls[0][0] == "mobkit/storage/doctor"
+    assert calls[0][1] == {"state_dir": "/var/lib/mobkit/state"}
+    assert result["diagnosis"] == {"findings": [], "inventory": []}
+
+    await handle.storage_doctor(
+        state_dir="/var/lib/mobkit/state", identity="domain:security"
+    )
+    assert calls[1][1] == {
+        "state_dir": "/var/lib/mobkit/state",
+        "identity": "domain:security",
+    }
+
+    # Omitted state_dir stays off the wire (the gateway answers with the
+    # typed capability-unavailable error).
+    await handle.storage_doctor()
+    assert calls[2][1] == {}
+
+
+@pytest.mark.asyncio
 async def test_identity_resolved_tools_rpc_name():
     handle, calls = make_mock_mob_handle({
         "mobkit/identity/resolved_tools": {

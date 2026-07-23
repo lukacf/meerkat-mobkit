@@ -84,12 +84,34 @@ MobKit provides two materialization functions for session inspection:
 
 These power MobKit's operational session inspection features and adapter-specific APIs.
 
+## On-disk layout and durability
+
+On persistent gateway launches (`persistent_state`), session state lives in
+the state directory under names owned by `MobKitStorageLayout`, MobKit's
+single path authority: the canonical session database is `sessions.sqlite3`
+(Meerkat's realm spelling), and the runtime store — session resume, archive,
+retire — is `runtime.sqlite`. Legacy spellings (`sessions.db`,
+`sessions.sqlite`) remain readable through canonical-name-first probing: a
+single existing spelling is used where it lies, but two spellings of the
+same store refuse startup (error `-32014`, "file-name twins") and point at
+`mobkit/storage/doctor` — renames happen only through the storage migrate
+verb.
+
+Durability is fail-closed: a runtime store that cannot open is a startup
+error, never a silent in-memory fallback. Running sessions in-memory on a
+persistent launch requires the explicit declaration
+`runtime_options.runtime_store = {"storage": "memory"}`
+(`runtime_store.memory()` / `runtimeStore.memory()` in the SDKs), and the
+choice is visible in the storage census on `mobkit/status` →
+`storage.slots`. See
+[Configuration → Storage layout and durability](/reference/configuration#storage-layout-and-durability).
+
 ## Runtime correlation
 
 When MobKit accepts a `mobkit/send_message` request, the response includes the Meerkat `session_id` that accepted the message. Treat that value as the canonical correlation handle for follow-up inspection, debugging, and resume-aware flows.
 
 ## See also
 
-- [Configuration](/reference/configuration) -- session store settings
-- [RPC API](/api/rpc) -- `session_store.*` methods
+- [Configuration](/reference/configuration) -- session store settings, storage layout, durability classes
+- [RPC API](/api/rpc) -- `session_store.*` methods, `mobkit/storage/doctor`
 - [BigQuery naming](/reference/decisions) -- naming validation rules

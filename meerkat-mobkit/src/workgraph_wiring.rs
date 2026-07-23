@@ -52,6 +52,17 @@ pub const WORKGRAPH_STORE_FILE: &str = "workgraph.sqlite3";
 /// closed, matching the schedule-tools posture.
 #[must_use]
 pub fn open_workgraph_service(state_dir: &Path, realm_id: &str) -> Option<WorkGraphService> {
+    open_workgraph_service_reporting(state_dir, realm_id).ok()
+}
+
+/// [`open_workgraph_service`] with the open failure reported instead of
+/// swallowed, so composition sites can record the sanctioned boot-without
+/// posture as a health-visible storage-slot degradation (M4) rather than a
+/// warn line alone.
+pub fn open_workgraph_service_reporting(
+    state_dir: &Path,
+    realm_id: &str,
+) -> Result<WorkGraphService, String> {
     let path = state_dir.join(WORKGRAPH_STORE_FILE);
     let store = match SqliteWorkGraphStore::open(&path) {
         Ok(store) => store,
@@ -61,10 +72,10 @@ pub fn open_workgraph_service(state_dir: &Path, realm_id: &str) -> Option<WorkGr
                 error = %error,
                 "failed to open workgraph store; workgraph disabled for this gateway",
             );
-            return None;
+            return Err(format!("{}: {error}", path.display()));
         }
     };
-    Some(scoped_workgraph_service(Arc::new(store), realm_id))
+    Ok(scoped_workgraph_service(Arc::new(store), realm_id))
 }
 
 /// Build a realm-scoped [`WorkGraphService`] over an in-memory store, for
@@ -397,9 +408,19 @@ pub fn attach_workgraph_tools(
     state_dir: &Path,
     realm_id: &str,
 ) -> Option<(WorkGraphService, WorkGraphAdmissionSlot)> {
-    let service = open_workgraph_service(state_dir, realm_id)?;
+    attach_workgraph_tools_reporting(builder, state_dir, realm_id).ok()
+}
+
+/// [`attach_workgraph_tools`] with the open failure reported instead of
+/// swallowed (see [`open_workgraph_service_reporting`]).
+pub fn attach_workgraph_tools_reporting(
+    builder: &FactoryAgentBuilder,
+    state_dir: &Path,
+    realm_id: &str,
+) -> Result<(WorkGraphService, WorkGraphAdmissionSlot), String> {
+    let service = open_workgraph_service_reporting(state_dir, realm_id)?;
     let slot = install_workgraph_tools(builder, &service);
-    Some((service, slot))
+    Ok((service, slot))
 }
 
 /// Memory-store variant of [`attach_workgraph_tools`] for ephemeral launches.
@@ -2151,7 +2172,8 @@ comms = true
             dir.path().to_path_buf(),
             8,
             Arc::new(meerkat_store::MemoryStore::new()),
-        );
+        )
+        .expect("persistent spec");
         assert_eq!(
             spec.workgraph_admission_sidecar,
             Some(crate::workgraph_admission::workgraph_admission_sidecar_path(dir.path())),

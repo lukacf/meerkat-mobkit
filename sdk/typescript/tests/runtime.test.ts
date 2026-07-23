@@ -448,6 +448,59 @@ describe("MobHandle.capabilities()", () => {
   });
 });
 
+describe("MobHandle.storageDoctor()", () => {
+  it("sends mobkit/storage/doctor with snake_case params and parses the result", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      state_dir: "/var/lib/mobkit/state",
+      diagnosis: {
+        findings: [
+          {
+            severity: "error",
+            code: "file-name-twins",
+            message: "2 spellings of the 'sessions' store exist side by side",
+            path: "/var/lib/mobkit/state/sessions.db",
+          },
+        ],
+        inventory: [{ realm: "state", root: "/var/lib/mobkit/state" }],
+      },
+      storage: { blob_durability: "persistent_disk" },
+    }));
+
+    const result = await handle.storageDoctor({
+      stateDir: "/var/lib/mobkit/state",
+      identity: "domain:security",
+    });
+    assert.equal(calls[0].method, "mobkit/storage/doctor");
+    assert.deepEqual(calls[0].params, {
+      state_dir: "/var/lib/mobkit/state",
+      identity: "domain:security",
+    });
+    assert.equal(result.stateDir, "/var/lib/mobkit/state");
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].code, "file-name-twins");
+    assert.equal(result.findings[0].severity, "error");
+    assert.equal(result.findings[0].path, "/var/lib/mobkit/state/sessions.db");
+    assert.equal(result.findings[0].realm, undefined);
+    assert.equal(result.inventory.length, 1);
+    assert.deepEqual(result.storage, { blob_durability: "persistent_disk" });
+  });
+
+  it("omits params left unset and maps a null storage summary", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      state_dir: "/s",
+      diagnosis: { findings: [], inventory: [] },
+      storage: null,
+    }));
+
+    const result = await handle.storageDoctor();
+    assert.deepEqual(calls[0].params, {});
+    assert.equal(result.storage, null);
+    assert.deepEqual(result.findings, []);
+  });
+});
+
 describe("MobHandle Rust gateway parity wrappers", () => {
   it("sends scheduling evaluate and dispatch RPC names", async () => {
     const { handle, calls, setResponse } = createMockRuntime();

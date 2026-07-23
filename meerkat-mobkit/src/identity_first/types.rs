@@ -1013,6 +1013,14 @@ pub enum ContinuityStoreError {
     },
     Io(String),
     Corruption(String),
+    /// Lock contention or interruption at the storage layer: the operation
+    /// did not observably complete and MAY be retried. Classification alone
+    /// does not authorize a retry — per the shared storage retryability
+    /// contract, automatic retry is only sound for idempotent or CAS-keyed
+    /// operations (continuity writes are fencing-token CAS and qualify);
+    /// an indeterminate non-idempotent write needs outcome reconciliation
+    /// first. Retry policy stays with the caller.
+    Transient(String),
 }
 
 impl fmt::Display for ContinuityStoreError {
@@ -1047,6 +1055,9 @@ impl fmt::Display for ContinuityStoreError {
             }
             Self::Io(msg) => write!(f, "continuity store I/O error: {msg}"),
             Self::Corruption(msg) => write!(f, "continuity store corruption: {msg}"),
+            Self::Transient(msg) => {
+                write!(f, "continuity store transient failure: {msg}")
+            }
         }
     }
 }

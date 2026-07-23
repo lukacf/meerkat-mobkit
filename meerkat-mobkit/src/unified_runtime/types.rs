@@ -98,8 +98,25 @@ pub enum UnifiedRuntimeBuilderError {
     Io(String),
     /// Failed to parse a mob definition TOML.
     DefinitionLoad(String),
-    /// Conflicting builder configuration (e.g., persistent_state + continuity_store).
+    /// Conflicting builder configuration (e.g., persistent_state + scratch_dir).
     ConflictingConfiguration(String),
+    /// Storage layout refusal (file-name twins in the state directory).
+    StorageLayout(crate::storage_layout::StorageLayoutError),
+    /// A storage provider failed to open the realm's store set, or the
+    /// fail-closed durability rule refused it (M4).
+    StorageProvider(crate::storage_provider::MobKitStorageProviderError),
+}
+
+impl From<crate::storage_layout::StorageLayoutError> for UnifiedRuntimeBuilderError {
+    fn from(error: crate::storage_layout::StorageLayoutError) -> Self {
+        Self::StorageLayout(error)
+    }
+}
+
+impl From<crate::storage_provider::MobKitStorageProviderError> for UnifiedRuntimeBuilderError {
+    fn from(error: crate::storage_provider::MobKitStorageProviderError) -> Self {
+        Self::StorageProvider(error)
+    }
 }
 
 impl Display for UnifiedRuntimeBuilderError {
@@ -118,6 +135,8 @@ impl Display for UnifiedRuntimeBuilderError {
             Self::Io(msg) => write!(f, "{msg}"),
             Self::DefinitionLoad(msg) => write!(f, "{msg}"),
             Self::ConflictingConfiguration(msg) => write!(f, "conflicting configuration: {msg}"),
+            Self::StorageLayout(err) => write!(f, "{err}"),
+            Self::StorageProvider(err) => write!(f, "{err}"),
         }
     }
 }

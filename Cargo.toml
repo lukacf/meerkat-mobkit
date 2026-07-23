@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "meerkat-mobkit",
+    "mobkit-store-conformance",
 ]
 resolver = "2"
 

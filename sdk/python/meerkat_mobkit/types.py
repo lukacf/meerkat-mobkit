@@ -42,10 +42,88 @@ def _require_number(data: dict[str, Any], field: str, context: str) -> int | flo
 
 
 @dataclass(frozen=True)
+class StorageSlotSummary:
+    """One composed storage slot's durability record (M4 census).
+
+    Mirrors the entries of the ``storage.slots`` array on ``mobkit/status``
+    / ``mobkit/capabilities``: the domain (``"sessions"``, ``"runtime"``,
+    ``"blobs"``, ...), meerkat's durability vocabulary (``durability_class``
+    is the wire field ``class``: ``"durable"`` / ``"scratch"``;
+    ``resolution``: ``"persistent"`` / ``"declared_ephemeral"`` /
+    ``"non_persistent"``), the concrete backend, whether the slot is a
+    sanctioned boot-without degradation, and an optional detail note.
+    Parsing is forward-tolerant: unknown fields are ignored and unknown
+    vocabulary values pass through as strings.
+    """
+
+    domain: str
+    durability_class: str
+    resolution: str
+    backend: str
+    degraded: bool = False
+    detail: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StorageSlotSummary:
+        return cls(
+            domain=str(data.get("domain", "")),
+            durability_class=str(data.get("class", "")),
+            resolution=str(data.get("resolution", "")),
+            backend=str(data.get("backend", "")),
+            degraded=bool(data.get("degraded", False)),
+            detail=data.get("detail"),
+        )
+
+
+@dataclass(frozen=True)
+class StorageSummary:
+    """The runtime's composition-time storage census (H1/H2 + M4).
+
+    The ``storage`` object shared by ``mobkit/status``,
+    ``mobkit/capabilities``, and ``mobkit/storage/doctor``:
+    ``blob_durability`` / ``blob_store_persistent`` record the blob slot's
+    resolution (H1), ``session_store_incremental`` the incremental
+    persistence probe (H2, ``None`` when no sessions are persisted), and
+    ``slots`` the per-slot durability census (M4).
+    """
+
+    blob_durability: str
+    blob_store_persistent: bool
+    session_store_incremental: bool | None = None
+    slots: list[StorageSlotSummary] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StorageSummary:
+        raw_slots = data.get("slots", [])
+        return cls(
+            blob_durability=str(data.get("blob_durability", "")),
+            blob_store_persistent=bool(data.get("blob_store_persistent", False)),
+            session_store_incremental=data.get("session_store_incremental"),
+            slots=[
+                StorageSlotSummary.from_dict(entry)
+                for entry in raw_slots
+                if isinstance(entry, dict)
+            ]
+            if isinstance(raw_slots, list)
+            else [],
+        )
+
+    def slot(self, domain: str) -> StorageSlotSummary | None:
+        """The census entry for ``domain``, if the runtime reported one."""
+        return next((s for s in self.slots if s.domain == domain), None)
+
+
+def _storage_summary_from(data: dict[str, Any]) -> StorageSummary | None:
+    raw = data.get("storage")
+    return StorageSummary.from_dict(raw) if isinstance(raw, dict) else None
+
+
+@dataclass(frozen=True)
 class StatusResult:
     contract_version: str
     running: bool
     loaded_modules: list[str]
+    storage: StorageSummary | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StatusResult:
@@ -53,6 +131,7 @@ class StatusResult:
             contract_version=data["contract_version"],
             running=data["running"],
             loaded_modules=list(data.get("loaded_modules", [])),
+            storage=_storage_summary_from(data),
         )
 
 
@@ -102,6 +181,7 @@ class CapabilitiesResult:
     loaded_modules: list[str]
     runtime_capabilities: RuntimeCapabilities | None = None
     workgraph: bool = False
+    storage: StorageSummary | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilitiesResult:
@@ -112,6 +192,7 @@ class CapabilitiesResult:
             loaded_modules=list(data.get("loaded_modules", [])),
             runtime_capabilities=RuntimeCapabilities.from_dict(rc_raw) if rc_raw else None,
             workgraph=bool(data.get("workgraph", False)),
+            storage=_storage_summary_from(data),
         )
 
 

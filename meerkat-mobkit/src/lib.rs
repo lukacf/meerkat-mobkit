@@ -31,6 +31,11 @@ pub mod protocol;
 pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
+pub mod storage_doctor;
+pub mod storage_health;
+pub mod storage_layout;
+pub mod storage_migrate;
+pub mod storage_provider;
 pub mod tool_compose;
 pub mod topology_control;
 pub mod types;
@@ -128,12 +133,13 @@ pub use memory::{
     CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DistillCause,
     DistillerConfig, DistillerEngine, DreamOutcome, DreamRun, HygieneCause, HygieneOutcome,
     HygienistConfig, HygienistEngine, ManifestTier, MemberAgentEventSink, MemoryConflictBridge,
-    MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryRecord, MemoryScope,
+    MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryPanelStore, MemoryRecord, MemoryScope,
     MemorySpawnCustomizer, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
     OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
     SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
-    StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,
-    TrustTier, spawn_member_event_observer, spawn_taint_observer,
+    StewardConfig, StewardEngine, StewardStore, StewardTriggers, TaintLlmWriteGate,
+    TaintObserverGuard, TaintableStore, TrustTier, spawn_member_event_observer,
+    spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
@@ -151,8 +157,8 @@ pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_ev
 pub use rpc::{
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, IdentityFirstContext, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse, MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE,
-    MOBKIT_CONTRACT_VERSION, handle_console_ingress_json, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, handle_unified_rpc_json_arc,
+    MOBKIT_CONTRACT_VERSION, STORAGE_RESOLUTION_CODE, handle_console_ingress_json,
+    handle_mobkit_rpc_json, handle_unified_rpc_json, handle_unified_rpc_json_arc,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{
@@ -184,6 +190,32 @@ pub use runtime::{
     run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
     start_mobkit_runtime_with_options,
+};
+pub use storage_doctor::{
+    MobKitStorageMigrator, diagnose_state_dir, diagnose_state_dir_blocking,
+    diagnose_state_dir_with_runtime,
+};
+pub use storage_health::{
+    BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
+    StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,
+};
+pub use storage_layout::{
+    DatabaseProvenance, DatabaseResolution, DatabaseSlot, DatabaseSummary, MobKitStorageLayout,
+    ResolvedDatabase, StateDirDurability, StorageLayoutError, StorageLayoutSummary,
+    default_ephemeral_scratch_root, default_gateway_home,
+};
+pub use storage_migrate::{
+    CheckpointAdoptionOutcome, DivergenceStatus, FileRenameEntry, LedgerBaselineAction,
+    LedgerBaselineEntry, MigrateMode, MobKitMaintenanceFence, MobKitMigrateReport,
+    MobKitPruneArtifact, MobKitPruneReport, PruneAction, PruneArtifactKind, RenameAction,
+    RowDivergenceEntry, SiblingRename, TwinReport, TwinResolution, enumerate_state_dir_artifacts,
+    enumerate_state_dir_databases, is_registered_backup_artifact_name,
+    is_registered_quarantine_artifact_name, migrate_state_dir, prune_state_dir,
+};
+pub use storage_provider::{
+    DiskMobKitStorageProvider, MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet,
+    MobKitStorageProvider, MobKitStorageProviderError, REQUIRED_MOBKIT_DURABILITY_DOMAINS,
+    enforce_fail_closed_store_set,
 };
 pub use topology_control::{
     SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,

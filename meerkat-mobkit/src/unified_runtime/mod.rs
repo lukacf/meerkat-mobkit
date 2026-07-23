@@ -49,7 +49,9 @@ pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
 };
-pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
+pub use event_log::{
+    EventLogConfig, EventLogError, EventLogStore, EventQuery, NullEventLogStore, PersistedEvent,
+};
 pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use mob_ops::MemberTurnAdmission;
 pub use types::{
@@ -178,11 +180,13 @@ pub struct UnifiedRuntime {
     // disabled and mutation methods are then absent/denied.
     topology_controller: crate::topology_control::TopologyController,
 
-    // Optional bundled-store handle backing the console Memory panel's
-    // read-only RPCs (§9.3). Interior-mutable so gateways can wire it after
-    // the runtime is shared (`Arc`), wherever the store is constructed.
+    // Optional panel-capable store handle backing the console Memory
+    // panel's read-only RPCs (§9.3). Any provider advertising
+    // `MemoryPanelStore` serves it (M4 de-weld). Interior-mutable so
+    // gateways can wire it after the runtime is shared (`Arc`), wherever
+    // the store is constructed.
     memory_panel_store:
-        std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+        std::sync::RwLock<Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>>,
     // Realm-scoped WorkGraph service backing the `mobkit/workgraph/*` RPC
     // group and the console experience section. Seeded from the bootstrap
     // spec and deliberately FIXED from then on: the admission guards
@@ -824,7 +828,7 @@ impl UnifiedRuntime {
 
     pub fn set_memory_panel_store(
         &self,
-        store: crate::memory::sqlite_store::SqliteAgentMemoryStore,
+        store: Arc<dyn crate::memory::capabilities::MemoryPanelStore>,
     ) {
         *self
             .memory_panel_store
@@ -834,7 +838,7 @@ impl UnifiedRuntime {
 
     pub fn memory_panel_store(
         &self,
-    ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+    ) -> Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>> {
         self.memory_panel_store
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -852,6 +856,14 @@ impl UnifiedRuntime {
     /// or the stock spec constructors, which do all three.
     pub fn workgraph_service(&self) -> Option<meerkat::WorkGraphService> {
         self.workgraph_service.clone()
+    }
+
+    /// Composition-time storage durability resolution (H1/H2) carried from
+    /// the bootstrap spec, reported by `mobkit/status` /
+    /// `mobkit/capabilities`. `None` when the spec was composed externally
+    /// without a declaration.
+    pub fn resolved_storage(&self) -> Option<crate::storage_health::ResolvedStorageSummary> {
+        self.mob_runtime.resolved_storage()
     }
 
     /// The runtime-wide admission authority serializing the workgraph

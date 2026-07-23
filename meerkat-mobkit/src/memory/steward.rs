@@ -74,8 +74,11 @@ use meerkat_core::{Message, Provider, UserMessage};
 use crate::identity_first::agent_memory::{
     AgentMemoryError, compact_whitespace, truncate_utf8_boundary,
 };
+use crate::memory::capabilities::{
+    EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, StewardStore,
+};
 use crate::memory::coordinator::DEFAULT_INSTRUCTION_HEADER;
-use crate::memory::distiller::{TombstoneSource, TranscriptSource};
+use crate::memory::distiller::TranscriptSource;
 use crate::memory::events::{MemoryEventSink, MemoryTimelineEvent};
 use crate::memory::guards::{BackgroundBudget, BackgroundBudgetConfig};
 use crate::memory::records::{
@@ -83,10 +86,7 @@ use crate::memory::records::{
     NewMemoryRecord, RecordMeta, RecordStatus, TrustTier, UsageEvent,
 };
 use crate::memory::selector::FactorySelectorHandle;
-use crate::memory::sqlite_store::{
-    EvidenceRefResolver, PendingHarvest, PendingPromotion, PendingProposal, SqliteAgentMemoryStore,
-};
-use crate::memory::staged::{StagedBatchKind, StagedMemoryStore, StagedMutationBatch, StagedOp};
+use crate::memory::staged::{StagedBatchKind, StagedMutationBatch, StagedOp};
 use crate::memory::taint::MemberAgentEventSink;
 use crate::runtime::{GatingResolutionNotice, GatingResolutionObserver};
 
@@ -931,7 +931,7 @@ pub struct StewardEngine {
     profile: StewardProfile,
     config: StewardConfig,
     handle: Arc<dyn StewardClientHandle>,
-    store: Arc<SqliteAgentMemoryStore>,
+    store: Arc<dyn StewardStore>,
     transcripts: Arc<dyn TranscriptSource>,
     gating: Option<Arc<dyn MemoryGatingBridge>>,
     conflicts: Option<Arc<dyn MemoryConflictBridge>>,
@@ -954,7 +954,7 @@ impl StewardEngine {
         profile: StewardProfile,
         config: StewardConfig,
         handle: Arc<dyn StewardClientHandle>,
-        store: Arc<SqliteAgentMemoryStore>,
+        store: Arc<dyn StewardStore>,
         transcripts: Arc<dyn TranscriptSource>,
         realm: impl Into<String>,
     ) -> Self {
@@ -1660,7 +1660,6 @@ impl StewardEngine {
         if lines.is_empty() {
             lines.push("(store is empty)".to_string());
         }
-        use crate::identity_first::agent_memory::AgentMemoryProvider;
         let manifest = self
             .store
             .manifest(&scopes_for_manifest, ManifestTier::Full)
@@ -1691,7 +1690,6 @@ impl StewardEngine {
         &self,
         partition: &DreamPartition,
     ) -> Result<SignalPacket, AgentMemoryError> {
-        use crate::identity_first::agent_memory::AgentMemoryProvider;
         let mut proposals = self
             .store
             .pending_proposals(&self.realm, MAX_PROPOSALS_PER_DREAM)
@@ -2294,16 +2292,14 @@ impl StewardEngine {
             }
             applied.push((verdict.record_id, verdict.verdict, verdict.rationale));
         }
-        if !load_bearing_ids.is_empty() {
-            use crate::identity_first::agent_memory::AgentMemoryProvider;
-            if let Err(err) = self
+        if !load_bearing_ids.is_empty()
+            && let Err(err) = self
                 .store
                 .mark_usage(&load_bearing_ids, UsageEvent::JudgedUseful)
                 .await
-            {
-                run.skips
-                    .push(format!("mark_usage(JudgedUseful) failed: {err}"));
-            }
+        {
+            run.skips
+                .push(format!("mark_usage(JudgedUseful) failed: {err}"));
         }
         run.phases.push((
             "usage_audit".to_string(),
@@ -3296,7 +3292,6 @@ impl StewardEngine {
         run_id: &str,
         run: &mut DreamRun,
     ) -> Result<(), StewardError> {
-        use crate::identity_first::agent_memory::AgentMemoryProvider;
         let scope = MemoryScope::Identity {
             realm: self.realm.clone(),
             identity: harvest.identity.clone(),
@@ -3873,6 +3868,7 @@ pub mod eval {
 mod tests {
     use super::*;
     use crate::identity_first::agent_memory::AgentMemoryProvider;
+    use crate::memory::capabilities::{MemoryPanelStore, TaintableStore};
     use crate::memory::distiller::{TranscriptMessage, TranscriptSlice};
     use crate::memory::events::CollectingEventSink;
     use crate::memory::records::{InjectionLogEntry, InjectionSurface, VerificationClaim};

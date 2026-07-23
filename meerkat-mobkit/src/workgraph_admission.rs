@@ -156,15 +156,45 @@ struct SidecarLock {
 impl SidecarLock {
     /// Generous timeout: cross-process contention is rare (operator-paced
     /// goal/attention mutations), and failing closed on a busy sidecar
-    /// refuses a legitimate admission.
+    /// refuses a legitimate admission. Passed to the `Maintenance` open as
+    /// a named [`meerkat_sqlite::OpenOptions`] override — the profile's
+    /// fail-fast zero-timeout default is the opposite of the sidecar's
+    /// deliberate wait-then-fail-closed policy.
     const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+    /// Take the cross-process admission lock.
+    ///
+    /// The sidecar database is created on first use through the
+    /// create-capable `Primary` profile, then locked through a
+    /// `Maintenance` open (which never creates and never mutates pragmas).
+    /// `Primary` leaves the file in WAL mode; that is fine for a lock
+    /// file: under WAL, `BEGIN IMMEDIATE` still admits exactly one holder
+    /// per file across processes (it takes the single WAL write lock),
+    /// which is the only property the sidecar relies on.
+    ///
+    /// Deliberately NO ledger domain and NO per-operation fence guard: the
+    /// file holds no schema (it exists purely to arbitrate the write
+    /// lock), and stamping a ledger row on every open would itself contend
+    /// for the very lock this sidecar arbitrates — a held admission would
+    /// stall a concurrent opener for the full busy timeout just to write
+    /// ledger bookkeeping into a lock file.
     fn acquire(path: &Path) -> Result<Self, String> {
-        let connection = rusqlite::Connection::open(path)
-            .map_err(|error| format!("open admission sidecar {}: {error}", path.display()))?;
-        connection
-            .busy_timeout(Self::BUSY_TIMEOUT)
-            .map_err(|error| format!("set admission sidecar busy timeout: {error}"))?;
+        if !path.is_file() {
+            meerkat_sqlite::open(path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+                .map_err(|error| format!("create admission sidecar {}: {error}", path.display()))?;
+        }
+        let connection = meerkat_sqlite::open_with(
+            path,
+            meerkat_sqlite::ConnectionProfile::Maintenance { write: true },
+            meerkat_sqlite::OpenOptions {
+                busy_timeout: Some(Self::BUSY_TIMEOUT),
+                // The admission sidecar is deliberately ledger-exempt
+                // (lock-file bookkeeping, rebuilt not migrated): no
+                // schema preflight applies.
+                ..Default::default()
+            },
+        )
+        .map_err(|error| format!("open admission sidecar {}: {error}", path.display()))?;
         connection
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| {
@@ -698,6 +728,28 @@ mod tests {
         drop(first);
         let second = second.await.expect("join");
         assert!(second.is_ok(), "released lock must admit the waiter");
+    }
+
+    /// The sidecar's documented ledger exemption: it deliberately carries
+    /// no tables at all — stamping a `meerkat_schema` ledger row on open
+    /// would itself take the write lock the sidecar exists to arbitrate.
+    #[test]
+    fn sidecar_carries_no_schema_and_no_ledger() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = workgraph_admission_sidecar_path(dir.path());
+        drop(SidecarLock::acquire(&path).expect("acquire"));
+        let probe = rusqlite::Connection::open(&path).expect("probe");
+        let tables: i64 = probe
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count tables");
+        assert_eq!(
+            tables, 0,
+            "the lock database must stay empty: no ledger, no tables"
+        );
     }
 
     /// The sidecar is a separate file from the store — holding a write

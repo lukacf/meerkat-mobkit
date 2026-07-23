@@ -432,10 +432,44 @@ pub trait AgentMemoryProvider: Send + Sync {
         false
     }
 
-    /// Bundled-store downcast seam: the builder wires the console Memory
-    /// panel (§9.3) when — and only when — the configured provider is the
-    /// bundled SQLite store. External providers keep the default `None`.
-    fn as_sqlite_store(&self) -> Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+    // ------------------------------------------------------------------
+    // Judgment-plane capability accessors (M4 de-weld). These replace the
+    // old `as_sqlite_store()` downcast: wiring probes for the ABSTRACT
+    // capability a feature needs (firewall controls, steward surface,
+    // panel reads, selected-record fetch, tombstone reads) instead of for
+    // one blessed implementation. Recall-only providers keep the default
+    // `None` for all of them — that, not the arm of a match they were
+    // born in, is what makes them recall-only.
+    // ------------------------------------------------------------------
+
+    /// §10.1 firewall control surface, when this provider supports
+    /// gate/sink/resolver installation.
+    fn as_taintable(&self) -> Option<Arc<dyn crate::memory::capabilities::TaintableStore>> {
+        None
+    }
+
+    /// §8.5 steward dream read/write surface.
+    fn as_steward_store(&self) -> Option<Arc<dyn crate::memory::capabilities::StewardStore>> {
+        None
+    }
+
+    /// §9.3 console Memory panel read API.
+    fn as_memory_panel_store(
+        &self,
+    ) -> Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>> {
+        None
+    }
+
+    /// §8.3 Selector body fetch for selector-chosen record ids.
+    fn as_selected_record_fetch(
+        &self,
+    ) -> Option<Arc<dyn crate::memory::selector::SelectedRecordFetch>> {
+        None
+    }
+
+    /// §8.4 Distiller tombstone reads (recently tombstoned records per
+    /// scope, for dedup against re-distillation).
+    fn as_tombstone_source(&self) -> Option<Arc<dyn crate::memory::distiller::TombstoneSource>> {
         None
     }
 }
@@ -3352,6 +3386,7 @@ mod tests {
     // ---- Recorder (§8.2) ----
 
     use crate::identity_first::types::LocalExternalToolOverlay;
+    use crate::memory::capabilities::TaintableStore;
     use crate::memory::sqlite_store::SqliteAgentMemoryStore;
     use crate::memory::taint::TaintLlmWriteGate;
     use meerkat_core::agent::AgentToolDispatcher;
