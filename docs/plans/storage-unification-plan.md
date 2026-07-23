@@ -23,6 +23,42 @@ worth correcting loudly because "which line do I pin" is exactly the
 ambiguity this plan exists to kill: MobKit's crate version and release tags
 are both 0.8.x, and the hotfixes below ship on the **0.8.x** line.
 
+**Revision 4 (implementation).** The arc is implemented on the
+`storage-unification` branch (hotfixes H1-H3 plus phases M0-M6, on Meerkat
+`=0.8.3` carrying the upstream storage arc). Deltas discovered and decided
+during implementation, recorded here so the plan stays honest against the
+code: the canonical database spellings are the `*.sqlite3` forms with
+canonical-name-first probing and legacy names accepted as read twins
+(`mobkit doctor` reports both; migrate renames under the fence with a
+registered rename marker); the meerkat-sqlite ledger domains are
+`mobkit-memory`, `mobkit-continuity`, `mobkit-metadata`, `mobkit-console`,
+and the memory admission sidecar is deliberately **ledger-exempt** (it is
+derived state, rebuilt rather than migrated); H3 shipped as batch
+adoption via direct SQL under the maintenance fence plus the sanctioned
+lazy-at-restore variant in the continuity adapter, both driving observed
+cursors; the judgment-plane de-weld landed as capability traits
+(`StewardStore`, `TaintableStore`, `MemoryPanelStore`) and
+`as_sqlite_store` is deleted; the M4 composite removed the builder's fifth
+storage fallback, and **incremental local continuity is honestly
+deferred** — the seam and adapter forwarding ship, the local incremental
+backend does not; a `ContinuityStore` default-method rollback defect found
+during M4b is fixed rather than worked around; the SDK durability
+vocabulary ships exactly what the wire supports (blob ephemerality is
+Rust-builder-only and census-visible, not wire-configurable), storage
+refusals in the gateway init path get typed code `-32014` (refusals inside
+`UnifiedRuntime::bootstrap` still surface as `-32603` with typed message
+text — recorded limitation), and both SDK bootstraps had to check for an
+init `RpcError` before their process-died rewrap for the typed error to be
+reachable at all; the M5 gate bans ambient root resolution and locator
+literals with an explicit allowlist (the layout authority itself, mobpack's
+config-discovery HOME uses, wiring-const definitions, and the
+doctor/migrate census files); prune only ever deletes **registered**
+artifact names — a strict `<original>.pre-<dotted version>-<timestamp>`
+/ `.corrupt-<timestamp>` parse, never a substring match; and
+post-review hardening requires exactly one durability declaration per slot
+in `REQUIRED_MOBKIT_DURABILITY_DOMAINS`, so a provider cannot dodge the
+fail-closed rule by omission.
+
 **Revision 3.** Revision 2 incorporated the second review round (HomeCore,
 ob3, and an independent static review): the provider layering is split into
 a MobKit-owned composite over Meerkat's seam, the filename-ownership
