@@ -214,7 +214,8 @@ pub use storage_migrate::{
 };
 pub use storage_provider::{
     DiskMobKitStorageProvider, MobKitLeaseAuthority, MobKitRealmOpenContext, MobKitRealmStoreSet,
-    MobKitStorageProvider, MobKitStorageProviderError, enforce_fail_closed_store_set,
+    MobKitStorageProvider, MobKitStorageProviderError, REQUIRED_MOBKIT_DURABILITY_DOMAINS,
+    enforce_fail_closed_store_set,
 };
 pub use topology_control::{
     SameProcessTopologyCoordinator, TopologyAction, TopologyApplyRequest,

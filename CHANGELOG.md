@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Durability declaration completeness is enforced at the storage seam.**
+  `enforce_fail_closed_store_set` now requires exactly one
+  `DurabilityDeclaration` for every slot in the new
+  `REQUIRED_MOBKIT_DURABILITY_DOMAINS` (`continuity`, `event_log`, `console`,
+  `metadata`, `blobs`, `agent_memory`, `schedule`); a provider that omits or
+  duplicates a domain is refused at composition instead of silently passing
+  the fail-closed durability rule. Mirrors the meerkat-level
+  `REQUIRED_DURABILITY_DOMAINS` hardening.
+
 - **`mobkit_gateway storage-migrate` / `storage-prune` — MobKit migration
   participation (storage-unification Phase M6).** New library module
   `meerkat_mobkit::storage_migrate` plus two offline maintenance verbs on

@@ -164,13 +164,46 @@ pub trait MobKitStorageProvider: Send + Sync {
     }
 }
 
+/// Every durability domain a [`MobKitRealmStoreSet`] must declare — one
+/// declaration per slot, no omissions. Mirrors the meerkat-level
+/// `REQUIRED_DURABILITY_DOMAINS` contract for the mobkit slots.
+pub const REQUIRED_MOBKIT_DURABILITY_DOMAINS: [&str; 7] = [
+    "continuity",
+    "event_log",
+    "console",
+    "metadata",
+    "blobs",
+    "agent_memory",
+    "schedule",
+];
+
 /// Enforce the fail-closed durability rule against the context's explicit
-/// ephemeral declarations: a `Durable` slot resolving `NonPersistent`
-/// without its domain declared ephemeral refuses composition.
+/// ephemeral declarations.
+///
+/// Completeness first: every slot in
+/// [`REQUIRED_MOBKIT_DURABILITY_DOMAINS`] must carry exactly one
+/// declaration — a provider cannot dodge the rule by omitting a domain or
+/// returning an empty list. Then each declaration is checked: a `Durable`
+/// slot resolving `NonPersistent` without its domain declared ephemeral
+/// refuses composition.
 pub fn enforce_fail_closed_store_set(
     set: &MobKitRealmStoreSet,
     ctx: &MobKitRealmOpenContext,
 ) -> Result<(), MobKitStorageProviderError> {
+    for required in REQUIRED_MOBKIT_DURABILITY_DOMAINS {
+        let count = set
+            .durability
+            .iter()
+            .filter(|declaration| declaration.domain == required)
+            .count();
+        if count != 1 {
+            return Err(MobKitStorageProviderError::DurabilityViolation {
+                domain: format!(
+                    "{required} (provider supplied {count} durability declarations for this                      slot; exactly one is required)"
+                ),
+            });
+        }
+    }
     for declaration in &set.durability {
         if declaration.is_undeclared_nonpersistent_durable()
             && !ctx.is_declared_ephemeral(&declaration.domain)
@@ -379,10 +412,11 @@ mod tests {
             .open_realm(&ctx)
             .await
             .expect("disk realm opens");
-        set.durability.push(DurabilityDeclaration::durable(
-            "continuity",
-            DurabilityResolution::NonPersistent,
-        ));
+        for declaration in &mut set.durability {
+            if declaration.domain == "continuity" {
+                declaration.resolution = DurabilityResolution::NonPersistent;
+            }
+        }
         let error = enforce_fail_closed_store_set(&set, &ctx)
             .expect_err("undeclared non-persistent durable slot must refuse");
         assert!(matches!(
@@ -398,5 +432,58 @@ mod tests {
             .push("continuity".to_string());
         enforce_fail_closed_store_set(&set, &declared)
             .expect("declared ephemeral domain must compose");
+    }
+
+    /// Completeness: a provider cannot dodge the fail-closed rule by
+    /// omitting a domain's declaration (or declaring it twice).
+    #[tokio::test]
+    async fn enforce_refuses_omitted_and_duplicate_declarations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = context(dir.path());
+        let set = DiskMobKitStorageProvider
+            .open_realm(&ctx)
+            .await
+            .expect("disk realm opens");
+
+        let mut omitted = set.durability.clone();
+        omitted.retain(|declaration| declaration.domain != "metadata");
+        let mut incomplete = MobKitRealmStoreSet {
+            durability: omitted,
+            ..clone_stores(&set)
+        };
+        let error = enforce_fail_closed_store_set(&incomplete, &ctx)
+            .expect_err("an omitted durability declaration must refuse");
+        assert!(matches!(
+            error,
+            MobKitStorageProviderError::DurabilityViolation { ref domain }
+                if domain.starts_with("metadata") && domain.contains("0 durability declarations")
+        ));
+
+        incomplete.durability = set.durability.clone();
+        incomplete.durability.push(DurabilityDeclaration::durable(
+            "metadata",
+            DurabilityResolution::Persistent,
+        ));
+        let error = enforce_fail_closed_store_set(&incomplete, &ctx)
+            .expect_err("a duplicated durability declaration must refuse");
+        assert!(matches!(
+            error,
+            MobKitStorageProviderError::DurabilityViolation { ref domain }
+                if domain.starts_with("metadata") && domain.contains("2 durability declarations")
+        ));
+    }
+
+    fn clone_stores(set: &MobKitRealmStoreSet) -> MobKitRealmStoreSet {
+        MobKitRealmStoreSet {
+            continuity_store: Arc::clone(&set.continuity_store),
+            lease_authority: set.lease_authority.clone(),
+            event_log_store: None,
+            console_log_store: Arc::clone(&set.console_log_store),
+            metadata_store: Arc::clone(&set.metadata_store),
+            blob_store: Arc::clone(&set.blob_store),
+            agent_memory_provider: set.agent_memory_provider.clone(),
+            schedule_store: Arc::clone(&set.schedule_store),
+            durability: set.durability.clone(),
+        }
     }
 }
