@@ -101,20 +101,86 @@ export interface SessionCreatedContext {
   readonly systemPrompt: string | null;
 }
 
+// -- Storage census (H1/H2 + M4) ------------------------------------------
+
+/**
+ * One composed storage slot's durability record (M4 census): the domain
+ * (`"sessions"`, `"runtime"`, `"blobs"`, ...), meerkat's durability
+ * vocabulary (`durabilityClass` is the wire field `class`: `"durable"` /
+ * `"scratch"`; `resolution`: `"persistent"` / `"declared_ephemeral"` /
+ * `"non_persistent"`), the concrete backend, whether the slot is a
+ * sanctioned boot-without degradation, and an optional detail note.
+ * Parsing is forward-tolerant: unknown fields are ignored and unknown
+ * vocabulary values pass through as strings.
+ */
+export interface StorageSlotSummary {
+  readonly domain: string;
+  readonly durabilityClass: string;
+  readonly resolution: string;
+  readonly backend: string;
+  readonly degraded: boolean;
+  readonly detail?: string;
+}
+
+/**
+ * The runtime's composition-time storage census — the `storage` object
+ * shared by `mobkit/status`, `mobkit/capabilities`, and
+ * `mobkit/storage/doctor`: `blobDurability` / `blobStorePersistent` record
+ * the blob slot's resolution (H1), `sessionStoreIncremental` the
+ * incremental persistence probe (H2, `null` when no sessions are
+ * persisted), and `slots` the per-slot durability census (M4).
+ */
+export interface StorageSummary {
+  readonly blobDurability: string;
+  readonly blobStorePersistent: boolean;
+  readonly sessionStoreIncremental: boolean | null;
+  readonly slots: readonly StorageSlotSummary[];
+}
+
+export function parseStorageSummary(raw: unknown): StorageSummary {
+  const d = asRecord(raw);
+  const slots = asRecordArray(d.slots).map((entry) => ({
+    domain: String(entry.domain ?? ""),
+    durabilityClass: String(entry.class ?? ""),
+    resolution: String(entry.resolution ?? ""),
+    backend: String(entry.backend ?? ""),
+    degraded: Boolean(entry.degraded ?? false),
+    ...(entry.detail !== undefined ? { detail: String(entry.detail) } : {}),
+  }));
+  return {
+    blobDurability: String(d.blob_durability ?? ""),
+    blobStorePersistent: Boolean(d.blob_store_persistent ?? false),
+    sessionStoreIncremental:
+      typeof d.session_store_incremental === "boolean"
+        ? d.session_store_incremental
+        : null,
+    slots,
+  };
+}
+
+function parseOptionalStorageSummary(raw: unknown): StorageSummary | undefined {
+  return raw !== null && raw !== undefined && typeof raw === "object"
+    ? parseStorageSummary(raw)
+    : undefined;
+}
+
 // -- StatusResult ---------------------------------------------------------
 
 export interface StatusResult {
   readonly contractVersion: string;
   readonly running: boolean;
   readonly loadedModules: readonly string[];
+  readonly storage?: StorageSummary;
 }
 
 export function parseStatusResult(raw: unknown): StatusResult {
   const d = asRecord(raw);
+  const storage = parseOptionalStorageSummary(d.storage);
   return {
     contractVersion: String(d.contract_version ?? ""),
     running: Boolean(d.running),
     loadedModules: asStringArray(d.loaded_modules),
+    ...(storage !== undefined ? { storage } : {}),
   };
 }
 
@@ -131,7 +197,9 @@ export interface StorageDoctorFinding {
 }
 
 /** `mobkit/storage/doctor` result: the shape-stable StorageDiagnosis plus
- *  the live H1/H2 storage summary when the gateway resolved one. */
+ *  the live H1/H2 storage summary when the gateway resolved one. `storage`
+ *  stays the raw wire record for compatibility; apply
+ *  {@link parseStorageSummary} to get the typed census. */
 export interface StorageDoctorResult {
   readonly stateDir: string;
   readonly findings: readonly StorageDoctorFinding[];
@@ -214,16 +282,19 @@ export interface CapabilitiesResult {
   readonly loadedModules: readonly string[];
   readonly runtimeCapabilities?: RuntimeCapabilities;
   readonly workgraph: boolean;
+  readonly storage?: StorageSummary;
 }
 
 export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
   const d = asRecord(raw);
+  const storage = parseOptionalStorageSummary(d.storage);
   return {
     contractVersion: String(d.contract_version ?? ""),
     methods: asStringArray(d.methods),
     loadedModules: asStringArray(d.loaded_modules),
     runtimeCapabilities: parseRuntimeCapabilities(d.runtime_capabilities),
     workgraph: Boolean(d.workgraph ?? false),
+    ...(storage !== undefined ? { storage } : {}),
   };
 }
 

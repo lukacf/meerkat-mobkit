@@ -12,5 +12,7 @@
  */
 
 export * as auth from "./auth.js";
+export * as eventLog from "./event-log.js";
 export * as memory from "./memory.js";
+export * as runtimeStore from "./runtime-store.js";
 export * as sessionStore from "./session-store.js";

@@ -18,6 +18,7 @@ class MobKitBuilderConfig:
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     event_log: Any | None = None
+    runtime_store: Any | None = None
     console_read_only: bool | None = None
     console_fetch_timeout_ms: int | None = None
     gating_config_path: str | None = None
@@ -88,14 +89,58 @@ class MobKitBuilder:
         self._config.pre_spawn_callback = callback
         return self
 
-    def event_log(self, *, storage: Any, **kwargs: Any) -> MobKitBuilder:
-        """Configure persistent event log.
+    def event_log(self, config: Any = None, *, storage: Any = None, **kwargs: Any) -> MobKitBuilder:
+        """Configure the operational event log.
+
+        Preferred form — a typed declaration from
+        :mod:`meerkat_mobkit.config.event_log`::
+
+            from meerkat_mobkit.config import event_log
+            MobKit.builder().event_log(event_log.memory(batch_size=64))
+            MobKit.builder().event_log(event_log.null())
+
+        The gateway accepts only the declared ephemeral storage kinds
+        (``"memory"`` — bounded queryable in-process store; ``"null"`` —
+        events dropped) and rejects anything else at startup. Without this
+        call no events are ingested at all.
 
         Args:
-            storage: An EventLogStore implementation for the app's backend.
-            **kwargs: Additional config (batch_size, flush_interval_ms, filter).
+            config: A typed config (``event_log.memory()`` / ``event_log.null()``)
+                or a raw wire dict.
+            storage: Legacy keyword form: an EventLogStore implementation or
+                a storage string; mutually exclusive with ``config``.
+            **kwargs: Additional wire fields for the keyword form
+                (batch_size, flush_interval_ms, filter).
         """
+        if config is not None and storage is not None:
+            raise ValueError("event_log accepts either config or storage=..., not both")
+        if config is not None:
+            if kwargs:
+                raise ValueError("event_log keyword options apply to the storage=... form only")
+            self._config.event_log = config
+            return self
+        if storage is None:
+            raise ValueError("event_log requires a config or storage=...")
         self._config.event_log = {"storage": storage, **kwargs}
+        return self
+
+    def runtime_store(self, config: Any) -> MobKitBuilder:
+        """Declare the runtime store's durability explicitly.
+
+        The gateway's runtime store (session resume/archive/retire) is
+        persistent SQLite by default; a failed open is a startup error, not
+        a silent in-memory fallback. The only declarable alternative is the
+        explicit in-memory form::
+
+            from meerkat_mobkit.config import runtime_store
+            MobKit.builder().runtime_store(runtime_store.memory())
+
+        Sessions then do not survive gateway restart, and the choice shows
+        up in the storage census (``mobkit/status`` → ``storage.slots``).
+        Accepts the typed config or the raw wire dict
+        ``{"storage": "memory"}``.
+        """
+        self._config.runtime_store = config
         return self
 
     def on_error(self, callback: Callable[..., Any] | Callable[..., Awaitable[Any]]) -> MobKitBuilder:

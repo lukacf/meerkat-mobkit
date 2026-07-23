@@ -14,6 +14,12 @@ CAPABILITY_UNAVAILABLE_CODE: int = -32004
 LEASE_LOST_CODE: int = -32005
 MEMORY_BACKEND_UNAVAILABLE_CODE: int = -32012
 CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
+# Fail-closed storage refusal at gateway startup (mobkit/init): file-name
+# twins the storage layout refuses to pick between, a store that failed to
+# open where the silent fallback used to be, or a state-root creation
+# failure. The message carries the remediation (the storage doctor, or the
+# explicit ephemeral declaration).
+STORAGE_RESOLUTION_CODE: int = -32014
 # WorkGraph service not configured on the runtime.
 WORKGRAPH_UNAVAILABLE_CODE: int = -32041
 # WorkGraph CAS/revision conflict on a mutation (stale `expected_revision`).
@@ -171,6 +177,36 @@ class ConsoleTimelineReplayUnavailableError(RpcError):
     ):
         super().__init__(
             CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class StorageResolutionError(RpcError):
+    """Raised when the gateway refuses to start over a storage resolution gap.
+
+    The refusals are deliberate (storage-unification fail-closed posture):
+    file-name twins (e.g. ``sessions.sqlite3`` beside ``sessions.db``) the
+    layout will not pick between, a session/runtime/blob/metadata/console
+    store that failed to open where older gateways silently fell back to
+    in-memory, or an uncreatable state root. The message names the
+    remediation — run the storage doctor (``mobkit/storage/doctor``) for
+    twins, fix the database file, or declare the ephemeral choice
+    explicitly (e.g. ``runtime_store.memory()``).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            STORAGE_RESOLUTION_CODE,
             message,
             request_id=request_id,
             method=method,

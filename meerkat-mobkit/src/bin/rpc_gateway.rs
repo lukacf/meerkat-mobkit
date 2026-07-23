@@ -34,8 +34,8 @@ use meerkat_mobkit::{
     MemoryBackendConfig, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
     ObjectStoreBlobStore, PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata,
     RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute,
-    ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
+    STORAGE_RESOLUTION_CODE, ScheduleDefinition, SqliteConsoleLogStore, SqliteMetadataStore,
+    TrustedOidcRuntimeConfig, UnifiedRuntime, UnifiedRuntimeShutdownReport, handle_mobkit_rpc_json,
     load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::{
         ensure_shell_tooling_build_substrate, mob_definition_may_use_image_generation,
@@ -4531,7 +4531,10 @@ external_addressable = true
     drop(rpc_tx);
 
     /// Helper: send a JSON-RPC error response for the init request and exit.
-    fn fail_init(request_id: &Value, code: i32, message: String) -> ! {
+    /// Storage-refusal sites pass [`STORAGE_RESOLUTION_CODE`] so SDKs reify
+    /// the fail-closed durability errors; everything else keeps the standard
+    /// JSON-RPC codes.
+    fn fail_init(request_id: &Value, code: i64, message: String) -> ! {
         let error_response = json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -4615,20 +4618,20 @@ external_addressable = true
         } else {
             let db_path = match storage_layout.continuity_db() {
                 Ok(resolved) => resolved.path,
-                Err(e) => fail_init(&request_id, -32603, e.to_string()),
+                Err(e) => fail_init(&request_id, STORAGE_RESOLUTION_CODE, e.to_string()),
             };
             if storage_layout.is_declared_ephemeral()
                 && let Err(e) = std::fs::create_dir_all(storage_layout.state_dir())
             {
                 fail_init(
                     &request_id,
-                    -32603,
+                    STORAGE_RESOLUTION_CODE,
                     format!("failed to create the declared-ephemeral scratch root: {e}"),
                 );
             }
             let substrate = meerkat_mobkit::gateway_wiring::open_identity_substrate(&db_path)
                 .await
-                .unwrap_or_else(|e| fail_init(&request_id, -32603, e));
+                .unwrap_or_else(|e| fail_init(&request_id, STORAGE_RESOLUTION_CODE, e));
             local_default_lease_provider = Some(substrate.lease_provider);
             substrate.continuity_store
         })
@@ -4677,13 +4680,13 @@ external_addressable = true
         if let Err(e) = std::fs::create_dir_all(state_path) {
             fail_init(
                 &request_id,
-                -32603,
+                STORAGE_RESOLUTION_CODE,
                 format!("failed to create persistent state directory: {e}"),
             );
         }
         let sqlite_path = match storage_layout.session_db() {
             Ok(resolved) => resolved.path,
-            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+            Err(e) => fail_init(&request_id, STORAGE_RESOLUTION_CODE, e.to_string()),
         };
         let session_store_kind = if identity_session_store_adapter.is_some() {
             "ContinuitySessionStoreAdapter"
@@ -4698,7 +4701,7 @@ external_addressable = true
                     Ok(s) => Arc::new(s),
                     Err(e) => fail_init(
                         &request_id,
-                        -32603,
+                        STORAGE_RESOLUTION_CODE,
                         format!("failed to open SQLite session store: {e}"),
                     ),
                 }
@@ -4717,7 +4720,7 @@ external_addressable = true
                 Ok(store) => Arc::new(store),
                 Err(e) => fail_init(
                     &request_id,
-                    -32603,
+                    STORAGE_RESOLUTION_CODE,
                     format!("failed to open binary blob store: {e}"),
                 ),
             };
@@ -4757,7 +4760,7 @@ external_addressable = true
                 ),
                 Err(err) => fail_init(
                     &request_id,
-                    -32603,
+                    STORAGE_RESOLUTION_CODE,
                     meerkat_mobkit::storage_health::RuntimeStoreResolutionError {
                         path: runtime_db_path.clone(),
                         message: err.to_string(),
@@ -5036,7 +5039,7 @@ external_addressable = true
         if let Err(err) = std::fs::create_dir_all(agent_workspace) {
             fail_init(
                 &request_id,
-                -32603,
+                STORAGE_RESOLUTION_CODE,
                 format!("failed to create scratch directory: {err}"),
             );
         }
@@ -5329,13 +5332,13 @@ external_addressable = true
     let persistent_metadata: Arc<dyn PersistentMetadataStore> = if persistent_state.is_some() {
         let metadata_path = match storage_layout.metadata_db() {
             Ok(resolved) => resolved.path,
-            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+            Err(e) => fail_init(&request_id, STORAGE_RESOLUTION_CODE, e.to_string()),
         };
         Arc::new(
             SqliteMetadataStore::open(&metadata_path).unwrap_or_else(|e| {
                 fail_init(
                     &request_id,
-                    -32603,
+                    STORAGE_RESOLUTION_CODE,
                     format!(
                         "failed to open the mobkit metadata store at {}: {e}",
                         metadata_path.display()
@@ -5375,13 +5378,13 @@ external_addressable = true
     if persistent_state.is_some() {
         let console_log_path = match storage_layout.console_db() {
             Ok(resolved) => resolved.path,
-            Err(e) => fail_init(&request_id, -32603, e.to_string()),
+            Err(e) => fail_init(&request_id, STORAGE_RESOLUTION_CODE, e.to_string()),
         };
         let console_log_store = Arc::new(
             SqliteConsoleLogStore::open(&console_log_path).unwrap_or_else(|e| {
                 fail_init(
                     &request_id,
-                    -32603,
+                    STORAGE_RESOLUTION_CODE,
                     format!(
                         "failed to open the mobkit console store at {}: {e}",
                         console_log_path.display()
@@ -5575,13 +5578,17 @@ external_addressable = true
                                     // WAL keeps the read-side safe.
                                     let session_db = match storage_layout.session_db() {
                                         Ok(resolved) => resolved.path,
-                                        Err(e) => fail_init(&request_id, -32603, e.to_string()),
+                                        Err(e) => fail_init(
+                                            &request_id,
+                                            STORAGE_RESOLUTION_CODE,
+                                            e.to_string(),
+                                        ),
                                     };
                                     match meerkat_store::SqliteSessionStore::open(session_db) {
                                         Ok(store) => Arc::new(store),
                                         Err(e) => fail_init(
                                             &request_id,
-                                            -32603,
+                                            STORAGE_RESOLUTION_CODE,
                                             format!("agent memory session store: {e}"),
                                         ),
                                     }

@@ -88,6 +88,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `"memory"` form keeps working), and the new `runtime_store` key accepts
   `{"storage": "memory"}` — the explicit ephemeral runtime-store
   declaration. Unknown keys still reject.
+- **SDK storage durability vocabulary (storage-unification Phase M5).**
+  Python gains the `config.runtime_store` (`runtime_store.memory()`) and
+  `config.event_log` (`event_log.memory(batch_size, flush_interval_ms)` /
+  `event_log.null()`) modules plus the builder methods
+  `.runtime_store(config)` and the extended `.event_log(config)` (the
+  legacy `event_log(storage=..., **kwargs)` keyword form keeps working);
+  TypeScript mirrors them as the `runtimeStore` / `eventLog` config
+  modules (`eventLog.nullStore()` — `null` is reserved) and
+  `.runtimeStore(config)` / the extended `.eventLog(...)`. Both SDKs now
+  parse the storage census: `StatusResult.storage` /
+  `CapabilitiesResult.storage` carry a typed `StorageSummary` (H1 blob
+  durability, the H2 incremental probe, and the M4 per-slot
+  `StorageSlotSummary` census), with forward-tolerant parsing;
+  TypeScript additionally exports `parseStorageSummary` for the raw
+  `mobkit/storage/doctor` `storage` record. Blob-store durability
+  remains embedder-only (no wire declaration; census-visible read-only).
+- **Typed fail-closed storage refusals: JSON-RPC error `-32014`
+  (`STORAGE_RESOLUTION_CODE`).** The `rpc_gateway` init storage refusals
+  — file-name twins the layout refuses to pick between, a
+  session/runtime/blob/metadata/console store that failed to open where
+  the silent in-memory fallback used to be, an uncreatable state root —
+  now answer `mobkit/init` with `-32014` instead of generic `-32603`,
+  and both SDKs reify it as the new `StorageResolutionError`
+  (`RpcError` subclass). Both SDK bootstraps also stop rewrapping a
+  received structured init error as a transport failure when the gateway
+  exits after writing it (the fail-closed refusals do exactly that).
+  Refusals raised inside `UnifiedRuntime::bootstrap` (Rust builder
+  surfaces) still surface as `-32603` with the typed message text.
+- **M5 storage anti-regression gate** (`meerkat-mobkit/tests/storage_gate.rs`,
+  default test lane): production code may not resolve ambient roots
+  (`$HOME`/`$XDG_*`/`$LOCALAPPDATA`/`$TMPDIR` reads, `env::temp_dir`,
+  `dirs::`-style derivations) or spell the canonical database file names
+  outside `src/storage_layout.rs`; legitimate uses are allowlisted with
+  documented reasons (mobpack's skill/MCP-config home discovery and
+  scratch outputs, the feature-owned schedule/workgraph constants, the
+  doctor's legacy-spelling census). The sweep it enforces moved the
+  mobpack flow-editor draft-store default off its private
+  `$XDG_STATE_HOME`/`$HOME` derivation onto
+  `storage_layout::default_gateway_home()` (same resulting path).
 
 ### Fixed
 

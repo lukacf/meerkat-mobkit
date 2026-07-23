@@ -116,6 +116,16 @@ Apps write identity-scoped agent memory explicitly through `mobkit/agent_memory/
 
 Agent memory is identity-scoped rather than session-scoped. A session respawn or identity reset does not delete stored memory; apps that need privacy reset semantics can call `mobkit/agent_memory/forget` for specific records or use a provider that clears memory as part of the app's identity lifecycle. `forget` removes records from future recall and injection, but it cannot remove text already delivered into an active model context; reset or respawn the identity after deletion when immediate context revocation matters.
 
+On disk, the agent-memory root under the state directory is
+`agent-memory/` — the canonical name owned by `MobKitStorageLayout`; the
+legacy `agent-memory-sqlite/` spelling remains readable through
+canonical-name-first probing, and both existing at once refuses startup as
+file-name twins (run `mobkit/storage/doctor`). Per-realm files beneath the
+root stay feature-owned. Like every durable slot, the agent-memory store
+appears in the storage census (`mobkit/status` → `storage.slots`) with its
+durability class and resolution; see
+[Configuration → Storage layout and durability](/reference/configuration#storage-layout-and-durability).
+
 ## The `memory` recorder tool
 
 With the SQLite store (the default), identity-first members get a capability-gated `memory` tool: `remember`, `update`, `forget`, `recall`, and `propose_to_mob`. Writes carry real agent authorship and always enter at the `agent_observed` trust tier or below — an agent that verified a fact records the verification as a *claim* in provenance (`epistemic: "verified_claim"` plus `verification_evidence`); the trust-tier upgrade is a steward-only reviewed operation. `update` supersedes a record within its own lineage in the agent's own identity scope; cross-identity updates are rejected by the store validator. `propose_to_mob` queues a proposal for mob scope — a steward or operator must commit it. Tool results are an indexing-excluded message class, so confirmations and recall payloads never echo into session semantic memory. Disable the tool with `agent_memory.recorder_tool: false` (default `true` when agent memory is enabled).

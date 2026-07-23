@@ -40,6 +40,7 @@ from .errors import (
     CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
     LEASE_LOST_CODE,
     MEMORY_BACKEND_UNAVAILABLE_CODE,
+    STORAGE_RESOLUTION_CODE,
     WORKGRAPH_CONFLICT_CODE,
     WORKGRAPH_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
@@ -51,6 +52,7 @@ from .errors import (
     MobKitError,
     NotConnectedError,
     RpcError,
+    StorageResolutionError,
     TransportError,
     WorkGraphConflictError,
     WorkGraphUnavailableError,
@@ -139,6 +141,8 @@ from .types import (
     SpawnMemberResult,
     SpawnResult,
     StatusResult,
+    StorageSlotSummary,
+    StorageSummary,
     SubscribeResult,
     UnifiedAgentEvent,
     UnifiedModuleEvent,
@@ -173,7 +177,7 @@ from .events import (
 )
 
 # Config modules (importable as meerkat_mobkit.auth, etc.)
-from .config import auth, memory, session_store
+from .config import auth, event_log, memory, runtime_store, session_store
 
 # Rich tool-result content blocks for callback tool handlers.
 from .tool_content import (
@@ -219,12 +223,14 @@ __all__ = [
     "CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE",
     "LEASE_LOST_CODE",
     "MEMORY_BACKEND_UNAVAILABLE_CODE",
+    "STORAGE_RESOLUTION_CODE",
     "WORKGRAPH_CONFLICT_CODE",
     "WORKGRAPH_UNAVAILABLE_CODE",
     "CapabilityUnavailableError",
     "ConsoleTimelineReplayUnavailableError",
     "LeaseLostError",
     "MemoryBackendUnavailableError",
+    "StorageResolutionError",
     "WorkGraphConflictError",
     "WorkGraphUnavailableError",
     "ContractMismatchError",
@@ -232,6 +238,8 @@ __all__ = [
     # Typed return models
     "StatusResult",
     "CapabilitiesResult",
+    "StorageSlotSummary",
+    "StorageSummary",
     "ReconcileResult",
     "SpawnResult",
     "SpawnMemberResult",
@@ -342,6 +350,8 @@ __all__ = [
     "UnknownEvent",
     # Config modules
     "auth",
+    "event_log",
     "memory",
+    "runtime_store",
     "session_store",
 ]

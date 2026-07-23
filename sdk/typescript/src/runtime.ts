@@ -28,6 +28,7 @@ import {
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
   LEASE_LOST_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
+  STORAGE_RESOLUTION_CODE,
   WORKGRAPH_UNAVAILABLE_CODE,
   WORKGRAPH_CONFLICT_CODE,
   CapabilityUnavailableError,
@@ -37,6 +38,7 @@ import {
   MobEventsStaleError,
   NotConnectedError,
   RpcError,
+  StorageResolutionError,
   TransportError,
   WorkGraphUnavailableError,
   WorkGraphConflictError,
@@ -542,14 +544,15 @@ export class MobKitRuntime {
         // Pre-fix every error path here was rewritten to a generic
         // `TransportError`, destroying the original RPC code/message
         // (e.g. config errors like `bad mob.toml: line 7`). The fix:
-        // only synthesize TransportError when the subprocess actually
-        // died; otherwise re-throw the structured RpcError so operators
-        // can diagnose config errors without spelunking gateway logs.
-        if (this._transport !== null && !this._transport.isRunning()) {
-          throw new TransportError("gateway process died during bootstrap");
-        }
+        // re-throw a structured RpcError whenever one was received —
+        // fail-closed init refusals (the typed StorageResolutionError)
+        // write the error response and then exit, so the process being
+        // dead does not make the structured error a transport failure.
         if (isRpcError(err)) {
           throw err;
+        }
+        if (this._transport !== null && !this._transport.isRunning()) {
+          throw new TransportError("gateway process died during bootstrap");
         }
         throw new TransportError(
           `mobkit/init failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -598,6 +601,9 @@ export class MobKitRuntime {
     }
     if (this._config.eventLog) {
       runtimeOptions.event_log = serializeConfig(this._config.eventLog);
+    }
+    if (this._config.runtimeStore) {
+      runtimeOptions.runtime_store = serializeConfig(this._config.runtimeStore);
     }
     if (this._config.consoleConfigPath) {
       runtimeOptions.console_config_path = this._config.consoleConfigPath;
@@ -697,6 +703,9 @@ export class MobKitRuntime {
       }
       if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
         throw new ConsoleTimelineReplayUnavailableError(message, rid, method, err.data);
+      }
+      if (code === STORAGE_RESOLUTION_CODE) {
+        throw new StorageResolutionError(message, rid, method, err.data);
       }
       if (code === WORKGRAPH_UNAVAILABLE_CODE) {
         throw new WorkGraphUnavailableError(message, rid, method, err.data);
@@ -1376,6 +1385,9 @@ export class MobHandle {
       }
       if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
         throw new ConsoleTimelineReplayUnavailableError(message, id, method, err.data);
+      }
+      if (code === STORAGE_RESOLUTION_CODE) {
+        throw new StorageResolutionError(message, id, method, err.data);
       }
       const rpcError = new RpcError(code, message, id, method, err.data);
       if (code === MOB_EVENTS_STALE_CURSOR_CODE) {

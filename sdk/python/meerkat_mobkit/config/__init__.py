@@ -1,4 +1,4 @@
 """Configuration modules for MobKit runtime."""
-from . import auth, memory, session_store
+from . import auth, event_log, memory, runtime_store, session_store
 
-__all__ = ["auth", "memory", "session_store"]
+__all__ = ["auth", "event_log", "memory", "runtime_store", "session_store"]

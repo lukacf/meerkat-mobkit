@@ -282,6 +282,8 @@ rt = await (
 | `.gating(path)` | Gating config path |
 | `.routing(path)` | Routing config path |
 | `.scheduling(*files)` | Schedule config files |
+| `.event_log(config)` | Operational event log declaration (`event_log.memory()` / `event_log.null()`) |
+| `.runtime_store(config)` | Explicit ephemeral runtime-store declaration (`runtime_store.memory()`) |
 | `.memory(config)` | Memory configuration |
 | `.agent_memory(config=True, **options)` | Durable identity-scoped agent memory |
 | `.auth(config)` | Auth configuration |
@@ -320,6 +322,39 @@ store. Options include `realm`, `selection`, `max_entries`,
 `recall_timeout_ms`, `recall_failure_policy`, and `instruction_header`; the SDK
 serializes them to the gateway wire contract. Automatic injection defaults to a
 500 ms timeout and skips the memory block if recall fails.
+
+**Storage durability declarations.** The gateway is fail-closed about
+durable storage: a store that cannot open is a startup error, never a
+silent in-memory fallback. The `config.runtime_store` and
+`config.event_log` modules produce the explicit declarations:
+
+```python
+from meerkat_mobkit.config import event_log, runtime_store
+
+runtime = await (
+    MobKit.builder()
+    .mob("config/mob.toml")
+    .persistent_state("state/mobkit")
+    # Declare an in-memory runtime store (sessions do not survive restart).
+    .runtime_store(runtime_store.memory())
+    # Declare a bounded queryable in-process event log — or event_log.null().
+    .event_log(event_log.memory(batch_size=64))
+    .build()
+)
+```
+
+The resolved picture is the typed storage census: `StatusResult.storage` /
+`CapabilitiesResult.storage` parse the gateway's `storage` object into
+`StorageSummary` (blob durability, the H2 incremental probe, and the
+per-slot `StorageSlotSummary` census with `domain`, `durability_class`,
+`resolution`, `backend`, `degraded`, `detail`). A fail-closed startup
+refusal — file-name twins, a store that failed to open — surfaces as the
+typed `StorageResolutionError` (code `-32014`,
+`STORAGE_RESOLUTION_CODE`), not a `TransportError`; its message names the
+remediation (`mobkit/storage/doctor`, or the explicit ephemeral
+declaration). Blob-store durability has no wire declaration today — it is
+declared by Rust embedders via `ephemeral_blobs(true)` /
+`binary_blob_store(...)` and reported read-only in the census.
 
 ## Runtime lifecycle
 
@@ -364,6 +399,7 @@ from meerkat_mobkit.errors import (
     NotConnectedError,     # No active runtime connection
     CapabilityUnavailableError,  # Requested capability unavailable
     ContractMismatchError,       # SDK/runtime version mismatch
+    StorageResolutionError,      # Fail-closed storage refusal at init (-32014)
 )
 ```
 
@@ -430,9 +466,11 @@ from meerkat_mobkit import (
     # Errors
     MobKitError, TransportError, RpcError,
     MobEventsStaleError, MOB_EVENTS_STALE_CURSOR_CODE,
+    StorageResolutionError, STORAGE_RESOLUTION_CODE,
     NotConnectedError, CapabilityUnavailableError, ContractMismatchError,
     # Typed results
     StatusResult, CapabilitiesResult, ReconcileResult,
+    StorageSummary, StorageSlotSummary,
     SpawnResult, SpawnMemberResult,
     SendMessageResult, SubscribeResult,
     KeepAliveConfig, EventEnvelope,
@@ -453,7 +491,7 @@ from meerkat_mobkit import (
     MobStructuralEvent, MobRun, MobRunStatus,
     StepRecord, FailureRecord, FrameRecord, LoopRecord, LoopIterationRecord,
     # Config modules
-    auth, memory, session_store,
+    auth, event_log, memory, runtime_store, session_store,
 )
 ```
 

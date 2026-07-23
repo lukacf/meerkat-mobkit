@@ -105,9 +105,65 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `console_require_app_auth` | Boolean | Overrides `ConsolePolicy.require_app_auth` for explicit gateway builds, commonly `false` for local demos. |
 | `console_read_only` | Boolean | Sets `ConsolePolicy.read_only` for SDK `rpc_gateway` launches; mutating console RPCs are denied and omitted from capabilities while read/stream routes stay available. |
 | `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
-| `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
+| `event_log` | Object | Declares the operational event log. `storage = "memory"` (with optional `batch_size`, `flush_interval_ms`) keeps a bounded queryable in-process store so `mobkit/query_events` returns events instead of `no_event_log_configured`; `storage = "null"` declares that events are dropped. Both are declared-ephemeral choices; omitting the key means no ingestion at all, and any other storage kind fails initialization. Durable event-log backends are embedder-only (`UnifiedRuntimeBuilder` accepts any `EventLogStore`). |
+| `runtime_store` | Object | Declares the runtime store's durability. The store (`runtime.sqlite` — session resume, archive, retire) is persistent SQLite by default; the only accepted declaration is `{ "storage": "memory" }`, after which sessions do not survive gateway restart. A failed SQLite open without this declaration is a startup error (`-32014`), never a silent in-memory fallback. |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
+
+## Storage layout and durability
+
+`MobKitStorageLayout` is the single path authority for storage roots and the
+canonical top-level database locators; no gateway or builder surface derives
+state-dir file names or resolves ambient roots (`$XDG_STATE_HOME`, `$HOME`)
+on its own, and a CI gate (`tests/storage_gate.rs`) keeps it that way.
+Feature code owns *relative* names beneath the layout's roots (the blob
+directory's internal sharding, per-realm agent-memory files).
+
+**Canonical spellings** (decided once; stores shared with Meerkat keep
+Meerkat's names, MobKit-owned files converge on `*.sqlite3`):
+
+| Slot | Canonical name | Legacy spellings (still readable) |
+|------|----------------|------------------------------------|
+| sessions | `sessions.sqlite3` | `sessions.db`, `sessions.sqlite` |
+| runtime | `runtime.sqlite` | — |
+| schedule | `schedule.sqlite` | — |
+| workgraph | `workgraph.sqlite3` | — |
+| continuity | `continuity.sqlite3` | `continuity.db`, `identity_continuity.sqlite` |
+| metadata | `mobkit_metadata.sqlite3` | `mobkit_metadata.sqlite` |
+| console | `mobkit_console.sqlite3` | `mobkit_console.sqlite` |
+| agent-memory root | `agent-memory/` | `agent-memory-sqlite/` |
+| event log | `event_log.sqlite3` (reserved) | — |
+| blob root | `blobs/` | — |
+
+**Canonical-name-first probing.** Opening a slot resolves the canonical name
+first, then probes the known legacy spellings in the same directory. Exactly
+one spelling → it is used *where it lies* (no rename at open). Two spellings
+of the same store → the gateway refuses to start (error `-32014`, "file-name
+twins") and points at `mobkit/storage/doctor`; physical renames happen only
+through the storage migrate verb, under the maintenance fence.
+
+**Durability classes and the declaration requirement.** Every composed slot
+resolves to a durability class (`durable` / `scratch`) and a resolution
+(`persistent` / `declared_ephemeral` / `non_persistent`). A durable-class
+slot may run non-persistent only as an *explicit declaration*
+(`runtime_options.runtime_store`, `runtime_options.event_log`, the Rust
+builder's `ephemeral_runtime_store(true)` / `ephemeral_blobs(true)`) — never
+as a silent fallback; undeclared gaps are startup errors that SDKs surface
+as the typed `StorageResolutionError` (`-32014`). The sanctioned boot-without
+degradations (schedule or workgraph store open failure) disable the feature
+and appear as `degraded` slots.
+
+**Storage census surfaces.** The resolved picture rides the `storage` object
+on `mobkit/status`, `mobkit/capabilities`, and `mobkit/storage/doctor`:
+`blob_durability` / `blob_store_persistent` (H1), `session_store_incremental`
+(H2), and the per-slot `slots` array (`domain`, `class`, `resolution`,
+`backend`, `degraded`, optional `detail`).
+
+<Note>
+**Changelog policy.** Any storage file rename or table move gets the
+binary-rename treatment: an explicit, loud changelog entry naming the old
+and new spellings — operators read these files directly.
+</Note>
 
 ### Identity bootstrap
 

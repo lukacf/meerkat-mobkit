@@ -373,6 +373,17 @@ pub const MEMORY_BACKEND_UNAVAILABLE_CODE: i64 = -32012;
 /// reify `-32010` specifically as a mob-events ledger error.
 pub const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: i64 = -32013;
 
+/// JSON-RPC error code for the fail-closed storage refusals `rpc_gateway`
+/// emits at `mobkit/init` (M5): file-name twins the layout refuses to pick
+/// between, a store that failed to open where the silent fallback used to
+/// be (session/runtime/blob/metadata/console/continuity), and state-root
+/// creation failures. The message carries the remediation (the storage
+/// doctor, or the explicit ephemeral declaration). Distinct from `-32603`
+/// so SDKs can reify a deliberate durability refusal instead of reporting
+/// a generic internal error. Single source of truth — keep in sync with
+/// `StorageResolutionError` in the Python and TypeScript SDKs.
+pub const STORAGE_RESOLUTION_CODE: i64 = -32014;
+
 /// JSON-RPC error code returned by every `mobkit/workgraph/*` method when
 /// the runtime has no WorkGraph service configured
 /// (`data.kind = "workgraph_unavailable"`). Single source of truth — keep

@@ -67,6 +67,14 @@ export const CAPABILITY_UNAVAILABLE_CODE = -32004 as const;
 export const LEASE_LOST_CODE = -32005 as const;
 export const MEMORY_BACKEND_UNAVAILABLE_CODE = -32012 as const;
 export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
+/**
+ * Fail-closed storage refusal at gateway startup (`mobkit/init`): file-name
+ * twins the storage layout refuses to pick between, a store that failed to
+ * open where the silent fallback used to be, or a state-root creation
+ * failure. The message carries the remediation (the storage doctor, or the
+ * explicit ephemeral declaration).
+ */
+export const STORAGE_RESOLUTION_CODE = -32014 as const;
 /** WorkGraph service not configured on this runtime (memory-backend-unavailable pattern). */
 export const WORKGRAPH_UNAVAILABLE_CODE = -32041 as const;
 /** WorkGraph CAS/revision conflict — refetch the item/binding's current revision and retry. */
@@ -170,6 +178,30 @@ export class ConsoleTimelineReplayUnavailableError extends RpcError {
   }
 }
 
+/**
+ * Raised when the gateway refuses to start over a storage resolution gap.
+ *
+ * The refusals are deliberate (storage-unification fail-closed posture):
+ * file-name twins (e.g. `sessions.sqlite3` beside `sessions.db`) the layout
+ * will not pick between, a session/runtime/blob/metadata/console store that
+ * failed to open where older gateways silently fell back to in-memory, or
+ * an uncreatable state root. The message names the remediation — run the
+ * storage doctor (`mobkit/storage/doctor`) for twins, fix the database
+ * file, or declare the ephemeral choice explicitly (e.g.
+ * `runtimeStore.memory()`).
+ */
+export class StorageResolutionError extends RpcError {
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(STORAGE_RESOLUTION_CODE, message, requestId, method, data);
+    this.name = "StorageResolutionError";
+  }
+}
+
 /** Raised when a `mobkit/workgraph/*` call is made but no WorkGraph service is configured. */
 export class WorkGraphUnavailableError extends RpcError {
   constructor(
@@ -244,6 +276,7 @@ export function isRpcError(err: unknown): err is RpcError {
     candidate.name === "CapabilityUnavailableError" ||
     candidate.name === "MemoryBackendUnavailableError" ||
     candidate.name === "ConsoleTimelineReplayUnavailableError" ||
+    candidate.name === "StorageResolutionError" ||
     candidate.name === "WorkGraphUnavailableError" ||
     candidate.name === "WorkGraphConflictError"
   ) && typeof candidate.code === "number";

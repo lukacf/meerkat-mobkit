@@ -150,7 +150,6 @@ const DEFAULT_DEPLOY_EXEC_TIMEOUT_MS: u64 = 600_000;
 const DEPLOY_EXEC_TIMEOUT_GRACE_MS: u64 = 250;
 const MOBPACK_DRAFT_STORE_ENV: &str = "MOBKIT_FLOW_EDITOR_DRAFT_STORE";
 const MOBPACK_DRAFT_STORE_FILENAME: &str = "meerkat-mobkit-flow-editor-drafts.json";
-const MOBPACK_DRAFT_STATE_DIR: &str = "meerkat-mobkit";
 const EDITOR_SCHEMA_FIELD_TYPES: &[&str] = &[
     "string", "string[]", "number", "float", "int", "integer", "boolean", "bool", "enum", "bytes",
     "object",
@@ -3922,31 +3921,15 @@ fn mobpack_draft_store_path(params: &Value) -> PathBuf {
 }
 
 fn default_mobpack_draft_store_path() -> PathBuf {
-    default_mobpack_draft_store_path_from_env(
-        std::env::var("XDG_STATE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-}
-
-fn default_mobpack_draft_store_path_from_env(
-    xdg_state_home: Option<&str>,
-    home: Option<&str>,
-) -> PathBuf {
-    if let Some(path) = xdg_state_home
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return PathBuf::from(path)
-            .join(MOBPACK_DRAFT_STATE_DIR)
-            .join(MOBPACK_DRAFT_STORE_FILENAME);
+    // The draft store lives under the gateway home; the ambient
+    // `$XDG_STATE_HOME`/`$HOME` derivation belongs to `storage_layout`
+    // (M5 gate), never re-read here. The OS temp directory stays the last
+    // resort when neither root exists — drafts are recoverable scratch,
+    // not a durable slot.
+    match crate::storage_layout::default_gateway_home() {
+        Ok(home) => home.join(MOBPACK_DRAFT_STORE_FILENAME),
+        Err(_) => std::env::temp_dir().join(MOBPACK_DRAFT_STORE_FILENAME),
     }
-    if let Some(path) = home.map(str::trim).filter(|value| !value.is_empty()) {
-        return PathBuf::from(path)
-            .join(".local/state")
-            .join(MOBPACK_DRAFT_STATE_DIR)
-            .join(MOBPACK_DRAFT_STORE_FILENAME);
-    }
-    std::env::temp_dir().join(MOBPACK_DRAFT_STORE_FILENAME)
 }
 
 fn read_mobpack_draft_store(path: &Path) -> Result<BTreeMap<String, Value>, String> {
@@ -29413,24 +29396,22 @@ model = "gpt-5.5"
 
     #[test]
     fn mobpack_draft_registry_defaults_to_durable_state_path() {
+        // The layered `$XDG_STATE_HOME`/`$HOME` rules are storage_layout's
+        // (tested there); mobpack only appends its feature-owned file name
+        // under the gateway home, falling back to the OS temp directory
+        // when neither root exists.
+        let path = default_mobpack_draft_store_path();
         assert_eq!(
-            default_mobpack_draft_store_path_from_env(Some("/state"), Some("/home/luka")),
-            PathBuf::from("/state")
-                .join(MOBPACK_DRAFT_STATE_DIR)
-                .join(MOBPACK_DRAFT_STORE_FILENAME)
+            path.file_name().and_then(|name| name.to_str()),
+            Some(MOBPACK_DRAFT_STORE_FILENAME)
         );
-        assert_eq!(
-            default_mobpack_draft_store_path_from_env(None, Some("/home/luka")),
-            PathBuf::from("/home/luka")
-                .join(".local/state")
-                .join(MOBPACK_DRAFT_STATE_DIR)
-                .join(MOBPACK_DRAFT_STORE_FILENAME)
-        );
-        assert!(
-            !default_mobpack_draft_store_path_from_env(None, Some("/home/luka"))
-                .starts_with(std::env::temp_dir()),
-            "draft registry must not default to temp storage when HOME is available"
-        );
+        if let Ok(home) = crate::storage_layout::default_gateway_home() {
+            assert_eq!(path, home.join(MOBPACK_DRAFT_STORE_FILENAME));
+            assert!(
+                !path.starts_with(std::env::temp_dir()) || home.starts_with(std::env::temp_dir()),
+                "draft registry must not default to temp storage when a state root is available"
+            );
+        }
     }
 
     #[test]
