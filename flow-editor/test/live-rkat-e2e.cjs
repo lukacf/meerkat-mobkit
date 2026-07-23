@@ -1419,7 +1419,7 @@ async function validateCustomDeploySettings(dir) {
   // `rkat mob run` executes pack policy directly: model/token/duration/tool
   // caps and surface are not CLI overrides; the prompt and realm scope are.
   const expectedPairs = [
-    ["--prompt", "Custom deploy proof prompt."],
+
     ["--trust-policy", "strict"],
     ["--realm", "editor-proof-realm"],
     ["--instance", "editor-proof-instance"],
@@ -1428,6 +1428,11 @@ async function validateCustomDeploySettings(dir) {
     ["--state-root", path.join(dir, "state-root")],
     ["--user-config-root", path.join(dir, "config-root")],
   ];
+  // The controller emits the single-token hyphen-safe form (a prompt
+  // beginning with `-` must not parse as a flag).
+  if (!argv.includes("--prompt=Custom deploy proof prompt.")) {
+    throw new Error(`custom deploy argv missing --prompt=<text> single token: ${JSON.stringify(argv)}`);
+  }
   for (const [flag, value] of expectedPairs) {
     const index = argv.indexOf(flag);
     if (index < 0 || argv[index + 1] !== value) {
