@@ -459,7 +459,7 @@ mod tests {
                 if domain.starts_with("metadata") && domain.contains("0 durability declarations")
         ));
 
-        incomplete.durability = set.durability.clone();
+        incomplete.durability = set.durability;
         incomplete.durability.push(DurabilityDeclaration::durable(
             "metadata",
             DurabilityResolution::Persistent,

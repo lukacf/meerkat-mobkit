@@ -223,7 +223,7 @@ fn meerkat_realm_ctx(root: &Path) -> meerkat::storage_provider::RealmOpenContext
             state_root: root.to_path_buf(),
             realm: realm.clone(),
         },
-        manifest: meerkat_store::RealmManifest {
+        manifest: meerkat_store::RealmManifestPin::Builtin(meerkat_store::RealmManifest {
             realm,
             backend: meerkat_store::RealmBackend::Memory,
             origin: meerkat_store::RealmOrigin::Explicit,
@@ -241,7 +241,7 @@ fn meerkat_realm_ctx(root: &Path) -> meerkat::storage_provider::RealmOpenContext
             .iter()
             .map(ToString::to_string)
             .collect(),
-        },
+        }),
         paths: meerkat_store::realm_paths_in(root, "bundle-conformance"),
         layout: None,
     }
@@ -257,7 +257,11 @@ async fn open_fresh_meerkat_realm(
         .open(&ctx)
         .await
         .expect("the bundle's meerkat provider must open its realm");
-    meerkat::storage_provider::enforce_fail_closed_durability(&set, &ctx.manifest)
+    let ephemeral_domains = match &ctx.manifest {
+        meerkat_store::RealmManifestPin::Builtin(manifest) => manifest.ephemeral_domains.clone(),
+        meerkat_store::RealmManifestPin::External(manifest) => manifest.ephemeral_domains.clone(),
+    };
+    meerkat::storage_provider::enforce_fail_closed_durability(&set, &ephemeral_domains)
         .expect("declared-ephemeral meerkat set composes");
     set
 }
