@@ -41,7 +41,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.8.1",
+        "CARGO_PKG_VERSION": "0.8.2",
         "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
     },
     proc_macro_deps = all_crate_deps(
@@ -75,7 +75,7 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.8.1",
+        "CARGO_PKG_VERSION": "0.8.2",
         "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
     },
     tags = [
@@ -124,8 +124,56 @@ rust_test(
     ],
     visibility = ["//visibility:public"],
     rustc_env = {
-        "CARGO_PKG_VERSION": "0.8.1",
+        "CARGO_PKG_VERSION": "0.8.2",
         "CARGO_BIN_NAME": "conformance",
+        "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "mobkit-store-conformance",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+        "//mobkit-store-conformance:mobkit_store_conformance",
+    ] + all_crate_deps(
+        package_name = "mobkit-store-conformance",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "one_remote_bundle_test",
+    aliases = aliases(
+        package_name = "mobkit-store-conformance",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "one_remote_bundle",
+    crate_root = "tests/one_remote_bundle.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+    ],
+    srcs = [
+        "tests/one_remote_bundle.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.2",
+        "CARGO_BIN_NAME": "one_remote_bundle",
         "CARGO_MANIFEST_DIR": "./mobkit-store-conformance",
     },
     tags = [
@@ -156,5 +204,6 @@ test_suite(
     tests = [
         ":conformance_test",
         ":mobkit_store_conformance_unit_test",
+        ":one_remote_bundle_test",
     ],
 )
