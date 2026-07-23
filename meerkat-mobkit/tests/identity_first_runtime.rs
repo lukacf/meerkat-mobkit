@@ -38,7 +38,7 @@ use meerkat_mobkit::identity_first::{
     RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
-use meerkat_mobkit::{ErrorEvent, ErrorHook};
+use meerkat_mobkit::{ErrorEvent, ErrorHook, StewardStore, TaintableStore};
 
 // ===========================================================================
 // Helpers

@@ -666,41 +666,45 @@ impl UnifiedRuntimeBuilder {
             } else {
                 None
             };
-        // Full-stack path: the bundled SQLite store is opened pre-runtime so
-        // it can serve as the provider (recorder + recall) from the first
-        // spawn; the firewall + engines attach post-construction, when the
-        // memory event sink and mob handle exist.
-        let stack_sqlite_store = if self.agent_memory_engines.is_some() {
-            let Some(layout) = storage_layout.as_ref() else {
-                return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                    "persistent_agent_memory_stack() requires persistent_state()".to_string(),
-                ));
+        // Full-stack path: the stack provider exists pre-runtime so it can
+        // serve as the provider (recorder + recall) from the first spawn;
+        // the firewall + engines attach post-construction, when the memory
+        // event sink and mob handle exist. An explicit `agent_memory()`
+        // provider is used as-is — `attach_memory_engines` capability-checks
+        // it; otherwise the bundled SQLite store opens under the layout root.
+        let stack_provider: Option<Arc<dyn AgentMemoryProvider>> =
+            if self.agent_memory_engines.is_some() {
+                if let Some(provider) = self.agent_memory_provider.clone() {
+                    Some(provider)
+                } else {
+                    let Some(layout) = storage_layout.as_ref() else {
+                        return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                            "persistent_agent_memory_stack() requires persistent_state()"
+                                .to_string(),
+                        ));
+                    };
+                    // One slot for both store kinds: a legacy
+                    // `agent-memory-sqlite/` corpus keeps being used where it
+                    // lies; fresh deployments get the canonical
+                    // `agent-memory/` root.
+                    let memory_path = layout.agent_memory_root()?.path;
+                    Some(Arc::new(
+                        crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path)
+                            .map_err(|e| {
+                                UnifiedRuntimeBuilderError::Io(format!(
+                                    "failed to open agent memory store at {}: {e}",
+                                    memory_path.display()
+                                ))
+                            })?,
+                    ))
+                }
+            } else {
+                None
             };
-            // One slot for both store kinds: a legacy `agent-memory-sqlite/`
-            // corpus keeps being used where it lies; fresh deployments get
-            // the canonical `agent-memory/` root.
-            let memory_path = layout.agent_memory_root()?.path;
-            Some(
-                crate::memory::sqlite_store::SqliteAgentMemoryStore::open(&memory_path).map_err(
-                    |e| {
-                        UnifiedRuntimeBuilderError::Io(format!(
-                            "failed to open agent memory store at {}: {e}",
-                            memory_path.display()
-                        ))
-                    },
-                )?,
-            )
-        } else {
-            None
-        };
         let agent_memory_provider = self
             .agent_memory_provider
             .clone()
-            .or_else(|| {
-                stack_sqlite_store
-                    .clone()
-                    .map(|store| Arc::new(store) as Arc<dyn AgentMemoryProvider>)
-            })
+            .or_else(|| stack_provider.clone())
             .or(persistent_agent_memory_provider);
         let agent_memory_injector = agent_memory_provider.as_ref().map(|provider| {
             AgentMemoryRuntimeInjector::new(
@@ -975,31 +979,34 @@ impl UnifiedRuntimeBuilder {
             serde_json::Value::Null
         };
 
-        // Classic-path bundled-store wiring: the console Memory panel (§9.3),
-        // the §10.1 posture write gate (only when the embedder did not
-        // install a taint-tracking gate already), and the §9.3 timeline sink
-        // for quarantined writes. Providers other than the bundled SQLite
-        // store keep injection + recorder without a panel.
-        if let Some(store) = classic_agent_memory
-            .as_ref()
-            .and_then(|provider| provider.as_sqlite_store())
-        {
-            let llm_writes = self
-                .agent_memory_config
-                .as_ref()
-                .map(|config| config.llm_writes)
-                .unwrap_or_default();
-            store.set_llm_write_gate_if_absent(Arc::new(
-                crate::memory::taint::TaintLlmWriteGate::new(None, llm_writes),
-            ));
-            store.set_event_sink_if_absent(runtime.memory_event_sink());
-            runtime.set_memory_panel_store(store.clone());
+        // Classic-path capability wiring (M4 de-weld): the §10.1 posture
+        // write gate and the §9.3 timeline sink install on any provider
+        // advertising the firewall controls (only when the embedder did not
+        // install a taint-tracking gate already), and the console Memory
+        // panel (§9.3) registers for any provider advertising the panel
+        // read API. Recall-only providers keep injection + recorder
+        // without a panel — by their capability flags, not by type.
+        if let Some(provider) = classic_agent_memory.as_ref() {
+            if let Some(taintable) = provider.as_taintable() {
+                let llm_writes = self
+                    .agent_memory_config
+                    .as_ref()
+                    .map(|config| config.llm_writes)
+                    .unwrap_or_default();
+                taintable.set_llm_write_gate_if_absent(Arc::new(
+                    crate::memory::taint::TaintLlmWriteGate::new(None, llm_writes),
+                ));
+                taintable.set_event_sink_if_absent(runtime.memory_event_sink());
+            }
+            if let Some(panel) = provider.as_memory_panel_store() {
+                runtime.set_memory_panel_store(panel);
+            }
         }
 
         // Full-stack path (persistent_agent_memory_stack): firewall + engines
-        // + observer over the pre-opened SQLite store.
-        if let (Some(store), Some(engines)) =
-            (stack_sqlite_store, self.agent_memory_engines.as_ref())
+        // + observer over the pre-opened stack provider.
+        if let (Some(provider), Some(engines)) =
+            (stack_provider, self.agent_memory_engines.as_ref())
         {
             let config = self.agent_memory_config.clone().unwrap_or_default();
             let persistent_state = self.persistent_state_path.clone();
@@ -1022,7 +1029,7 @@ impl UnifiedRuntimeBuilder {
                     None
                 };
             let stack = crate::memory_wiring::attach_memory_engines(
-                store,
+                provider,
                 &config,
                 engines,
                 crate::memory_wiring::MemoryStackSeams {
@@ -1033,7 +1040,9 @@ impl UnifiedRuntimeBuilder {
                 },
             )
             .map_err(UnifiedRuntimeBuilderError::Io)?;
-            runtime.set_memory_panel_store(stack.store.clone());
+            if let Some(panel) = stack.panel.clone() {
+                runtime.set_memory_panel_store(panel);
+            }
             // Runtime ownership makes both infinite supervisors visible to
             // normal shutdown and to the identity-bootstrap failure cleanup
             // path below. Leaking either handle here would leave ghost memory

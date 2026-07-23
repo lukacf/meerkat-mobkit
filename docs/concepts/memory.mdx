@@ -194,7 +194,7 @@ Memory lifecycle events (`memory.dream.*`, `memory.record.promoted`, `memory.qua
 
 Visibility is governed by the [access-control](/concepts/access-control) memory actions: identity-scoped records need `agent.memory.read` + `agent.view` on the identity, mob-scoped records need `mob.memory.read`, operator-scoped records need `operator.memory.read`, realm-scoped records and dream history need an unscoped `agent.memory.read` grant, and quarantined content needs `memory.quarantine.review`. The panel's nav entry appears when the experience projection reports `memory.can_read`.
 
-Embedders wire the panel by handing the store to the runtime: `runtime.set_memory_panel_store(store)` before building the console router.
+Embedders wire the panel by handing the runtime any panel-capable store handle (`Arc<dyn MemoryPanelStore>` — the bundled SQLite store advertises it via `provider.as_memory_panel_store()`): `runtime.set_memory_panel_store(panel)` before building the console router. Providers that do not advertise `MemoryPanelStore` leave the panel methods unadvertised.
 
 ## See also
 

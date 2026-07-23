@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING (pre-1.0): the judgment plane is de-welded onto capability
+  traits (storage-unification Phase M4).** The taint firewall controls, the
+  Steward's dream read/write surface, and the console Memory panel's read
+  API — previously inherent methods on the concrete
+  `SqliteAgentMemoryStore` — are now capability traits in
+  `meerkat_mobkit::memory::capabilities`: `TaintableStore` (the five
+  firewall setters `set_llm_write_gate`, `set_llm_write_gate_if_absent`,
+  `set_evidence_resolver`, `set_event_sink`, `set_event_sink_if_absent`),
+  `StewardStore: StagedMemoryStore + TombstoneSource` (the nineteen steward
+  read/write methods, including the dream ledger writers), and
+  `MemoryPanelStore: StewardStore` (the eight panel-only reads). The full
+  plane — firewall, Steward, Hygienist span source, Selector fetch, console
+  panel — now runs against ANY `AgentMemoryProvider` advertising the
+  matching capability accessors (`as_taintable`, `as_steward_store`,
+  `as_memory_panel_store`, `as_selected_record_fetch`,
+  `as_tombstone_source`; all default `None`). Breaking API notes for
+  embedders under the pre-1.0 policy:
+  - `AgentMemoryProvider::as_sqlite_store()` is **deleted** (the trait no
+    longer names its own implementation); probe the capability accessors
+    instead.
+  - The promoted store methods moved from inherent impls to the trait
+    impls: call sites on the concrete `SqliteAgentMemoryStore` now need the
+    corresponding trait in scope (`TaintableStore`, `StewardStore`,
+    `MemoryPanelStore` — all re-exported from `meerkat_mobkit`).
+  - `memory_wiring::attach_memory_engines` takes
+    `Arc<dyn AgentMemoryProvider>` instead of the concrete store, and
+    `AgentMemoryStack` carries `steward_store: Option<Arc<dyn StewardStore>>`
+    and `panel: Option<Arc<dyn MemoryPanelStore>>` instead of the concrete
+    `store` field. Missing capabilities are named errors, never silent
+    downgrades.
+  - `UnifiedRuntime::{set_memory_panel_store, memory_panel_store}` and the
+    console router plumbing carry `Arc<dyn MemoryPanelStore>` instead of
+    the concrete store by value.
+  - `StewardEngine::new` and `StoreSpanReferenceSource::new` take
+    `Arc<dyn StewardStore>`; `EvidenceRefResolver` moved to
+    `memory::capabilities` (re-exported from the old `sqlite_store` path,
+    together with the promoted row types).
+  Behavior notes: the gateway's Selector wiring now fails with "requires a
+  provider with selected-record fetch support (SelectedRecordFetch)"
+  instead of "requires the sqlite agent-memory store", and reuses the
+  configured provider's fetch handle instead of opening a second concrete
+  store on the same files; the Markdown provider stays recall-only *by its
+  capability flags* (it advertises none), and explicitly configuring
+  distiller/steward/hygienist against a recall-only provider now fails
+  init loudly instead of silently constructing nothing.
+
 - **BREAKING / fail-closed (H1): persistent-mode blob storage no longer
   silently falls back to in-memory blobs.** Previously, when a
   persistent-mode runtime (`MobBootstrapSpec::persistent*`,

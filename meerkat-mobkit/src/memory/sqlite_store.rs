@@ -30,6 +30,15 @@ use crate::identity_first::agent_memory::{
 };
 use crate::memory::taint::LlmWriteGate;
 
+// The judgment-plane capability vocabulary lived here before the M4 de-weld;
+// re-exported so `sqlite_store::{EvidenceRefResolver, PendingPromotion, ...}`
+// paths keep resolving.
+pub use super::capabilities::{
+    DreamAuditVerdict, DreamRunAudit, EvidenceRefResolver, MemoryPanelStore, PanelRecordsPage,
+    PendingHarvest, PendingPromotion, PendingProposal, PersistedDreamRun, ScopeOverview,
+    StewardStore, TaintableStore,
+};
+
 use super::records::{
     InjectionLogEntry, InjectionSurface, ManifestTier, MemoryAuthor, MemoryId, MemoryKind,
     MemoryProvenance, MemoryScope, NewMemoryRecord, ProposalId, RecordMeta, RecordStatus,
@@ -307,15 +316,6 @@ pub struct SqliteAgentMemoryStore {
     event_sink: Arc<Mutex<Option<Arc<dyn crate::memory::events::MemoryEventSink>>>>,
 }
 
-/// §10.2 P3: whether an [`EvidenceRef`] resolves against the persistent
-/// session store (session exists; a cited range lies within the persisted
-/// transcript). The semantic endorsement half of an `agent_verified` retier
-/// is the dream's judgment (recorded in the op rationale); this is the
-/// mechanical half.
-pub trait EvidenceRefResolver: Send + Sync {
-    fn resolves(&self, evidence: &crate::memory::records::EvidenceRef) -> Result<(), String>;
-}
-
 impl SqliteAgentMemoryStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, AgentMemoryError> {
         let root = root.into();
@@ -334,67 +334,6 @@ impl SqliteAgentMemoryStore {
             evidence_resolver: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(Mutex::new(None)),
         })
-    }
-
-    /// Install the §10.1 LLM write gate. Wiring installs it at startup,
-    /// before any member can dispatch a write.
-    pub fn set_llm_write_gate(&self, gate: Arc<dyn LlmWriteGate>) {
-        *self
-            .llm_write_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
-    }
-
-    /// Install the §10.1 gate only when none is present. The classic-mob
-    /// builder path uses this so it never clobbers a taint-tracking gate an
-    /// embedder (or the gateway) installed before handing the store over.
-    /// Returns whether this call installed the gate.
-    pub fn set_llm_write_gate_if_absent(&self, gate: Arc<dyn LlmWriteGate>) -> bool {
-        let mut guard = self
-            .llm_write_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_some() {
-            return false;
-        }
-        *guard = Some(gate);
-        true
-    }
-
-    /// Install the §10.2 evidence-ref resolver. The steward wiring installs
-    /// it at startup; from then on every staged retier to `agent_verified`
-    /// must cite evidence that resolves against the session store.
-    pub fn set_evidence_resolver(&self, resolver: Arc<dyn EvidenceRefResolver>) {
-        *self
-            .evidence_resolver
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
-    }
-
-    /// Wire the §9.3 timeline sink for quarantined-write events.
-    pub fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
-        *self
-            .event_sink
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
-    }
-
-    /// Wire the §9.3 sink only when none is present — the classic-mob
-    /// builder path uses this so an embedder-installed sink survives.
-    /// Returns whether this call installed the sink.
-    pub fn set_event_sink_if_absent(
-        &self,
-        sink: Arc<dyn crate::memory::events::MemoryEventSink>,
-    ) -> bool {
-        let mut guard = self
-            .event_sink
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_some() {
-            return false;
-        }
-        *guard = Some(sink);
-        true
     }
 
     fn gate(&self) -> Option<Arc<dyn LlmWriteGate>> {
@@ -1111,18 +1050,6 @@ impl SqliteAgentMemoryStore {
         })
     }
 
-    /// Newest-first injection-ledger rows for a realm (§9.2). Read surface
-    /// for the steward's usage audit and the console Memory panel.
-    pub async fn injection_log(
-        &self,
-        realm: &str,
-        limit: usize,
-    ) -> Result<Vec<InjectionLogEntry>, AgentMemoryError> {
-        let store = self.clone();
-        let realm = realm.to_string();
-        run_blocking(move || store.injection_log_blocking(&realm, limit)).await
-    }
-
     fn propose_blocking(
         &self,
         scope: &MemoryScope,
@@ -1266,6 +1193,59 @@ impl SqliteAgentMemoryStore {
 }
 
 // ---- provider trait implementations ----
+
+/// §10.1 firewall control surface. The gate/resolver/sink slots are shared
+/// across clones (inner `Arc<Mutex<..>>`), so wiring once covers every
+/// handle.
+impl TaintableStore for SqliteAgentMemoryStore {
+    fn set_llm_write_gate(&self, gate: Arc<dyn LlmWriteGate>) {
+        *self
+            .llm_write_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    fn set_llm_write_gate_if_absent(&self, gate: Arc<dyn LlmWriteGate>) -> bool {
+        let mut guard = self
+            .llm_write_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(gate);
+        true
+    }
+
+    fn set_evidence_resolver(&self, resolver: Arc<dyn EvidenceRefResolver>) {
+        *self
+            .evidence_resolver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
+    }
+
+    fn set_event_sink(&self, sink: Arc<dyn crate::memory::events::MemoryEventSink>) {
+        *self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    fn set_event_sink_if_absent(
+        &self,
+        sink: Arc<dyn crate::memory::events::MemoryEventSink>,
+    ) -> bool {
+        let mut guard = self
+            .event_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(sink);
+        true
+    }
+}
 
 #[async_trait]
 impl AgentMemoryProvider for SqliteAgentMemoryStore {
@@ -1422,8 +1402,26 @@ impl AgentMemoryProvider for SqliteAgentMemoryStore {
         true
     }
 
-    fn as_sqlite_store(&self) -> Option<&SqliteAgentMemoryStore> {
-        Some(self)
+    fn as_taintable(&self) -> Option<Arc<dyn TaintableStore>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn as_steward_store(&self) -> Option<Arc<dyn StewardStore>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn as_memory_panel_store(&self) -> Option<Arc<dyn MemoryPanelStore>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn as_selected_record_fetch(
+        &self,
+    ) -> Option<Arc<dyn crate::memory::selector::SelectedRecordFetch>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn as_tombstone_source(&self) -> Option<Arc<dyn crate::memory::distiller::TombstoneSource>> {
+        Some(Arc::new(self.clone()))
     }
 }
 
@@ -1440,100 +1438,15 @@ impl StagedMemoryStore for SqliteAgentMemoryStore {
     }
 }
 
-// ---- steward read/write surface (§8.5) ----
+// ---- steward read/write surface (§8.5): StewardStore ----
 
-/// Per-scope store overview row for the dream's orient phase (§8.5) and
-/// the P3b console Memory panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopeOverview {
-    pub scope: MemoryScope,
-    pub active: u64,
-    pub quarantined: u64,
-    pub superseded: u64,
-    pub tombstoned: u64,
-    pub body_bytes: u64,
-}
-
-/// One pending (or held) mob/operator-scope proposal awaiting a dream
-/// verdict (§8.5 promotion).
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingProposal {
-    pub proposal_id: ProposalId,
-    pub scope: MemoryScope,
-    pub record: NewMemoryRecord,
-    pub author: MemoryAuthor,
-    pub status: String,
-    pub created_at_ms: u64,
-    /// §10.1 propose-time taint fact: `Some(reason)` when the write gate
-    /// would have quarantined this author at propose time. A plain steward
-    /// "accept" on a tainted proposal downgrades to an operator gate.
-    pub taint: Option<String>,
-}
-
-/// One retired identity awaiting an exit-interview harvest (§8.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingHarvest {
-    pub identity: String,
-    pub session_key: Option<String>,
-    pub cause: String,
-    pub retired_at_ms: u64,
-}
-
-/// One gated quarantine-promotion (§10.2): the staged batch commits only on
-/// gating approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPromotion {
-    pub pending_id: String,
-    pub stage_token: String,
-    pub record_id: MemoryId,
-    pub scope_kind: String,
-    pub scope_key: String,
-    pub rationale: Option<String>,
-    pub status: String,
-    pub created_at_ms: u64,
-}
-
-/// One persisted dream run (§8.5): the durable verdict sheet — phases,
-/// verdict counters, and skips as `DreamRun::detail()` JSON — written by the
-/// steward at the end of every pipeline run (one row per partition run).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersistedDreamRun {
-    pub run_id: String,
-    pub partition_label: String,
-    pub started_at_ms: u64,
-    pub completed_at_ms: u64,
-    pub ops_committed: u64,
-    /// `DreamRun::detail()` JSON text (phases, verdicts, skips).
-    pub detail: String,
-}
-
-/// One usage-audit verdict awaiting (or holding) operator review — the
-/// "memories you might want to correct" queue (§16 Q6). `resolved_at_ms`
-/// NULL = open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DreamAuditVerdict {
-    pub run_id: String,
-    pub record_id: String,
-    pub verdict: String,
-    pub rationale: String,
-    pub created_at_ms: u64,
-    pub resolved_at_ms: Option<u64>,
-    pub resolution: Option<String>,
-}
-
-impl SqliteAgentMemoryStore {
-    /// The per-scope retention floors this store warns against (§7.3);
-    /// rendered into the dream's orient overview as floor pressure.
-    pub fn scope_floors(&self) -> (usize, usize) {
+#[async_trait]
+impl StewardStore for SqliteAgentMemoryStore {
+    fn scope_floors(&self) -> (usize, usize) {
         (self.scope_floor_records, self.scope_floor_bytes)
     }
 
-    /// Per-scope counts and byte totals for a realm — the orient phase's
-    /// one cheap aggregate.
-    pub async fn scope_overview(
-        &self,
-        realm: &str,
-    ) -> Result<Vec<ScopeOverview>, AgentMemoryError> {
+    async fn scope_overview(&self, realm: &str) -> Result<Vec<ScopeOverview>, AgentMemoryError> {
         let store = self.clone();
         let realm = realm.to_string();
         run_blocking(move || {
@@ -1589,8 +1502,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Pending/held proposals, oldest first (§8.5 promotion queue).
-    pub async fn pending_proposals(
+    async fn pending_proposals(
         &self,
         realm: &str,
         limit: usize,
@@ -1650,9 +1562,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Record a dream verdict on a proposal: `accepted`, `rejected`, or
-    /// `held` (held stays in the pending queue for the next dream).
-    pub async fn set_proposal_status(
+    async fn set_proposal_status(
         &self,
         realm: &str,
         proposal_id: &str,
@@ -1686,10 +1596,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Quarantined records, newest first — the dream's review queue (§8.5).
-    /// The steward is the one stage that reads these bodies wholesale; the
-    /// caller renders them defanged.
-    pub async fn quarantined_records(
+    async fn quarantined_records(
         &self,
         realm: &str,
         limit: usize,
@@ -1718,9 +1625,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Records by id, any status — the gather phase's bounded body fetch.
-    /// Missing ids are skipped (the model may cite stale ids).
-    pub async fn records_by_ids(
+    async fn records_by_ids(
         &self,
         realm: &str,
         ids: &[String],
@@ -1742,10 +1647,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Most recently updated records in a realm, any scope, active or
-    /// quarantined — the gather phase filters (e.g. recent distillates by
-    /// author) host-side.
-    pub async fn recent_records(
+    async fn recent_records(
         &self,
         realm: &str,
         limit: usize,
@@ -1774,9 +1676,17 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Record a retired identity for the next dream's exit-interview
-    /// harvest (§8.5). Idempotent per (identity, retired_at_ms).
-    pub async fn record_pending_harvest(
+    async fn injection_log(
+        &self,
+        realm: &str,
+        limit: usize,
+    ) -> Result<Vec<InjectionLogEntry>, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || store.injection_log_blocking(&realm, limit)).await
+    }
+
+    async fn record_pending_harvest(
         &self,
         realm: &str,
         identity: &str,
@@ -1803,8 +1713,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Pending exit-interview harvests, oldest first.
-    pub async fn pending_harvests(
+    async fn pending_harvests(
         &self,
         realm: &str,
         limit: usize,
@@ -1840,8 +1749,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Mark one exit-interview harvest done.
-    pub async fn mark_harvest_complete(
+    async fn mark_harvest_complete(
         &self,
         realm: &str,
         identity: &str,
@@ -1864,9 +1772,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Record a gated quarantine-promotion: gating `pending_id` → staged
-    /// batch token (§10.2). Only a gating approval commits the token.
-    pub async fn record_pending_promotion(
+    async fn record_pending_promotion(
         &self,
         realm: &str,
         promotion: PendingPromotion,
@@ -1897,8 +1803,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Look up a still-pending gated promotion by its gating pending id.
-    pub async fn pending_promotion_by_id(
+    async fn pending_promotion_by_id(
         &self,
         realm: &str,
         pending_id: &str,
@@ -1933,8 +1838,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// All still-pending gated promotions (dream-start reconciliation).
-    pub async fn pending_promotions(
+    async fn pending_promotions(
         &self,
         realm: &str,
     ) -> Result<Vec<PendingPromotion>, AgentMemoryError> {
@@ -1973,8 +1877,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Resolve a gated promotion: `committed`, `denied`, or `expired`.
-    pub async fn resolve_pending_promotion(
+    async fn resolve_pending_promotion(
         &self,
         realm: &str,
         pending_id: &str,
@@ -2003,9 +1906,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Re-key a gated promotion after a gating escalation minted a
-    /// successor pending entry.
-    pub async fn rekey_pending_promotion(
+    async fn rekey_pending_promotion(
         &self,
         realm: &str,
         old_pending_id: &str,
@@ -2028,10 +1929,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Discard a staged-but-uncommitted batch (denied/expired gated
-    /// promotions; §8.5 crash semantics keep this safe — an unapplied stage
-    /// row is never visible).
-    pub async fn discard_stage(&self, token: StageToken) -> Result<(), AgentMemoryError> {
+    async fn discard_stage(&self, token: StageToken) -> Result<(), AgentMemoryError> {
         let store = self.clone();
         run_blocking(move || {
             store.with_realm_conn(&token.realm, |conn| {
@@ -2042,53 +1940,80 @@ impl SqliteAgentMemoryStore {
         })
         .await
     }
+
+    async fn save_dream_run(
+        &self,
+        realm: &str,
+        run: PersistedDreamRun,
+    ) -> Result<(), AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                conn.execute(
+                    "INSERT OR REPLACE INTO dream_runs                      (run_id, partition_label, started_at_ms, completed_at_ms, ops_committed, detail)                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        run.run_id,
+                        run.partition_label,
+                        run.started_at_ms,
+                        run.completed_at_ms,
+                        run.ops_committed,
+                        run.detail,
+                    ],
+                )
+                .map_err(sql_err)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn save_dream_audit_verdicts(
+        &self,
+        realm: &str,
+        run_id: &str,
+        verdicts: Vec<(String, String, String)>,
+    ) -> Result<(), AgentMemoryError> {
+        if verdicts.is_empty() {
+            return Ok(());
+        }
+        let store = self.clone();
+        let realm = realm.to_string();
+        let run_id = run_id.to_string();
+        let now = now_ms();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                for (record_id, verdict, rationale) in &verdicts {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO dream_audit_verdicts                          (run_id, record_id, verdict, rationale, created_at_ms)                          VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![run_id, record_id, verdict, rationale, now],
+                    )
+                    .map_err(sql_err)?;
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
 }
 
-// ---- console Memory panel read surface (§9.3, P3b) ----
+// ---- console Memory panel read surface (§9.3, P3b): MemoryPanelStore ----
 
-/// One page of panel records: strictly-descending `(updated_at_ms,
-/// memory_id)` keyset pagination.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PanelRecordsPage {
-    pub records: Vec<super::records::MemoryRecord>,
-    /// Pass back as `cursor` to continue; `None` when exhausted.
-    pub next_cursor: Option<(u64, String)>,
-}
-
-/// One steward dream run reconstructed from its audit rows (every committed
-/// op records its `Steward { run_id }` author in the audit `detail`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DreamRunAudit {
-    pub run_id: String,
-    pub first_op_at_ms: u64,
-    pub last_op_at_ms: u64,
-    pub ops: u64,
-    /// op kind → count (create/supersede/tombstone/retier/set_rank).
-    pub op_kinds: std::collections::BTreeMap<String, u64>,
-    /// Ops that landed quarantined at the write seam.
-    pub quarantined_ops: u64,
-    /// Bounded sample of touched record ids, newest first.
-    pub memory_ids: Vec<String>,
-    /// Bounded sample of op rationales, newest first.
-    pub rationales: Vec<String>,
-}
-
-/// Bounds for [`SqliteAgentMemoryStore::dream_history`]: audit rows scanned
+/// Bounds for [`MemoryPanelStore::dream_history`]: audit rows scanned
 /// per call and per-run sample sizes. The panel is a summary surface, not a
 /// full audit export.
 const DREAM_HISTORY_SCAN_ROWS: usize = 5_000;
 const DREAM_HISTORY_ID_SAMPLE: usize = 12;
 const DREAM_HISTORY_RATIONALE_SAMPLE: usize = 6;
 
-impl SqliteAgentMemoryStore {
-    /// Realms with a store file on disk (panel realm picker).
-    pub async fn panel_realms(&self) -> Result<Vec<String>, AgentMemoryError> {
+#[async_trait]
+impl MemoryPanelStore for SqliteAgentMemoryStore {
+    async fn panel_realms(&self) -> Result<Vec<String>, AgentMemoryError> {
         let store = self.clone();
         run_blocking(move || store.known_realms()).await
     }
 
-    /// One record by id, any status.
-    pub async fn record_by_id(
+    async fn record_by_id(
         &self,
         realm: &str,
         memory_id: &str,
@@ -2102,10 +2027,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Panel record listing: optional scope/status filters, newest-updated
-    /// first, keyset cursor. Any status is visible here — the panel is an
-    /// inspection surface and renders status explicitly.
-    pub async fn records_page(
+    async fn records_page(
         &self,
         realm: &str,
         scope_kind: Option<&str>,
@@ -2182,14 +2104,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Supersede lineage around one record, oldest first: ancestors via the
-    /// `supersedes` pointer, the record itself, then committed successors
-    /// via the `Superseded { by }` status link. When the tip has no
-    /// committed successor, records *claiming* to supersede it (e.g. a
-    /// quarantined supersede that left the prior active, §10.1) are
-    /// appended without recursing — claims are visible but never extend
-    /// the walk. Bounded by `max_len`, cycle-safe.
-    pub async fn supersede_chain(
+    async fn supersede_chain(
         &self,
         realm: &str,
         memory_id: &str,
@@ -2270,8 +2185,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Newest-first injection-ledger rows for one record (panel usage view).
-    pub async fn injection_log_for_record(
+    async fn injection_log_for_record(
         &self,
         realm: &str,
         record_id: &str,
@@ -2321,40 +2235,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Dream-run summaries reconstructed from steward audit rows, newest
-    /// run first. Bounded scan ([`DREAM_HISTORY_SCAN_ROWS`]); runs older
-    /// than the scan window fall off the panel, which is acceptable for a
-    /// history summary surface.
-    /// Persist one completed dream run (idempotent on run_id).
-    pub async fn save_dream_run(
-        &self,
-        realm: &str,
-        run: PersistedDreamRun,
-    ) -> Result<(), AgentMemoryError> {
-        let store = self.clone();
-        let realm = realm.to_string();
-        run_blocking(move || {
-            store.with_realm_conn(&realm, |conn| {
-                conn.execute(
-                    "INSERT OR REPLACE INTO dream_runs                      (run_id, partition_label, started_at_ms, completed_at_ms, ops_committed, detail)                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![
-                        run.run_id,
-                        run.partition_label,
-                        run.started_at_ms,
-                        run.completed_at_ms,
-                        run.ops_committed,
-                        run.detail,
-                    ],
-                )
-                .map_err(sql_err)?;
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    /// Persisted dream runs, newest first.
-    pub async fn dream_runs(
+    async fn dream_runs(
         &self,
         realm: &str,
         limit: usize,
@@ -2389,40 +2270,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Record the usage-audit verdicts of one dream run. Only non-clean
-    /// verdicts belong here (the review queue); load-bearing records are
-    /// counted in the run detail, not queued.
-    pub async fn save_dream_audit_verdicts(
-        &self,
-        realm: &str,
-        run_id: &str,
-        verdicts: Vec<(String, String, String)>,
-    ) -> Result<(), AgentMemoryError> {
-        if verdicts.is_empty() {
-            return Ok(());
-        }
-        let store = self.clone();
-        let realm = realm.to_string();
-        let run_id = run_id.to_string();
-        let now = now_ms();
-        run_blocking(move || {
-            store.with_realm_conn(&realm, |conn| {
-                for (record_id, verdict, rationale) in &verdicts {
-                    conn.execute(
-                        "INSERT OR REPLACE INTO dream_audit_verdicts                          (run_id, record_id, verdict, rationale, created_at_ms)                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![run_id, record_id, verdict, rationale, now],
-                    )
-                    .map_err(sql_err)?;
-                }
-                Ok(())
-            })
-        })
-        .await
-    }
-
-    /// Open (unresolved) audit verdicts, newest first — the operator review
-    /// queue. One row per (run, record); the console dedups by record.
-    pub async fn open_dream_audit_verdicts(
+    async fn open_dream_audit_verdicts(
         &self,
         realm: &str,
         limit: usize,
@@ -2458,34 +2306,7 @@ impl SqliteAgentMemoryStore {
         .await
     }
 
-    /// Resolve every open audit verdict for `record_id` (the operator acted:
-    /// superseded/retired/dismissed via the review queue).
-    pub async fn resolve_dream_audit_verdicts(
-        &self,
-        realm: &str,
-        record_id: &str,
-        resolution: &str,
-    ) -> Result<usize, AgentMemoryError> {
-        let store = self.clone();
-        let realm = realm.to_string();
-        let record_id = record_id.to_string();
-        let resolution = resolution.to_string();
-        let now = now_ms();
-        run_blocking(move || {
-            store.with_realm_conn(&realm, |conn| {
-                let changed = conn
-                    .execute(
-                        "UPDATE dream_audit_verdicts                          SET resolved_at_ms = ?1, resolution = ?2                          WHERE record_id = ?3 AND resolved_at_ms IS NULL",
-                        rusqlite::params![now, resolution, record_id],
-                    )
-                    .map_err(sql_err)?;
-                Ok(changed)
-            })
-        })
-        .await
-    }
-
-    pub async fn dream_history(
+    async fn dream_history(
         &self,
         realm: &str,
         max_runs: usize,
@@ -2573,6 +2394,40 @@ impl SqliteAgentMemoryStore {
                     .into_iter()
                     .filter_map(|run_id| runs.remove(&run_id))
                     .collect())
+            })
+        })
+        .await
+    }
+}
+
+impl SqliteAgentMemoryStore {
+    /// Resolve every open audit verdict for `record_id` (the operator acted:
+    /// superseded/retired/dismissed via the review queue).
+    ///
+    /// Deliberately NOT on [`StewardStore`]/[`MemoryPanelStore`]: no
+    /// production caller exists yet (the operator review-queue mutation is
+    /// a reserved seam); it joins the capability trait with its first
+    /// consumer.
+    pub async fn resolve_dream_audit_verdicts(
+        &self,
+        realm: &str,
+        record_id: &str,
+        resolution: &str,
+    ) -> Result<usize, AgentMemoryError> {
+        let store = self.clone();
+        let realm = realm.to_string();
+        let record_id = record_id.to_string();
+        let resolution = resolution.to_string();
+        let now = now_ms();
+        run_blocking(move || {
+            store.with_realm_conn(&realm, |conn| {
+                let changed = conn
+                    .execute(
+                        "UPDATE dream_audit_verdicts                          SET resolved_at_ms = ?1, resolution = ?2                          WHERE record_id = ?3 AND resolved_at_ms IS NULL",
+                        rusqlite::params![now, resolution, record_id],
+                    )
+                    .map_err(sql_err)?;
+                Ok(changed)
             })
         })
         .await

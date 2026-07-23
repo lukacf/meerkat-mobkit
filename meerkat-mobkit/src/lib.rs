@@ -131,12 +131,13 @@ pub use memory::{
     CompactionResetSink, ConsolePrincipalOperatorResolver, ContentTrustConfig, DistillCause,
     DistillerConfig, DistillerEngine, DreamOutcome, DreamRun, HygieneCause, HygieneOutcome,
     HygienistConfig, HygienistEngine, ManifestTier, MemberAgentEventSink, MemoryConflictBridge,
-    MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryRecord, MemoryScope,
+    MemoryEventSink, MemoryGatingBridge, MemoryKind, MemoryPanelStore, MemoryRecord, MemoryScope,
     MemorySpawnCustomizer, MemoryTimelineEvent, MobPurposeSource, NewMemoryRecord,
     OperatorResolver, PromotionGateResolver, RecordMeta, SessionStoreEvidenceResolver,
     SessionTaintTracker, SqliteAgentMemoryStore, StagedMemoryStore, StagedMutationBatch, StagedOp,
-    StewardConfig, StewardEngine, StewardTriggers, TaintLlmWriteGate, TaintObserverGuard,
-    TrustTier, spawn_member_event_observer, spawn_taint_observer,
+    StewardConfig, StewardEngine, StewardStore, StewardTriggers, TaintLlmWriteGate,
+    TaintObserverGuard, TaintableStore, TrustTier, spawn_member_event_observer,
+    spawn_taint_observer,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,

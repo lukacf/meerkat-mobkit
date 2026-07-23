@@ -96,10 +96,10 @@ pub struct ConsoleJsonState {
     /// Optional ABAC enforcement. `None` (or a disabled config) keeps every
     /// console surface byte-for-byte compatible with the pre-access world.
     pub(crate) access: Option<AccessController>,
-    /// Optional bundled-store handle for the console Memory panel's
-    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (markdown
-    /// store, no memory configured) leaves those methods unadvertised.
-    pub(crate) memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    /// Optional panel-capable store handle for the console Memory panel's
+    /// read-only `mobkit/memory/panel/*` RPCs (§9.3). `None` (recall-only
+    /// provider, no memory configured) leaves those methods unadvertised.
+    pub(crate) memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     /// §16 Q1 provisional operator keying: the console send path notes
     /// "authenticated principal P addressed identity I" through this
     /// resolver; the memory coordinator reads it for operator-scope recall.
@@ -379,7 +379,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     access: Option<AccessController>,
-    memory_panel: Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    memory_panel: Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>,
     operator_resolver: Option<Arc<crate::memory::coordinator::ConsolePrincipalOperatorResolver>>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<meerkat::WorkGraphService>,
@@ -644,7 +644,7 @@ pub async fn console_rpc_handler(
         auth_context.principal.as_deref(),
         state.access.as_ref(),
         auth_context.access_view.as_ref(),
-        state.memory_panel.as_ref(),
+        state.memory_panel.as_deref(),
         state.identity_roster.clone(),
         state.workgraph.as_ref(),
         state.topology.as_ref(),
@@ -2027,7 +2027,7 @@ fn memory_panel_record_json(
 /// Resolve the realms a panel read spans: the explicit `realm` param, or
 /// every realm with a store file.
 async fn memory_panel_realms(
-    store: &crate::memory::sqlite_store::SqliteAgentMemoryStore,
+    store: &dyn crate::memory::capabilities::MemoryPanelStore,
     params: &Value,
 ) -> Result<Vec<String>, crate::identity_first::agent_memory::AgentMemoryError> {
     match normalized_console_rpc_string_param(params, "realm").filter(|realm| !realm.is_empty()) {
@@ -2037,7 +2037,7 @@ async fn memory_panel_realms(
 }
 
 async fn handle_memory_panel_records(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2137,7 +2137,7 @@ async fn handle_memory_panel_records(
 }
 
 async fn handle_memory_panel_record(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2238,7 +2238,7 @@ async fn handle_memory_panel_record(
 }
 
 async fn handle_memory_panel_quarantine(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     view: Option<&AccessView>,
     params: &Value,
     response_id: Value,
@@ -2310,7 +2310,7 @@ async fn handle_memory_panel_quarantine(
 }
 
 async fn handle_memory_panel_dreams(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2359,7 +2359,7 @@ async fn handle_memory_panel_dreams(
 /// counters, skips, and partition label per run — survives restarts, unlike
 /// the audit-trail reconstruction served by `panel/dreams`.
 async fn handle_memory_panel_dream_runs(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2407,7 +2407,7 @@ async fn handle_memory_panel_dream_runs(
 /// The open usage-audit review queue: dead-weight verdicts awaiting operator
 /// action ("memories you might want to correct").
 async fn handle_memory_panel_audit_verdicts(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2453,7 +2453,7 @@ async fn handle_memory_panel_audit_verdicts(
 /// FLOOR verdict tile (floors included so the client renders pressure
 /// without duplicating the thresholds).
 async fn handle_memory_panel_overview(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2500,7 +2500,7 @@ async fn handle_memory_panel_overview(
 /// Pipeline view's inbound lane (bodies withheld: titles only; the record
 /// body stays reachable through panel/record once committed).
 async fn handle_memory_panel_proposals(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2544,7 +2544,7 @@ async fn handle_memory_panel_proposals(
 /// The injection ledger (most recent first): the Knowledge Lens history and
 /// the echo-safety/dup diagnostics feed.
 async fn handle_memory_panel_injections(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -2584,7 +2584,7 @@ async fn handle_memory_panel_injections(
 
 /// Pending exit-interview harvests — the Health strip's harvest-queue lane.
 async fn handle_memory_panel_harvests(
-    store: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    store: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     params: &Value,
     response_id: Value,
 ) -> Value {
@@ -3185,7 +3185,7 @@ pub async fn console_rpc_multipart_handler(
                 auth_context.principal.as_deref(),
                 state.access.as_ref(),
                 auth_context.access_view.as_ref(),
-                state.memory_panel.as_ref(),
+                state.memory_panel.as_deref(),
                 state.identity_roster.clone(),
                 state.workgraph.as_ref(),
                 state.topology.as_ref(),
@@ -5239,7 +5239,7 @@ async fn handle_console_runtime_rpc_with_visibility(
     authenticated_principal: Option<&str>,
     access: Option<&AccessController>,
     access_view: Option<&AccessView>,
-    memory_panel: Option<&crate::memory::sqlite_store::SqliteAgentMemoryStore>,
+    memory_panel: Option<&dyn crate::memory::capabilities::MemoryPanelStore>,
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<&meerkat::WorkGraphService>,
     topology: Option<&crate::topology_control::TopologyRuntimeHandle>,

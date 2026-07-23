@@ -178,11 +178,13 @@ pub struct UnifiedRuntime {
     // disabled and mutation methods are then absent/denied.
     topology_controller: crate::topology_control::TopologyController,
 
-    // Optional bundled-store handle backing the console Memory panel's
-    // read-only RPCs (§9.3). Interior-mutable so gateways can wire it after
-    // the runtime is shared (`Arc`), wherever the store is constructed.
+    // Optional panel-capable store handle backing the console Memory
+    // panel's read-only RPCs (§9.3). Any provider advertising
+    // `MemoryPanelStore` serves it (M4 de-weld). Interior-mutable so
+    // gateways can wire it after the runtime is shared (`Arc`), wherever
+    // the store is constructed.
     memory_panel_store:
-        std::sync::RwLock<Option<crate::memory::sqlite_store::SqliteAgentMemoryStore>>,
+        std::sync::RwLock<Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>>,
     // Realm-scoped WorkGraph service backing the `mobkit/workgraph/*` RPC
     // group and the console experience section. Seeded from the bootstrap
     // spec and deliberately FIXED from then on: the admission guards
@@ -824,7 +826,7 @@ impl UnifiedRuntime {
 
     pub fn set_memory_panel_store(
         &self,
-        store: crate::memory::sqlite_store::SqliteAgentMemoryStore,
+        store: Arc<dyn crate::memory::capabilities::MemoryPanelStore>,
     ) {
         *self
             .memory_panel_store
@@ -834,7 +836,7 @@ impl UnifiedRuntime {
 
     pub fn memory_panel_store(
         &self,
-    ) -> Option<crate::memory::sqlite_store::SqliteAgentMemoryStore> {
+    ) -> Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>> {
         self.memory_panel_store
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

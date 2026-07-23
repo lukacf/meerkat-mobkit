@@ -5142,68 +5142,6 @@ external_addressable = true
         );
         irt.set_error_hook(Some(gateway_error_hook.clone()));
 
-        // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
-        // customizer/injector are constructed below, so their coordinators
-        // snapshot the stage. Operator switch is
-        // `agent_memory.selector = "off" | "default" | "profile:<path>"`;
-        // the MOBKIT_AGENT_MEMORY_SELECTOR env var remains a fallback for
-        // unmigrated deployments, with config taking precedence.
-        {
-            use meerkat_mobkit::memory::selector as memory_selector;
-            let configured = gateway_options
-                .agent_memory
-                .as_ref()
-                .and_then(|agent_memory| agent_memory.selector.as_ref());
-            let spec = resolve_selector_spec(configured).unwrap_or_else(|e| {
-                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
-            });
-            let profile = memory_selector::profile_for_spec(&spec).unwrap_or_else(|e| {
-                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
-            });
-            if let Some(profile) = profile {
-                let Some(agent_memory) = gateway_options.agent_memory.as_ref() else {
-                    fail_init(
-                        &request_id,
-                        -32602,
-                        "agent memory selector requires runtime_options.agent_memory".to_string(),
-                    );
-                };
-                if agent_memory.store != GatewayAgentMemoryStoreKind::Sqlite {
-                    fail_init(
-                        &request_id,
-                        -32602,
-                        "agent memory selector requires the sqlite agent-memory store".to_string(),
-                    );
-                }
-                // Second handle on the same per-realm database files, used
-                // only for selected-body fetch; WAL keeps this safe.
-                let fetch = meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
-                    .unwrap_or_else(|e| {
-                        fail_init(
-                            &request_id,
-                            -32603,
-                            format!("agent memory selector store: {e}"),
-                        );
-                    });
-                let factory_state = storage_layout.state_dir().to_path_buf();
-                let handle = memory_selector::FactorySelectorHandle::new(
-                    factory_state,
-                    meerkat::Config::default(),
-                    agent_memory.config.realm.clone(),
-                    &profile,
-                );
-                let model = profile.model.clone();
-                memory_selector::install(Arc::new(memory_selector::SelectorRuntime {
-                    stage: Arc::new(memory_selector::SelectorStage::new(
-                        profile,
-                        Arc::new(handle),
-                    )),
-                    fetch: Arc::new(fetch),
-                }));
-                tracing::info!(model = %model, "agent memory selector installed");
-            }
-        }
-
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
             Arc::new(GatewayRosterProvider::new(bridge.clone()));
@@ -5237,132 +5175,140 @@ external_addressable = true
         > = None;
         let agent_memory_provider: Option<Arc<dyn meerkat_mobkit::AgentMemoryProvider>> =
             if let Some(agent_memory) = gateway_options.agent_memory.as_ref() {
-                match agent_memory.store {
-                    GatewayAgentMemoryStoreKind::Markdown => Some(Arc::new(
-                        meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
-                            .unwrap_or_else(|e| {
-                                fail_init(
-                                    &request_id,
-                                    -32603,
-                                    format!("failed to open agent memory store: {e}"),
-                                );
-                            }),
-                    )
-                        as Arc<dyn meerkat_mobkit::AgentMemoryProvider>),
-                    GatewayAgentMemoryStoreKind::Sqlite => {
-                        // Shared read handle on the persistent session store
-                        // for the Distiller's evidence windows and the
-                        // steward's gather/usage/resolvability reads.
-                        let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
-                            if agent_memory.distiller.enabled || agent_memory.steward.enabled {
-                                if persistent_state.is_none() {
+                // Concrete store construction is the only per-kind decision
+                // left (M4 de-weld); everything downstream assembles on the
+                // provider's advertised capabilities.
+                let provider: Arc<dyn meerkat_mobkit::AgentMemoryProvider> =
+                    match agent_memory.store {
+                        GatewayAgentMemoryStoreKind::Markdown => Arc::new(
+                            meerkat_mobkit::MarkdownAgentMemoryStore::open(&agent_memory.path)
+                                .unwrap_or_else(|e| {
                                     fail_init(
                                         &request_id,
-                                        -32602,
-                                        "agent memory distiller/steward require persistent_state"
-                                            .to_string(),
+                                        -32603,
+                                        format!("failed to open agent memory store: {e}"),
                                     );
-                                }
-                                Some(
-                                    if let Some(adapter) = identity_session_store_adapter.clone() {
-                                        adapter
-                                    } else {
-                                        // Second handle on the same session
-                                        // database the mob bridge persists to;
-                                        // WAL keeps the read-side safe.
-                                        let session_db = match storage_layout.session_db() {
-                                            Ok(resolved) => resolved.path,
-                                            Err(e) => fail_init(&request_id, -32603, e.to_string()),
-                                        };
-                                        match meerkat_store::SqliteSessionStore::open(session_db) {
-                                            Ok(store) => Arc::new(store),
-                                            Err(e) => fail_init(
-                                                &request_id,
-                                                -32603,
-                                                format!("agent memory session store: {e}"),
-                                            ),
-                                        }
-                                    },
-                                )
-                            } else {
-                                None
-                            };
-                        // Converged assembly (memory_wiring): store + §10.1
-                        // firewall + Distiller + Steward, with the gateway's
-                        // late-binding bridges passed as seams. The Hygienist
-                        // and the gateway-only extras (outbound taint
-                        // declarer, panel registration, compaction reset,
-                        // observer spawn, dream scheduling) follow below.
-                        let memory_events = runtime.memory_event_sink();
-                        let engines = meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
-                            distiller: agent_memory.distiller.clone(),
-                            steward: agent_memory.steward.clone(),
-                        };
-                        let stack = match meerkat_mobkit::memory_wiring::build_sqlite_memory_stack(
-                            &agent_memory.path,
-                            &agent_memory.config,
-                            &engines,
-                            meerkat_mobkit::memory_wiring::MemoryStackSeams {
-                                persistent_state: persistent_state.clone(),
-                                transcript_store: memory_transcript_store,
-                                event_sink: Some(memory_events.clone()),
-                                mob_purpose: Some(Arc::new(GatewayMobPurposeSource {
-                                    mob: mob_definition.id.to_string(),
-                                    roster: steward_roster_slot.clone(),
-                                })),
-                                steward_gating: Some(Arc::new(GatewayMemoryGatingBridge {
-                                    runtime: steward_late_runtime.clone(),
-                                })),
-                                steward_conflicts: Some(Arc::new(GatewayMemoryConflictBridge {
-                                    runtime: steward_late_runtime.clone(),
-                                    handle: tokio::runtime::Handle::current(),
-                                })),
-                            },
-                        ) {
-                            Ok(stack) => stack,
-                            Err(e) => {
-                                let code = if e.starts_with("failed to open") {
-                                    -32603
+                                }),
+                        ),
+                        GatewayAgentMemoryStoreKind::Sqlite => Arc::new(
+                            meerkat_mobkit::SqliteAgentMemoryStore::open(&agent_memory.path)
+                                .unwrap_or_else(|e| {
+                                    fail_init(
+                                        &request_id,
+                                        -32603,
+                                        format!("failed to open agent memory store: {e}"),
+                                    );
+                                }),
+                        ),
+                    };
+                if provider.as_taintable().is_some() {
+                    // Shared read handle on the persistent session store
+                    // for the Distiller's evidence windows and the
+                    // steward's gather/usage/resolvability reads.
+                    let memory_transcript_store: Option<Arc<dyn meerkat::SessionStore>> =
+                        if agent_memory.distiller.enabled || agent_memory.steward.enabled {
+                            if persistent_state.is_none() {
+                                fail_init(
+                                    &request_id,
+                                    -32602,
+                                    "agent memory distiller/steward require persistent_state"
+                                        .to_string(),
+                                );
+                            }
+                            Some(
+                                if let Some(adapter) = identity_session_store_adapter.clone() {
+                                    adapter
                                 } else {
-                                    -32602
-                                };
-                                fail_init(&request_id, code, e);
-                            }
+                                    // Second handle on the same session
+                                    // database the mob bridge persists to;
+                                    // WAL keeps the read-side safe.
+                                    let session_db = match storage_layout.session_db() {
+                                        Ok(resolved) => resolved.path,
+                                        Err(e) => fail_init(&request_id, -32603, e.to_string()),
+                                    };
+                                    match meerkat_store::SqliteSessionStore::open(session_db) {
+                                        Ok(store) => Arc::new(store),
+                                        Err(e) => fail_init(
+                                            &request_id,
+                                            -32603,
+                                            format!("agent memory session store: {e}"),
+                                        ),
+                                    }
+                                },
+                            )
+                        } else {
+                            None
                         };
-                        let store = stack.store;
-                        let tracker = stack.taint;
-                        let mut sinks = stack.sinks;
-                        agent_memory_distiller = stack.distiller;
-                        if let Some(engine) = agent_memory_distiller.as_ref() {
-                            let _ = engine;
-                            tracing::info!(
-                                model = ?agent_memory.distiller.model,
-                                "agent memory distiller installed"
-                            );
+                    // Converged assembly (memory_wiring): provider + §10.1
+                    // firewall + Distiller + Steward, with the gateway's
+                    // late-binding bridges passed as seams. The Hygienist
+                    // and the gateway-only extras (outbound taint
+                    // declarer, panel registration, compaction reset,
+                    // observer spawn, dream scheduling) follow below.
+                    let memory_events = runtime.memory_event_sink();
+                    let engines = meerkat_mobkit::memory_wiring::MemoryEnginesConfig {
+                        distiller: agent_memory.distiller.clone(),
+                        steward: agent_memory.steward.clone(),
+                    };
+                    let stack = match meerkat_mobkit::memory_wiring::attach_memory_engines(
+                        provider.clone(),
+                        &agent_memory.config,
+                        &engines,
+                        meerkat_mobkit::memory_wiring::MemoryStackSeams {
+                            persistent_state: persistent_state.clone(),
+                            transcript_store: memory_transcript_store,
+                            event_sink: Some(memory_events.clone()),
+                            mob_purpose: Some(Arc::new(GatewayMobPurposeSource {
+                                mob: mob_definition.id.to_string(),
+                                roster: steward_roster_slot.clone(),
+                            })),
+                            steward_gating: Some(Arc::new(GatewayMemoryGatingBridge {
+                                runtime: steward_late_runtime.clone(),
+                            })),
+                            steward_conflicts: Some(Arc::new(GatewayMemoryConflictBridge {
+                                runtime: steward_late_runtime.clone(),
+                                handle: tokio::runtime::Handle::current(),
+                            })),
+                        },
+                    ) {
+                        Ok(stack) => stack,
+                        Err(e) => fail_init(&request_id, -32602, e),
+                    };
+                    let panel = stack.panel.clone();
+                    let steward_store = stack.steward_store.clone();
+                    let tracker = stack.taint;
+                    let mut sinks = stack.sinks;
+                    agent_memory_distiller = stack.distiller;
+                    if let Some(engine) = agent_memory_distiller.as_ref() {
+                        let _ = engine;
+                        tracing::info!(
+                            model = ?agent_memory.distiller.model,
+                            "agent memory distiller installed"
+                        );
+                    }
+                    if let Some(engine) = stack.steward.clone() {
+                        // Dream cadence (§ ask 7 / P5): when this gateway
+                        // runs a schedule host, the dream is driven as a
+                        // durable host-runnable occurrence (registered at
+                        // the schedule-host spawn). Only gateways WITHOUT
+                        // a schedule host keep the in-process loop.
+                        if schedule_host_inputs.is_none() {
+                            std::mem::forget(engine.spawn_dream_loop());
                         }
-                        if let Some(engine) = stack.steward.clone() {
-                            // Dream cadence (§ ask 7 / P5): when this gateway
-                            // runs a schedule host, the dream is driven as a
-                            // durable host-runnable occurrence (registered at
-                            // the schedule-host spawn). Only gateways WITHOUT
-                            // a schedule host keep the in-process loop.
-                            if schedule_host_inputs.is_none() {
-                                std::mem::forget(engine.spawn_dream_loop());
-                            }
-                            agent_memory_steward = Some(engine);
-                            tracing::info!(
-                                model = ?agent_memory.steward.model,
-                                cadence = %agent_memory.steward.cadence,
-                                per_mob = agent_memory.steward.per_mob,
-                                "agent memory steward installed"
-                            );
-                        }
-                        // §10.1 ask 5 (outbound half): make the member's comms
-                        // runtime the authenticated carrier of the host's taint
-                        // fact. Fire-and-forget: the member may not be
-                        // materialized, so a miss is logged, not fatal.
-                        let taint_mob_handle = runtime.mob_handle();
-                        tracker.set_outbound_taint_declarer(std::sync::Arc::new(
+                        agent_memory_steward = Some(engine);
+                        tracing::info!(
+                            model = ?agent_memory.steward.model,
+                            cadence = %agent_memory.steward.cadence,
+                            per_mob = agent_memory.steward.per_mob,
+                            "agent memory steward installed"
+                        );
+                    }
+                    // §10.1 ask 5 (outbound half): make the member's comms
+                    // runtime the authenticated carrier of the host's taint
+                    // fact. Fire-and-forget: the member may not be
+                    // materialized, so a miss is logged, not fatal.
+                    let taint_mob_handle = runtime.mob_handle();
+                    tracker.set_outbound_taint_declarer(std::sync::Arc::new(
                             move |identity: &str,
                                   taint: Option<meerkat_core::comms::SenderContentTaint>| {
                                 let handle = taint_mob_handle.clone();
@@ -5385,115 +5331,204 @@ external_addressable = true
                                 });
                             },
                         ));
-                        // §9.3 console Memory panel: must precede
-                        // build_reference_app_router (the router builds after
-                        // this region).
-                        runtime.set_memory_panel_store(store.clone());
-                        // §8.6 Hygienist: audited transcript curation at
-                        // compaction boundaries and on demand, applied
-                        // through meerkat's typed transcript-revision
-                        // extension on the concrete session service.
-                        if agent_memory.hygienist.enabled {
-                            use meerkat_mobkit::memory::hygienist as memory_hygienist;
-                            let Some(edit_service) = transcript_edit_service.clone() else {
-                                fail_init(
-                                    &request_id,
-                                    -32602,
-                                    "agent memory hygienist requires persistent sessions \
+                    // §9.3 console Memory panel: must precede
+                    // build_reference_app_router (the router builds after
+                    // this region). Registered when — and only when —
+                    // the provider advertises the panel read API.
+                    if let Some(panel) = panel {
+                        runtime.set_memory_panel_store(panel);
+                    }
+                    // §8.6 Hygienist: audited transcript curation at
+                    // compaction boundaries and on demand, applied
+                    // through meerkat's typed transcript-revision
+                    // extension on the concrete session service.
+                    if agent_memory.hygienist.enabled {
+                        use meerkat_mobkit::memory::hygienist as memory_hygienist;
+                        let Some(steward_spans) = steward_store.clone() else {
+                            fail_init(
+                                &request_id,
+                                -32602,
+                                "agent memory hygienist requires a provider with the \
+                                     steward surface (StewardStore)"
+                                    .to_string(),
+                            );
+                        };
+                        let Some(edit_service) = transcript_edit_service.clone() else {
+                            fail_init(
+                                &request_id,
+                                -32602,
+                                "agent memory hygienist requires persistent sessions \
                                      (runtime_options.persistent_state or an identity session \
                                      store): the transcript-revision seam only exists on the \
                                      persistent session service"
-                                        .to_string(),
-                                );
-                            };
-                            let mut profile =
-                                memory_hygienist::HygienistProfile::embedded_default();
-                            if let Some(model) = agent_memory.hygienist.model.as_deref() {
-                                profile = profile.with_model_override(model).unwrap_or_else(|e| {
-                                    fail_init(
-                                        &request_id,
-                                        -32602,
-                                        format!("agent memory hygienist: {e}"),
-                                    );
-                                });
-                            }
-                            let Some(state) = persistent_state.clone() else {
+                                    .to_string(),
+                            );
+                        };
+                        let mut profile = memory_hygienist::HygienistProfile::embedded_default();
+                        if let Some(model) = agent_memory.hygienist.model.as_deref() {
+                            profile = profile.with_model_override(model).unwrap_or_else(|e| {
                                 fail_init(
                                     &request_id,
                                     -32602,
-                                    "agent memory hygienist requires persistent_state".to_string(),
+                                    format!("agent memory hygienist: {e}"),
                                 );
-                            };
-                            let handle = memory_hygienist::FactoryHygienistHandle::new(
-                                state,
-                                meerkat::Config::default(),
-                                agent_memory.config.realm.clone(),
-                                &profile,
-                            );
-                            let model = profile.model.clone();
-                            let gate: Option<Arc<dyn memory_hygienist::DistillationGate>> =
-                                agent_memory_distiller.clone().map(|engine| {
-                                    engine as Arc<dyn memory_hygienist::DistillationGate>
-                                });
-                            let engine = Arc::new(memory_hygienist::HygienistEngine::new(
-                                profile,
-                                agent_memory.hygienist.clone(),
-                                Arc::new(handle),
-                                Arc::new(memory_hygienist::SessionServiceRevisionSeam::new(
-                                    edit_service,
-                                )),
-                                Arc::new(memory_hygienist::StoreSpanReferenceSource::new(
-                                    Arc::new(store.clone()),
-                                    agent_memory.config.realm.clone(),
-                                )),
-                                gate,
-                                agent_memory.config.realm.clone(),
-                            ));
-                            engine.set_event_sink(memory_events.clone());
-                            // §8.6 trigger sequencing: behind the distiller's
-                            // compaction harvest when one exists; directly off
-                            // the compaction event otherwise. Never both —
-                            // that would race the ordering this preserves.
-                            match agent_memory_distiller.as_ref() {
-                                Some(distiller) => distiller.set_compaction_follow_up(
-                                    memory_hygienist::distiller_follow_up(engine.clone()),
-                                ),
-                                None => sinks.push(Arc::new(
-                                    memory_hygienist::HygienistTriggers::new(engine.clone()),
-                                )),
-                            }
-                            agent_memory_hygienist = Some(engine);
-                            tracing::info!(
-                                model = %model,
-                                runs_per_day = agent_memory.hygienist.runs_per_day,
-                                "agent memory hygienist installed"
-                            );
+                            });
                         }
-                        // §9.1 as-built: ALWAYS-ON compaction reset for the
-                        // coordinator's session budgets — deliberately NOT
-                        // gated on distiller.enabled (gate finding: budgeted
-                        // injection without a distiller never reset).
-                        let compaction_reset_slot = agent_memory_compaction_reset.clone();
-                        sinks.push(Arc::new(meerkat_mobkit::CompactionResetSink::new(
-                            Arc::new(move |session: &str| {
-                                if let Some(injector) = compaction_reset_slot.get() {
-                                    injector.on_session_compacted(session);
-                                }
-                            }),
-                        )));
-                        // Observe-stream feed lives for the gateway process;
-                        // forgetting the guard keeps the task running.
-                        std::mem::forget(meerkat_mobkit::spawn_member_event_observer(
-                            runtime.mob_handle(),
-                            sinks,
+                        let Some(state) = persistent_state.clone() else {
+                            fail_init(
+                                &request_id,
+                                -32602,
+                                "agent memory hygienist requires persistent_state".to_string(),
+                            );
+                        };
+                        let handle = memory_hygienist::FactoryHygienistHandle::new(
+                            state,
+                            meerkat::Config::default(),
+                            agent_memory.config.realm.clone(),
+                            &profile,
+                        );
+                        let model = profile.model.clone();
+                        let gate: Option<Arc<dyn memory_hygienist::DistillationGate>> =
+                            agent_memory_distiller.clone().map(|engine| {
+                                engine as Arc<dyn memory_hygienist::DistillationGate>
+                            });
+                        let engine = Arc::new(memory_hygienist::HygienistEngine::new(
+                            profile,
+                            agent_memory.hygienist.clone(),
+                            Arc::new(handle),
+                            Arc::new(memory_hygienist::SessionServiceRevisionSeam::new(
+                                edit_service,
+                            )),
+                            Arc::new(memory_hygienist::StoreSpanReferenceSource::new(
+                                steward_spans,
+                                agent_memory.config.realm.clone(),
+                            )),
+                            gate,
+                            agent_memory.config.realm.clone(),
                         ));
-                        agent_memory_taint = Some(tracker);
-                        Some(stack.provider)
+                        engine.set_event_sink(memory_events.clone());
+                        // §8.6 trigger sequencing: behind the distiller's
+                        // compaction harvest when one exists; directly off
+                        // the compaction event otherwise. Never both —
+                        // that would race the ordering this preserves.
+                        match agent_memory_distiller.as_ref() {
+                            Some(distiller) => distiller.set_compaction_follow_up(
+                                memory_hygienist::distiller_follow_up(engine.clone()),
+                            ),
+                            None => sinks.push(Arc::new(memory_hygienist::HygienistTriggers::new(
+                                engine.clone(),
+                            ))),
+                        }
+                        agent_memory_hygienist = Some(engine);
+                        tracing::info!(
+                            model = %model,
+                            runs_per_day = agent_memory.hygienist.runs_per_day,
+                            "agent memory hygienist installed"
+                        );
                     }
+                    // §9.1 as-built: ALWAYS-ON compaction reset for the
+                    // coordinator's session budgets — deliberately NOT
+                    // gated on distiller.enabled (gate finding: budgeted
+                    // injection without a distiller never reset).
+                    let compaction_reset_slot = agent_memory_compaction_reset.clone();
+                    sinks.push(Arc::new(meerkat_mobkit::CompactionResetSink::new(
+                        Arc::new(move |session: &str| {
+                            if let Some(injector) = compaction_reset_slot.get() {
+                                injector.on_session_compacted(session);
+                            }
+                        }),
+                    )));
+                    // Observe-stream feed lives for the gateway process;
+                    // forgetting the guard keeps the task running.
+                    std::mem::forget(meerkat_mobkit::spawn_member_event_observer(
+                        runtime.mob_handle(),
+                        sinks,
+                    ));
+                    agent_memory_taint = Some(tracker);
+                    Some(stack.provider)
+                } else {
+                    // Recall-only provider by its capability flags (M4
+                    // de-weld): no firewall, no engines, no panel — and any
+                    // engine explicitly configured against it refuses
+                    // loudly instead of silently not existing.
+                    if agent_memory.distiller.enabled
+                        || agent_memory.steward.enabled
+                        || agent_memory.hygienist.enabled
+                    {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            "agent memory distiller/steward/hygienist require a provider \
+                             with judgment-plane capabilities (the bundled sqlite store)"
+                                .to_string(),
+                        );
+                    }
+                    Some(provider)
                 }
             } else {
                 None
             };
+        // §8.3 LLM Selector (P1.3): process-wide install BEFORE the memory
+        // customizer/injector are constructed below, so their coordinators
+        // snapshot the stage. Operator switch is
+        // `agent_memory.selector = "off" | "default" | "profile:<path>"`;
+        // the MOBKIT_AGENT_MEMORY_SELECTOR env var remains a fallback for
+        // unmigrated deployments, with config taking precedence.
+        {
+            use meerkat_mobkit::memory::selector as memory_selector;
+            let configured = gateway_options
+                .agent_memory
+                .as_ref()
+                .and_then(|agent_memory| agent_memory.selector.as_ref());
+            let spec = resolve_selector_spec(configured).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            let profile = memory_selector::profile_for_spec(&spec).unwrap_or_else(|e| {
+                fail_init(&request_id, -32602, format!("agent memory selector: {e}"));
+            });
+            if let Some(profile) = profile {
+                let Some(agent_memory) = gateway_options.agent_memory.as_ref() else {
+                    fail_init(
+                        &request_id,
+                        -32602,
+                        "agent memory selector requires runtime_options.agent_memory".to_string(),
+                    );
+                };
+                // M4 de-weld: the selector needs a provider that can fetch
+                // selected record bodies — a capability, not a store kind.
+                // The provider's own fetch handle also replaces the second
+                // concrete store open this block used to make.
+                let fetch = agent_memory_provider
+                    .as_ref()
+                    .and_then(|provider| provider.as_selected_record_fetch())
+                    .unwrap_or_else(|| {
+                        fail_init(
+                            &request_id,
+                            -32602,
+                            "agent memory selector requires a provider with selected-record \
+                             fetch support (SelectedRecordFetch)"
+                                .to_string(),
+                        );
+                    });
+                let factory_state = storage_layout.state_dir().to_path_buf();
+                let handle = memory_selector::FactorySelectorHandle::new(
+                    factory_state,
+                    meerkat::Config::default(),
+                    agent_memory.config.realm.clone(),
+                    &profile,
+                );
+                let model = profile.model.clone();
+                memory_selector::install(Arc::new(memory_selector::SelectorRuntime {
+                    stage: Arc::new(memory_selector::SelectorStage::new(
+                        profile,
+                        Arc::new(handle),
+                    )),
+                    fetch,
+                }));
+                tracing::info!(model = %model, "agent memory selector installed");
+            }
+        }
+
         // §7.2 / §16 Q1 operator-resolver seam. The PROVISIONAL keying is
         // the console auth principal; that resolver lives with the console
         // auth wiring and plugs in here as one line of glue. Until it is
