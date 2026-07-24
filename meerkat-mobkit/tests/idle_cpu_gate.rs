@@ -31,6 +31,16 @@
 //! large fixture those size-proportional reads alone exceed this gate's
 //! budget on pre-fix code; the write-epoch gate and event-driven reconcile
 //! cadence make them ~zero.
+//!
+//! COMPOSITION-PARITY class: this test composes its runtime the way the
+//! production gateway binaries do (own stores + own session service +
+//! `MobBootstrapSpec::new`), NOT through `UnifiedRuntimeBuilder`. The
+//! third idle-burn generation survived the builder-composed version of
+//! this gate: the builder path threads the write-epoch witness internally,
+//! but the gateways' external composition left it absent, silently
+//! disabling the console epoch gate in every production deployment while
+//! the test stayed green. Diverge from the gateways' composition here only
+//! with a reason written down.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
@@ -38,19 +48,23 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
-use meerkat_mob::{MobDefinition, ProfileName};
+use meerkat_mob::{MobDefinition, MobStorage, ProfileName};
 use meerkat_mobkit::identity_first::orchestrator::{RestoreOutcome, restore_flow};
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentIdentity, ContinuityStore, DurabilityPolicy, DurableAgentSpec,
     IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider,
     SessionBridge,
 };
+use meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store;
 use meerkat_mobkit::{
-    AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration, MobKitConsoleAggregator,
-    UnifiedRuntimeBuilder,
+    AllowAllConsoleVisibilityPolicy, Base64BlobStoreAdapter, BinaryBlobStore,
+    ConsoleRuntimeRegistration, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    MobKitConsoleAggregator, ObjectStoreBlobStore, UnifiedRuntime,
 };
+use meerkat_store::SqliteSessionStore;
 use tokio::time::sleep;
 
 const MOB_TOML: &str = r#"
@@ -162,20 +176,85 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
     let state_path = temp.path().join("state");
     let capture = CaptureClient::default();
 
-    let unified = Arc::new(
-        UnifiedRuntimeBuilder::default()
-            .definition(MobDefinition::from_toml(MOB_TOML).expect("parse idle-cpu mob definition"))
-            .persistent_state(&state_path)
-            .comms(true)
-            .default_llm_client(Arc::new(capture.clone()))
-            .build()
-            .await
-            .expect("build UnifiedRuntime"),
+    // GATEWAY-PARITY COMPOSITION — keep in lockstep with the persistent
+    // branches of src/bin/rpc_gateway.rs / src/bin/mobkit_gateway.rs. Both
+    // production gateways roll their own stores and session service and
+    // enter through `MobBootstrapSpec::new`, NOT through
+    // `UnifiedRuntimeBuilder`. The 0.8.4 idle driver survived this gate's
+    // first version precisely because of that split: the library builder
+    // threads the session write-epoch witness internally, while the
+    // external composition must wrap its runtime store with
+    // `epoch_tracking_runtime_store` and call `with_session_write_epochs`
+    // by hand — omit either and the console discovery loop re-reads whole
+    // session documents every 5s forever.
+    std::fs::create_dir_all(&state_path).expect("create state dir");
+    let definition = MobDefinition::from_toml(MOB_TOML).expect("parse idle-cpu mob definition");
+    let session_store = Arc::new(
+        SqliteSessionStore::open(state_path.join("sessions.sqlite")).expect("session store"),
     );
-    let bridge: Arc<dyn SessionBridge> = unified
-        .session_bridge()
-        .expect("session_bridge should exist")
-        .clone();
+    let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(Base64BlobStoreAdapter::new(binary_blob_store));
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        meerkat_runtime::store::SqliteRuntimeStore::new(state_path.join("runtime.sqlite"))
+            .expect("runtime store"),
+    );
+    let (runtime_store, session_write_epochs) = epoch_tracking_runtime_store(runtime_store);
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let factory = AgentFactory::new(&state_path)
+        .session_store(session_store.clone())
+        .builtins(false)
+        .comms(true);
+    let mut agent_builder = FactoryAgentBuilder::new(factory, Config::default());
+    agent_builder.default_blob_store = Some(blob_store.clone());
+    let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+        Arc::new(PersistentSessionService::new(
+            agent_builder,
+            64,
+            session_store,
+            Arc::clone(&runtime_store),
+            blob_store,
+        ));
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_session_write_epochs(&session_write_epochs)
+        .with_session_runtime_adapter(adapter)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(capture.clone())),
+        });
+    let unified = Arc::new(
+        UnifiedRuntime::bootstrap(
+            mob_spec,
+            MobKitConfig {
+                modules: Vec::new(),
+                discovery: DiscoverySpec {
+                    namespace: "idle-cpu-gate".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            },
+            Duration::from_mins(1),
+        )
+        .await
+        .expect("bootstrap UnifiedRuntime"),
+    );
+    // The library builder constructs this bridge internally after bootstrap;
+    // the spec-composed (gateway-parity) path builds it by hand from the
+    // same parts, exactly as `UnifiedRuntimeBuilder::build` does.
+    let bridge: Arc<dyn SessionBridge> = Arc::new(
+        meerkat_mobkit::identity_first::bridge::MobSessionBridge::with_session_service(
+            unified.mob_handle(),
+            unified
+                .mob_runtime()
+                .session_service()
+                .cloned()
+                .expect("spec-composed runtime carries a session service"),
+        ),
+    );
     let store = Arc::new(
         LocalContinuityStore::open(state_path.join("continuity.db")).expect("continuity store"),
     );

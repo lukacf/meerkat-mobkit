@@ -51,6 +51,7 @@ type PersistentSessionServiceParts = (
     Option<ScheduleHostInputs>,
     Option<WorkGraphParts>,
     meerkat_mobkit::storage_health::ResolvedStorageSummary,
+    meerkat_mobkit::mob_handle_runtime::SessionWriteEpochsHandle,
 );
 
 #[derive(Debug, Deserialize)]
@@ -414,6 +415,13 @@ fn build_persistent_session_service(
             )
         })?,
     );
+    // Wrap in the write-epoch facade BEFORE the machine and session service
+    // capture the store; the witness threads to the bootstrap spec so the
+    // console session-history epoch gate works on this externally-composed
+    // path (mirrors rpc_gateway.rs — without it the 5s discovery loop
+    // re-reads whole session documents forever).
+    let (runtime_store, session_write_epochs) =
+        meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),
         Arc::clone(&blob_store),
@@ -545,6 +553,7 @@ fn build_persistent_session_service(
             Some(session_store_incremental),
         )
         .with_slots(slots),
+        session_write_epochs,
     ))
 }
 
@@ -1200,6 +1209,7 @@ async fn run() -> anyhow::Result<()> {
             schedule_host_inputs,
             workgraph,
             resolved_storage,
+            session_write_epochs,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1220,6 +1230,7 @@ async fn run() -> anyhow::Result<()> {
         // runtime_store handed to PersistentSessionService, so this is defensive;
         // the default ephemeral branch below is the one that was actually broken.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
+            .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
         if let Some((_, admission_slot, state_dir)) = &workgraph {
@@ -1241,6 +1252,11 @@ async fn run() -> anyhow::Result<()> {
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        // Same write-epoch facade as the persistent path: the console
+        // discovery gate is composition-independent, and the witness is
+        // sound for any store as long as every write goes through it.
+        let (runtime_store, session_write_epochs) =
+            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -1280,6 +1296,7 @@ async fn run() -> anyhow::Result<()> {
         // first mobkit/init (persistent_sessions defaults off, so this is the path
         // every launch hits). rpc_gateway.rs already had this call.
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone())
             .with_workgraph_admission_slot(workgraph_admission_slot);

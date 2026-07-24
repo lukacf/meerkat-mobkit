@@ -1419,6 +1419,39 @@ impl SessionSnapshotWriteEpochs {
     }
 }
 
+/// Public handle to this process's per-session durable write-epoch witness
+/// (see [`SessionSnapshotWriteEpochs`]). Obtained from
+/// [`epoch_tracking_runtime_store`]; hand it to
+/// [`MobBootstrapSpec::with_session_write_epochs`] so the console
+/// session-history discovery loop and whole-document read absorption can
+/// skip re-reads while a session's epoch is unchanged.
+#[derive(Clone)]
+pub struct SessionWriteEpochsHandle {
+    pub(crate) epochs: Arc<SessionSnapshotWriteEpochs>,
+}
+
+/// Wrap a runtime store so every session-scoped durable write advances the
+/// returned per-session write-epoch witness.
+///
+/// Externally-composed runtimes (the gateway binaries roll their own stores
+/// and session services and enter through [`MobBootstrapSpec::new`]) MUST
+/// wrap BEFORE handing the store to `MeerkatMachine::persistent` /
+/// `PersistentSessionService::new`: the witness is sound only if every
+/// session-scoped write in this process goes through the returned store.
+/// The stock persistent bootstrap constructors do this internally.
+pub fn epoch_tracking_runtime_store(
+    inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+) -> (
+    Arc<dyn meerkat_runtime::RuntimeStore>,
+    SessionWriteEpochsHandle,
+) {
+    let epochs = Arc::new(SessionSnapshotWriteEpochs::default());
+    let store: Arc<dyn meerkat_runtime::RuntimeStore> = Arc::new(
+        SessionStoreBackedRuntimeStore::with_write_epochs(inner, Arc::clone(&epochs)),
+    );
+    (store, SessionWriteEpochsHandle { epochs })
+}
+
 /// Absorbs repeated authoritative session-document reads while the session's
 /// durable authority is unchanged.
 ///
@@ -3742,6 +3775,36 @@ impl MobBootstrapSpec {
         self.session_service = Arc::new(AfterCreateMobSessionService {
             inner: self.session_service,
             after_hook: hook,
+        });
+        self
+    }
+
+    /// Install the write-epoch witness produced by
+    /// [`epoch_tracking_runtime_store`] on an externally-composed spec.
+    ///
+    /// [`Self::new`] leaves the witness absent, which disables the console
+    /// session-history epoch gate and whole-document read absorption — on
+    /// gateway compositions that was the 0.8.4 idle driver: the 5s console
+    /// discovery loop re-read and re-validated every member's full session
+    /// document forever (~0.3 core per idle durable member at production
+    /// document sizes). Both gateway binaries compose through [`Self::new`],
+    /// so they must wrap their runtime store with
+    /// [`epoch_tracking_runtime_store`] and hand the witness here.
+    ///
+    /// Also wraps the session service with the
+    /// [`SessionDocumentReadAbsorber`] so repeated authoritative
+    /// whole-document loads are served from the last decoded document while
+    /// the session's write epoch is unchanged.
+    pub fn with_session_write_epochs(mut self, epochs: &SessionWriteEpochsHandle) -> Self {
+        self.session_write_epochs = Some(Arc::clone(&epochs.epochs));
+        self.session_service = Arc::new(PreBuildMobSessionService {
+            inner: self.session_service,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
+                &epochs.epochs,
+            )))),
         });
         self
     }

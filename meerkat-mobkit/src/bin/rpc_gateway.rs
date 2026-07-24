@@ -4829,6 +4829,16 @@ external_addressable = true
                 ),
             }
         };
+        // Wrap the runtime store in the write-epoch facade BEFORE the machine
+        // and session service capture it, and thread the witness into the
+        // bootstrap spec below. Without it `MobBootstrapSpec::new` leaves the
+        // witness absent and the console session-history epoch gate is
+        // disabled — the 5s discovery loop then re-reads and re-validates
+        // every member's whole session document forever (~0.3 core per idle
+        // durable member at production document sizes; the 0.8.4 idle
+        // driver on this externally-composed path).
+        let (runtime_store, session_write_epochs) =
+            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -4998,6 +5008,7 @@ external_addressable = true
         };
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             // Order matters: workgraph before agent mob tools so child mobs
             // inherit the service at mob-state install time.
@@ -5114,6 +5125,11 @@ external_addressable = true
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        // Same write-epoch facade as the persistent path: the console
+        // discovery gate is composition-independent, and the witness is
+        // sound for any store as long as every write goes through it.
+        let (runtime_store, session_write_epochs) =
+            meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store(runtime_store);
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -5279,6 +5295,7 @@ external_addressable = true
             };
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone())
             .with_options(MobBootstrapOptions {
