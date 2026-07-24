@@ -223,6 +223,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     in-memory epoch compare. Witnesses are dropped on both unregister and
     register-replacement so a restarted runtime's counter can never
     suppress its first backfill.
+  - **The epoch gate actually engages in the gateway binaries.** Both
+    gateways compose their own stores and session services through
+    `MobBootstrapSpec::new`, which leaves the write-epoch witness absent —
+    so the gate above silently stayed disabled in every production
+    deployment while the library-composed test stayed green. New public
+    seam for externally-composed runtimes:
+    `epoch_tracking_runtime_store()` + `SessionWriteEpochsHandle` +
+    `MobBootstrapSpec::with_session_write_epochs()`; both binaries now
+    wrap their runtime store and thread the witness on all launch paths,
+    and the idle gate composes at gateway parity so composition-path
+    divergence in this class cannot pass the suite again. Real-dump A/B:
+    ~0.97 cores idle pre-fix → ~0.03 post-fix.
   - **Restore elision.** `restore_flow` returns an empty snapshot for
     already-active identities instead of re-running adoption work.
   - **Idle-CPU regression gate** (`tests/idle_cpu_gate.rs`) strengthened to
