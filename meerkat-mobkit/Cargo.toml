@@ -123,6 +123,9 @@ path = "../examples/005-access-control-pack/server.rs"
 
 [dev-dependencies]
 serde_json = "1"
+# Process CPU-time deltas (never wall clock) for the idle-CPU regression
+# gate (tests/idle_cpu_gate.rs); safe wrapper because unsafe_code is forbidden.
+cpu-time = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 futures = "0.3"
 tower = { version = "0.5", features = ["util"] }

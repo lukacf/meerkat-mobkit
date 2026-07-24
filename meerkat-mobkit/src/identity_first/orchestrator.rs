@@ -97,9 +97,23 @@ mod restore_concurrency_tests {
             None,
             false,
         ));
-        assert!(should_load_resume_snapshot(
+    }
+
+    #[test]
+    fn already_active_reconcile_never_loads_a_snapshot() {
+        assert!(!should_load_resume_snapshot(
+            RestoreSnapshotPolicy::PreserveOutcomePayload,
+            None,
+            true,
+        ));
+        assert!(!should_load_resume_snapshot(
             RestoreSnapshotPolicy::BridgeRequirementOnly,
             Some(false),
+            true,
+        ));
+        assert!(!should_load_resume_snapshot(
+            RestoreSnapshotPolicy::BridgeRequirementOnly,
+            Some(true),
             true,
         ));
     }
@@ -359,13 +373,19 @@ fn should_load_resume_snapshot(
     bridge_requires_snapshot: Option<bool>,
     already_active: bool,
 ) -> bool {
+    // A reconcile pass over an already-active (converged) identity is
+    // metadata convergence, never a second embodiment: no bridge call runs,
+    // its outcome classification does not key on snapshot presence, and no
+    // production consumer reads the payload. Loading it made every converged
+    // reconcile pay one full session-blob read per member.
+    if already_active {
+        return false;
+    }
     match policy {
         RestoreSnapshotPolicy::PreserveOutcomePayload => true,
         RestoreSnapshotPolicy::BridgeRequirementOnly => {
-            // Without a bridge there is no explicit opt-out. Already-active
-            // identities also skip the bridge call, so retain the snapshot for
-            // the legacy outcome classification and payload.
-            already_active || bridge_requires_snapshot.unwrap_or(true)
+            // Without a bridge there is no explicit opt-out.
+            bridge_requires_snapshot.unwrap_or(true)
         }
     }
 }
@@ -406,9 +426,12 @@ pub async fn restore_flow(
 /// continuity snapshot read when the configured bridge explicitly declares
 /// that it resumes by session id.
 ///
-/// Unlike [`restore_flow`], a successful resumed outcome may carry an empty
-/// snapshot when the bridge opted out of the payload. Callers that consume
-/// `RestoreOutcome::Resumed.snapshot` must continue using [`restore_flow`].
+/// Like [`restore_flow`] since the idle-cost fix, a successful resumed
+/// outcome may carry an empty snapshot: `restore_flow` elides the continuity
+/// snapshot read for already-active identities even under
+/// `RestoreSnapshotPolicy::PreserveOutcomePayload`. No `RestoreOutcome`
+/// consumer may assume a populated `Resumed.snapshot`; read the durable
+/// record instead when payload bytes are required.
 pub async fn restore_flow_for_bootstrap(
     runtime: &IdentityRuntime,
     roster: &[DurableAgentSpec],
@@ -588,16 +611,9 @@ async fn restore_flow_with_snapshot_policy(
         let already_active = already_active_identities.contains(identity);
         if already_active {
             let record = runtime.reuse_active_restore_state(spec).await?;
-            let snapshot = if snapshot_policy == RestoreSnapshotPolicy::PreserveOutcomePayload {
-                runtime
-                    .continuity_store()
-                    .load_session_snapshot(&record.session_id)
-                    .await
-                    .map_err(IdentityRuntimeError::Store)?
-                    .unwrap_or(SessionSnapshot { data: Vec::new() })
-            } else {
-                SessionSnapshot { data: Vec::new() }
-            };
+            // Converged pass: the member already exists, so the checkpoint
+            // payload is inert metadata here (see should_load_resume_snapshot).
+            let snapshot = SessionSnapshot { data: Vec::new() };
             let draft = AgentBuildDraft {
                 model: None,
                 system_prompt: None,

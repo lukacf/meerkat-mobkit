@@ -412,6 +412,10 @@ struct PreBuildMobSessionService {
     hook: PreBuildHook,
     after_create_hook: Option<AfterCreateHook>,
     runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
+    /// Installed only on the persistent runtime-backed path: absorbs the
+    /// identity reconcile loop's repeated authoritative reads of unchanged
+    /// session documents (see `SessionDocumentReadAbsorber`).
+    session_read_absorber: Option<Arc<SessionDocumentReadAbsorber>>,
 }
 
 impl PreBuildMobSessionService {
@@ -440,6 +444,29 @@ impl PreBuildMobSessionService {
             after_hook(result.session_id.clone(), context).await;
         }
         result
+    }
+
+    /// Authoritative session read behind `load_persisted_session`: with an
+    /// absorber installed, an unchanged document (per the runtime-store write
+    /// epoch) is served from the absorbed copy instead of re-reading and
+    /// re-verifying it through the inner service.
+    async fn load_persisted_session_absorbed(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+        let Some(absorber) = self.session_read_absorber.as_ref() else {
+            return self.inner.load_persisted_session(session_id).await;
+        };
+        if let Some(session) = absorber.lookup(session_id) {
+            return Ok(Some(session));
+        }
+        let epoch = absorber.observe_epoch(session_id);
+        let loaded = self.inner.load_persisted_session(session_id).await?;
+        match loaded.as_ref() {
+            Some(session) => absorber.admit(session_id, epoch, session),
+            None => absorber.evict(session_id),
+        }
+        Ok(loaded)
     }
 }
 
@@ -1354,6 +1381,133 @@ fn build_persistent_runtime_store(
     }
 }
 
+/// Monotonic per-runtime write epochs observed at this process's single
+/// runtime-store seam. Every session-scoped durable write (session snapshot,
+/// machine lifecycle, input state, ops lifecycle) advances the runtime's
+/// epoch; [`SessionDocumentReadAbsorber`] keys its cached authoritative reads
+/// on the epoch so an unchanged epoch proves the durable authority for that
+/// session did not move through this process.
+///
+/// Correct only while this process is the sole writer of the underlying
+/// runtime store (the identity single-embodiment lease guard already enforces
+/// one live gateway per store; storage doctor tooling opens stores read-only).
+#[derive(Default)]
+pub(crate) struct SessionSnapshotWriteEpochs {
+    epochs: std::sync::Mutex<BTreeMap<String, u64>>,
+}
+
+impl SessionSnapshotWriteEpochs {
+    /// Advance before the write is attempted: a failed write may have
+    /// partially applied in an unknown store, so over-invalidation is the
+    /// safe direction.
+    fn advance(&self, runtime_id: &meerkat_runtime::LogicalRuntimeId) {
+        let mut epochs = self
+            .epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *epochs.entry(runtime_id.0.clone()).or_insert(0) += 1;
+    }
+
+    fn observe(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(session_id);
+        self.epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&runtime_id.0)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Absorbs repeated authoritative session-document reads while the session's
+/// durable authority is unchanged.
+///
+/// meerkat-mob 0.8.5's identity reconcile loop re-reads and checkpoint-
+/// verifies each durable member's full session document once per scan
+/// interval even when nothing changed — on the HomeCore fleet that is one
+/// 82 MB deserialize + canonical sha256 per member per second (~0.3 CPU
+/// cores per idle member). This absorber serves the previously decoded
+/// document (a cheap copy-on-write clone) while the runtime-store write
+/// epoch for that session is unchanged.
+///
+/// Memory constraint: one decoded document per recently-read session stays
+/// resident (Session shares its transcript via `Arc`), bounded by the durable
+/// fleet's persisted transcript sizes. That residency replaces an unbounded
+/// per-second decode+digest burn.
+pub(crate) struct SessionDocumentReadAbsorber {
+    epochs: Arc<SessionSnapshotWriteEpochs>,
+    // Keyed by the session id's canonical string form (SessionId is not Ord).
+    cache: std::sync::Mutex<BTreeMap<String, AbsorbedSessionDocument>>,
+}
+
+struct AbsorbedSessionDocument {
+    epoch: u64,
+    session: meerkat_core::session::Session,
+}
+
+impl SessionDocumentReadAbsorber {
+    pub(crate) fn new(epochs: Arc<SessionSnapshotWriteEpochs>) -> Self {
+        Self {
+            epochs,
+            cache: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn observe_epoch(&self, session_id: &meerkat_core::types::SessionId) -> u64 {
+        self.epochs.observe(session_id)
+    }
+
+    /// Serve the cached document only when its admission epoch still matches
+    /// the current write epoch; stale entries are dropped on lookup.
+    fn lookup(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Option<meerkat_core::session::Session> {
+        let current = self.epochs.observe(session_id);
+        let key = session_id.to_string();
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match cache.get(&key) {
+            Some(entry) if entry.epoch == current => Some(entry.session.clone()),
+            Some(_) => {
+                cache.remove(&key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Admit under the epoch observed BEFORE the inner load: a write racing
+    /// the load bumps the current epoch past `epoch`, so the next lookup
+    /// misses and re-reads instead of trusting a possibly-torn read.
+    fn admit(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        epoch: u64,
+        session: &meerkat_core::session::Session,
+    ) {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                session_id.to_string(),
+                AbsorbedSessionDocument {
+                    epoch,
+                    session: session.clone(),
+                },
+            );
+    }
+
+    fn evict(&self, session_id: &meerkat_core::types::SessionId) {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id.to_string());
+    }
+}
+
 /// RuntimeStore forwarding facade for identity-first apps with an external
 /// compatibility projection.
 ///
@@ -1363,8 +1517,13 @@ fn build_persistent_runtime_store(
 /// being read back through this facade as runtime authority. Store-only
 /// recovery remains owned by Meerkat's session-document machine;
 /// this facade must not reinterpret the projection as runtime authority.
+///
+/// When constructed with [`Self::with_write_epochs`], the facade additionally
+/// records a per-runtime write epoch for every session-scoped mutating
+/// method, feeding [`SessionDocumentReadAbsorber`] invalidation.
 struct SessionStoreBackedRuntimeStore {
     inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+    write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
 }
 
 impl SessionStoreBackedRuntimeStore {
@@ -1372,7 +1531,31 @@ impl SessionStoreBackedRuntimeStore {
         inner: Arc<dyn meerkat_runtime::RuntimeStore>,
         _session_store: Arc<dyn SessionStore>,
     ) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            write_epochs: None,
+        }
+    }
+
+    fn with_write_epochs(
+        inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+        write_epochs: Arc<SessionSnapshotWriteEpochs>,
+    ) -> Self {
+        Self {
+            inner,
+            write_epochs: Some(write_epochs),
+        }
+    }
+
+    /// Bump the write epoch. Called BEFORE the inner write (a failed write
+    /// may have partially applied — over-invalidate) and AFTER it completes
+    /// (a read that overlapped the write may have admitted pre-write bytes
+    /// under the during-write epoch; the post-write bump makes the current
+    /// epoch strictly greater, so the next lookup misses and re-reads).
+    fn note_session_scoped_write(&self, runtime_id: &meerkat_runtime::LogicalRuntimeId) {
+        if let Some(epochs) = self.write_epochs.as_ref() {
+            epochs.advance(runtime_id);
+        }
     }
 }
 
@@ -1407,9 +1590,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         session_delta: meerkat_runtime::store::SessionDelta,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .commit_session_snapshot(runtime_id, session_delta)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn commit_session_transcript_rewrite_snapshot(
@@ -1418,9 +1604,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         session_delta: meerkat_runtime::store::SessionDelta,
         commit: &meerkat_core::TranscriptRewriteCommit,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .commit_session_transcript_rewrite_snapshot(runtime_id, session_delta, commit)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn atomic_apply(
@@ -1431,7 +1620,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         input_updates: Vec<InputStatePersistenceRecord>,
         session_store_key: Option<meerkat_core::types::SessionId>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .atomic_apply(
                 runtime_id,
                 session_delta,
@@ -1439,7 +1629,9 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
                 input_updates,
                 session_store_key,
             )
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn atomic_apply_with_machine_lifecycle(
@@ -1451,7 +1643,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         input_updates: Vec<InputStatePersistenceRecord>,
         session_store_key: meerkat_core::types::SessionId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .atomic_apply_with_machine_lifecycle(
                 runtime_id,
                 session_delta,
@@ -1460,7 +1653,9 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
                 input_updates,
                 session_store_key,
             )
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn load_input_states(
@@ -1495,7 +1690,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner.clear_session_snapshot(runtime_id).await
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner.clear_session_snapshot(runtime_id).await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn replace_session_snapshot_if_current(
@@ -1504,9 +1702,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         expected_current: &[u8],
         replacement: Vec<u8>,
     ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .replace_session_snapshot_if_current(runtime_id, expected_current, replacement)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn clear_session_snapshot_if_current(
@@ -1514,9 +1715,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         expected_current: &[u8],
     ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .clear_session_snapshot_if_current(runtime_id, expected_current)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn persist_input_state(
@@ -1524,7 +1728,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         state: &InputStatePersistenceRecord,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner.persist_input_state(runtime_id, state).await
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner.persist_input_state(runtime_id, state).await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn persist_input_states_atomically(
@@ -1532,9 +1739,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         states: &[InputStatePersistenceRecord],
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .persist_input_states_atomically(runtime_id, states)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn compare_and_swap_input_states_atomically(
@@ -1546,9 +1756,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::InputStateBatchCasOutcome,
         meerkat_runtime::store::RuntimeStoreError,
     > {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .compare_and_swap_input_states_atomically(runtime_id, expected, replacements)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn compare_and_swap_input_states_atomically_with_fence(
@@ -1561,14 +1774,17 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::FencedInputStateBatchCasOutcome,
         meerkat_runtime::store::RuntimeStoreError,
     > {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .compare_and_swap_input_states_atomically_with_fence(
                 runtime_id,
                 expected,
                 replacements,
                 write_fence,
             )
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn load_input_state(
@@ -1598,9 +1814,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::MachineLifecycleCasOutcome,
         meerkat_runtime::store::RuntimeStoreError,
     > {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .compare_and_swap_machine_lifecycle(runtime_id, expected, replacement)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn compare_and_swap_machine_lifecycle_with_fence(
@@ -1613,14 +1832,17 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::FencedMachineLifecycleCasOutcome,
         meerkat_runtime::store::RuntimeStoreError,
     > {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .compare_and_swap_machine_lifecycle_with_fence(
                 runtime_id,
                 expected,
                 replacement,
                 write_fence,
             )
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn load_machine_lifecycle_record(
@@ -1636,9 +1858,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         commit: MachineLifecycleCommit,
         input_states: &[InputStatePersistenceRecord],
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .commit_machine_lifecycle(runtime_id, commit, input_states)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn commit_unregister_finalization(
@@ -1646,9 +1871,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         finalization: meerkat_runtime::store::UnregisterFinalizationCommit,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .commit_unregister_finalization(runtime_id, finalization)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     // Defaulted trait methods MUST be delegated too: the defaults answer
@@ -1676,9 +1904,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         projection: &meerkat_core::CompactionProjectionId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .mark_compaction_projection_finalized(runtime_id, projection)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn is_runtime_projection_quarantined(
@@ -1694,7 +1925,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner.delete_ops_lifecycle(runtime_id).await
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner.delete_ops_lifecycle(runtime_id).await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn initialize_ops_lifecycle_if_absent(
@@ -1705,9 +1939,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::ops_lifecycle::PersistedOpsSnapshot,
         meerkat_runtime::store::RuntimeStoreError,
     > {
-        self.inner
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner
             .initialize_ops_lifecycle_if_absent(runtime_id, candidate)
-            .await
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn persist_ops_lifecycle(
@@ -1715,7 +1952,10 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         snapshot: &meerkat_runtime::ops_lifecycle::PersistedOpsSnapshot,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.inner.persist_ops_lifecycle(runtime_id, snapshot).await
+        self.note_session_scoped_write(runtime_id);
+        let result = self.inner.persist_ops_lifecycle(runtime_id, snapshot).await;
+        self.note_session_scoped_write(runtime_id);
+        result
     }
 
     async fn load_ops_lifecycle(
@@ -2267,7 +2507,10 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
-                self.inner.load_persisted_session(session_id).await
+                // Inherent method so absorber-equipped wrappers can serve
+                // unchanged documents without an inner read (idle-cadence
+                // fix); wrappers without an absorber forward unchanged.
+                self.load_persisted_session_absorbed(session_id).await
             }
             // meerkat 0.7.29 revival seam (ask 31): the trait defaults answer
             // `Ok(None)`/`Unsupported`, which masks the inner persistent
@@ -3302,6 +3545,7 @@ impl MobBootstrapSpec {
             hook: no_op_pre_build_hook(),
             after_create_hook: None,
             runtime_adapter_override: None,
+            session_read_absorber: None,
         }) as Arc<dyn MobSessionService>;
         Self {
             definition,
@@ -3463,6 +3707,7 @@ impl MobBootstrapSpec {
             hook: no_op_pre_build_hook(),
             after_create_hook: None,
             runtime_adapter_override: Some(adapter),
+            session_read_absorber: None,
         });
         self
     }
@@ -3640,6 +3885,7 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
             runtime_adapter_override: effective_runtime_adapter.clone(),
+            session_read_absorber: None,
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -3921,6 +4167,15 @@ impl MobBootstrapSpec {
                 StorageSlotSummary::persistent("runtime", "SqliteRuntimeStore"),
             )
         };
+        // One epoch-observing facade fronts BOTH the machine and the session
+        // service, so every session-scoped durable write this process performs
+        // invalidates the session-document read absorber installed below.
+        let session_read_epochs = Arc::new(SessionSnapshotWriteEpochs::default());
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(SessionStoreBackedRuntimeStore::with_write_epochs(
+                runtime_store,
+                Arc::clone(&session_read_epochs),
+            ));
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -4005,6 +4260,9 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
             runtime_adapter_override: None,
+            session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(
+                session_read_epochs,
+            ))),
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -4272,6 +4530,7 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
+            session_read_absorber: None,
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -6531,6 +6790,7 @@ realm_profile = "worker-v2"
             hook,
             after_create_hook: None,
             runtime_adapter_override: None,
+            session_read_absorber: None,
         };
 
         let req = CreateSessionRequest {
@@ -6632,6 +6892,205 @@ realm_profile = "worker-v2"
         assert!(
             (effective.multiplier - 3.5).abs() < f64::EPSILON,
             "Config.retry.multiplier must be plumbed, not the 2.0 default"
+        );
+    }
+
+    /// Inner-service stand-in for the absorber seam: `load_persisted_session`
+    /// returns one fixed document and counts reads; everything else is inert.
+    struct AbsorberInnerProbe {
+        session: meerkat_core::session::Session,
+        loads: std::sync::atomic::AtomicU64,
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionService for AbsorberInnerProbe {
+        async fn create_session(
+            &self,
+            _req: CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, SessionError> {
+            Err(SessionError::Unsupported("create_session".to_string()))
+        }
+
+        async fn start_turn(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StartTurnRequest,
+        ) -> Result<meerkat_core::types::RunResult, SessionError> {
+            Err(SessionError::Unsupported("start_turn".to_string()))
+        }
+
+        async fn interrupt(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::service::SessionView, SessionError> {
+            Err(SessionError::NotFound { id: id.clone() })
+        }
+
+        async fn list(
+            &self,
+            _query: meerkat_core::service::SessionQuery,
+        ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
+            Ok(Vec::new())
+        }
+
+        async fn archive(&self, _id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceCommsExt for AbsorberInnerProbe {}
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceControlExt for AbsorberInnerProbe {
+        async fn append_system_context(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::AppendSystemContextRequest,
+        ) -> Result<
+            meerkat_core::service::AppendSystemContextResult,
+            meerkat_core::service::SessionControlError,
+        > {
+            Err(SessionError::Unsupported("append_system_context".to_string()).into())
+        }
+
+        async fn stage_tool_results(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StageToolResultsRequest,
+        ) -> Result<meerkat_core::service::StageToolResultsResult, SessionError> {
+            Err(SessionError::Unsupported("stage_tool_results".to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceHistoryExt for AbsorberInnerProbe {
+        async fn read_history(
+            &self,
+            id: &meerkat_core::types::SessionId,
+            _query: meerkat_core::service::SessionHistoryQuery,
+        ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+            Err(SessionError::NotFound { id: id.clone() })
+        }
+    }
+
+    #[async_trait]
+    impl MobSessionService for AbsorberInnerProbe {
+        async fn create_session_under_runtime_turn_boundary(
+            &self,
+            req: CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, SessionError> {
+            meerkat_core::SessionService::create_session(self, req).await
+        }
+
+        async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            meerkat_core::SessionService::archive(self, session_id).await
+        }
+
+        async fn discard_live_session_under_runtime_turn_boundary(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            Ok(())
+        }
+
+        async fn load_persisted_session(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+            self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if session_id == self.session.id() {
+                Ok(Some(self.session.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    /// The idle-cadence structural gate at the mobkit seam: repeated
+    /// authoritative reads of an UNCHANGED session document must reach the
+    /// inner (PersistentSessionService-shaped) service exactly once, and a
+    /// session-scoped durable write through the runtime-store facade must
+    /// invalidate the absorbed copy.
+    #[tokio::test]
+    async fn session_read_absorber_serves_unchanged_documents_until_a_write_epoch_advances() {
+        let session =
+            meerkat_core::session::Session::with_id(meerkat_core::types::SessionId::new());
+        let session_id = session.id().clone();
+        let probe = Arc::new(AbsorberInnerProbe {
+            session,
+            loads: std::sync::atomic::AtomicU64::new(0),
+        });
+        let epochs = Arc::new(SessionSnapshotWriteEpochs::default());
+        let wrapped = PreBuildMobSessionService {
+            inner: probe.clone(),
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: None,
+            session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
+                &epochs,
+            )))),
+        };
+
+        // A converged idle window issues many reads; only the first may reach
+        // the inner service.
+        for _ in 0..5 {
+            let loaded = MobSessionService::load_persisted_session(&wrapped, &session_id)
+                .await
+                .expect("absorbed load");
+            assert_eq!(loaded.expect("absorbed document present").id(), &session_id);
+        }
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "unchanged-session reads must be absorbed after the first inner load"
+        );
+
+        // Any session-scoped durable write through the epoch-observing
+        // runtime-store facade invalidates the absorbed copy.
+        let facade = SessionStoreBackedRuntimeStore::with_write_epochs(
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            Arc::clone(&epochs),
+        );
+        let runtime_id = meerkat_runtime::LogicalRuntimeId::for_session(&session_id);
+        meerkat_runtime::RuntimeStore::clear_session_snapshot(&facade, &runtime_id)
+            .await
+            .expect("facade-observed session-scoped write");
+
+        let reloaded = MobSessionService::load_persisted_session(&wrapped, &session_id)
+            .await
+            .expect("post-write load");
+        assert!(reloaded.is_some());
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a session-scoped write must force the next read back to the inner service"
+        );
+
+        // Absence evicts: a missing document must never be served from cache.
+        let other_id = meerkat_core::types::SessionId::new();
+        for _ in 0..2 {
+            assert!(
+                MobSessionService::load_persisted_session(&wrapped, &other_id)
+                    .await
+                    .expect("absent load")
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            probe.loads.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "absent documents are not cached"
         );
     }
 
@@ -6906,6 +7365,7 @@ realm_profile = "worker-v2"
             hook: no_op_pre_build_hook(),
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+            session_read_absorber: None,
         };
         let session_id = meerkat_core::types::SessionId::new();
         let run_id = meerkat_core::lifecycle::RunId::new();
@@ -7038,6 +7498,7 @@ realm_profile = "worker-v2"
             hook: no_op_pre_build_hook(),
             after_create_hook: None,
             runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+            session_read_absorber: None,
         };
         let session_id = meerkat_core::types::SessionId::new();
         let run_id = meerkat_core::lifecycle::RunId::new();
