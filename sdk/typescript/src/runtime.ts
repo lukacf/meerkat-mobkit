@@ -400,6 +400,124 @@ function normalizeBlobUpload(
 
 // -- MobKitRuntime --------------------------------------------------------
 
+export interface JobsListOptions {
+  readonly sessionId: string;
+  readonly limit?: number;
+}
+
+export interface JobSubscriptionOptions {
+  readonly subscriptionId: string;
+  readonly sessionId: string;
+  readonly delivery: Record<string, unknown>;
+}
+
+export interface MonitorStartOptions {
+  readonly sessionId: string;
+  readonly submissionKey: string;
+  readonly command: string;
+  readonly timeoutSecs: number;
+  readonly restartClass:
+    | "checkpoint_resumable"
+    | "replayable"
+    | "non_resumable";
+  readonly delivery: Record<string, unknown>;
+  readonly protocol?: "framed_jsonl" | "lines";
+  readonly workingDir?: string;
+  readonly maxLineBytes?: number;
+  readonly maxNotificationsPerWindow?: number;
+  readonly notificationWindowMs?: number;
+  readonly maxRetainedDiagnosticBytes?: number;
+}
+
+/** Safe application-facing durable-job surface. */
+export class JobsHandle {
+  /** @internal */
+  constructor(private readonly runtime: MobKitRuntime) {}
+
+  get(jobId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/get", { job_id: jobId });
+  }
+
+  list(options: JobsListOptions): Promise<unknown> {
+    const params: Record<string, unknown> = { session_id: options.sessionId };
+    if (options.limit !== undefined) params.limit = options.limit;
+    return this.runtime._rpc("jobs/list", params);
+  }
+
+  cancel(jobId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/cancel", { job_id: jobId });
+  }
+
+  progress(jobId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/progress", { job_id: jobId });
+  }
+
+  result(jobId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/result", { job_id: jobId });
+  }
+
+  artifacts(jobId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/artifacts", { job_id: jobId });
+  }
+
+  retry(jobId: string, retryDueAtMs: number): Promise<unknown> {
+    return this.runtime._rpc("jobs/retry", {
+      job_id: jobId,
+      retry_due_at_ms: retryDueAtMs,
+    });
+  }
+
+  health(): Promise<unknown> {
+    return this.runtime._rpc("jobs/health", {});
+  }
+
+  subscribe(jobId: string, options: JobSubscriptionOptions): Promise<unknown> {
+    return this.runtime._rpc("jobs/subscribe", {
+      job_id: jobId,
+      subscription_id: options.subscriptionId,
+      session_id: options.sessionId,
+      delivery: options.delivery,
+    });
+  }
+
+  unsubscribe(jobId: string, subscriptionId: string): Promise<unknown> {
+    return this.runtime._rpc("jobs/unsubscribe", {
+      job_id: jobId,
+      subscription_id: subscriptionId,
+    });
+  }
+}
+
+/** Durable monitor convenience surface; lifecycle remains job-owned. */
+export class MonitorsHandle {
+  /** @internal */
+  constructor(private readonly runtime: MobKitRuntime) {}
+
+  start(options: MonitorStartOptions): Promise<unknown> {
+    const params: Record<string, unknown> = {
+      session_id: options.sessionId,
+      submission_key: options.submissionKey,
+      command: options.command,
+      timeout_secs: options.timeoutSecs,
+      protocol: options.protocol ?? "framed_jsonl",
+      restart_class: options.restartClass,
+      delivery: options.delivery,
+    };
+    if (options.workingDir !== undefined) params.working_dir = options.workingDir;
+    if (options.maxLineBytes !== undefined) params.max_line_bytes = options.maxLineBytes;
+    if (options.maxNotificationsPerWindow !== undefined) {
+      params.max_notifications_per_window = options.maxNotificationsPerWindow;
+    }
+    if (options.notificationWindowMs !== undefined) {
+      params.notification_window_ms = options.notificationWindowMs;
+    }
+    if (options.maxRetainedDiagnosticBytes !== undefined) {
+      params.max_retained_diagnostic_bytes = options.maxRetainedDiagnosticBytes;
+    }
+    return this.runtime._rpc("monitors/start", params);
+  }
+}
+
 /**
  * Running MobKit runtime instance.
  *
@@ -415,6 +533,8 @@ export class MobKitRuntime {
   private _lifecycleSequence = 0;
   private _dispatcher = new CallbackDispatcher();
   private _rustHttpBase: string | null = null;
+  readonly jobs = new JobsHandle(this);
+  readonly monitors = new MonitorsHandle(this);
 
   /** @internal */
   constructor(config: MobKitBuilderConfig, transport?: PersistentTransport) {
@@ -513,6 +633,14 @@ export class MobKitRuntime {
       }
       if (this._config.agentCustomizer !== null) {
         this._dispatcher.registerAgentCustomizer(this._config.agentCustomizer);
+      }
+      this._dispatcher.registerJobRpc(
+        (method, params) => this._rpcUnchecked(method, params),
+      );
+      if (this._config.jobCredentialResolver !== null) {
+        this._dispatcher.registerJobCredentialResolver(
+          this._config.jobCredentialResolver,
+        );
       }
       this._transport.setCallbackHandler(
         this._dispatcher.handleCallback.bind(this._dispatcher),

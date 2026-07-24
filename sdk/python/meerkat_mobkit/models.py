@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .jobs import DetachedJobExecution
 
 
 @dataclass
@@ -117,6 +120,12 @@ class SessionBuildOptions:
     # Per-tool wire metadata from register_tool(description=/input_schema=);
     # tools without an entry cross the wire as bare name strings.
     _tool_defs: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    # Host-only runner implementations paired with their private execution
+    # declarations. Only the declarations cross the build callback wire.
+    _job_executions: dict[str, DetachedJobExecution] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
     def add_tools(self, tools: list[str]) -> None:
         """Declare tool names the agent can use."""
@@ -132,6 +141,7 @@ class SessionBuildOptions:
         *,
         description: str = "",
         input_schema: dict[str, Any] | None = None,
+        execution: DetachedJobExecution | None = None,
     ) -> None:
         """Register a callable tool with the agent.
 
@@ -144,6 +154,7 @@ class SessionBuildOptions:
             description: Human-readable tool description.
             input_schema: JSON Schema for the tool arguments. When omitted
                 the gateway advertises the permissive ``{"type": "object"}``.
+            execution: Optional detached-job declaration and host runner.
         """
         if not isinstance(name, str):
             raise TypeError(f"tool name must be a string, got {type(name).__name__}: {name!r}")
@@ -153,14 +164,25 @@ class SessionBuildOptions:
             raise TypeError(
                 f"input_schema must be a dict, got {type(input_schema).__name__}: {input_schema!r}"
             )
+        if execution is not None:
+            from .jobs import DetachedJobExecution
+
+            if not isinstance(execution, DetachedJobExecution):
+                raise TypeError(
+                    "execution must be DetachedJobExecution, got "
+                    f"{type(execution).__name__}: {execution!r}"
+                )
         self._tools.append(name)
         self._tool_handlers[name] = handler
-        if description or input_schema is not None:
+        if description or input_schema is not None or execution is not None:
             tool_def: dict[str, Any] = {"name": name}
             if description:
                 tool_def["description"] = description
             if input_schema is not None:
                 tool_def["input_schema"] = input_schema
+            if execution is not None:
+                tool_def["execution"] = execution.to_wire()
+                self._job_executions[name] = execution
             self._tool_defs[name] = tool_def
 
     @property
@@ -170,6 +192,10 @@ class SessionBuildOptions:
     @property
     def tool_handlers(self) -> dict[str, Any]:
         return dict(self._tool_handlers)
+
+    @property
+    def job_executions(self) -> dict[str, DetachedJobExecution]:
+        return dict(self._job_executions)
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}

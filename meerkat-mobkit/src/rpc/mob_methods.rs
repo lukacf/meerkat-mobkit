@@ -1945,12 +1945,27 @@ pub(super) async fn handle_member_status(
                 .member_status(&crate::member_comms_id::mob_member_id(&mid))
                 .await
             {
-                Ok(snapshot) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                    error: None,
-                },
+                Ok(snapshot) => {
+                    let mut result = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
+                    if let Some(session_id) = snapshot.current_session_id.as_ref()
+                        && let Some(job_health) = runtime.job_health_projection()
+                        && let Some(session_jobs) = job_health
+                            .get("by_session")
+                            .and_then(|by_session| by_session.get(session_id.to_string()))
+                    {
+                        result["detached_jobs"] = session_jobs.clone();
+                        result["awaiting_detached"] = session_jobs
+                            .get("awaiting_detached")
+                            .cloned()
+                            .unwrap_or(Value::Bool(false));
+                    }
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

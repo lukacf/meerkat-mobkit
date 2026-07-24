@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Durable detached jobs
+
+- Added durable detached callback registration with runner identity, restart
+  and idempotency policy, submission timeout, and credential scopes.
+- Added `runtime.jobs` and `runtime.monitors` domain handles plus the fenced
+  asynchronous start/reconcile/cancel and report protocol. Reconciliation
+  reuses the exact committed attempt, fence, lease, checkpoint, and handle
+  without minting authority on reopen.
+- Detached credentials are resolved from the runner's bound SDK profile for
+  each committed attempt and never enter durable job state or reports.
+
 ### Lease renewal authority
 
 - Documented the `LeaseProvider.renewLeases()` commit boundary: rejected

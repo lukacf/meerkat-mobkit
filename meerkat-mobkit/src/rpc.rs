@@ -1665,6 +1665,12 @@ async fn handle_unified_rpc_json_inner(
             if let Some(storage) = runtime.resolved_storage() {
                 result["storage"] = storage.status_json();
             }
+            if let Some(job_health) = runtime.job_health_projection() {
+                result["detached_jobs"] = job_health
+                    .get("detached_jobs")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
@@ -1822,6 +1828,29 @@ async fn handle_unified_rpc_json_inner(
                     "mobkit/cross_mob/send",
                 ]);
             }
+            let job_health = runtime.job_health_projection();
+            if job_health.is_some() {
+                methods.extend_from_slice(&[
+                    "jobs/get",
+                    "jobs/list",
+                    "jobs/cancel",
+                    "jobs/progress",
+                    "jobs/result",
+                    "jobs/artifacts",
+                    "jobs/retry",
+                    "jobs/health",
+                    "jobs/subscribe",
+                    "jobs/unsubscribe",
+                ]);
+                if job_health
+                    .as_ref()
+                    .and_then(|projection| projection.get("monitors_available"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    methods.push("monitors/start");
+                }
+            }
             let topology = runtime.topology_runtime_handle();
             let (topology_methods, topology_capabilities) =
                 topology_methods::capability_projection(&topology, None, false);
@@ -1848,6 +1877,11 @@ async fn handle_unified_rpc_json_inner(
                     // True when a WorkGraph service is configured and the
                     // mobkit/workgraph/* group is live.
                     "workgraph": workgraph_configured,
+                    "detached_jobs": job_health
+                        .as_ref()
+                        .and_then(|projection| projection.get("detached_jobs"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
                         "can_spawn_members": true,

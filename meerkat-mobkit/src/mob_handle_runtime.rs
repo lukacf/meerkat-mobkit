@@ -4277,6 +4277,28 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
+        let (job_store, job_store_slot): (Arc<dyn meerkat::DetachedJobStore>, StorageSlotSummary) =
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                (Arc::clone(&provider.job_store), provider.job_slot_summary())
+            } else {
+                let path = meerkat_store::realm_paths_in(
+                    &store_path,
+                    crate::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                )
+                .jobs_sqlite_path;
+                let store =
+                    meerkat::SqliteDetachedJobStore::open(path.clone()).map_err(|error| {
+                        crate::storage_health::JobStoreResolutionError {
+                            path,
+                            message: error.to_string(),
+                        }
+                    })?;
+                (
+                    Arc::new(store),
+                    StorageSlotSummary::persistent("jobs", "SqliteDetachedJobStore"),
+                )
+            };
+        builder.default_detached_job_store = Some(job_store);
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
@@ -4390,6 +4412,7 @@ impl MobBootstrapSpec {
             runtime_store_slot,
             blob_slot_summary(blob_durability),
             workgraph_slot,
+            job_store_slot,
         ];
         if let Some(slot) = schedule_slot {
             slots.push(slot);
@@ -4531,6 +4554,9 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
+        if let Some(provider) = provider_meerkat_stores.as_ref() {
+            builder.default_detached_job_store = Some(Arc::clone(&provider.job_store));
+        }
         let (session_llm_reconfigure_blueprint, session_llm_default_client_slot) =
             session_llm_reconfigure_blueprint(&builder, &store_path);
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
@@ -4669,6 +4695,15 @@ impl MobBootstrapSpec {
                     "workgraph",
                     "MemoryWorkGraphStore",
                     "declared by the ephemeral launch mode",
+                )
+            },
+            if let Some(provider) = provider_meerkat_stores.as_ref() {
+                provider.job_slot_summary()
+            } else {
+                StorageSlotSummary::declared_ephemeral(
+                    "jobs",
+                    "disabled",
+                    "semantic detached admission is unavailable in ephemeral launch mode",
                 )
             },
         ];
@@ -7340,6 +7375,7 @@ realm_profile = "worker-v2"
             self.record("stage_tool_results");
             Ok(meerkat_core::service::StageToolResultsResult {
                 accepted_result_count: 7,
+                disposition: meerkat_core::service::StageToolResultsDisposition::Staged,
             })
         }
     }

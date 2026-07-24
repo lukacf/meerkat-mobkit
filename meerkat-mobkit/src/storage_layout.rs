@@ -435,6 +435,16 @@ impl MobKitStorageLayout {
         self.state_dir.join(WORKGRAPH_STORE_FILE)
     }
 
+    /// Canonical Meerkat-level detached-job database inherited by MobKit's
+    /// composite provider. This is realm-owned, not a second MobKit store.
+    pub fn jobs_db(&self) -> PathBuf {
+        meerkat_store::realm_paths_in(
+            &self.state_dir,
+            crate::storage_provider::MEERKAT_LEVEL_REALM_ID,
+        )
+        .jobs_sqlite_path
+    }
+
     /// The reserved event-log locator (nothing opens it before M4).
     pub fn event_log_db(&self) -> PathBuf {
         self.state_dir.join(EVENT_LOG_DB_FILE_NAME)
@@ -827,6 +837,12 @@ mod tests {
             layout.workgraph_db(),
             tmp.path()
                 .join(crate::workgraph_wiring::WORKGRAPH_STORE_FILE)
+        );
+        assert_eq!(
+            layout.jobs_db(),
+            tmp.path()
+                .join(crate::storage_provider::MEERKAT_LEVEL_REALM_ID)
+                .join("jobs.sqlite3")
         );
         assert_eq!(layout.blob_root(), tmp.path().join("blobs"));
         assert_eq!(layout.event_log_db(), tmp.path().join("event_log.sqlite3"));

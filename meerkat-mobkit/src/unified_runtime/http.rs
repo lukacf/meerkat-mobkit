@@ -3,8 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
+use axum::http::{HeaderMap, header};
+use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::{Json, Router};
 use futures::StreamExt;
 use meerkat_core::comms::EventStream;
 
@@ -23,6 +25,48 @@ use crate::runtime::RuntimeDecisionState;
 use tower::limit::ConcurrencyLimitLayer;
 
 use super::UnifiedRuntime;
+
+async fn healthz_response(
+    headers: HeaderMap,
+    job_health_projection: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
+) -> axum::response::Response {
+    let wants_json = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim().starts_with("application/json"))
+        });
+    if !wants_json {
+        return "ok".into_response();
+    }
+    let projection = job_health_projection
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let public_projection = projection.map_or_else(
+        || {
+            serde_json::json!({
+                "status": "ok",
+                "detached_jobs": null
+            })
+        },
+        |projection| {
+            serde_json::json!({
+                "status": projection
+                    .get("status")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!("ok")),
+                "detached_jobs": projection
+                    .get("detached_jobs")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            })
+        },
+    );
+    Json(public_projection).into_response()
+}
 
 /// Default cap for the stock reference app router.
 ///
@@ -176,6 +220,7 @@ impl UnifiedRuntime {
             self.console_identity_roster(),
             self.workgraph_service(),
             Some(self.topology_runtime_handle()),
+            Some(Arc::clone(&self.job_health_projection)),
         )
     }
 
@@ -212,8 +257,15 @@ impl UnifiedRuntime {
         let agent_sse_visibility_policy = visibility_policy.clone();
         let mob_sse_visibility_policy = visibility_policy.clone();
         let structural_sse_visibility_policy = visibility_policy.clone();
+        let job_health_projection = Arc::clone(&self.job_health_projection);
         Router::new()
-            .route("/healthz", get(|| async { "ok" }))
+            .route(
+                "/healthz",
+                get(move |headers: HeaderMap| {
+                    let job_health_projection = Arc::clone(&job_health_projection);
+                    healthz_response(headers, job_health_projection)
+                }),
+            )
             .merge(self.build_console_frontend_router())
             .merge(protected_flow_editor_router_with_runtime_catalog(
                 flow_editor_decisions,
@@ -329,6 +381,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use axum::http::{HeaderMap, header};
     use futures::StreamExt;
     use meerkat_client::TestClient;
     use meerkat_core::comms::EventStream;
@@ -336,6 +389,7 @@ mod tests {
 
     use super::{
         DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, generation_authoritative_agent_event_stream,
+        healthz_response,
     };
     use crate::identity_first::{
         AgentAddressability, AgentIdentity, DurableAgentSpec, LocalContinuityStore,
@@ -346,6 +400,38 @@ mod tests {
     #[test]
     fn reference_router_default_concurrency_allows_sse_fanout() {
         assert_eq!(DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, 1024);
+    }
+
+    #[tokio::test]
+    async fn healthz_preserves_text_probe_and_negotiates_structured_jobs() {
+        let projection = Arc::new(std::sync::RwLock::new(Some(serde_json::json!({
+            "status": "ok",
+            "detached_jobs": {
+                "queued": 1,
+                "running": 2,
+                "awaiting_members": 1,
+                "stale_leases": 0,
+                "needs_attention": 0,
+                "delivery_backlog": 0
+            }
+        }))));
+        let text = healthz_response(HeaderMap::new(), Arc::clone(&projection)).await;
+        assert_eq!(text.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            axum::body::to_bytes(text.into_body(), usize::MAX)
+                .await
+                .expect("text body"),
+            "ok"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, "application/json".parse().expect("accept"));
+        let json = healthz_response(headers, projection).await;
+        let body = axum::body::to_bytes(json.into_body(), usize::MAX)
+            .await
+            .expect("json body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(body["detached_jobs"]["running"], 2);
     }
 
     #[tokio::test]

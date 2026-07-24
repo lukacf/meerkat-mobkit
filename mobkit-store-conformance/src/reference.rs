@@ -446,6 +446,7 @@ impl meerkat::storage_provider::RealmStorageProvider for ReferenceMemoryRealmPro
             runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
             schedule_store: Arc::new(meerkat::MemoryScheduleStore::new()),
             workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+            job_store: Arc::new(meerkat::MemoryDetachedJobStore::new()),
             blob_store,
             artifact_store: Arc::new(meerkat_store::MemoryArtifactStore::new()),
             store_path: ctx.paths.root.clone(),
@@ -455,6 +456,7 @@ impl meerkat::storage_provider::RealmStorageProvider for ReferenceMemoryRealmPro
                 "runtime",
                 "schedule",
                 "workgraph",
+                "jobs",
                 "blobs",
                 "artifacts",
             ]

@@ -2,6 +2,8 @@
  * Typed data models for MobKit SDK — input/config objects sent to the runtime.
  */
 
+import { DetachedJobExecution } from "./jobs.js";
+
 // -- DiscoverySpec --------------------------------------------------------
 
 export interface DiscoverySpec {
@@ -115,6 +117,7 @@ export class SessionBuildOptions {
 
   private _tools: string[] = [];
   private _toolHandlers: Map<string, ToolHandler> = new Map();
+  private _jobExecutions: Map<string, DetachedJobExecution> = new Map();
   // Per-tool wire metadata from registerTool options; tools without an
   // entry cross the wire as bare name strings.
   private _toolDefs: Map<string, Record<string, unknown>> = new Map();
@@ -140,7 +143,11 @@ export class SessionBuildOptions {
   registerTool(
     name: string,
     handler: ToolHandler,
-    options?: { description?: string; inputSchema?: Record<string, unknown> },
+    options?: {
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+      execution?: DetachedJobExecution;
+    },
   ): void {
     if (typeof name !== "string") {
       throw new TypeError(
@@ -154,10 +161,24 @@ export class SessionBuildOptions {
     }
     this._tools.push(name);
     this._toolHandlers.set(name, handler);
-    if (options?.description !== undefined || options?.inputSchema !== undefined) {
+    if (
+      options?.execution !== undefined &&
+      !(options.execution instanceof DetachedJobExecution)
+    ) {
+      throw new TypeError("execution must be a DetachedJobExecution");
+    }
+    if (
+      options?.description !== undefined ||
+      options?.inputSchema !== undefined ||
+      options?.execution !== undefined
+    ) {
       const def: Record<string, unknown> = { name };
       if (options.description !== undefined) def.description = options.description;
       if (options.inputSchema !== undefined) def.input_schema = options.inputSchema;
+      if (options.execution !== undefined) {
+        def.execution = options.execution.toWire();
+        this._jobExecutions.set(name, options.execution);
+      }
       this._toolDefs.set(name, def);
     }
   }
@@ -168,6 +189,10 @@ export class SessionBuildOptions {
 
   get toolHandlers(): ReadonlyMap<string, ToolHandler> {
     return new Map(this._toolHandlers);
+  }
+
+  get jobExecutions(): ReadonlyMap<string, DetachedJobExecution> {
+    return new Map(this._jobExecutions);
   }
 
   toDict(): Record<string, unknown> {

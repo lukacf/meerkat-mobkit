@@ -28,7 +28,14 @@
 
 export { MobKit, MobKitBuilder } from "./builder.js";
 export type { MobKitBuilderConfig } from "./builder.js";
-export { MobKitRuntime, MobHandle, ToolCaller, SseBridge } from "./runtime.js";
+export {
+  MobKitRuntime,
+  MobHandle,
+  ToolCaller,
+  SseBridge,
+  JobsHandle,
+  MonitorsHandle,
+} from "./runtime.js";
 export type {
   BlobUploadInput,
   BlobUploadSource,
@@ -42,6 +49,9 @@ export type {
   MobpackCreateOptions,
   MobpackSaveOptions,
   MobpackHistoryOptions,
+  JobsListOptions,
+  JobSubscriptionOptions,
+  MonitorStartOptions,
 } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------
@@ -57,6 +67,23 @@ export type {
   SessionQuery,
   ToolHandler,
 } from "./models.js";
+
+// Detached callback-job host contracts. The runtime's generated machine
+// remains authoritative; these types only bind host execution/reporting.
+export {
+  DetachedJobExecution,
+  DetachedJobResult,
+} from "./jobs.js";
+export type {
+  DetachedJobAuthority,
+  DetachedJobContext,
+  DetachedJobExecutionOptions,
+  DetachedJobHandler,
+  DetachedJobRunner,
+  JobCredentialResolver,
+  JobIdempotencyScope,
+  JobRestartClass,
+} from "./jobs.js";
 export {
   discoverySpecToDict,
   preSpawnDataToDict,

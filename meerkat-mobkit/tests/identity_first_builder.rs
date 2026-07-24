@@ -3927,6 +3927,7 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
                 runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
                 schedule_store: Arc::new(meerkat_schedule::MemoryScheduleStore::new()),
                 workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
+                job_store: Arc::new(meerkat::MemoryDetachedJobStore::new()),
                 blob_store: Arc::new(meerkat_store::MemoryBlobStore::new()),
                 artifact_store: Arc::new(meerkat_store::MemoryArtifactStore::new()),
                 store_path: ctx.paths.root.clone(),
@@ -3936,6 +3937,7 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
                     "runtime",
                     "schedule",
                     "workgraph",
+                    "jobs",
                     "blobs",
                     "artifacts",
                 ]

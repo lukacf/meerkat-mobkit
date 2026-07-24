@@ -17,6 +17,7 @@ class MobKitBuilderConfig:
     discovery_callback: Any | None = None
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
+    job_credential_resolver: Any | None = None
     event_log: Any | None = None
     runtime_store: Any | None = None
     console_read_only: bool | None = None
@@ -155,6 +156,26 @@ class MobKitBuilder:
             rt = await MobKit.builder().mob("mob.toml").on_error(on_error).build()
         """
         self._config.error_callback = callback
+        return self
+
+    def job_credentials(
+        self,
+        resolver: Callable[
+            [str | None, tuple[str, ...]],
+            Any | Awaitable[Any],
+        ],
+    ) -> MobKitBuilder:
+        """Resolve detached-job credentials afresh for each committed attempt.
+
+        The resolver receives the runner's single bound profile name and the
+        required scopes. It must return an ephemeral mapping; MobKit passes it
+        only to the host runner context and never serializes it to job RPC.
+        """
+        if not callable(resolver):
+            raise TypeError(
+                f"job credential resolver must be callable, got {type(resolver).__name__}"
+            )
+        self._config.job_credential_resolver = resolver
         return self
 
     def gating(self, config_path: str) -> MobKitBuilder:
