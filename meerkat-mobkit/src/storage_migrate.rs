@@ -87,6 +87,10 @@ use crate::storage_layout::{
     DatabaseProvenance, DatabaseSlot, MobKitStorageLayout, RUNTIME_REGISTRY_FILE_NAME,
     StorageLayoutError,
 };
+use crate::storage_marker_stamp::{
+    MarkerStampError, MarkerStampMode, SessionDocumentStore, SessionMarkerStampReport,
+    stamp_session_document_markers_already_fenced, stamp_session_document_markers_blocking,
+};
 use crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE;
 
 /// How long the fence waits (total, across all files) for in-flight
@@ -319,6 +323,13 @@ pub struct MobKitMigrateReport {
     /// Continuity checkpoint-evidence adoption outcome (case 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adoption: Option<CheckpointAdoptionOutcome>,
+    /// Digest-format marker stamping per session-document store (case 6):
+    /// verified-but-marker-less documents (written by pre-marker builds)
+    /// are respelled in place so decode-time heal probes stop re-running
+    /// on every load. One outcome per store (continuity, runtime,
+    /// sessions).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marker_stamping: Vec<MarkerStampStoreOutcome>,
     /// Deprecated-leftover findings (case 5; report-only), reusing the
     /// doctor finding vocabulary.
     #[serde(default)]
@@ -518,6 +529,24 @@ pub struct CheckpointAdoptionOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<ContinuityAdoptionReport>,
     /// Set when adoption did not run (no continuity database).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+}
+
+/// Case 6 outcome: the digest-format marker-stamping walk over one
+/// session-document store (or why it did not run).
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkerStampStoreOutcome {
+    /// Store label (`continuity`, `runtime`, `sessions`).
+    pub store: String,
+    /// The database the walk covered (canonical-resolved).
+    pub database: PathBuf,
+    /// The walk report (`None` when skipped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<SessionMarkerStampReport>,
+    /// Set when the walk did not run (no database, wrong schema, unfenced
+    /// after a rename).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped: Option<String>,
 }
@@ -769,6 +798,12 @@ pub fn migrate_state_dir(
     // ── Case 4: continuity checkpoint-evidence adoption (H3 machinery). ──
     run_checkpoint_adoption(&layout, mode, &unfenced, &mut report);
 
+    // ── Case 6: digest-format marker stamping over every session-document
+    // store (runs after adoption so freshly adopted rows — which adoption's
+    // re-serialization already marker-stamps — classify already-current
+    // here, and remaining legacy rows stay adoption's population). ────────
+    run_marker_stamping(&layout, mode, &unfenced, &mut report);
+
     // ── Case 5: deprecated leftovers (report-only). ──────────────────────
     let scope = DiagnoseScope::new(vec![state_dir.to_path_buf()]);
     let diagnosis = storage_doctor::diagnose_state_dir_blocking(&scope, None);
@@ -1011,6 +1046,110 @@ fn run_checkpoint_adoption(
         Err(error) => report
             .errors
             .push(format!("continuity checkpoint adoption failed: {error}")),
+    }
+}
+
+/// Case 6: digest-format marker stamping over every session-document store
+/// (continuity `session_snapshots`, meerkat runtime
+/// `runtime_session_snapshots`, meerkat legacy headless `sessions` rows).
+/// Same fence discipline as case 4: apply composes with the already-held
+/// pass fence; dry-run takes the walk's own short-lived fence and read-only
+/// connection. A database in `unfenced` (canonical fence lost after a
+/// rename) is skipped fail-closed. Refusals surface in
+/// [`MobKitMigrateReport::errors`] ⇒ nonzero exit.
+fn run_marker_stamping(
+    layout: &MobKitStorageLayout,
+    mode: MigrateMode,
+    unfenced: &[PathBuf],
+    report: &mut MobKitMigrateReport,
+) {
+    let stamp_mode = match mode {
+        MigrateMode::Apply => MarkerStampMode::Apply,
+        _ => MarkerStampMode::DryRun,
+    };
+    for (slot, store) in [
+        (DatabaseSlot::Continuity, SessionDocumentStore::Continuity),
+        (
+            DatabaseSlot::Runtime,
+            SessionDocumentStore::RuntimeSnapshots,
+        ),
+        (DatabaseSlot::Sessions, SessionDocumentStore::SessionStore),
+    ] {
+        let resolved = match layout.resolve_database(slot) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                report.errors.push(format!(
+                    "{} locator unresolved for marker stamping: {error}",
+                    store.label()
+                ));
+                continue;
+            }
+        };
+        if unfenced.contains(&resolved.path) {
+            report.marker_stamping.push(MarkerStampStoreOutcome {
+                store: store.label().to_string(),
+                database: resolved.path,
+                report: None,
+                skipped: Some(
+                    "database is not fenced at its canonical path after rename; \
+                     marker stamping skipped (fail-closed)"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+        if !resolved.path.is_file() {
+            report.marker_stamping.push(MarkerStampStoreOutcome {
+                store: store.label().to_string(),
+                database: resolved.path,
+                report: None,
+                skipped: Some("no database materialized; nothing to stamp".to_string()),
+            });
+            continue;
+        }
+        let result = match stamp_mode {
+            MarkerStampMode::Apply => {
+                stamp_session_document_markers_already_fenced(&resolved.path, store, stamp_mode)
+            }
+            MarkerStampMode::DryRun => {
+                stamp_session_document_markers_blocking(&resolved.path, store, stamp_mode)
+            }
+        };
+        match result {
+            Ok(walk) => {
+                if !walk.is_clean() {
+                    report.errors.push(format!(
+                        "{} session document row(s) in the {} store refused digest-format \
+                         marker stamping; see the marker-stamping report",
+                        walk.refused.len(),
+                        store.label()
+                    ));
+                }
+                report.marker_stamping.push(MarkerStampStoreOutcome {
+                    store: store.label().to_string(),
+                    database: resolved.path,
+                    report: Some(walk),
+                    skipped: None,
+                });
+            }
+            // A file without this store's table is not this store (for
+            // example a runtime.sqlite created before runtime snapshots
+            // existed): skipped, never an error.
+            Err(MarkerStampError::MissingTable { table, .. }) => {
+                report.marker_stamping.push(MarkerStampStoreOutcome {
+                    store: store.label().to_string(),
+                    database: resolved.path,
+                    report: None,
+                    skipped: Some(format!(
+                        "database carries no {table} table; not this session-document store"
+                    )),
+                });
+            }
+            Err(error) => report.errors.push(format!(
+                "{} digest-format marker stamping failed: {error}",
+                store.label()
+            )),
+        }
     }
 }
 
@@ -2261,6 +2400,290 @@ mod tests {
             .expect("second walk");
         assert_eq!(second_walk.already_stamped, 1);
         assert_eq!(second_walk.adopted, 0);
+    }
+
+    /// A verified, history-bearing session serialized the way a pre-marker
+    /// (0.8.4-class) writer persisted it: current-format digests, verified
+    /// checkpoint stamp, `digest_format` marker absent.
+    fn verified_marker_less_session_bytes(tag: &str) -> (String, Vec<u8>) {
+        use meerkat_core::types::UserMessage;
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(UserMessage::text(format!(
+            "{tag} old context"
+        ))));
+        session.push(meerkat_core::Message::User(UserMessage::text(format!(
+            "{tag} old context two"
+        ))));
+        session
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 2 },
+                vec![meerkat_core::Message::User(UserMessage::text(format!(
+                    "{tag} replacement"
+                )))],
+                meerkat_core::TranscriptRewriteReason::new("edit"),
+                None,
+                None,
+            )
+            .expect("commit fixture rewrite");
+        let stamp = meerkat_core::SessionCheckpointStamp::root(
+            &session,
+            meerkat_core::SessionCheckpointProvenance::SessionCreated,
+        )
+        .expect("mint root stamp");
+        session
+            .install_checkpoint_stamp(stamp)
+            .expect("install root stamp");
+        let mut document = serde_json::to_value(&session).expect("serialize session");
+        document["metadata"][meerkat_core::SESSION_TRANSCRIPT_HISTORY_STATE_KEY]
+            .as_object_mut()
+            .expect("history state object")
+            .remove("digest_format")
+            .expect("current writers stamp the marker");
+        (
+            session.id().to_string(),
+            serde_json::to_vec(&document).expect("serialize marker-less document"),
+        )
+    }
+
+    fn marker_stamp_outcome<'a>(
+        report: &'a MobKitMigrateReport,
+        store: &str,
+    ) -> &'a MarkerStampStoreOutcome {
+        report
+            .marker_stamping
+            .iter()
+            .find(|outcome| outcome.store == store)
+            .unwrap_or_else(|| panic!("no marker-stamping outcome for {store}"))
+    }
+
+    fn document_carries_current_marker(bytes: &[u8]) -> bool {
+        let document: serde_json::Value = serde_json::from_slice(bytes).expect("decode document");
+        document["metadata"][meerkat_core::SESSION_TRANSCRIPT_HISTORY_STATE_KEY]["digest_format"]
+            .as_u64()
+            .is_some_and(|format| format >= 2)
+    }
+
+    /// Case 6 over the full pass: verified marker-less documents in every
+    /// session-document store (continuity, runtime, sessions) are respelled
+    /// with the digest-format marker; dry-run is a byte-identical census;
+    /// a second apply reports everything already current (HomeCore ask (a)).
+    #[test]
+    fn marker_stamping_case_stamps_verified_marker_less_rows_across_stores() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+
+        let continuity_db = state.join("continuity.sqlite3");
+        let (continuity_sid, continuity_bytes) =
+            verified_marker_less_session_bytes("case6-continuity");
+        {
+            let conn = create_legacy_continuity(&continuity_db);
+            insert_record(&conn, "test:alice", &continuity_sid);
+            insert_snapshot(&conn, &continuity_sid, "test:alice", &continuity_bytes);
+        }
+
+        let runtime_db = state.join("runtime.sqlite");
+        let (runtime_sid, runtime_bytes) = verified_marker_less_session_bytes("case6-runtime");
+        {
+            let conn = Connection::open(&runtime_db).expect("create runtime fixture");
+            conn.execute_batch(
+                "CREATE TABLE runtime_session_snapshots (
+                    runtime_id TEXT PRIMARY KEY,
+                    session_snapshot BLOB NOT NULL
+                );",
+            )
+            .expect("runtime ddl");
+            conn.execute(
+                "INSERT INTO runtime_session_snapshots (runtime_id, session_snapshot) \
+                 VALUES (?1, ?2)",
+                rusqlite::params![format!("session-runtime:{runtime_sid}"), runtime_bytes],
+            )
+            .expect("insert runtime snapshot");
+        }
+
+        let sessions_db = state.join("sessions.sqlite3");
+        let (sessions_sid, sessions_bytes) = verified_marker_less_session_bytes("case6-sessions");
+        {
+            let conn = Connection::open(&sessions_db).expect("create sessions fixture");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    message_count INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    session_json BLOB NOT NULL
+                );",
+            )
+            .expect("sessions ddl");
+            conn.execute(
+                "INSERT INTO sessions (session_id, created_at_ms, updated_at_ms, message_count, \
+                 total_tokens, metadata_json, session_json) VALUES (?1, 0, 0, 1, 0, '{}', ?2)",
+                rusqlite::params![sessions_sid, sessions_bytes],
+            )
+            .expect("insert session row");
+        }
+
+        // Dry-run: census only, every database byte-identical.
+        let digests_before: Vec<String> = [&continuity_db, &runtime_db, &sessions_db]
+            .iter()
+            .map(|path| file_digest_hex(path))
+            .collect();
+        let dry = migrate_state_dir(state, MigrateMode::DryRun, None);
+        assert!(!dry.has_errors(), "{:?}", dry.errors);
+        for store in ["continuity", "runtime", "sessions"] {
+            let walk = marker_stamp_outcome(&dry, store)
+                .report
+                .as_ref()
+                .unwrap_or_else(|| panic!("{store} walk must run"));
+            assert_eq!(walk.stamped, 1, "{store} dry-run must report the candidate");
+            assert!(walk.is_clean(), "{store}: {:?}", walk.refused);
+        }
+        let digests_after_dry: Vec<String> = [&continuity_db, &runtime_db, &sessions_db]
+            .iter()
+            .map(|path| file_digest_hex(path))
+            .collect();
+        assert_eq!(
+            digests_before, digests_after_dry,
+            "dry-run must leave every store byte-identical"
+        );
+
+        // Apply: every store's candidate row is respelled in place and the
+        // rewritten document still verifies.
+        let apply = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!apply.has_errors(), "{:?}", apply.errors);
+        for store in ["continuity", "runtime", "sessions"] {
+            let walk = marker_stamp_outcome(&apply, store)
+                .report
+                .as_ref()
+                .unwrap_or_else(|| panic!("{store} walk must run"));
+            assert_eq!(walk.stamped, 1, "{store} apply must stamp");
+            assert!(walk.is_clean(), "{store}: {:?}", walk.refused);
+        }
+        for (db, table, column, key, sid) in [
+            (
+                &continuity_db,
+                "session_snapshots",
+                "data",
+                "session_id",
+                &continuity_sid,
+            ),
+            (
+                &runtime_db,
+                "runtime_session_snapshots",
+                "session_snapshot",
+                "runtime_id",
+                &format!("session-runtime:{runtime_sid}"),
+            ),
+            (
+                &sessions_db,
+                "sessions",
+                "session_json",
+                "session_id",
+                &sessions_sid,
+            ),
+        ] {
+            let conn = Connection::open(db).expect("reopen store");
+            let bytes: Vec<u8> = conn
+                .query_row(
+                    &format!("SELECT {column} FROM {table} WHERE {key} = ?1"),
+                    [sid],
+                    |row| row.get(0),
+                )
+                .expect("rewritten row");
+            assert!(
+                document_carries_current_marker(&bytes),
+                "{table} row must carry the digest-format marker after apply"
+            );
+            let session: meerkat_core::Session =
+                serde_json::from_slice(&bytes).expect("decode rewritten document");
+            assert!(
+                matches!(
+                    session.try_checkpoint_state().expect("checkpoint state"),
+                    meerkat_core::SessionCheckpointState::Verified(_)
+                ),
+                "{table} row must keep verifying after the respell"
+            );
+        }
+
+        // Idempotence: a second apply stamps nothing new.
+        let second = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!second.has_errors(), "{:?}", second.errors);
+        for store in ["continuity", "runtime", "sessions"] {
+            let walk = marker_stamp_outcome(&second, store)
+                .report
+                .as_ref()
+                .unwrap_or_else(|| panic!("{store} walk must run"));
+            assert_eq!(walk.stamped, 0, "{store} second apply must be a no-op");
+            assert_eq!(walk.already_current, 1, "{store}");
+        }
+    }
+
+    /// HomeCore ask (a), adoption half: checkpoint adoption (case 4)
+    /// re-serializes what it adopts, so an adopted legacy history-bearing
+    /// document comes out marker-stamped — and case 6 (running later in the
+    /// same pass) classifies it already current instead of respelling it a
+    /// second time.
+    #[test]
+    fn adoption_rewrites_carry_the_digest_format_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let continuity_db = state.join("continuity.sqlite3");
+
+        // A legacy (unstamped) history-bearing marker-less document: strip
+        // both the checkpoint stamp and the digest-format marker.
+        let (sid, verified_bytes) = verified_marker_less_session_bytes("case4-adopt");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&verified_bytes).expect("decode fixture");
+        document["metadata"]
+            .as_object_mut()
+            .expect("metadata")
+            .remove(meerkat_core::SESSION_CHECKPOINT_STAMP_KEY)
+            .expect("stamped fixture");
+        let legacy_bytes = serde_json::to_vec(&document).expect("legacy bytes");
+        assert!(!document_carries_current_marker(&legacy_bytes));
+        {
+            let conn = create_legacy_continuity(&continuity_db);
+            insert_record(&conn, "test:alice", &sid);
+            insert_snapshot(&conn, &sid, "test:alice", &legacy_bytes);
+        }
+
+        let report = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!report.has_errors(), "{:?}", report.errors);
+        let adoption = report
+            .adoption
+            .as_ref()
+            .and_then(|outcome| outcome.report.as_ref())
+            .expect("adoption walk");
+        assert_eq!(adoption.adopted, 1);
+        let stamping = marker_stamp_outcome(&report, "continuity")
+            .report
+            .as_ref()
+            .expect("marker-stamping walk");
+        assert_eq!(
+            stamping.already_current, 1,
+            "adoption's rewrite already carries the marker; case 6 must not respell it"
+        );
+        assert_eq!(stamping.stamped, 0);
+
+        let conn = Connection::open(&continuity_db).expect("reopen");
+        let bytes: Vec<u8> = conn
+            .query_row(
+                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                [&sid],
+                |row| row.get(0),
+            )
+            .expect("adopted row");
+        assert!(
+            document_carries_current_marker(&bytes),
+            "adopted documents must carry the digest-format marker"
+        );
+        let session: meerkat_core::Session =
+            serde_json::from_slice(&bytes).expect("decode adopted document");
+        assert!(matches!(
+            session.try_checkpoint_state().expect("checkpoint state"),
+            meerkat_core::SessionCheckpointState::Verified(_)
+        ));
     }
 
     #[test]

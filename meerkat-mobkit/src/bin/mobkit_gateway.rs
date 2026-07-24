@@ -756,7 +756,8 @@ const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --sta
      [--apply] [--adopt <path>] [--json]\n\
      Fenced offline migration of one MobKit state directory \
      (storage-unification M6): ledger baseline, legacy-spelling renames, \
-     twin reconciliation, continuity checkpoint adoption, leftover census.\n\
+     twin reconciliation, continuity checkpoint adoption, digest-format \
+     marker stamping (stamp-digest-format-markers), leftover census.\n\
      Dry-run by default; --apply mutates under the exclusive maintenance \
      fence. --adopt <path> resolves a divergent file-name twin by adopting \
      that copy and archiving the rest read-only (requires --apply).\n\
@@ -920,6 +921,21 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
             (Some(skipped), _) => println!("adoption: {skipped}"),
             (None, Some(walk)) => {
                 println!("adoption at {}:\n{walk}", adoption.database.display());
+            }
+            (None, None) => {}
+        }
+    }
+    for outcome in &report.marker_stamping {
+        match (&outcome.skipped, &outcome.report) {
+            (Some(skipped), _) => {
+                println!("marker stamping [{}]: {skipped}", outcome.store);
+            }
+            (None, Some(walk)) => {
+                println!(
+                    "marker stamping [{}] at {}:\n{walk}",
+                    outcome.store,
+                    outcome.database.display()
+                );
             }
             (None, None) => {}
         }
