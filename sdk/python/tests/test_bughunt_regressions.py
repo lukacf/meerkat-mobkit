@@ -432,7 +432,7 @@ def test_stop_honors_negotiated_horizon_and_waits_for_gated_shutdown_callback():
     # `time.monotonic` function. `threading.Barrier` also uses monotonic time on
     # current Python versions and must remain real while this callback is gated.
     with patch("meerkat_mobkit._transport.time") as transport_time:
-        transport_time.monotonic.side_effect = [100.0, 100.0]
+        transport_time.monotonic.return_value = 100.0
         worker = threading.Thread(target=stop_transport)
         worker.start()
         gate.wait(timeout=2)
