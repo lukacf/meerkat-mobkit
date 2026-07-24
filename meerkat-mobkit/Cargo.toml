@@ -75,7 +75,6 @@ meerkat-session = { git = "https://github.com/lukacf/meerkat", rev = "5f7ff147c"
 meerkat-sqlite = { git = "https://github.com/lukacf/meerkat", rev = "5f7ff147c" }
 meerkat-store = { git = "https://github.com/lukacf/meerkat", rev = "5f7ff147c", features = ["sqlite"] }
 meerkat-tools = { git = "https://github.com/lukacf/meerkat", rev = "5f7ff147c" }
-meerkat-jobs = { git = "https://github.com/lukacf/meerkat", rev = "5f7ff147c" }
 tempfile = "3"
 async-trait = "0.1"
 rusqlite = { version = "0.37", features = ["bundled"] }

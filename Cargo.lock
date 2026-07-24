@@ -2304,7 +2304,6 @@ dependencies = [
  "meerkat-comms",
  "meerkat-contracts",
  "meerkat-core",
- "meerkat-jobs",
  "meerkat-live",
  "meerkat-mcp",
  "meerkat-memory",
