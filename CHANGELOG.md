@@ -198,6 +198,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Idle busy-loop, part 2: an idle gateway now costs ~zero CPU.** On
+  0.8.2–0.8.4 a fully idle durable member burned ~0.3 core indefinitely
+  (~1.1 cores for the two-identity production dump; ~5 cores extrapolated
+  for a 17-member host). The 0.8.4 schema-caching fix removed the
+  amplifier; this release fixes the drivers, in tandem with meerkat 0.8.6:
+  - **Event-driven stream reconcile.** The console forwarder and identity
+    health monitor replaced their 250 ms polling ticks (each paying a full
+    fleet-state projection per pass, per handle) with `ReconcileCadence`:
+    wakes on tracked mobs' machine-state watches, the managed-mob-set
+    epoch, the earliest subscribe-backoff deadline, and a 30 s safety tick
+    anchored at the last completed reconcile (so sustained event traffic
+    cannot starve it). Stream closures still reconcile immediately —
+    repair latency is unregressed; only watch-invisible signals (lease
+    fencing motion without a machine transition) moved from 250 ms to
+    ≤30 s detection.
+  - **Steady-state console discovery is I/O-free.** The 5 s session-history
+    discovery loop re-read the FULL session document every pass (two
+    whole-document sqlite reads + deserialize + rewrite-replay canonical
+    digest + a watermark refresh write, per member — the dominant burn on
+    82 MB production documents). Session-scoped write epochs
+    (`SessionSnapshotWriteEpochs`, bumped on both sides of every runtime
+    store write) now gate the backfill: an unchanged session costs one
+    in-memory epoch compare. Witnesses are dropped on both unregister and
+    register-replacement so a restarted runtime's counter can never
+    suppress its first backfill.
+  - **Restore elision.** `restore_flow` returns an empty snapshot for
+    already-active identities instead of re-running adoption work.
+  - **Idle-CPU regression gate** (`tests/idle_cpu_gate.rs`) strengthened to
+    the class that escaped every suite: one member's session grows to
+    ~12 MB, the console aggregator runs exactly as the gateways run it,
+    then a bounded quiesce probe precedes a 30 s window asserting ≤3 s
+    process CPU (verified red on the pre-fix code: 11.6 s).
 - **BREAKING for external `ContinuityStore` implementors relying on the
   old default: `rollback_continuity_record`'s compatibility implementation
   now actually restores.** The previous default restored the pre-reset

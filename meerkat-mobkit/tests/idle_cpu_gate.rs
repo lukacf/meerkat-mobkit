@@ -17,11 +17,20 @@
 //! The threshold is deliberately generous to CI noise (10% of one core over
 //! the window); the historical defect consumed ~30% of a core per member and
 //! scales with member count, so a hot-loop recurrence trips this
-//! immediately. CAVEAT: the size-proportional REVERIFICATION class (per-pass
-//! canonical-JSON hashing of large documents) needs a large transcript to
-//! reproduce — small fixtures alone will not trip it. The meerkat
-//! e2e-smoke-turbo-s idle gate carries the large-document fixture; this
-//! gate covers the loop cadence itself.
+//! immediately.
+//!
+//! SIZE-PROPORTIONAL class: one member carries a large (multi-megabyte)
+//! persisted transcript and a console aggregator (session-history backfill
+//! enabled, as every gateway runs it) is registered over the runtime. The
+//! second idle-burn generation re-read that member's FULL session document
+//! (two whole-document deserializes through
+//! `PersistentSessionService::load_authoritative_session_base`) once per
+//! 5s discovery pass and refreshed a watermark row each pass, because the
+//! growing-session freshness TTL (2s) was shorter than the loop period —
+//! plus the 4Hz stream reconcilers deep-cloning the machine state. With the
+//! large fixture those size-proportional reads alone exceed this gate's
+//! budget on pre-fix code; the write-epoch gate and event-driven reconcile
+//! cadence make them ~zero.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
@@ -32,12 +41,15 @@ use std::time::{Duration, Instant};
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::types::StopReason;
 use meerkat_mob::{MobDefinition, ProfileName};
-use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::identity_first::orchestrator::{RestoreOutcome, restore_flow};
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentIdentity, ContinuityStore, DurabilityPolicy, DurableAgentSpec,
     IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider,
     SessionBridge,
+};
+use meerkat_mobkit::{
+    AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration, MobKitConsoleAggregator,
+    UnifiedRuntimeBuilder,
 };
 use tokio::time::sleep;
 
@@ -58,8 +70,15 @@ const MEMBER_COUNT: usize = 3;
 const IDLE_WINDOW: Duration = Duration::from_secs(30);
 /// 10% of one core over the idle window. The pre-fix defect consumed
 /// ~0.3 core-seconds per second PER member (0.9 cores for this fleet),
-/// i.e. ~27 CPU-seconds over this window.
+/// i.e. ~27 CPU-seconds over this window; the size-proportional
+/// session-history re-read of the large member alone exceeds this budget.
 const MAX_IDLE_CPU: Duration = Duration::from_secs(3);
+/// The large member's transcript is built from turns carrying inputs of this
+/// size, giving a persisted session document of
+/// `LARGE_SESSION_TURNS * LARGE_TURN_INPUT_BYTES` ≈ 12 MB — the
+/// production-dump scale class (synthetic; nothing committed).
+const LARGE_TURN_INPUT_BYTES: usize = 3_000_000;
+const LARGE_SESSION_TURNS: usize = 4;
 
 fn identity(name: &str) -> AgentIdentity {
     AgentIdentity::parse(name).unwrap()
@@ -143,14 +162,16 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
     let state_path = temp.path().join("state");
     let capture = CaptureClient::default();
 
-    let unified = UnifiedRuntimeBuilder::default()
-        .definition(MobDefinition::from_toml(MOB_TOML).expect("parse idle-cpu mob definition"))
-        .persistent_state(&state_path)
-        .comms(true)
-        .default_llm_client(Arc::new(capture.clone()))
-        .build()
-        .await
-        .expect("build UnifiedRuntime");
+    let unified = Arc::new(
+        UnifiedRuntimeBuilder::default()
+            .definition(MobDefinition::from_toml(MOB_TOML).expect("parse idle-cpu mob definition"))
+            .persistent_state(&state_path)
+            .comms(true)
+            .default_llm_client(Arc::new(capture.clone()))
+            .build()
+            .await
+            .expect("build UnifiedRuntime"),
+    );
     let bridge: Arc<dyn SessionBridge> = unified
         .session_bridge()
         .expect("session_bridge should exist")
@@ -206,7 +227,64 @@ async fn converged_idle_gateway_consumes_near_zero_cpu() {
         );
         sleep(Duration::from_millis(100)).await;
     }
-    sleep(Duration::from_secs(3)).await;
+
+    // Grow ONE member to production-dump scale (~12 MB of persisted
+    // transcript, synthetic): the size-proportional idle-burn class only
+    // reproduces against a large session document.
+    let large_member = &roster[0].identity;
+    for turn in 0..LARGE_SESSION_TURNS {
+        let filler = format!("large-transcript filler {turn} ")
+            .repeat(LARGE_TURN_INPUT_BYTES / 32)
+            .chars()
+            .take(LARGE_TURN_INPUT_BYTES)
+            .collect::<String>();
+        identity_rt
+            .send(large_member, &meerkat_core::ContentInput::Text(filler))
+            .await
+            .expect("large seed turn");
+    }
+
+    // Turn-driven sends return before the session task finishes the turn and
+    // its durable commits; wait until every large seed reached the LLM.
+    let deadline = Instant::now() + Duration::from_mins(2);
+    while capture.count() < MEMBER_COUNT + LARGE_SESSION_TURNS {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for large seed turns to reach the LLM"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    // Register the console aggregator exactly as the gateways do: its
+    // session-history discovery loop (5s) is part of the idle surface under
+    // test. In-memory store keeps the CPU class while avoiding disk noise.
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    aggregator.register_runtime(ConsoleRuntimeRegistration {
+        runtime_key: "idle-cpu-gate".to_string(),
+        runtime: Arc::clone(&unified),
+        identity_namespace: "idle".to_string(),
+        visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+    });
+
+    // Quiesce before opening the measured window: the large turns' trailing
+    // durable commits (multi-second, size-proportional, debug-build) and the
+    // console's one legitimate catch-up backfill must finish first. Probe the
+    // process CPU rate until it drops to idle level; a gateway that NEVER
+    // quiesces fails here — which is the defect this gate exists to catch.
+    let quiesce_deadline = Instant::now() + Duration::from_mins(4);
+    loop {
+        let probe_start = process_cpu_time();
+        sleep(Duration::from_secs(2)).await;
+        let probe_burn = process_cpu_time().saturating_sub(probe_start);
+        if probe_burn < Duration::from_millis(200) {
+            break;
+        }
+        assert!(
+            Instant::now() < quiesce_deadline,
+            "gateway never quiesced after seeding: still burning {probe_burn:?} \
+             per 2s probe (an idle-CPU hot loop)"
+        );
+    }
 
     // The measured contract: a converged, idle gateway must consume ~zero
     // CPU regardless of member count or transcript size.

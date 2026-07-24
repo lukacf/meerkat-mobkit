@@ -1591,7 +1591,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         session_delta: meerkat_runtime::store::SessionDelta,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .commit_session_snapshot(runtime_id, session_delta)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1605,7 +1606,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         commit: &meerkat_core::TranscriptRewriteCommit,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .commit_session_transcript_rewrite_snapshot(runtime_id, session_delta, commit)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1621,7 +1623,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         session_store_key: Option<meerkat_core::types::SessionId>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .atomic_apply(
                 runtime_id,
                 session_delta,
@@ -1644,7 +1647,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         session_store_key: meerkat_core::types::SessionId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .atomic_apply_with_machine_lifecycle(
                 runtime_id,
                 session_delta,
@@ -1703,7 +1707,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         replacement: Vec<u8>,
     ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .replace_session_snapshot_if_current(runtime_id, expected_current, replacement)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1716,7 +1721,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         expected_current: &[u8],
     ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .clear_session_snapshot_if_current(runtime_id, expected_current)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1740,7 +1746,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         states: &[InputStatePersistenceRecord],
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .persist_input_states_atomically(runtime_id, states)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1757,7 +1764,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::RuntimeStoreError,
     > {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .compare_and_swap_input_states_atomically(runtime_id, expected, replacements)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1775,7 +1783,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::RuntimeStoreError,
     > {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .compare_and_swap_input_states_atomically_with_fence(
                 runtime_id,
                 expected,
@@ -1815,7 +1824,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::RuntimeStoreError,
     > {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .compare_and_swap_machine_lifecycle(runtime_id, expected, replacement)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1833,7 +1843,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::RuntimeStoreError,
     > {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .compare_and_swap_machine_lifecycle_with_fence(
                 runtime_id,
                 expected,
@@ -1859,7 +1870,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         input_states: &[InputStatePersistenceRecord],
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .commit_machine_lifecycle(runtime_id, commit, input_states)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1872,7 +1884,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         finalization: meerkat_runtime::store::UnregisterFinalizationCommit,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .commit_unregister_finalization(runtime_id, finalization)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1905,7 +1918,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         projection: &meerkat_core::CompactionProjectionId,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .mark_compaction_projection_finalized(runtime_id, projection)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -1940,7 +1954,8 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         meerkat_runtime::store::RuntimeStoreError,
     > {
         self.note_session_scoped_write(runtime_id);
-        let result = self.inner
+        let result = self
+            .inner
             .initialize_ops_lifecycle_if_absent(runtime_id, candidate)
             .await;
         self.note_session_scoped_write(runtime_id);
@@ -3529,6 +3544,11 @@ pub struct MobBootstrapSpec {
     /// binaries roll their own session services) should set it beside their
     /// own store composition, and `None` renders as an absent declaration.
     pub resolved_storage: Option<ResolvedStorageSummary>,
+    /// Per-session durable write epochs (persistent runtime-backed path
+    /// only). Cheap unchanged-since-last-look witness for read-side loops
+    /// (console session-history discovery); `None` means no such witness and
+    /// callers must fall back to reading.
+    pub(crate) session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -3569,6 +3589,7 @@ impl MobBootstrapSpec {
             workgraph_admission_slots: Vec::new(),
             workgraph_admission_sidecar: None,
             resolved_storage: None,
+            session_write_epochs: None,
             _ephemeral_dir: None,
         }
     }
@@ -4260,9 +4281,9 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
             runtime_adapter_override: None,
-            session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(
-                session_read_epochs,
-            ))),
+            session_read_absorber: Some(Arc::new(SessionDocumentReadAbsorber::new(Arc::clone(
+                &session_read_epochs,
+            )))),
         }) as Arc<dyn MobSessionService>;
         let (
             agent_mob_mcp_state,
@@ -4278,6 +4299,7 @@ impl MobBootstrapSpec {
             Some(session_llm_default_client_slot),
         );
         let mut spec = Self::new(definition, storage, session_service);
+        spec.session_write_epochs = Some(session_read_epochs);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
@@ -4720,6 +4742,10 @@ pub struct MobRuntime {
     /// Composition-time storage durability resolution carried over from the
     /// bootstrap spec so the health surfaces can report it.
     resolved_storage: Option<ResolvedStorageSummary>,
+    /// Per-session durable write epochs carried from the bootstrap spec
+    /// (persistent runtime-backed path only); see
+    /// [`Self::session_document_write_epoch`].
+    session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -4820,6 +4846,7 @@ impl MobRuntime {
             workgraph_service: spec.workgraph_service,
             workgraph_admission,
             resolved_storage: spec.resolved_storage,
+            session_write_epochs: spec.session_write_epochs,
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -4842,6 +4869,7 @@ impl MobRuntime {
             workgraph_service: None,
             workgraph_admission,
             resolved_storage: None,
+            session_write_epochs: None,
             _ephemeral_dir: None,
         }
     }
@@ -4935,6 +4963,19 @@ impl MobRuntime {
 
     pub async fn baseline_member_specs(&self) -> Vec<SpawnMemberSpec> {
         self.baseline_member_specs.read().await.clone()
+    }
+
+    /// Current durable write epoch for `session_id`, when this runtime owns
+    /// the single-writer epoch seam (persistent runtime-backed path).
+    ///
+    /// An unchanged value between two observations proves no session-scoped
+    /// durable write went through THIS process in between, so read-side
+    /// loops (console session-history discovery) can skip whole-document
+    /// re-reads. `None` means no witness exists and callers must read.
+    pub(crate) fn session_document_write_epoch(&self, session_id_str: &str) -> Option<u64> {
+        let epochs = self.session_write_epochs.as_ref()?;
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str).ok()?;
+        Some(epochs.observe(&session_id))
     }
 
     pub async fn read_session_history(

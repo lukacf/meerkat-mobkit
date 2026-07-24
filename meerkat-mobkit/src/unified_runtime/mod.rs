@@ -1165,24 +1165,162 @@ struct TrackedAgentEventStream {
 type TaggedAgentEventStream = BoxStream<'static, ForwardedAgentEvent>;
 
 /// Per-member subscribe-failure backoff for agent-event subscriptions.
-/// The forwarder and independent identity-health monitor reconcile every
-/// 250ms; without backoff a
-/// member that keeps failing `subscribe_agent_events` is retried 4×/s
-/// indefinitely and floods the log (observed: ~49k "failed to subscribe"
-/// warnings over 3.4h on a single wedged-retiring alias). Both retry transient
-/// failures with exponential backoff; only the independent health monitor
-/// hands persistent loss to identity repair.
+/// The forwarder and independent identity-health monitor reconcile on
+/// machine-state/mob-set change signals (plus a slow safety tick); without
+/// backoff a member that keeps failing `subscribe_agent_events` is retried
+/// on every wake indefinitely and floods the log (observed: ~49k "failed to
+/// subscribe" warnings over 3.4h on a single wedged-retiring alias). Both
+/// retry transient failures with exponential backoff; only the independent
+/// health monitor hands persistent loss to identity repair.
 struct SubscribeBackoff {
     next_attempt: tokio::time::Instant,
     consecutive_failures: u32,
 }
 
-/// First retry waits one reconcile tick; subsequent retries double up to a
+/// First retry waits one backoff quantum; subsequent retries double up to a
 /// cap so a persistently-unsubscribable member costs at most ~1 attempt per
-/// `SUBSCRIBE_BACKOFF_MAX` instead of one per tick.
+/// `SUBSCRIBE_BACKOFF_MAX`.
 const SUBSCRIBE_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const SUBSCRIBE_BACKOFF_MAX: Duration = Duration::from_secs(30);
 const PERMANENT_STREAM_FAILURE_THRESHOLD: u32 = 4;
+
+/// Upper bound between reconcile passes when no change signal fires. The
+/// reconcilers are event-driven (machine-state watches + managed-mob-set
+/// epoch + stream closures + backoff deadlines); this tick only bounds drift
+/// from signals they cannot observe — identity-lease fencing-token motion
+/// without a machine transition, and membership changes that land inside the
+/// unwatched window while a brand-new mob's watcher is being bound. It must
+/// stay slow: the historical 250ms tick made every pass's full member
+/// projection an idle-CPU driver on restore-scale mobs.
+const RECONCILE_SAFETY_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Wakes the stream reconcilers when membership/binding truth may have moved,
+/// replacing the historical 250ms polling tick.
+///
+/// Wake sources, in no priority order:
+/// - any tracked mob's [`meerkat_mob::MobMachineStateChanges`] firing (the
+///   mob actor publishes on every applied machine input),
+/// - the managed mob-set epoch changing (child mob created/removed),
+/// - the earliest pending subscribe-backoff deadline,
+/// - the [`RECONCILE_SAFETY_INTERVAL`] safety tick.
+///
+/// Watchers are keyed by mob id and RETAINED across rebinds so their
+/// internally-tracked seen-version survives: a state change landing while a
+/// reconcile pass runs still wakes the next wait. Only a mob first seen by
+/// the previous pass starts a fresh watcher (its pre-bind changes are covered
+/// by that same pass's subscription attempt and by the safety tick). Closed
+/// watchers (actor gone) are dropped on rebind and on wake so a destroyed mob
+/// cannot busy-wake the loop.
+struct ReconcileCadence {
+    machine_watchers: BTreeMap<String, meerkat_mob::MobMachineStateChanges>,
+    mob_set_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    /// Absolute deadline for the next safety reconcile, anchored at the last
+    /// completed reconcile pass ([`Self::rebind`]). Persisting it here is
+    /// load-bearing: the callers' outer `select!` drops and recreates the
+    /// [`Self::wait`] future on every forwarded member event, so a deadline
+    /// computed inside `wait` would reset under sustained event traffic and
+    /// the safety reconcile would never fire.
+    next_safety_deadline: tokio::time::Instant,
+}
+
+impl ReconcileCadence {
+    fn new(agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>) -> Self {
+        Self {
+            machine_watchers: BTreeMap::new(),
+            mob_set_changes: agent_mob_mcp_state
+                .as_ref()
+                .map(|state| state.mob_set_changes()),
+            next_safety_deadline: tokio::time::Instant::now() + RECONCILE_SAFETY_INTERVAL,
+        }
+    }
+
+    /// Rebind the watcher set to the exact handles the reconcile pass just
+    /// enumerated, keeping existing watchers (and their seen-versions) alive.
+    /// Every reconcile pass ends here, so this is also where the safety
+    /// deadline is re-armed: drift from watch-invisible signals is bounded
+    /// relative to the last reconcile, not the last wake attempt.
+    fn rebind(&mut self, handles: &[MobHandle]) {
+        let mut next = BTreeMap::new();
+        for handle in handles {
+            let key = handle.mob_id().to_string();
+            let watcher = self
+                .machine_watchers
+                .remove(&key)
+                .unwrap_or_else(|| handle.machine_state_changes());
+            if !watcher.is_closed() {
+                next.insert(key, watcher);
+            }
+        }
+        self.machine_watchers = next;
+        self.next_safety_deadline = tokio::time::Instant::now() + RECONCILE_SAFETY_INTERVAL;
+    }
+
+    /// Wait for the next reconcile trigger. `next_backoff_attempt` is the
+    /// earliest pending subscribe retry, if any.
+    async fn wait(&mut self, next_backoff_attempt: Option<tokio::time::Instant>) {
+        let now = tokio::time::Instant::now();
+        let mut deadline = self.next_safety_deadline;
+        if let Some(attempt) = next_backoff_attempt {
+            deadline = deadline.min(attempt.max(now));
+        }
+
+        let Self {
+            machine_watchers,
+            mob_set_changes,
+            ..
+        } = self;
+
+        // Await "any machine watcher fired". A closed watcher is removed
+        // in-place so it cannot immediately re-wake the caller.
+        let machine_change = async {
+            if machine_watchers.is_empty() {
+                std::future::pending::<()>().await;
+                return;
+            }
+            let keys: Vec<String> = machine_watchers.keys().cloned().collect();
+            let closed_key = {
+                let futures: Vec<_> = machine_watchers
+                    .values_mut()
+                    .map(|watcher| Box::pin(watcher.changed()))
+                    .collect();
+                let (result, index, rest) = futures::future::select_all(futures).await;
+                drop(rest);
+                result.is_err().then(|| keys[index].clone())
+            };
+            if let Some(key) = closed_key {
+                machine_watchers.remove(&key);
+            }
+        };
+
+        let mob_set_change = async {
+            match mob_set_changes.as_mut() {
+                Some(rx) => rx.changed().await,
+                None => std::future::pending().await,
+            }
+        };
+
+        let mob_set_closed = tokio::select! {
+            () = machine_change => false,
+            result = mob_set_change => result.is_err(),
+            () = tokio::time::sleep_until(deadline) => false,
+        };
+        if mob_set_closed {
+            // The dispatcher state is gone; a closed watch completes
+            // immediately, so it must not stay selectable.
+            self.mob_set_changes = None;
+        }
+    }
+}
+
+/// Earliest pending subscribe-backoff deadline, if any member is waiting.
+fn earliest_backoff_attempt(
+    subscribe_failures: &HashMap<TrackedAgentEventStream, SubscribeBackoff>,
+) -> Option<tokio::time::Instant> {
+    subscribe_failures
+        .values()
+        .map(|backoff| backoff.next_attempt)
+        .min()
+}
 
 fn subscribe_backoff_delay(consecutive_failures: u32) -> Duration {
     SUBSCRIBE_BACKOFF_BASE
@@ -1286,11 +1424,9 @@ async fn run_resilient_mob_agent_event_forwarder(
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut reconcile_interval = tokio::time::interval(Duration::from_millis(250));
-    #[cfg(not(target_arch = "wasm32"))]
-    reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state);
 
-    Box::pin(reconcile_agent_event_streams(
+    let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
         &agent_mob_mcp_state,
         &mut tracked,
@@ -1299,6 +1435,7 @@ async fn run_resilient_mob_agent_event_forwarder(
         None,
     ))
     .await;
+    cadence.rebind(&handles);
 
     loop {
         tokio::select! {
@@ -1329,11 +1466,17 @@ async fn run_resilient_mob_agent_event_forwarder(
                     ForwardedAgentEvent::Closed(tracked_key) => {
                         tracked.remove(&tracked_key);
                         subscribe_failures.remove(&tracked_key);
+                        // A closure is itself the re-subscribe trigger: the
+                        // member may still be live (stream lag/teardown race),
+                        // and no machine transition is guaranteed to follow.
+                        let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+                        cadence.rebind(&handles);
                     }
                 }
             }
-            _ = reconcile_interval.tick() => {
-                Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+            () = cadence.wait(earliest_backoff_attempt(&subscribe_failures)) => {
+                let handles = Box::pin(reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut subscribe_failures, &mut streams, None)).await;
+                cadence.rebind(&handles);
             }
         }
     }
@@ -1350,11 +1493,9 @@ async fn run_identity_stream_health_monitor(
     let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
     let mut tracked = HashSet::new();
     let mut subscribe_failures: HashMap<TrackedAgentEventStream, SubscribeBackoff> = HashMap::new();
-    let mut reconcile_interval = tokio::time::interval(Duration::from_millis(250));
-    #[cfg(not(target_arch = "wasm32"))]
-    reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut cadence = ReconcileCadence::new(&agent_mob_mcp_state);
 
-    Box::pin(reconcile_agent_event_streams(
+    let handles = Box::pin(reconcile_agent_event_streams(
         &handle,
         &agent_mob_mcp_state,
         &mut tracked,
@@ -1363,6 +1504,7 @@ async fn run_identity_stream_health_monitor(
         Some(&identity_runtime),
     ))
     .await;
+    cadence.rebind(&handles);
 
     loop {
         tokio::select! {
@@ -1378,11 +1520,22 @@ async fn run_identity_stream_health_monitor(
                             &identity_runtime,
                             "live agent event stream closed permanently",
                         ).await;
+                        // Re-attach promptly after a closure; repair latency
+                        // must not wait for an unrelated machine transition.
+                        let handles = Box::pin(reconcile_agent_event_streams(
+                            &handle,
+                            &agent_mob_mcp_state,
+                            &mut tracked,
+                            &mut subscribe_failures,
+                            &mut streams,
+                            Some(&identity_runtime),
+                        )).await;
+                        cadence.rebind(&handles);
                     }
                 }
             }
-            _ = reconcile_interval.tick() => {
-                Box::pin(reconcile_agent_event_streams(
+            () = cadence.wait(earliest_backoff_attempt(&subscribe_failures)) => {
+                let handles = Box::pin(reconcile_agent_event_streams(
                     &handle,
                     &agent_mob_mcp_state,
                     &mut tracked,
@@ -1390,11 +1543,14 @@ async fn run_identity_stream_health_monitor(
                     &mut streams,
                     Some(&identity_runtime),
                 )).await;
+                cadence.rebind(&handles);
             }
         }
     }
 }
 
+/// Returns the handles it enumerated (primary + child mobs) so the caller can
+/// rebind its [`ReconcileCadence`] watchers to the same set.
 async fn reconcile_agent_event_streams(
     handle: &MobHandle,
     agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
@@ -1404,7 +1560,7 @@ async fn reconcile_agent_event_streams(
     identity_runtime: Option<
         &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
     >,
-) {
+) -> Vec<MobHandle> {
     let primary_mob_id = handle.mob_id().to_string();
     let mut handles = vec![handle.clone()];
     if let Some(state) = agent_mob_mcp_state {
@@ -1461,7 +1617,7 @@ async fn reconcile_agent_event_streams(
     // map can't grow without bound across the runtime's lifetime.
     subscribe_failures.retain(|key, _| current.contains(key));
 
-    for handle in handles {
+    for handle in &handles {
         let mob_id = handle.mob_id().to_string();
         for entry in handle.list_members_including_retiring().await {
             let identity = entry.agent_identity.clone();
@@ -1516,11 +1672,8 @@ async fn reconcile_agent_event_streams(
 
             let role = entry.role.clone();
 
-            match subscribe_agent_events_for_console_forwarder(
-                &handle,
-                &tracked_key.member_identity,
-            )
-            .await
+            match subscribe_agent_events_for_console_forwarder(handle, &tracked_key.member_identity)
+                .await
             {
                 Ok(stream) => {
                     let close_key = tracked_key.clone();
@@ -1590,6 +1743,7 @@ async fn reconcile_agent_event_streams(
             }
         }
     }
+    handles
 }
 
 async fn subscribe_agent_events_for_console_forwarder(
@@ -1813,6 +1967,54 @@ mod tests {
             panic!("expected agent event");
         };
         assert_eq!(agent_id, "worker-one:0");
+    }
+
+    /// Regression: the callers' outer `select!` drops and recreates the
+    /// `wait()` future on every forwarded member event, so a safety deadline
+    /// computed inside `wait` would reset under sustained event traffic and
+    /// the safety reconcile would never fire. The deadline must persist in
+    /// the cadence and eventually complete a recreated `wait`.
+    #[tokio::test(start_paused = true)]
+    async fn reconcile_cadence_safety_deadline_survives_recreated_waits() {
+        let mut cadence = ReconcileCadence::new(&None);
+        let mut fired = false;
+        // Seven 5s rounds = 35s of simulated event churn; the 30s deadline
+        // anchored at construction must fire within them.
+        for _ in 0..7 {
+            tokio::select! {
+                () = cadence.wait(None) => {
+                    fired = true;
+                    break;
+                }
+                () = tokio::time::sleep(Duration::from_secs(5)) => {}
+            }
+        }
+        assert!(
+            fired,
+            "safety reconcile starved: recreated wait futures reset the deadline"
+        );
+    }
+
+    /// The safety bound is "at most 30s since the last reconcile pass", not
+    /// "since construction": `rebind` (which ends every reconcile pass) must
+    /// re-arm the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn reconcile_cadence_rebind_rearms_safety_deadline() {
+        let mut cadence = ReconcileCadence::new(&None);
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        cadence.rebind(&[]);
+        tokio::select! {
+            () = cadence.wait(None) => {
+                panic!("deadline fired 30s after construction despite rebind re-arm")
+            }
+            () = tokio::time::sleep(Duration::from_secs(29)) => {}
+        }
+        tokio::select! {
+            () = cadence.wait(None) => {}
+            () = tokio::time::sleep(Duration::from_secs(2)) => {
+                panic!("re-armed deadline did not fire 30s after rebind")
+            }
+        }
     }
 
     /// Regression: the console forwarder must only hold a live subscription

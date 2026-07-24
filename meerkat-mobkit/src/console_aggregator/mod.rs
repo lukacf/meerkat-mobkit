@@ -87,6 +87,14 @@ struct AggregatorInner {
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     opportunistic_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     session_backfill_permits: Arc<Semaphore>,
+    /// Last COMPLETED backfill's pre-read session write epoch, keyed by the
+    /// session's watermark runtime key. While the runtime's epoch witness for
+    /// the session is unchanged, the periodic discovery loop skips the
+    /// backfill outright — the historical shape re-read (and re-deserialized)
+    /// every member's full session document each pass, plus one watermark
+    /// row write, on a fully idle gateway. Entries are dropped with their
+    /// runtime; a missing entry or an epoch-less runtime always reads.
+    session_backfill_epochs: std::sync::Mutex<BTreeMap<String, u64>>,
     identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
     /// Per-runtime shutdown signals for the live-projection tasks spawned by
@@ -347,6 +355,7 @@ impl MobKitConsoleAggregator {
                 session_backfill_permits: Arc::new(Semaphore::new(
                     options.max_concurrent_session_backfills,
                 )),
+                session_backfill_epochs: std::sync::Mutex::new(BTreeMap::new()),
                 identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
                 live_projection_shutdowns: std::sync::Mutex::new(BTreeMap::new()),
@@ -403,6 +412,19 @@ impl MobKitConsoleAggregator {
         };
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
             runtimes.insert(runtime_key.clone(), entry);
+        }
+        // Registration replaces any prior runtime under this key, and epoch
+        // counters are per-process starting at zero: a witness recorded
+        // against the old runtime could coincide with the new counter and
+        // wrongly suppress its first backfill, so drop them here as well as
+        // on unregister.
+        {
+            let prefix = format!("{runtime_key}:session-history:");
+            self.inner
+                .session_backfill_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|key, _| !key.starts_with(&prefix));
         }
         // Re-registering a key replaces its live-projection task: signal the
         // old one before spawning the new (otherwise both would project).
@@ -500,6 +522,17 @@ impl MobKitConsoleAggregator {
             && let Some(shutdown) = shutdowns.remove(runtime_key)
         {
             let _ = shutdown.send(true);
+        }
+        // Drop this runtime's backfill epoch witnesses: a later re-register
+        // gets a fresh runtime whose epoch counter restarts, and a stale
+        // equal-valued witness would wrongly suppress its first backfill.
+        {
+            let prefix = format!("{runtime_key}:session-history:");
+            self.inner
+                .session_backfill_epochs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|key, _| !key.starts_with(&prefix));
         }
         if removed {
             self.inner
@@ -3176,6 +3209,23 @@ async fn backfill_one_session_history(
     } = target;
     let watermark_runtime_key =
         session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
+    // Steady-state gate: observe the runtime's per-session durable write
+    // epoch BEFORE any read. If the last completed backfill saw this same
+    // epoch, nothing durable moved through this process since — skip the
+    // watermark read, the full-document session read, and the watermark
+    // refresh write entirely. Observing before the read keeps invalidation
+    // safe: a write racing this backfill lands a newer epoch, so the next
+    // pass re-reads.
+    let write_epoch = entry.runtime.session_document_write_epoch(&session_id);
+    if !force_refresh && let Some(epoch) = write_epoch {
+        let epochs = inner
+            .session_backfill_epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if epochs.get(&watermark_runtime_key) == Some(&epoch) {
+            return Ok(());
+        }
+    }
     let watermark = inner
         .store
         .source_watermark(
@@ -3195,6 +3245,9 @@ async fn backfill_one_session_history(
     {
         return Ok(());
     }
+    // Only a failure-free pass may admit the pre-read epoch: recording it on
+    // a failure would suppress retries until the next durable write.
+    let mut completed_cleanly = true;
     loop {
         let page = match entry
             .runtime
@@ -3213,6 +3266,7 @@ async fn backfill_one_session_history(
                     err.to_string(),
                 )
                 .await?;
+                completed_cleanly = false;
                 break;
             }
         };
@@ -3229,6 +3283,7 @@ async fn backfill_one_session_history(
                     err.to_string(),
                 )
                 .await?;
+                completed_cleanly = false;
                 break;
             }
         };
@@ -3247,6 +3302,7 @@ async fn backfill_one_session_history(
                 "session history page missing messages".to_string(),
             )
             .await?;
+            completed_cleanly = false;
             break;
         };
         if messages.is_empty() {
@@ -3308,6 +3364,13 @@ async fn backfill_one_session_history(
         if !has_more || messages.len() < SESSION_HISTORY_PAGE_LIMIT {
             break;
         }
+    }
+    if completed_cleanly && let Some(epoch) = write_epoch {
+        inner
+            .session_backfill_epochs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(watermark_runtime_key, epoch);
     }
     Ok(())
 }
