@@ -1698,7 +1698,12 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
     async fn load_input_states(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-    ) -> Result<Vec<StoredInputState>, meerkat_runtime::store::RuntimeStoreError> {
+    ) -> Result<Vec<meerkat_runtime::InputStateRow>, meerkat_runtime::store::RuntimeStoreError>
+    {
+        // Forwards the per-row shape verbatim. meerkat 0.8.8 widened this to
+        // yield Decoded/Corrupt witnesses per row so one undecodable row can
+        // no longer poison an entire runtime's input-state load; the facade
+        // must not collapse that back to a whole-call failure.
         self.inner.load_input_states(runtime_id).await
     }
 
@@ -7340,6 +7345,10 @@ realm_profile = "worker-v2"
             self.record("stage_tool_results");
             Ok(meerkat_core::service::StageToolResultsResult {
                 accepted_result_count: 7,
+                // meerkat 0.8.8 added the durable-ingress disposition. This
+                // probe records the forwarded call; `Staged` is the ordinary
+                // accepted outcome.
+                disposition: meerkat_core::service::StageToolResultsDisposition::Staged,
             })
         }
     }

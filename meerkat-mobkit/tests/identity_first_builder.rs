@@ -3938,6 +3938,8 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
             Ok(meerkat::storage_provider::RealmStoreSet {
                 session_store: Arc::new(meerkat_store::MemoryStore::new()),
                 runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+                // Durable jobs (meerkat 0.8.8) added a job store to the set.
+                job_store: Arc::new(meerkat::MemoryDetachedJobStore::new()),
                 schedule_store: Arc::new(meerkat_schedule::MemoryScheduleStore::new()),
                 workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
                 blob_store: Arc::new(meerkat_store::MemoryBlobStore::new()),
@@ -3947,6 +3949,7 @@ async fn builder_storage_provider_routes_meerkat_level_bundle_and_census() {
                 durability: [
                     "sessions",
                     "runtime",
+                    "jobs",
                     "schedule",
                     "workgraph",
                     "blobs",

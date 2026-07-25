@@ -444,6 +444,8 @@ impl meerkat::storage_provider::RealmStorageProvider for ReferenceMemoryRealmPro
         Ok(meerkat::storage_provider::RealmStoreSet {
             session_store,
             runtime_store: Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()),
+            // Durable jobs (meerkat 0.8.8) added a job store to the realm set.
+            job_store: Arc::new(meerkat::MemoryDetachedJobStore::new()),
             schedule_store: Arc::new(meerkat::MemoryScheduleStore::new()),
             workgraph_store: Arc::new(meerkat::MemoryWorkGraphStore::new()),
             blob_store,
@@ -453,6 +455,7 @@ impl meerkat::storage_provider::RealmStorageProvider for ReferenceMemoryRealmPro
             durability: [
                 "sessions",
                 "runtime",
+                "jobs",
                 "schedule",
                 "workgraph",
                 "blobs",
