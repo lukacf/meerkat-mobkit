@@ -39,21 +39,9 @@ lazy-at-restore variant in the continuity adapter, both driving observed
 cursors; the judgment-plane de-weld landed as capability traits
 (`StewardStore`, `TaintableStore`, `MemoryPanelStore`) and
 `as_sqlite_store` is deleted; the M4 composite removed the builder's fifth
-storage fallback, and **incremental local continuity now ships** — the
-deferral is closed: head+rows are the canonical durable session
-representation in `continuity.sqlite3`, so an identity-member turn appends
-O(delta) instead of rewriting the whole document, every whole-snapshot verb
-is representation-aware (a head row means the blob row is a frozen archive,
-never read or written again), and the one-way `mobkit-continuity` v2 ledger
-bump is committed inside the transaction of a delta write that actually
-creates head state (a refused write rolls the DDL and the stamp back with
-it; an ACCEPTED write that adopts nothing commits its rows and leaves the
-file at v1) or by `storage-migrate --apply`, never as a side effect of a
-gateway launch, and the bump is reversible — `storage-downgrade --apply`
-re-materializes head+rows back into whole-document blobs, drops the
-channel, and rewinds the ledger, so rollback keeps every post-upgrade turn
-instead of restoring a pre-upgrade backup; a `ContinuityStore`
-default-method rollback defect found
+storage fallback, and **incremental local continuity is honestly
+deferred** — the seam and adapter forwarding ship, the local incremental
+backend does not; a `ContinuityStore` default-method rollback defect found
 during M4b is fixed rather than worked around; the SDK durability
 vocabulary ships exactly what the wire supports (blob ephemerality is
 Rust-builder-only and census-visible, not wire-configurable), storage

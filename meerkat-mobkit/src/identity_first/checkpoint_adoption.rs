@@ -387,17 +387,6 @@ struct SnapshotRowMeta {
     fencing_token: u64,
 }
 
-fn table_exists(conn: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
-    Ok(conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            [table],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
-}
-
 fn walk_snapshot_rows(
     tx: &Connection,
     mode: AdoptionMode,
@@ -433,25 +422,12 @@ fn walk_snapshot_rows(
         map
     };
 
-    // Canonical-representation rule (M4b): a `continuity_session_heads` row
-    // means that session's blob is a frozen archive that is never read or
-    // written again. Adopting into an archive would write bytes nothing
-    // serves and would re-stamp a document the head row already supersedes;
-    // head-canonical documents adopt live through the adapter's load path.
-    let head_canonical_sql = if table_exists(tx, "continuity_session_heads")
-        .map_err(sql_err("probe head-canonical tables"))?
-    {
-        " WHERE session_id NOT IN (SELECT session_id FROM continuity_session_heads)"
-    } else {
-        ""
-    };
-
     let snapshot_rows: Vec<SnapshotRowMeta> = {
         let mut stmt = tx
-            .prepare(&format!(
+            .prepare(
                 "SELECT session_id, identity, generation, checkpoint_version, fencing_token \
-                 FROM session_snapshots{head_canonical_sql} ORDER BY session_id"
-            ))
+                 FROM session_snapshots ORDER BY session_id",
+            )
             .map_err(sql_err("prepare snapshots"))?;
         let rows = stmt
             .query_map([], |row| {

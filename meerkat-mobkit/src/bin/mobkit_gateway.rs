@@ -825,73 +825,6 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     i32::from(report.has_errors())
 }
 
-const STORAGE_DOWNGRADE_USAGE: &str = "usage: mobkit_gateway storage-downgrade --state-dir <dir> \
-     [--apply] [--json]\n\
-     Fenced offline ROLLBACK of the head-canonical continuity upgrade \
-     (ledger mobkit-continuity v2 -> v1). Re-materializes every head+rows \
-     session back into a whole-document session_snapshots blob, drops the \
-     head-canonical trio, and rewinds the ledger row — which is what lets a \
-     previous release open the file again, keeping every post-upgrade turn.\n\
-     Dry-run by default; a dry run performs the ENTIRE reconstruction, \
-     including the per-document reader simulation, and then rolls back, so a \
-     clean dry run is evidence the apply run will work. --apply mutates \
-     under the exclusive maintenance fence, in ONE transaction whose last \
-     statement is the ledger rewind.\n\
-     Sessions whose retained transcript rewrite history cannot be re-inlined \
-     into a document a reader accepts are written WITHOUT that history and \
-     named individually in the report; their turn content is intact.\n\
-     Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
-
-/// Maintenance verb: `mobkit_gateway storage-downgrade`. The inverse of the
-/// head-canonical half of `storage-migrate --apply`. Like the other
-/// maintenance verbs it is a standalone argv verb bypassing the stdin init
-/// handshake — a rollback is never a side effect of gateway startup.
-fn run_storage_downgrade(args: &[String]) -> i32 {
-    let mut state_dir: Option<PathBuf> = None;
-    let mut apply = false;
-    let mut json = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--state-dir" => match iter.next() {
-                Some(value) => state_dir = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!("--state-dir requires a directory\n{STORAGE_DOWNGRADE_USAGE}");
-                    return 2;
-                }
-            },
-            "--apply" => apply = true,
-            "--json" => json = true,
-            other => {
-                eprintln!("unknown argument {other:?}\n{STORAGE_DOWNGRADE_USAGE}");
-                return 2;
-            }
-        }
-    }
-    let Some(state_dir) = state_dir else {
-        eprintln!("--state-dir is required\n{STORAGE_DOWNGRADE_USAGE}");
-        return 2;
-    };
-    let mode = if apply {
-        meerkat_mobkit::MigrateMode::Apply
-    } else {
-        meerkat_mobkit::MigrateMode::DryRun
-    };
-    let report = meerkat_mobkit::downgrade_state_dir(&state_dir, mode);
-    if json {
-        match serde_json::to_string_pretty(&report) {
-            Ok(text) => println!("{text}"),
-            Err(error) => {
-                eprintln!("failed to serialize downgrade report: {error}");
-                return 1;
-            }
-        }
-    } else {
-        print!("{}", meerkat_mobkit::render_downgrade_report(&report));
-    }
-    i32::from(report.has_errors())
-}
-
 fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
     let mode = match report.mode {
         meerkat_mobkit::MigrateMode::Apply => "apply",
@@ -1132,9 +1065,6 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("storage-prune") {
         std::process::exit(run_storage_prune(&args[1..]));
-    }
-    if args.first().map(String::as_str) == Some("storage-downgrade") {
-        std::process::exit(run_storage_downgrade(&args[1..]));
     }
     // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
     // every tracing event in the process is silently dropped: runtime

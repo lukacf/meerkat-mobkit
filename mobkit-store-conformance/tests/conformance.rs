@@ -214,53 +214,44 @@ async fn local_continuity_fencing_floor_survives_reopen() {
 // ContinuitySessionStoreAdapter
 // ---------------------------------------------------------------------------
 
-/// H2 pin, FLIPPED by M4b's incremental continuity channel: the bundled
-/// `LocalContinuityStore` now makes head+rows the canonical durable session
-/// representation, so the capability seam
-/// (`ContinuityStore::as_incremental_sessions`) advertises and the adapter
-/// forwards it. Identity-first deployments on the bundled store persist
-/// O(delta) per save instead of a whole session document. If this pin ever
-/// reads `false` again, the delta channel regressed.
+/// H2 pin, kept after M4b's DELIBERATE deferral: the capability seam
+/// (`ContinuityStore::as_incremental_sessions`) and the adapter forwarding
+/// landed, but the bundled `LocalContinuityStore` returns `None` — shipping
+/// a store-side delta channel beside the whole-snapshot byte authority
+/// (exact-match probes, parse-derived CAS tokens, `checkpoint_session`,
+/// H3's lazy adoption byte custody) would create two write authorities over
+/// one session with no reconciliation rule. Every identity-first deployment
+/// on the bundled store therefore still persists whole session documents
+/// per save; this pin flips when the local snapshot representation itself
+/// moves to head+rows (gated by meerkat-store-conformance's incremental
+/// profile).
 #[tokio::test]
 async fn continuity_session_adapter_over_local_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     let factory = LocalFileContinuityFactory {
         path: dir.path().join("continuity.sqlite"),
     };
-    chapters::continuity_session_adapter(&factory, true)
+    chapters::continuity_session_adapter(&factory, false)
         .await
         .expect("ContinuitySessionStoreAdapter must satisfy the adapter chapter");
 }
 
-/// Canary (inverted with the flip): asserting the OLD whole-blob world must
-/// now FAIL at the capability step — proving the pin is load-bearing in both
-/// directions instead of passing vacuously.
+/// Canary: asserting the flipped world today must FAIL at the capability
+/// step — proving the pin actually flips instead of passing vacuously.
+/// (Written pre-M4b to flip with the incremental channel; it stays pinned
+/// false because M4b deferred the bundled store's channel — see the pin
+/// above for why.)
 #[tokio::test]
-async fn continuity_session_adapter_whole_blob_expectation_fails_today() {
+async fn continuity_session_adapter_incremental_expectation_fails_today() {
     let dir = tempfile::tempdir().expect("tempdir");
     let factory = LocalFileContinuityFactory {
         path: dir.path().join("continuity.sqlite"),
     };
-    let failure = chapters::continuity_session_adapter(&factory, false)
+    let failure = chapters::continuity_session_adapter(&factory, true)
         .await
-        .expect_err("expecting the whole-blob degradation today must fail");
+        .expect_err("expecting the incremental capability today must fail");
     assert_eq!(failure.chapter(), "continuity_session_adapter");
     assert_eq!(failure.step(), "as_incremental_capability");
-}
-
-/// The M4b delta channel itself: the upstream meerkat incremental profile
-/// run over the real identity-first composition, plus the mobkit-specific
-/// pins (pre-registration parking, per-mutation fence/version discipline,
-/// byte-authority uniqueness).
-#[tokio::test]
-async fn local_continuity_store_passes_incremental_profile() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let factory = LocalFileContinuityFactory {
-        path: dir.path().join("continuity.sqlite"),
-    };
-    chapters::continuity_incremental(&factory, 0)
-        .await
-        .expect("LocalContinuityStore must satisfy the incremental continuity profile");
 }
 
 // ---------------------------------------------------------------------------

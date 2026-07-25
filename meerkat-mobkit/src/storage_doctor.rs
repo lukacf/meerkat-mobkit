@@ -82,11 +82,6 @@ pub const FINDING_CHECKPOINT_METADATA_INVALID: &str = "checkpoint-metadata-inval
 pub const FINDING_CHECKPOINT_DIGEST_MISMATCH: &str = "checkpoint-digest-mismatch";
 /// Continuity snapshot payloads that do not decode as a session document.
 pub const FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE: &str = "continuity-snapshot-undecodable";
-/// `session_snapshots` rows shadowed by a head-canonical session
-/// (`continuity_session_heads`): frozen migration archives that are never
-/// read or written again. Inventory-grade — they are dead weight until
-/// pruned, not a fault.
-pub const FINDING_CONTINUITY_ARCHIVED_SNAPSHOT: &str = "continuity-archived-snapshot";
 /// A console frame references a blob object missing from the blob root.
 pub const FINDING_DANGLING_CONSOLE_BLOB_REFERENCE: &str = "dangling-console-blob-reference";
 /// Blob objects still stored in the legacy sharded FS layout
@@ -660,12 +655,6 @@ fn census_continuity_snapshots(
     // (session id, identity, verification error) per stamped row whose
     // digest fails against the payload bytes.
     let mut digest_failures: Vec<(String, String, String)> = Vec::new();
-    // Sessions whose blob row is shadowed by a head-canonical head row.
-    let mut archived: BTreeMap<String, usize> = BTreeMap::new();
-
-    // The head-canonical channel (M4b) may not exist in this file: a state
-    // directory only carries it once a delta write committed the ledger bump.
-    let head_canonical = table_exists(&conn, "continuity_session_heads").unwrap_or(false);
 
     let result = (|| -> Result<(), rusqlite::Error> {
         let mut statement =
@@ -675,13 +664,6 @@ fn census_continuity_snapshots(
             let session_id: String = row.get(0)?;
             let identity: String = row.get(1)?;
             if identity_filter.is_some_and(|filter| filter != identity) {
-                continue;
-            }
-            // Canonical-representation rule: a head row means this blob is a
-            // frozen archive that is never read or written again. Classifying
-            // it would census a document nothing serves.
-            if head_canonical && session_is_head_canonical(&conn, &session_id)? {
-                *archived.entry(identity).or_default() += 1;
                 continue;
             }
             let data: Vec<u8> = row.get(2)?;
@@ -714,17 +696,6 @@ fn census_continuity_snapshots(
         }
         Ok(())
     })();
-
-    if head_canonical && result.is_ok() {
-        census_head_canonical_sessions(
-            &conn,
-            identity_filter,
-            &mut census,
-            &mut invalid,
-            &mut undecodable,
-            &mut digest_failures,
-        );
-    }
 
     if let Err(err) = result {
         out.findings.push(
@@ -791,125 +762,6 @@ fn census_continuity_snapshots(
             .with_path(db_path.to_path_buf()),
         );
     }
-    for (identity, count) in &archived {
-        out.findings.push(
-            StorageFinding::new(
-                FindingSeverity::Info,
-                FINDING_CONTINUITY_ARCHIVED_SNAPSHOT,
-                format!(
-                    "{count} frozen session-snapshot archive(s) for identity '{identity}' are \
-                     shadowed by head-canonical rows and are never read or written again — \
-                     reclaimable dead weight (no automated archive-prune verb ships yet)"
-                ),
-            )
-            .with_path(db_path.to_path_buf())
-            .with_realm(identity.clone()),
-        );
-    }
-}
-
-fn session_is_head_canonical(conn: &Connection, session_id: &str) -> Result<bool, rusqlite::Error> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM continuity_session_heads WHERE session_id = ?1)",
-        [session_id],
-        |row| row.get::<_, bool>(0),
-    )
-}
-
-/// Census the head-canonical half of the file: each `continuity_session_heads`
-/// row is classified structurally from the head's metadata, and stamped heads
-/// pay the same full verification the blob path pays — materializing the
-/// head-covered strand rows and verifying the checkpoint digest against the
-/// document restore will actually load.
-fn census_head_canonical_sessions(
-    conn: &Connection,
-    identity_filter: Option<&str>,
-    census: &mut BTreeMap<String, (usize, usize)>,
-    invalid: &mut usize,
-    undecodable: &mut usize,
-    digest_failures: &mut Vec<(String, String, String)>,
-) {
-    let mut statement = match conn
-        .prepare("SELECT session_id, identity, head_json FROM continuity_session_heads")
-    {
-        Ok(statement) => statement,
-        Err(_) => return,
-    };
-    let Ok(mut rows) = statement.query([]) else {
-        return;
-    };
-    while let Ok(Some(row)) = rows.next() {
-        let (Ok(session_id), Ok(identity), Ok(head_json)) = (
-            row.get::<_, String>(0),
-            row.get::<_, String>(1),
-            row.get::<_, Vec<u8>>(2),
-        ) else {
-            *undecodable += 1;
-            continue;
-        };
-        if identity_filter.is_some_and(|filter| filter != identity) {
-            continue;
-        }
-        let Ok(head) =
-            serde_json::from_slice::<meerkat_core::session_store::SessionHead>(&head_json)
-        else {
-            *undecodable += 1;
-            continue;
-        };
-        match meerkat_core::session_checkpoint_metadata_state(&head.id, &head.metadata) {
-            Ok(SessionCheckpointMetadataState::Stamped(_)) => {
-                match materialize_head_canonical_session(conn, &head) {
-                    Ok(session) => match session.try_checkpoint_state() {
-                        Ok(SessionCheckpointState::Verified(_)) => {
-                            census.entry(identity).or_default().0 += 1;
-                        }
-                        Ok(SessionCheckpointState::LegacyUnverified { .. }) => {
-                            census.entry(identity).or_default().1 += 1;
-                        }
-                        Err(error) => {
-                            digest_failures.push((session_id, identity, error.to_string()));
-                        }
-                    },
-                    Err(error) => {
-                        digest_failures.push((session_id, identity, error));
-                    }
-                }
-            }
-            Ok(SessionCheckpointMetadataState::LegacyUnverified { .. }) => {
-                census.entry(identity).or_default().1 += 1;
-            }
-            Err(_) => *invalid += 1,
-        }
-    }
-}
-
-fn materialize_head_canonical_session(
-    conn: &Connection,
-    head: &meerkat_core::session_store::SessionHead,
-) -> Result<Session, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT message_json FROM continuity_strand_messages
-             WHERE session_id = ?1 AND strand = ?2 AND seq < ?3 ORDER BY seq ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let count = i64::try_from(head.message_count).unwrap_or(i64::MAX);
-    let rows = statement
-        .query_map(
-            rusqlite::params![head.id.to_string(), head.strand.as_str(), count],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let messages = rows
-        .iter()
-        .map(|bytes| serde_json::from_slice::<meerkat_core::types::Message>(bytes))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("strand row does not decode: {error}"))?;
-    head.clone()
-        .into_session(messages)
-        .map_err(|error| error.to_string())
 }
 
 /// The on-disk object paths `ObjectStoreBlobStore` uses for a canonical blob
@@ -1376,130 +1228,6 @@ mod tests {
         assert_eq!(mismatches[0].realm.as_deref(), Some("domain:bad"));
         assert!(!mismatches[0].message.contains(&good_sid));
         assert!(diagnosis.has_errors());
-    }
-
-    /// M4b: a head-canonical continuity file censuses its head rows (with
-    /// the same stamp verification the blob path pays), reports the ledger at
-    /// the head-canonical version, and reports the shadowed blob row as a
-    /// frozen archive instead of censusing a document nothing serves.
-    #[tokio::test]
-    async fn continuity_census_is_representation_aware_for_head_canonical_sessions() {
-        use crate::identity_first::{
-            AgentIdentity, CheckpointVersion, ContinuityGeneration, ContinuityIncrementalSessions,
-            ContinuityRecord, ContinuityStore, ContinuityWriteCursor, FencingToken,
-            LocalContinuityStore, SessionSnapshot,
-        };
-
-        let temp = tempfile::tempdir().unwrap();
-        let state = temp.path();
-        let db_path = state.join("continuity.sqlite3");
-        let identity = AgentIdentity::parse("domain:stamped").unwrap();
-        let stamped = stamped_session();
-        let session_id = stamped.id().clone();
-        // The archived blob is the pre-stamp precursor of the same session:
-        // same id, same transcript, no checkpoint stamp.
-        let legacy_blob = {
-            let mut precursor = Session::with_id(session_id.clone());
-            precursor.push(Message::User(UserMessage::text("stamped")));
-            serde_json::to_vec(&precursor).unwrap()
-        };
-
-        {
-            let store = LocalContinuityStore::open(&db_path).unwrap();
-            store
-                .upsert_continuity_record(
-                    &ContinuityRecord {
-                        identity: identity.clone(),
-                        agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
-                            "rt:domain:stamped",
-                        )
-                        .unwrap(),
-                        session_id: session_id.clone(),
-                        generation: ContinuityGeneration::new(1),
-                        checkpoint_version: CheckpointVersion::new(0),
-                    },
-                    FencingToken::new(1),
-                )
-                .await
-                .unwrap();
-            // A pre-existing blob row for the same session becomes the frozen
-            // archive once the head row lands.
-            store
-                .save_session_snapshot(
-                    &identity,
-                    &session_id,
-                    ContinuityGeneration::new(1),
-                    CheckpointVersion::new(1),
-                    FencingToken::new(1),
-                    &SessionSnapshot { data: legacy_blob },
-                )
-                .await
-                .unwrap();
-
-            // The first delta write migrates the blob to head+rows and
-            // freezes the blob row as an archive.
-            let cursor = |version: u64| ContinuityWriteCursor {
-                identity: identity.clone(),
-                generation: ContinuityGeneration::new(1),
-                checkpoint_version: CheckpointVersion::new(version),
-                fencing_token: FencingToken::new(1),
-            };
-            let head = store.load_head(&session_id).await.unwrap().unwrap();
-            let migrated_token =
-                meerkat_core::session_store::session_head_cas_token(&head).unwrap();
-            store
-                .save_head(
-                    &cursor(2),
-                    &head,
-                    meerkat_core::session_store::SessionHeadCas::IfToken(migrated_token),
-                )
-                .await
-                .unwrap();
-            // A whole-document save of the STAMPED document now converts
-            // into the head row (the archive stays frozen).
-            store
-                .save_session_snapshot(
-                    &identity,
-                    &session_id,
-                    ContinuityGeneration::new(1),
-                    CheckpointVersion::new(3),
-                    FencingToken::new(1),
-                    &SessionSnapshot {
-                        data: serde_json::to_vec(&stamped).unwrap(),
-                    },
-                )
-                .await
-                .unwrap();
-        }
-
-        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
-        assert!(
-            !diagnosis.has_errors(),
-            "a verified head-canonical session must census clean: {diagnosis:?}"
-        );
-        assert!(
-            !codes(&diagnosis).contains(&FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS),
-            "the shadowed archive must not be censused as a live legacy document: {diagnosis:?}"
-        );
-        let archived = diagnosis
-            .findings
-            .iter()
-            .find(|f| f.code == FINDING_CONTINUITY_ARCHIVED_SNAPSHOT)
-            .expect("the frozen archive must be reported as inventory");
-        assert_eq!(archived.severity, FindingSeverity::Info);
-        assert_eq!(archived.realm.as_deref(), Some("domain:stamped"));
-
-        let entry = &diagnosis.inventory[0];
-        let continuity = entry
-            .databases
-            .iter()
-            .find(|db| db.path.ends_with("continuity.sqlite3"))
-            .expect("continuity inventory");
-        assert_eq!(
-            continuity.domains,
-            vec![("mobkit-continuity".to_string(), Some(2))],
-            "a file carrying head rows reports the head-canonical ledger version"
-        );
     }
 
     #[tokio::test]

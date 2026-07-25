@@ -12,7 +12,6 @@
 //! | [`continuity_rollback`]             | every `ContinuityStore` (parameterized by [`RollbackPath`]) |
 //! | [`local_continuity_fencing_floor`]  | the bundled `LocalContinuityStore` + `LocalLeaseProvider` pair only |
 //! | [`continuity_session_adapter`]      | `ContinuitySessionStoreAdapter` over any `ContinuityStore` with session-scoped CAS delete |
-//! | [`continuity_incremental`]          | `ContinuityStore`s that advertise `as_incremental_sessions` (M4b delta channel) |
 //! | [`event_log`]                       | every `EventLogStore` |
 //! | [`console_log`]                     | every `ConsoleLogStore` |
 //! | [`binary_blobs`]                    | every `BinaryBlobStore` |
@@ -26,7 +25,6 @@ mod blobs;
 mod console_log;
 mod continuity;
 mod continuity_adapter;
-mod continuity_incremental;
 mod event_log;
 mod legacy_data;
 
@@ -37,6 +35,5 @@ pub use continuity::{
     RollbackPath, continuity_rollback, continuity_store, local_continuity_fencing_floor,
 };
 pub use continuity_adapter::continuity_session_adapter;
-pub use continuity_incremental::continuity_incremental;
 pub use event_log::event_log;
 pub use legacy_data::{legacy_continuity_database, legacy_memory_database};

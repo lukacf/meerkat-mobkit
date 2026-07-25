@@ -244,145 +244,15 @@ pub trait ContinuityStore: Send + Sync {
     /// The default is `None`: the store persists whole snapshots only, and
     /// `ContinuitySessionStoreAdapter::as_incremental` stays `None` (the H2
     /// loudly-reported whole-blob degradation). The bundled
-    /// `LocalContinuityStore` advertises the channel (M4b landed: head+rows
-    /// are its canonical durable session representation); the JSON-RPC
+    /// `LocalContinuityStore` deliberately returns `None` — see the M4b
+    /// deferral note on that impl — and the JSON-RPC
     /// `GatewayContinuityStore` cannot advertise it (its wire protocol has
     /// only whole-snapshot verbs).
-    fn as_incremental_sessions(&self) -> Option<Arc<dyn ContinuityIncrementalSessions>> {
+    fn as_incremental_sessions(
+        &self,
+    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
         None
     }
-}
-
-/// The continuity write cursor a delta mutation is performed under.
-///
-/// Meerkat's `IncrementalSessionStore` verbs carry no continuity tuple, but
-/// the advertiser contract above demands fencing-token compare-and-set and
-/// per-`(identity, generation)` version monotonicity **per append and per
-/// head write**. The adapter therefore presents the registered cursor with
-/// every mutation, exactly as it does for whole-blob saves: the identity and
-/// generation come from the session registry the identity runtime publishes,
-/// `checkpoint_version` is minted by the adapter's one version allocator, and
-/// `fencing_token` is the registered lease token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContinuityWriteCursor {
-    pub identity: AgentIdentity,
-    pub generation: ContinuityGeneration,
-    pub checkpoint_version: CheckpointVersion,
-    pub fencing_token: FencingToken,
-}
-
-/// Cursor-carrying session-delta channel: meerkat's incremental persistence
-/// contract with the continuity write discipline threaded through every
-/// mutation.
-///
-/// Verb semantics are meerkat's
-/// [`IncrementalSessionStore`](meerkat_core::session_store::IncrementalSessionStore)
-/// semantics verbatim — implementations reuse the published guard functions
-/// (`validate_save_head_transition`, `validate_commit_rewrite_transition`,
-/// `head_canonical_plain_save_guard`, `strand_layout_for_history`) so the
-/// accept/reject boundary of a mobkit substrate can never differ from the
-/// meerkat service's. The only additions are:
-///
-/// - a [`ContinuityWriteCursor`] on every mutating verb, enforced with the
-///   same fence/version compare-and-set the whole-blob save verb applies;
-/// - [`Self::load_canonical_head`], which reports whether a session is
-///   head-canonical **without** synthesizing a head from a legacy blob (the
-///   adapter needs that distinction to keep H3's byte custody on the blob
-///   path).
-///
-/// Errors are meerkat `SessionStoreError`s: they flow to the session service
-/// unchanged, and continuity-discipline failures map exactly as the
-/// whole-blob path maps them today (stale fence / stale version / unknown
-/// binding become `SessionStoreError::Internal`).
-#[async_trait]
-pub trait ContinuityIncrementalSessions: Send + Sync {
-    async fn append_messages(
-        &self,
-        cursor: &ContinuityWriteCursor,
-        id: &meerkat_core::types::SessionId,
-        strand: &meerkat_core::session_store::TranscriptStrandId,
-        base_seq: u64,
-        messages: &[meerkat_core::types::Message],
-    ) -> Result<(), meerkat_core::SessionStoreError>;
-
-    async fn commit_rewrite(
-        &self,
-        cursor: &ContinuityWriteCursor,
-        id: &meerkat_core::types::SessionId,
-        record: &meerkat_core::TranscriptRewriteRecord,
-        expected: meerkat_core::session_store::SessionHeadCas,
-    ) -> Result<meerkat_core::session_store::SessionHead, meerkat_core::SessionStoreError>;
-
-    async fn save_head(
-        &self,
-        cursor: &ContinuityWriteCursor,
-        head: &meerkat_core::session_store::SessionHead,
-        expected: meerkat_core::session_store::SessionHeadCas,
-    ) -> Result<(), meerkat_core::SessionStoreError>;
-
-    /// The head a reader should see: the persisted head row, or — for a
-    /// session still stored as a legacy blob — the deterministic read-only
-    /// synthesis of one (never a write). Mirrors meerkat's `load_head`.
-    async fn load_head(
-        &self,
-        id: &meerkat_core::types::SessionId,
-    ) -> Result<Option<meerkat_core::session_store::SessionHead>, meerkat_core::SessionStoreError>;
-
-    /// The persisted head row only: `None` means "this session is still
-    /// blob-canonical". Never synthesizes.
-    async fn load_canonical_head(
-        &self,
-        id: &meerkat_core::types::SessionId,
-    ) -> Result<Option<meerkat_core::session_store::SessionHead>, meerkat_core::SessionStoreError>;
-
-    /// The head-canonical document, materialized from the head row and its
-    /// strand rows **inside ONE substrate read transaction**. `None` means
-    /// the session is still blob-canonical.
-    ///
-    /// Not `load_canonical_head` + `load_messages`. Head and rows are two
-    /// halves of one document and a concurrent delta write advances both;
-    /// reading them under two independent transactions can observe an old
-    /// head against new rows (or the reverse), which materializes a torn
-    /// document — `message_count` disagreeing with the rows behind it, or a
-    /// `head_revision` that no longer digests the transcript it names.
-    /// Implementations MUST take a single snapshot; there is deliberately
-    /// no default body, because the obvious one is exactly the torn
-    /// composition this method exists to replace.
-    async fn load_canonical_session(
-        &self,
-        id: &meerkat_core::types::SessionId,
-    ) -> Result<Option<meerkat_core::Session>, meerkat_core::SessionStoreError>;
-
-    /// The head-canonical document **and** its adopted rewrite commits,
-    /// under ONE substrate read transaction — the `previous` shape the
-    /// published head-canonical save guards expect.
-    ///
-    /// Same single-snapshot obligation as [`Self::load_canonical_session`],
-    /// widened to the rewrite ledger: a guard that compared a fresh
-    /// document against a stale commit list (or the reverse) would accept
-    /// or refuse a save on a state that never existed.
-    async fn load_canonical_previous(
-        &self,
-        id: &meerkat_core::types::SessionId,
-    ) -> Result<
-        Option<(
-            meerkat_core::Session,
-            Vec<meerkat_core::TranscriptRewriteCommit>,
-        )>,
-        meerkat_core::SessionStoreError,
-    >;
-
-    async fn load_messages(
-        &self,
-        id: &meerkat_core::types::SessionId,
-        strand: &meerkat_core::session_store::TranscriptStrandId,
-        range: std::ops::Range<u64>,
-    ) -> Result<Vec<meerkat_core::types::Message>, meerkat_core::SessionStoreError>;
-
-    async fn load_rewrites(
-        &self,
-        id: &meerkat_core::types::SessionId,
-    ) -> Result<Vec<meerkat_core::TranscriptRewriteRecord>, meerkat_core::SessionStoreError>;
 }
 
 // ---------------------------------------------------------------------------
