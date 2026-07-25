@@ -624,8 +624,21 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            # Fresh reset may expose the initial save for the new generation.
-            assert after.checkpoint_version in (0, 1, None)
+            # Fresh reset may expose the initial save for the new generation,
+            # and now also the save from the retire cleanup that follows it.
+            #
+            # This bound was 0/1/None while reset's retire cleanup always
+            # FAILED: M4b's incremental store refused the post-abandon
+            # terminal write, so identity-authority release was skipped and
+            # the flow stopped early (the same defect that made the gateway
+            # report runtime_cleanup_completed=false and leak provider
+            # grants). With that write acknowledged as a no-op, the reset
+            # completes and records one additional continuity checkpoint —
+            # deterministically 2, observed across repeated runs.
+            #
+            # NOTE: that the extra checkpoint is DESIRABLE rather than merely
+            # harmless is not proven here; it is tracked for confirmation.
+            assert after.checkpoint_version in (0, 1, 2, None)
         finally:
             await rt.shutdown()
 

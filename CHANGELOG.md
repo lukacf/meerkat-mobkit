@@ -9,6 +9,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Incremental continuity persistence: identity-member turns append
+  O(delta) instead of rewriting the whole session document (M4b
+  un-deferral).** `LocalContinuityStore` now advertises the session-delta
+  channel (`ContinuityStore::as_incremental_sessions`), and head+rows become
+  the canonical durable representation of a session in `continuity.sqlite3`:
+  a new `continuity_session_heads` / `continuity_strand_messages` /
+  `continuity_session_rewrites` trio (ledger `mobkit-continuity` v2), each
+  row stamped with its owning `(identity, generation)`. Because
+  `PersistentSessionService` routes every boundary save through the
+  incremental branch once the capability is `Some`, an ordinary turn on an
+  identity gateway now moves the turn's delta plus a few KB of head instead
+  of reading, reparsing, re-serializing and rewriting the entire document.
+  On the profiled HomeCore 82 MB session that removes the continuity half of
+  the per-turn write amplification, including the whole-document decode.
+
+  The canonical-representation rule is the same one meerkat-store uses for
+  its own head rows, and it is enforced by every verb rather than asserted:
+  **a `continuity_session_heads` row means head+rows are that session's sole
+  byte authority and its `session_snapshots` row is a frozen archive that is
+  never read or written again.** A whole-document save on a head-canonical
+  session converts into delta rows plus a small head (plain-append when the
+  incoming transcript extends the persisted strand, otherwise a `rebase:`
+  strand) and leaves the archive byte-identical; `load_session_snapshot`
+  serves the slim materialization; the whole-blob exact-bytes no-op probe
+  declines; CAS tokens derive from head+rows; and delete, identity deletion
+  and reset rollback scope all four tables (rollback still deletes only the
+  attempted generation's rows, so a prior generation's head+rows remain the
+  rollback authority). Guard semantics are meerkat's published validators
+  verbatim (`validate_save_head_transition`,
+  `validate_commit_rewrite_transition`, `strand_layout_for_history`,
+  `reconstruct_rewrite_record`), so the accept/reject boundary of the store
+  mirror cannot drift from the session service's.
+
+  Every delta mutation carries the continuity write discipline the
+  whole-blob path applies — fencing-token compare-and-set and per
+  `(identity, generation)` checkpoint-version monotonicity, per append and
+  per head write — through a new mobkit-internal
+  `ContinuityIncrementalSessions` trait taking an explicit
+  `ContinuityWriteCursor`. Rows, the head row and the `continuity_records`
+  advance commit in ONE transaction, so a partial append can never leave a
+  torn document and the durable cursor can never point past durable data.
+
+  Pre-registration delta writes **park** in process memory instead of being
+  refused: member creation provably saves before the identity runtime
+  publishes the owning cursor, and the service fails closed on projection
+  errors. Parked state is never durable, serves the service's continuity
+  preflight and head-CAS reads, and flushes under the real cursor when the
+  session registers. Parked rows are dropped only once they have been
+  adopted durably: a flush failure — and equally a registration that lands
+  between the service's append and the head write that adopts it, leaving
+  rows no head claims yet — restores the registry and markers, RETAINS the
+  parked rows, and refuses the registration, so the retry replays the write
+  instead of losing it. Parking a write and publishing its footprint are one
+  operation, so the footprint the "nothing was parked" purge relies on
+  cannot drift from what the store holds; abandoning a session (delete,
+  unregister, retire) reclaims its parked rows rather than merely unrouting
+  them.
+
+  **Upgrade note — the ledger bump is one-way, and deliberately NOT applied
+  at open.** Launching this release over an existing state directory leaves
+  `mobkit-continuity` at v1, so rolling back to an earlier release stays
+  possible. The v2 stamp is committed either by an incremental session write
+  that actually CREATES HEAD STATE — the head-canonical DDL and the stamp
+  ride inside that write's own transaction, so a write refused by a guard or
+  by its own CAS rolls both back and leaves the file at v1 with no head
+  rows — or by `mobkit_gateway storage-migrate --apply` under the exclusive
+  maintenance fence; `--dry-run` announces the pending bump. An ACCEPTED
+  write that creates no head state does not arm it either: an
+  `append_messages` whose adopting head write has not landed yet commits its
+  rows and its additive DDL and leaves the ledger at v1, because rows no
+  head adopts are not part of any document and an older binary still
+  correctly serves that session from its blob. Once a head row exists,
+  binaries older than this release refuse the file at open with
+  `SchemaFromTheFuture`. The doctor reports frozen archives under the new
+  `continuity-archived-snapshot` finding and censuses head-canonical
+  sessions with the same stamp verification the blob path pays. Frozen
+  archives are reclaimable dead weight until an archive-prune verb ships;
+  none does yet, so a migrated realm's `continuity.sqlite3` transiently
+  carries both representations for each migrated session.
+
+- **`mobkit_gateway storage-downgrade` — a real rollback for the
+  head-canonical ledger bump.** The v2 stamp is one-way, and because every
+  boundary save routes through the incremental branch once the capability is
+  advertised, the practical rollback window used to be a single turn: the
+  only documented recovery was restoring `continuity.*` from a backup taken
+  before that turn, which discards every turn since. This verb replaces that
+  guidance.
+
+  `storage-downgrade --state-dir <dir> [--apply] [--json]` re-materializes
+  every head+rows session back into a whole-document `session_snapshots`
+  blob, drops the head-canonical trio, and rewinds the `mobkit-continuity`
+  ledger row to v1 — which is what lifts the `SchemaFromTheFuture` lockout.
+  Post-upgrade turns are kept. One transaction per database under the same
+  `MobKitMaintenanceFence`, with the ledger rewind as its LAST statement
+  (the mirror of the stamp ordering): the lockout is lifted only together
+  with the blobs that make lifting it safe, so an interrupted downgrade
+  leaves the file exactly as head-canonical as it was.
+
+  Dry-run is the default and is not an estimate — it performs the entire
+  reconstruction, including the per-document reader simulation, and then
+  rolls back, so a clean dry run is evidence the apply run will work.
+
+  Retained transcript rewrite history is re-inlined from the rewrite rows
+  using meerkat's own published inverses, and every reconstructed document
+  is decoded back through the ordinary `Session` deserializer and re-checked
+  (same id, same live transcript, a history graph that validates, the same
+  adopted commits, and a document `strand_layout_for_history` can project
+  again) before it is written. A document that fails any of that is not
+  written: that session falls back to the slim form — live transcript, no
+  history graph — and is named individually in the report under
+  `DowngradeFidelity::HistoryDropped`. Head rows without the v2 stamp are
+  refused as corruption rather than silently repaired, because that state
+  means the file's rollback safety was never real.
+
 - **Durability declaration completeness is enforced at the storage seam.**
   `enforce_fail_closed_store_set` now requires exactly one
   `DurabilityDeclaration` for every slot in the new

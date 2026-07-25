@@ -460,11 +460,11 @@ mod tests {
         (incremental, writer.contents())
     }
 
-    /// H2: the continuity adapter — the session authority on identity-first
-    /// gateways — has no incremental channel; the probe must say so loudly,
-    /// naming the store kind and the whole-blob consequence.
+    /// H2 (flipped by M4b): the continuity adapter over the bundled local
+    /// store now advertises the session-delta channel, so the probe reports
+    /// incremental persistence with NO whole-blob degradation warning.
     #[tokio::test]
-    async fn probe_flags_continuity_adapter_as_whole_blob_and_warns() {
+    async fn probe_reports_continuity_adapter_as_incremental_without_warning() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (store, _fencing_floor) =
             crate::identity_first::LocalContinuityStore::open_with_fencing_floor(
@@ -479,15 +479,73 @@ mod tests {
         let (incremental, warnings) =
             probe_with_captured_warnings(&adapter, "ContinuitySessionStoreAdapter");
         assert!(
-            !incremental,
-            "the continuity adapter must not advertise incremental persistence"
+            incremental,
+            "the continuity adapter over the bundled store advertises incremental persistence"
         );
+        assert!(
+            warnings.is_empty(),
+            "no whole-blob degradation warning expected, got: {warnings}"
+        );
+    }
+
+    /// The degradation warning is still load-bearing for substrates that
+    /// genuinely have no delta channel (the wire-verb `GatewayContinuityStore`
+    /// shape): the probe must still say so loudly, naming the store kind and
+    /// the whole-blob consequence.
+    #[test]
+    fn probe_still_warns_for_a_whole_blob_only_store() {
+        struct WholeBlobOnlyStore;
+
+        #[async_trait::async_trait]
+        impl SessionStore for WholeBlobOnlyStore {
+            async fn save(
+                &self,
+                _session: &meerkat_core::Session,
+            ) -> Result<(), meerkat_core::SessionStoreError> {
+                Ok(())
+            }
+
+            async fn load(
+                &self,
+                _id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::Session>, meerkat_core::SessionStoreError>
+            {
+                Ok(None)
+            }
+
+            async fn list(
+                &self,
+                _filter: meerkat_core::SessionFilter,
+            ) -> Result<Vec<meerkat_core::SessionMeta>, meerkat_core::SessionStoreError>
+            {
+                Ok(Vec::new())
+            }
+
+            async fn delete(
+                &self,
+                _id: &meerkat_core::types::SessionId,
+            ) -> Result<(), meerkat_core::SessionStoreError> {
+                Ok(())
+            }
+
+            async fn delete_if_current_revision(
+                &self,
+                _id: &meerkat_core::types::SessionId,
+                _expected_current_revision: &str,
+            ) -> Result<bool, meerkat_core::SessionStoreError> {
+                Ok(false)
+            }
+        }
+
+        let store: Arc<dyn SessionStore> = Arc::new(WholeBlobOnlyStore);
+        let (incremental, warnings) = probe_with_captured_warnings(&store, "WholeBlobOnlyStore");
+        assert!(!incremental);
         assert!(
             warnings.contains("whole-blob"),
             "the startup warning must name the consequence, got: {warnings}"
         );
         assert!(
-            warnings.contains("ContinuitySessionStoreAdapter"),
+            warnings.contains("WholeBlobOnlyStore"),
             "the startup warning must name the store kind, got: {warnings}"
         );
     }

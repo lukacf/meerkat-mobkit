@@ -774,6 +774,29 @@ pub fn migrate_state_dir(
             });
         }
     }
+    // The head-canonical continuity bump is the one migration a gateway open
+    // deliberately never commits (it locks previous releases out of the
+    // file), so the operator has to see it coming.
+    if report.ledger.iter().any(|entry| {
+        entry.domain == "mobkit-continuity"
+            && entry.before.is_some_and(|version| {
+                version < crate::identity_first::HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION
+            })
+    }) {
+        report.notes.push(format!(
+            "continuity database is below the head-canonical schema version \
+             (mobkit-continuity v{}); {} — this bump is ONE-WAY: binaries older than this \
+             release refuse a stamped file at open (SchemaFromTheFuture). Back up continuity.* \
+             before applying.",
+            crate::identity_first::HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION,
+            if apply {
+                "--apply committed it under the exclusive maintenance fence"
+            } else {
+                "--apply would commit it under the exclusive maintenance fence, and the first \
+                 incremental session write would otherwise commit it lazily"
+            }
+        ));
+    }
     if state_dir.join(WORKGRAPH_ADMISSION_SIDECAR_FILE).is_file() {
         report.notes.push(
             "workgraph admission sidecar is ledger-exempt by design (M3): the lock database \
@@ -934,6 +957,19 @@ fn open_stores_through_ledgered_constructors(
         Ok(resolved) if resolved.path.is_file() && !unfenced.contains(&resolved.path) => {
             if let Err(error) = LocalContinuityStore::open(&resolved.path) {
                 errors.push(format!("continuity store open failed: {error}"));
+            } else if let Err(error) =
+                LocalContinuityStore::apply_head_canonical_schema_at(&resolved.path)
+            {
+                // The head-canonical (`mobkit-continuity` v2) bump is the one
+                // migration a plain gateway open deliberately does NOT
+                // commit: it locks previous releases out of the file, so it
+                // is committed only here, under the exclusive maintenance
+                // fence, as an explicit operator action — or lazily, in the
+                // transaction of a delta write that actually creates a head
+                // row (a refused write leaves the file at v1).
+                errors.push(format!(
+                    "continuity head-canonical schema migration failed: {error}"
+                ));
             }
         }
         Ok(_) => {}
@@ -2199,6 +2235,62 @@ mod tests {
             "{adoption:?}"
         );
         drop(foreign);
+    }
+
+    /// M4b: the one-way head-canonical continuity bump is an OPERATOR
+    /// action. Opening the store (what a gateway launch does) must leave the
+    /// file at the rollback-safe baseline; dry-run must announce the pending
+    /// bump without touching the file; `--apply` commits it under the fence.
+    #[test]
+    fn head_canonical_continuity_bump_is_operator_gated() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let db = state.join("continuity.sqlite3");
+        drop(create_legacy_continuity(&db));
+
+        // A gateway launch: opening the store converges the baseline only.
+        LocalContinuityStore::open(&db).expect("gateway-style open");
+        let probe = Connection::open(&db).expect("probe");
+        assert_eq!(
+            meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger"),
+            Some(1),
+            "launching a new gateway must not lock the previous release out of the file"
+        );
+        drop(probe);
+
+        let before = file_digest_hex(&db);
+        let dry = migrate_state_dir(state, MigrateMode::DryRun, None);
+        assert!(!dry.has_errors(), "{:?}", dry.errors);
+        assert!(
+            dry.notes
+                .iter()
+                .any(|note| note.contains("head-canonical") && note.contains("ONE-WAY")),
+            "dry-run must announce the pending one-way bump: {:?}",
+            dry.notes
+        );
+        assert_eq!(
+            file_digest_hex(&db),
+            before,
+            "dry-run must not mutate the database"
+        );
+
+        let applied = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!applied.has_errors(), "{:?}", applied.errors);
+        let entry = ledger_entry(&applied, "continuity.sqlite3", "mobkit-continuity");
+        assert_eq!(entry.action, LedgerBaselineAction::Stamped);
+        assert_eq!(entry.before, Some(1));
+        assert_eq!(
+            entry.after,
+            Some(crate::identity_first::HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION)
+        );
+
+        // Idempotent: a second apply is a no-op.
+        let second = migrate_state_dir(state, MigrateMode::Apply, None);
+        assert!(!second.has_errors(), "{:?}", second.errors);
+        assert_eq!(
+            ledger_entry(&second, "continuity.sqlite3", "mobkit-continuity").action,
+            LedgerBaselineAction::AlreadyCurrent
+        );
     }
 
     #[test]

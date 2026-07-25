@@ -3525,6 +3525,19 @@ async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_bef
     }
 }
 
+/// A checkpoint payload shaped like production's: the serialized session
+/// document `MobSessionBridge::checkpoint_session` writes for the identity's
+/// current session.
+fn checkpoint_document(session_id: &meerkat_core::types::SessionId) -> SessionSnapshot {
+    let mut session = meerkat_core::Session::with_id(session_id.clone());
+    session.push(meerkat_core::Message::User(
+        meerkat_core::UserMessage::text("explicit checkpoint".to_string()),
+    ));
+    SessionSnapshot {
+        data: serde_json::to_vec(&session).expect("serialize checkpoint document"),
+    }
+}
+
 #[tokio::test]
 async fn identity_first_builder_runtime_checkpoint_follows_initial_session_save_version() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3560,12 +3573,14 @@ async fn identity_first_builder_runtime_checkpoint_follows_initial_session_save_
         "initial session save should advance the live checkpoint version"
     );
 
+    // The explicit checkpoint verb carries a session DOCUMENT, exactly as
+    // `MobSessionBridge::checkpoint_session` does in production: once a
+    // session is head-canonical, whole-document writes convert into delta
+    // rows + a head, so opaque bytes are no longer expressible.
     let next_version = identity_runtime
         .checkpoint(
             &identity,
-            &SessionSnapshot {
-                data: b"builder checkpoint".to_vec(),
-            },
+            &checkpoint_document(status.session_id.as_ref().expect("active session id")),
         )
         .await
         .expect("checkpoint after bootstrap should not be stale");
@@ -3630,9 +3645,7 @@ async fn identity_first_builder_resume_checkpoint_follows_registered_session_sav
     let next_version = identity_runtime
         .checkpoint(
             &identity,
-            &SessionSnapshot {
-                data: b"resume checkpoint".to_vec(),
-            },
+            &checkpoint_document(status.session_id.as_ref().expect("active session id")),
         )
         .await
         .expect("checkpoint after resume should not be stale");
