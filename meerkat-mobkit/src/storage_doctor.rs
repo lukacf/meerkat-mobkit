@@ -404,6 +404,19 @@ fn sweep_state_dir(state_dir: &Path, identity_filter: Option<&str>, out: &mut St
         }
     }
 
+    // The canonical jobs database is inherited from the Meerkat-level realm
+    // bundle, so it lives under `<state>/mobkit/jobs.sqlite3` rather than in
+    // MobKit's top-level database family. Diagnose it through that composed
+    // path and its own schema-domain ledger.
+    let jobs_path = state_dir
+        .join(crate::storage_provider::MEERKAT_LEVEL_REALM_ID)
+        .join("jobs.sqlite3");
+    if jobs_path.is_file() {
+        entry
+            .databases
+            .push(inspect_database(&jobs_path, &["jobs"], out));
+    }
+
     // Agent-memory realm roots: twin census across the two spellings, then
     // per-realm database inventory inside each existing root.
     let memory_roots: Vec<PathBuf> = MEMORY_ROOT_SPELLINGS
@@ -1690,5 +1703,27 @@ mod tests {
             .await
             .expect("diagnose never fails on disk");
         assert_eq!(diagnosis.inventory.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn doctor_censuses_the_inherited_canonical_jobs_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(crate::storage_provider::MEERKAT_LEVEL_REALM_ID)
+            .join("jobs.sqlite3");
+        let _store = meerkat::SqliteDetachedJobStore::open(path.clone()).unwrap();
+
+        let diagnosis = diagnose_state_dir(&scope(&[temp.path()])).await;
+        let jobs = diagnosis.inventory[0]
+            .databases
+            .iter()
+            .find(|database| database.path == path)
+            .expect("jobs database inventory");
+        assert!(
+            jobs.domains
+                .iter()
+                .any(|(domain, version)| domain == "jobs" && version.is_some())
+        );
     }
 }

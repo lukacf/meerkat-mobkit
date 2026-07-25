@@ -187,6 +187,9 @@ pub struct UnifiedRuntime {
     // the store is constructed.
     memory_panel_store:
         std::sync::RwLock<Option<Arc<dyn crate::memory::capabilities::MemoryPanelStore>>>,
+    /// Rebuildable detached-job health/status projection supplied by the
+    /// host that owns the canonical Meerkat job service.
+    job_health_projection: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     // Realm-scoped WorkGraph service backing the `mobkit/workgraph/*` RPC
     // group and the console experience section. Seeded from the bootstrap
     // spec and deliberately FIXED from then on: the admission guards
@@ -305,6 +308,7 @@ impl UnifiedRuntime {
             access_controller: None,
             topology_controller: crate::topology_control::TopologyController::default(),
             memory_panel_store: std::sync::RwLock::new(None),
+            job_health_projection: Arc::new(std::sync::RwLock::new(None)),
             workgraph_service,
             console_identity_roster: std::sync::RwLock::new(None),
             console_operator_resolver: std::sync::RwLock::new(None),
@@ -524,6 +528,25 @@ impl UnifiedRuntime {
 
     pub fn binary_blob_store(&self) -> Option<Arc<dyn crate::blob_store::BinaryBlobStore>> {
         self.mob_runtime.binary_blob_store()
+    }
+
+    /// Publish the latest rebuildable detached-job observability projection.
+    ///
+    /// Lifecycle remains owned by Meerkat's generated job machine; this slot
+    /// exists only so status, capability, console, and health surfaces can
+    /// expose the host-owned projection without a parallel semantic store.
+    pub fn set_job_health_projection(&self, projection: Option<serde_json::Value>) {
+        *self
+            .job_health_projection
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = projection;
+    }
+
+    pub fn job_health_projection(&self) -> Option<serde_json::Value> {
+        self.job_health_projection
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn module_runtime_handle(&self) -> Arc<tokio::sync::Mutex<MobkitRuntimeHandle>> {

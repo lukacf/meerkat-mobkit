@@ -348,12 +348,34 @@ impl std::fmt::Display for RuntimeStoreResolutionError {
 
 impl std::error::Error for RuntimeStoreResolutionError {}
 
+/// Fail-closed canonical detached-job store open failure.
+#[derive(Debug)]
+pub struct JobStoreResolutionError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl std::fmt::Display for JobStoreResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to open the canonical detached-job store at {}: {} \
+             (durable detached admission is unavailable; fix the database file)",
+            self.path.display(),
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for JobStoreResolutionError {}
+
 /// Composite fail-closed storage composition failure for the persistent
 /// bootstrap path: any durable slot that can refuse at composition time.
 #[derive(Debug)]
 pub enum StorageResolutionError {
     Blob(BlobStoreResolutionError),
     RuntimeStore(RuntimeStoreResolutionError),
+    JobStore(JobStoreResolutionError),
 }
 
 impl std::fmt::Display for StorageResolutionError {
@@ -361,6 +383,7 @@ impl std::fmt::Display for StorageResolutionError {
         match self {
             Self::Blob(error) => error.fmt(f),
             Self::RuntimeStore(error) => error.fmt(f),
+            Self::JobStore(error) => error.fmt(f),
         }
     }
 }
@@ -376,6 +399,12 @@ impl From<BlobStoreResolutionError> for StorageResolutionError {
 impl From<RuntimeStoreResolutionError> for StorageResolutionError {
     fn from(error: RuntimeStoreResolutionError) -> Self {
         Self::RuntimeStore(error)
+    }
+}
+
+impl From<JobStoreResolutionError> for StorageResolutionError {
+    fn from(error: JobStoreResolutionError) -> Self {
+        Self::JobStore(error)
     }
 }
 

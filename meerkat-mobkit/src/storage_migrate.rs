@@ -21,9 +21,12 @@
 //!    `SqliteAgentMemoryStore` realm-connection path). Dry-run is a
 //!    read-only version matrix. The workgraph admission sidecar is
 //!    **exempt** (M3 decision: the lock database deliberately carries no
-//!    tables and no ledger); meerkat-shared databases (sessions, runtime,
-//!    schedule, workgraph) are report-only here — the owning meerkat store
-//!    converges each on its next open.
+//!    tables and no ledger); most meerkat-shared databases (sessions, runtime,
+//!    schedule, workgraph) are report-only here. The inherited jobs database
+//!    is the deliberate exception: this verb invokes Meerkat's canonical
+//!    `SqliteDetachedJobStore` constructor while holding the same state-wide
+//!    fence, so offline migration covers the Phase-4 jobs domain without
+//!    introducing a MobKit-owned schema authority.
 //! 2. **File-name unification (auto-safe, rename-only).** A lone legacy
 //!    spelling ([`crate::storage_layout::DatabaseSlot::legacy_names`])
 //!    renames to its M2 canonical name under the fence, WITH its `-wal` /
@@ -173,8 +176,9 @@ const LEFTOVER_FINDING_CODES: &[&str] = &[
 
 /// Enumerate every SQLite database file currently materialized under a
 /// MobKit state directory: each [`DatabaseSlot`]'s canonical **and** legacy
-/// spellings that exist as files, plus the per-realm agent-memory databases
-/// under both memory-root spellings. Sorted (deterministic fence order).
+/// spellings that exist as files, the inherited canonical jobs database, plus
+/// the per-realm agent-memory databases under both memory-root spellings.
+/// Sorted (deterministic fence order).
 ///
 /// The workgraph admission sidecar is deliberately excluded: it carries no
 /// per-operation fence guard by M3 design (it IS a cross-process lock), so
@@ -206,7 +210,12 @@ pub fn enumerate_state_dir_databases(state_dir: &Path) -> Vec<PathBuf> {
             }
         }
     }
+    let jobs = MobKitStorageLayout::with_injected_roots(state_dir.to_path_buf(), None).jobs_db();
+    if jobs.is_file() {
+        files.push(jobs);
+    }
     files.sort();
+    files.dedup();
     files
 }
 
@@ -854,7 +863,9 @@ enum LedgerDomainClass {
 
 fn ledger_domain_class(domain: &str) -> LedgerDomainClass {
     match domain {
-        "mobkit-continuity" | "mobkit-metadata" | "mobkit-console" => LedgerDomainClass::Stampable,
+        "mobkit-continuity" | "mobkit-metadata" | "mobkit-console" | "jobs" => {
+            LedgerDomainClass::Stampable
+        }
         "mobkit-workgraph-admission" => LedgerDomainClass::Exempt,
         _ if domain == MEMORY_LEDGER_DOMAIN => LedgerDomainClass::Stampable,
         _ => LedgerDomainClass::ReportOnly,
@@ -938,6 +949,10 @@ fn read_ledger_matrix(state_dir: &Path) -> Vec<(PathBuf, String, Option<i64>)> {
             push_db(db_path, &[MEMORY_LEDGER_DOMAIN]);
         }
     }
+    let jobs = MobKitStorageLayout::with_injected_roots(state_dir.to_path_buf(), None).jobs_db();
+    if jobs.is_file() {
+        push_db(jobs, &["jobs"]);
+    }
     matrix
 }
 
@@ -1015,6 +1030,13 @@ fn open_stores_through_ledgered_constructors(
         }
         Ok(_) => {}
         Err(error) => errors.push(format!("agent-memory locator unresolved: {error}")),
+    }
+    let jobs = layout.jobs_db();
+    if jobs.is_file()
+        && !unfenced.contains(&jobs)
+        && let Err(error) = meerkat::SqliteDetachedJobStore::open(&jobs)
+    {
+        errors.push(format!("detached-job store open failed: {error}"));
     }
 }
 
@@ -2093,6 +2115,8 @@ mod tests {
         drop(Connection::open(state.join("runtime.sqlite")).expect("runtime"));
         fs::create_dir_all(state.join("agent-memory")).expect("memory root");
         drop(Connection::open(state.join("agent-memory/alpha.sqlite3")).expect("realm"));
+        let jobs = MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None).jobs_db();
+        drop(meerkat::SqliteDetachedJobStore::open(&jobs).expect("jobs"));
         // Excluded: the admission sidecar (no fence guard by design) and
         // non-database files.
         drop(Connection::open(state.join(WORKGRAPH_ADMISSION_SIDECAR_FILE)).expect("sidecar"));
@@ -2102,12 +2126,13 @@ mod tests {
         let mut expected = vec![
             state.join("agent-memory/alpha.sqlite3"),
             state.join("continuity.db"),
+            jobs,
             state.join("runtime.sqlite"),
             state.join("sessions.sqlite3"),
         ];
         expected.sort();
         assert_eq!(fence.fenced_databases(), expected.as_slice());
-        assert_eq!(fence.len(), 4);
+        assert_eq!(fence.len(), 5);
         assert!(!fence.is_empty());
         for database in fence.fenced_databases() {
             assert!(meerkat_sqlite::fence_lock_path(database).is_file());
@@ -2304,7 +2329,10 @@ mod tests {
                 .expect("sessions ddl");
         }
         drop(Connection::open(state.join(WORKGRAPH_ADMISSION_SIDECAR_FILE)).expect("sidecar"));
+        let jobs = MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None).jobs_db();
+        drop(meerkat::SqliteDetachedJobStore::open(&jobs).expect("jobs"));
         let before = file_digest_hex(&state.join("continuity.db"));
+        let jobs_before = file_digest_hex(&jobs);
 
         let report = migrate_state_dir(state, MigrateMode::DryRun, None);
         assert!(!report.has_errors(), "{:?}", report.errors);
@@ -2315,6 +2343,10 @@ mod tests {
         assert_eq!(
             ledger_entry(&report, "sessions.db", "session-store").action,
             LedgerBaselineAction::ReportOnly
+        );
+        assert_eq!(
+            ledger_entry(&report, "jobs.sqlite3", "jobs").action,
+            LedgerBaselineAction::Recorded
         );
         assert_eq!(
             ledger_entry(
@@ -2346,6 +2378,11 @@ mod tests {
             file_digest_hex(&state.join("continuity.db")),
             before,
             "dry-run must leave the database byte-identical"
+        );
+        assert_eq!(
+            file_digest_hex(&jobs),
+            jobs_before,
+            "dry-run must leave the inherited jobs database byte-identical"
         );
         assert!(
             state.join("continuity.db").is_file(),

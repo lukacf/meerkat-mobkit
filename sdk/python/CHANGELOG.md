@@ -4,6 +4,17 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+- Added durable detached callback tools. `register_tool(..., execution=...)`
+  declares runner identity, restart and idempotency policy, submission timeout,
+  and credential scopes; the host accepts short `start`/`reconcile`/`cancel`
+  control callbacks and reports fenced progress, checkpoints, and terminal
+  results asynchronously.
+- Added `runtime.jobs` and `runtime.monitors` domain handles for the stable
+  job/monitor RPC surface. Reconnect reconciliation reuses the exact committed
+  attempt, fence, lease, checkpoint, and handle; it never advances authority
+  merely because the gateway reopened.
+- Detached credentials are resolved from the runner's bound SDK profile for
+  each committed attempt and are never serialized into job state or reports.
 - Persistent gateway shutdown now negotiates an explicit bounded horizon and
   keeps stdin/provider callbacks open until the gateway acknowledges runtime
   cleanup. The stock 335-second horizon covers provider operations that meet

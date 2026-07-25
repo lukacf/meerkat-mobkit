@@ -17,7 +17,7 @@
 )]
 //! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -50,11 +50,14 @@ use meerkat::{
     AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService, FactoryAgent,
     FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
-use meerkat_core::AgentToolDispatcher;
 use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::ops::ToolDispatchOutcome;
 use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
+use meerkat_core::{
+    AgentToolDispatcher, ToolCatalogCapabilities, ToolCatalogEntry, ToolDeadlineContributor,
+    ToolDeadlineOwner, ToolExecutionContract, ToolExecutionMode,
+};
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -612,12 +615,20 @@ mod tests {
             CallbackToolSpec::parse(&json!({
                 "name": "weather",
                 "description": "Look up the weather",
-                "input_schema": schema
+                "input_schema": schema,
+                "execution": {
+                    "mode": "detached",
+                    "runner": {"name": "weather.scan", "version": "1"},
+                    "restart_class": "non_resumable",
+                    "idempotency_scope": "interaction_and_arguments",
+                    "submission_timeout_ms": 30000,
+                    "credential_scopes": ["weather.read"]
+                }
             }))
             .expect("object spec"),
         ];
         let dispatcher =
-            CallbackToolDispatcher::new(test_callback_bridge(), "build-1".to_string(), specs);
+            CallbackToolDispatcher::new(test_callback_bridge(), "build-1".to_string(), specs, None);
         let defs = AgentToolDispatcher::tools(&dispatcher);
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name.as_ref(), "legacy_name");
@@ -626,6 +637,29 @@ mod tests {
         assert_eq!(defs[1].name.as_ref(), "weather");
         assert_eq!(defs[1].description, "Look up the weather");
         assert_eq!(defs[1].input_schema, schema);
+        let catalog = AgentToolDispatcher::tool_catalog(&dispatcher);
+        assert_eq!(
+            catalog[1].execution.default_mode(),
+            meerkat_core::ToolExecutionMode::Detached
+        );
+        let detached = catalog[1]
+            .execution
+            .detached_policy()
+            .expect("detached policy");
+        assert_eq!(detached.runner().name(), "weather.scan");
+        assert_eq!(detached.runner().version(), "1");
+        assert_eq!(
+            detached.restart_class(),
+            meerkat_core::RestartClass::NonResumable
+        );
+        assert_eq!(
+            detached.idempotency_scope(),
+            meerkat_core::IdempotencyScope::InteractionAndArguments
+        );
+        assert_eq!(
+            detached.credential_scopes(),
+            &std::collections::BTreeSet::from(["weather.read".to_string()])
+        );
     }
 
     #[test]
@@ -636,12 +670,280 @@ mod tests {
             json!({"name": ""}),
             json!({"name": "x", "input_schema": "not-an-object"}),
             json!({"name": "x", "description": 3}),
+            json!({"name": "x", "execution": {"mode": "detached"}}),
         ] {
             assert!(
                 CallbackToolSpec::parse(&value).is_err(),
                 "expected rejection for {value}"
             );
         }
+    }
+
+    #[test]
+    fn callback_event_delivery_builds_stable_runtime_owned_ingress() {
+        let job_id = meerkat::JobId::new("019f74fb-1907-7b21-932d-ab22c4d1f500").expect("job id");
+        let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f501")
+            .expect("session id");
+        let subscription = meerkat::JobSubscription::new(
+            meerkat::JobSubscriptionId::new("review-agent").expect("subscription"),
+            session_id,
+            meerkat::JobDeliveryKind::Event {
+                handling_mode: meerkat_core::HandlingMode::Queue,
+            },
+        );
+        let lineage =
+            meerkat::InteractionLineageId::from_string("019f74fb-1907-7b21-932d-ab22c4d1f502")
+                .expect("lineage");
+        let content = meerkat::JobDeliveryContent::Terminal(meerkat::JobTerminalResult::WorkerLost);
+
+        let input = callback_job_event_input(
+            &job_id,
+            7,
+            &subscription,
+            &lineage,
+            meerkat_core::HandlingMode::Queue,
+            &content,
+        );
+        let meerkat_runtime::Input::ExternalEvent(event) = input else {
+            panic!("job event delivery must use canonical external-event ingress");
+        };
+        assert_eq!(event.event_type, "job.terminal");
+        assert_eq!(event.handling_mode, meerkat_core::HandlingMode::Queue);
+        assert_eq!(
+            event
+                .header
+                .idempotency_key
+                .as_ref()
+                .map(ToString::to_string),
+            Some(format!("job:{job_id}:7:review-agent"))
+        );
+        assert_eq!(
+            event.payload,
+            json!({
+                "job_id": job_id.to_string(),
+                "delivery_sequence": 7,
+                "content": {
+                    "kind": "terminal",
+                    "result": "WorkerLost"
+                }
+            })
+        );
+        assert_eq!(
+            event.header.correlation_id.map(|id| id.to_string()),
+            Some(lineage.as_str().to_string())
+        );
+    }
+
+    #[test]
+    fn callback_runner_ownership_requires_exact_tool_runner_and_version() {
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
+        let runtime = DetachedCallbackJobRuntime::new(
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            Arc::new(meerkat::MemoryDetachedJobStore::new()),
+            blobs,
+        );
+        let dispatcher = CallbackToolDispatcher::new(
+            test_callback_bridge(),
+            "build-1".to_string(),
+            vec![
+                CallbackToolSpec::parse(&json!({
+                    "name": "security_scan",
+                    "execution": {
+                        "mode": "detached",
+                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "restart_class": "adoptable",
+                        "idempotency_scope": "interaction_and_arguments",
+                        "submission_timeout_ms": 30000
+                    }
+                }))
+                .expect("tool spec"),
+            ],
+            Some(runtime.clone()),
+        );
+        assert!(
+            dispatcher.reconcile_registered_catalog,
+            "the first exact callback owner must trigger recovery"
+        );
+        let duplicate = CallbackToolDispatcher::new(
+            test_callback_bridge(),
+            "build-2".to_string(),
+            vec![
+                CallbackToolSpec::parse(&json!({
+                    "name": "security_scan",
+                    "execution": {
+                        "mode": "detached",
+                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "restart_class": "adoptable",
+                        "idempotency_scope": "interaction_and_arguments",
+                        "submission_timeout_ms": 30000
+                    }
+                }))
+                .expect("tool spec"),
+            ],
+            Some(runtime.clone()),
+        );
+        assert!(
+            !duplicate.reconcile_registered_catalog,
+            "rebuilding an already-known exact owner must not start a duplicate recovery census"
+        );
+        let later_runner = CallbackToolDispatcher::new(
+            test_callback_bridge(),
+            "build-3".to_string(),
+            vec![
+                CallbackToolSpec::parse(&json!({
+                    "name": "report_export",
+                    "execution": {
+                        "mode": "detached",
+                        "runner": {"name": "homecore.report_export", "version": "1"},
+                        "restart_class": "adoptable",
+                        "idempotency_scope": "interaction_and_arguments",
+                        "submission_timeout_ms": 30000
+                    }
+                }))
+                .expect("tool spec"),
+            ],
+            Some(runtime.clone()),
+        );
+        assert!(
+            later_runner.reconcile_registered_catalog,
+            "a later exact owner must get its own recovery census"
+        );
+        let make_spec = |tool: &str, runner: &str, version: &str| {
+            meerkat::JobSpec::new(
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f503")
+                    .expect("session"),
+                meerkat::ExecutionIntentId::from_string(format!("intent:{tool}")).expect("intent"),
+                meerkat::InteractionLineageId::from_string(format!("lineage:{tool}"))
+                    .expect("lineage"),
+                meerkat::ToolIdentity::new(tool, version).expect("tool"),
+                meerkat::RunnerIdentity::new(runner, version).expect("runner"),
+                meerkat::RestartClass::Adoptable,
+                meerkat::CanonicalArgumentsHash::new(format!("sha256:{}", "a".repeat(64)))
+                    .expect("hash"),
+                meerkat::JobSubmissionKey::new(format!("submission:{tool}:{runner}:{version}"))
+                    .expect("submission"),
+            )
+        };
+        assert!(runtime.owns_callback_job(&make_spec(
+            "security_scan",
+            "homecore.security_scan",
+            "1"
+        )));
+        assert!(!runtime.owns_callback_job(&make_spec(
+            "other_tool",
+            "homecore.security_scan",
+            "1"
+        )));
+        assert!(!runtime.owns_callback_job(&make_spec(
+            "security_scan",
+            "homecore.security_scan",
+            "2"
+        )));
+    }
+
+    #[tokio::test]
+    async fn callback_reconcile_rehydrates_exact_committed_authority_without_advancing_fence() {
+        let store = Arc::new(meerkat::MemoryDetachedJobStore::new());
+        let service = meerkat::DetachedJobService::new(store.clone());
+        let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f532")
+            .expect("session id");
+        let spec = meerkat::JobSpec::new(
+            meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            session_id,
+            meerkat::ExecutionIntentId::from_string("intent:reconcile").expect("intent"),
+            meerkat::InteractionLineageId::from_string("lineage:reconcile").expect("lineage"),
+            meerkat::ToolIdentity::new("security_scan", "1").expect("tool"),
+            meerkat::RunnerIdentity::new("homecore.security_scan", "1").expect("runner"),
+            meerkat::RestartClass::Adoptable,
+            meerkat::CanonicalArgumentsHash::new(format!("sha256:{}", "a".repeat(64)))
+                .expect("arguments hash"),
+            meerkat::JobSubmissionKey::new("callback:reconcile").expect("submission key"),
+        );
+        let receipt = service.submit(spec).await.expect("submit");
+        let claim = service
+            .claim_attempt(
+                &receipt.job_id,
+                meerkat::AttemptClaim::new(
+                    meerkat::WorkerId::new("worker-1").expect("worker"),
+                    100,
+                    u64::MAX,
+                    meerkat::RunnerHandleRef::new("external:scan-1").expect("handle"),
+                ),
+            )
+            .await
+            .expect("claim");
+
+        let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(4);
+        let bridge = StdioCallbackBridge::new(stdout_tx);
+        let binary: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blobs: Arc<dyn meerkat_core::BlobStore> = Arc::new(Base64BlobStoreAdapter::new(binary));
+        let dispatcher = CallbackToolDispatcher::new(
+            bridge.clone(),
+            "build-1".to_string(),
+            vec![
+                CallbackToolSpec::parse(&json!({
+                    "name": "security_scan",
+                    "execution": {
+                        "mode": "detached",
+                        "runner": {"name": "homecore.security_scan", "version": "1"},
+                        "restart_class": "adoptable",
+                        "idempotency_scope": "interaction_and_arguments",
+                        "submission_timeout_ms": 30000
+                    }
+                }))
+                .expect("tool spec"),
+            ],
+            Some(DetachedCallbackJobRuntime::new(
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                store.clone(),
+                blobs,
+            )),
+        );
+        let reconcile = tokio::spawn(async move { dispatcher.reconcile_detached_jobs().await });
+        let request_line = stdout_rx.recv().await.expect("reconcile callback");
+        let request: Value = serde_json::from_str(&request_line).expect("callback json");
+        assert_eq!(
+            request.pointer("/params/attempts/0/authority/fence"),
+            Some(&json!(claim.fence.get()))
+        );
+        assert_eq!(
+            request.pointer("/params/attempts/0/authority/attempt_id"),
+            Some(&json!(claim.attempt_id.to_string()))
+        );
+        assert_eq!(
+            request.pointer("/params/attempts/0/runner_handle"),
+            Some(&json!("external:scan-1"))
+        );
+        bridge
+            .route_callback_response(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "live_attempts": [{
+                        "job_id": receipt.job_id.to_string(),
+                        "attempt_id": claim.attempt_id.to_string(),
+                        "fence": claim.fence.get()
+                    }]
+                }
+            }))
+            .await;
+        reconcile
+            .await
+            .expect("reconcile task")
+            .expect("reconcile succeeds");
+
+        let reopened = meerkat::DetachedJobStore::get(&*store, &receipt.job_id)
+            .await
+            .expect("read")
+            .expect("job");
+        assert_eq!(reopened.machine_state.attempt_count, 1);
+        assert_eq!(reopened.machine_state.current_fence, claim.fence.get());
+        assert_eq!(
+            reopened.machine_state.current_attempt_id.as_deref(),
+            Some(claim.attempt_id.as_str())
+        );
     }
 
     #[test]
@@ -2068,6 +2370,7 @@ actions = ["agent.view"]
             bridge: StdioCallbackBridge::new(stdout_tx),
             has_session_builder: false,
             session_store: None,
+            detached_jobs: None,
         };
         let session_id = meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f532")
             .expect("valid session id");
@@ -3852,6 +4155,499 @@ struct CallbackToolSpec {
     name: String,
     description: Option<String>,
     input_schema: Option<Value>,
+    execution: ToolExecutionContract,
+}
+
+#[derive(Clone)]
+struct DetachedCallbackJobRuntime {
+    realm_id: String,
+    store: Arc<dyn meerkat::DetachedJobStore>,
+    service: meerkat::DetachedJobService,
+    blob_store: Arc<dyn meerkat_core::BlobStore>,
+    runtime_inbox: Option<meerkat_runtime::RuntimeDeliveryInbox>,
+    delivery_service: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_mob::MobSessionService>>>>,
+    delivery_driver_started: Arc<AtomicBool>,
+    monitor_recovery_completed: Arc<AtomicBool>,
+    monitor_shell_config: Option<meerkat_tools::builtin::shell::ShellConfig>,
+    monitor_managers: Arc<Mutex<HashMap<String, Arc<meerkat_tools::builtin::shell::JobManager>>>>,
+    callback_runners: Arc<std::sync::RwLock<BTreeSet<(String, String, String)>>>,
+}
+
+impl DetachedCallbackJobRuntime {
+    fn new(
+        realm_id: impl Into<String>,
+        store: Arc<dyn meerkat::DetachedJobStore>,
+        blob_store: Arc<dyn meerkat_core::BlobStore>,
+    ) -> Self {
+        Self {
+            realm_id: realm_id.into(),
+            service: meerkat::DetachedJobService::new(Arc::clone(&store)),
+            store,
+            blob_store,
+            runtime_inbox: None,
+            delivery_service: Arc::new(std::sync::RwLock::new(None)),
+            delivery_driver_started: Arc::new(AtomicBool::new(false)),
+            monitor_recovery_completed: Arc::new(AtomicBool::new(false)),
+            monitor_shell_config: None,
+            monitor_managers: Arc::new(Mutex::new(HashMap::new())),
+            callback_runners: Arc::new(std::sync::RwLock::new(BTreeSet::new())),
+        }
+    }
+
+    fn with_runtime_delivery_store(
+        mut self,
+        runtime_store: Arc<dyn meerkat_runtime::RuntimeStore>,
+    ) -> Self {
+        self.runtime_inbox = Some(meerkat_runtime::RuntimeDeliveryInbox::new(runtime_store));
+        self
+    }
+
+    fn with_monitor_shell(mut self, project_root: PathBuf, enabled: bool) -> Self {
+        if enabled {
+            self.monitor_shell_config =
+                Some(meerkat_tools::builtin::shell::ShellConfig::with_project_root(project_root));
+        }
+        self
+    }
+
+    fn shell_delivery_projector(
+        &self,
+    ) -> Result<Arc<dyn meerkat_tools::builtin::shell::ShellJobDeliveryProjector>, String> {
+        let runtime_inbox = self.runtime_inbox.clone().ok_or_else(|| {
+            "durable monitor execution requires the persistent runtime inbox".to_string()
+        })?;
+        Ok(Arc::new(meerkat::JobOutboxProjector::new_for_realm(
+            Arc::clone(&self.store),
+            runtime_inbox,
+            self.realm_id.clone(),
+        )))
+    }
+
+    async fn monitor_manager(
+        &self,
+        session_id: &meerkat_core::SessionId,
+    ) -> Result<Arc<meerkat_tools::builtin::shell::JobManager>, String> {
+        let key = session_id.to_string();
+        let mut managers = self.monitor_managers.lock().await;
+        if let Some(manager) = managers.get(&key) {
+            return Ok(Arc::clone(manager));
+        }
+        let config = self.monitor_shell_config.clone().ok_or_else(|| {
+            "monitors/start requires shell tooling to be enabled for this MobKit runtime"
+                .to_string()
+        })?;
+        let durable = meerkat_tools::builtin::shell::DurableShellJobRuntime::new(
+            self.realm_id.clone(),
+            session_id.clone(),
+            Arc::clone(&self.store),
+            Arc::clone(&self.blob_store),
+            self.shell_delivery_projector()?,
+        )
+        .map_err(|error| error.to_string())?;
+        let manager = Arc::new(
+            meerkat_tools::builtin::shell::JobManager::new(config)
+                .with_durable_job_runtime(durable)
+                .bind_canonical_async_ops(
+                    session_id.clone(),
+                    Arc::new(meerkat_runtime::RuntimeOpsLifecycleRegistry::new()),
+                ),
+        );
+        managers.insert(key, Arc::clone(&manager));
+        Ok(manager)
+    }
+
+    fn register_callback_catalog(&self, catalog: &[ToolCatalogEntry]) -> bool {
+        let mut runners = self
+            .callback_runners
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registered_new_runner = false;
+        for entry in catalog {
+            if let Some(policy) = entry.execution.detached_policy() {
+                registered_new_runner |= runners.insert((
+                    entry.tool.name.to_string(),
+                    policy.runner().name().to_string(),
+                    policy.runner().version().to_string(),
+                ));
+            }
+        }
+        registered_new_runner
+    }
+
+    fn owns_callback_job(&self, spec: &meerkat::JobSpec) -> bool {
+        self.callback_runners
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(
+                spec.tool.name().to_string(),
+                spec.runner.name().to_string(),
+                spec.runner.version().to_string(),
+            ))
+    }
+
+    async fn recover_monitor_jobs(&self) -> Result<(), String> {
+        if self.monitor_shell_config.is_none()
+            || self.monitor_recovery_completed.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let sessions = self
+            .store
+            .list_all(usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|job| {
+                job.spec.realm_id == self.realm_id
+                    && matches!(
+                        job.spec.runner.name(),
+                        "meerkat.shell" | "meerkat.monitor_script"
+                    )
+            })
+            .map(|job| {
+                let session_id = job.spec.origin_session_id;
+                (session_id.to_string(), session_id)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for session_id in sessions.into_values() {
+            self.monitor_manager(&session_id)
+                .await?
+                .list_jobs()
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        self.monitor_recovery_completed
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn attach_delivery_service(&self, service: Arc<dyn meerkat_mob::MobSessionService>) {
+        *self
+            .delivery_service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
+    }
+
+    fn arm_delivery_driver(&self, unified_runtime: Arc<UnifiedRuntime>) {
+        if self
+            .delivery_driver_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = runtime.recover_monitor_jobs().await {
+                    tracing::warn!(%error, "durable monitor recovery failed");
+                }
+                if let Err(error) = runtime.drain_deliveries().await {
+                    tracing::warn!(%error, "durable callback delivery drain failed");
+                }
+                match runtime.health_projection().await {
+                    Ok(projection) => unified_runtime.set_job_health_projection(Some(projection)),
+                    Err(error) => {
+                        tracing::warn!(%error, "durable callback health projection failed");
+                        unified_runtime.set_job_health_projection(Some(json!({
+                            "status": "degraded",
+                            "detached_jobs": {
+                                "status": "degraded",
+                                "reason": "job_health_projection_failed"
+                            }
+                        })));
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    async fn drain_deliveries(&self) -> Result<(), String> {
+        let Some(runtime_inbox) = self.runtime_inbox.clone() else {
+            return Ok(());
+        };
+        let delivery_service = self
+            .delivery_service
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(delivery_service) = delivery_service else {
+            return Ok(());
+        };
+        let projector = meerkat::JobOutboxProjector::new_for_realm(
+            Arc::clone(&self.store),
+            runtime_inbox.clone(),
+            self.realm_id.clone(),
+        );
+        projector
+            .project_pending(256)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let sink: Arc<dyn meerkat::JobDeliverySink> =
+            Arc::new(CallbackJobDeliverySink { delivery_service });
+        let applier = meerkat::JobRuntimeDeliveryApplier::new(runtime_inbox, sink);
+        for session_id in self.delivery_origin_sessions().await? {
+            applier
+                .apply_pending(
+                    &meerkat_runtime::LogicalRuntimeId::for_session(&session_id),
+                    256,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    async fn delivery_origin_sessions(&self) -> Result<Vec<meerkat_core::SessionId>, String> {
+        Ok(self
+            .store
+            .list_all(usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|job| job.spec.realm_id == self.realm_id)
+            .map(|job| {
+                let origin = job.spec.origin_session_id;
+                (origin.to_string(), origin)
+            })
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect())
+    }
+
+    async fn runtime_delivery_backlog(&self) -> Result<u64, String> {
+        let Some(runtime_inbox) = self.runtime_inbox.clone() else {
+            return Ok(0);
+        };
+        let mut total = 0_u64;
+        for session_id in self.delivery_origin_sessions().await? {
+            let pending = runtime_inbox
+                .list_pending(
+                    &meerkat_runtime::LogicalRuntimeId::for_session(&session_id),
+                    usize::MAX,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            total = total.saturating_add(u64::try_from(pending.len()).unwrap_or(u64::MAX));
+        }
+        Ok(total)
+    }
+
+    async fn health_projection(&self) -> Result<Value, String> {
+        let now_ms = callback_unix_time_ms()?;
+        let health = self
+            .service
+            .health_snapshot_for_realm(&self.realm_id, now_ms, usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?;
+        let runtime_delivery_backlog = self.runtime_delivery_backlog().await?;
+        let delivery_backlog = health
+            .delivery_backlog
+            .saturating_add(runtime_delivery_backlog);
+        let degraded = health.is_degraded() || runtime_delivery_backlog > 0;
+        let mut by_session = serde_json::Map::new();
+        for job in self
+            .store
+            .list_all(usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|job| job.spec.realm_id == self.realm_id)
+        {
+            let key = job.spec.origin_session_id.to_string();
+            let entry = by_session.entry(key).or_insert_with(|| {
+                json!({
+                    "active": 0_u64,
+                    "awaiting_detached": false,
+                    "queued": 0_u64,
+                    "running": 0_u64,
+                    "needs_attention": 0_u64
+                })
+            });
+            let active = matches!(
+                job.machine_state.lifecycle_phase,
+                meerkat::JobPhase::Unsubmitted
+                    | meerkat::JobPhase::Queued
+                    | meerkat::JobPhase::Claimed
+                    | meerkat::JobPhase::Running
+                    | meerkat::JobPhase::WaitingExternal
+                    | meerkat::JobPhase::LossObserved
+                    | meerkat::JobPhase::RetryScheduled
+            );
+            if active {
+                entry["active"] = json!(
+                    entry["active"]
+                        .as_u64()
+                        .unwrap_or_default()
+                        .saturating_add(1)
+                );
+                entry["awaiting_detached"] = Value::Bool(true);
+            }
+            let field = match job.machine_state.lifecycle_phase {
+                meerkat::JobPhase::Queued | meerkat::JobPhase::RetryScheduled => Some("queued"),
+                meerkat::JobPhase::Running | meerkat::JobPhase::WaitingExternal => Some("running"),
+                meerkat::JobPhase::NeedsAttention => Some("needs_attention"),
+                _ => None,
+            };
+            if let Some(field) = field {
+                entry[field] = json!(entry[field].as_u64().unwrap_or_default().saturating_add(1));
+            }
+        }
+        Ok(json!({
+            "status": if degraded { "degraded" } else { "ok" },
+            "monitors_available": self.monitor_shell_config.is_some(),
+            "detached_jobs": {
+                "status": if degraded { "degraded" } else { "ok" },
+                "queued": health.queued,
+                "running": health.running,
+                "awaiting_members": health.awaiting_members,
+                "stale_leases": health.stale_leases,
+                "needs_attention": health.needs_attention,
+                "delivery_backlog": delivery_backlog
+            },
+            "by_session": by_session
+        }))
+    }
+}
+
+struct CallbackJobDeliverySink {
+    delivery_service: Arc<dyn meerkat_mob::MobSessionService>,
+}
+
+#[async_trait]
+impl meerkat::JobDeliverySink for CallbackJobDeliverySink {
+    async fn apply(&self, application: meerkat::JobDeliveryApplication) -> Result<(), String> {
+        match application {
+            meerkat::JobDeliveryApplication::Record { .. } => Ok(()),
+            meerkat::JobDeliveryApplication::Notification {
+                job_id,
+                delivery_sequence,
+                subscription,
+                content,
+            } => {
+                let mut request = meerkat_core::service::AppendSystemContextRequest::from_text(
+                    callback_job_delivery_text(&job_id, &content),
+                );
+                request.source = Some(format!("detached_job:{job_id}"));
+                request.idempotency_key = Some(format!(
+                    "job:{job_id}:{delivery_sequence}:{}",
+                    subscription.subscription_id()
+                ));
+                self.delivery_service
+                    .append_system_context(subscription.session_id(), request)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+            meerkat::JobDeliveryApplication::Event {
+                job_id,
+                delivery_sequence,
+                subscription,
+                interaction_lineage_id,
+                handling_mode,
+                content,
+            } => {
+                let runtime_adapter = self
+                    .delivery_service
+                    .runtime_adapter()
+                    .ok_or_else(|| {
+                        format!(
+                            "session {} has no runtime-owned durable event ingress for detached job {job_id}",
+                            subscription.session_id()
+                        )
+                    })?;
+                let input = callback_job_event_input(
+                    &job_id,
+                    delivery_sequence,
+                    &subscription,
+                    &interaction_lineage_id,
+                    handling_mode,
+                    &content,
+                );
+                meerkat_runtime::SessionServiceRuntimeExt::accept_input(
+                    runtime_adapter.as_ref(),
+                    subscription.session_id(),
+                    input,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            }
+        }
+    }
+}
+
+fn callback_job_event_input(
+    job_id: &meerkat::JobId,
+    delivery_sequence: u64,
+    subscription: &meerkat::JobSubscription,
+    interaction_lineage_id: &meerkat::InteractionLineageId,
+    handling_mode: meerkat_core::HandlingMode,
+    content: &meerkat::JobDeliveryContent,
+) -> meerkat_runtime::Input {
+    let event_type = match content {
+        meerkat::JobDeliveryContent::Notification(_) => "job.notification",
+        meerkat::JobDeliveryContent::Terminal(_) => "job.terminal",
+    };
+    let content_value = match content {
+        meerkat::JobDeliveryContent::Notification(notification) => json!({
+            "kind": "notification",
+            "notification": notification,
+        }),
+        meerkat::JobDeliveryContent::Terminal(result) => json!({
+            "kind": "terminal",
+            "result": result,
+        }),
+    };
+    let correlation_id = uuid::Uuid::parse_str(interaction_lineage_id.as_str())
+        .ok()
+        .map(meerkat_runtime::CorrelationId::from_uuid);
+    let idempotency_key = format!(
+        "job:{job_id}:{delivery_sequence}:{}",
+        subscription.subscription_id()
+    );
+    meerkat_runtime::Input::ExternalEvent(meerkat_runtime::ExternalEventInput {
+        objective_id: None,
+        header: meerkat_runtime::InputHeader {
+            id: meerkat_core::lifecycle::InputId::new(),
+            timestamp: chrono::Utc::now(),
+            source: meerkat_runtime::InputOrigin::External {
+                source_name: event_type.to_string(),
+            },
+            durability: meerkat_runtime::InputDurability::Durable,
+            visibility: meerkat_runtime::InputVisibility::default(),
+            idempotency_key: Some(meerkat_runtime::IdempotencyKey::new(idempotency_key)),
+            supersession_key: None,
+            correlation_id,
+        },
+        event_type: event_type.to_string(),
+        payload: json!({
+            "job_id": job_id.to_string(),
+            "delivery_sequence": delivery_sequence,
+            "content": content_value,
+        }),
+        blocks: None,
+        handling_mode,
+        render_metadata: None,
+    })
+}
+
+fn callback_job_delivery_text(
+    job_id: &meerkat::JobId,
+    content: &meerkat::JobDeliveryContent,
+) -> String {
+    match content {
+        meerkat::JobDeliveryContent::Notification(notification) => format!(
+            "Detached job {job_id}: {}\n\n{}",
+            notification.title(),
+            notification.body()
+        ),
+        meerkat::JobDeliveryContent::Terminal(result) => {
+            format!("Detached job {job_id} reached terminal state: {result:?}")
+        }
+    }
 }
 
 impl CallbackToolSpec {
@@ -3861,6 +4657,7 @@ impl CallbackToolSpec {
                 name: name.to_string(),
                 description: None,
                 input_schema: None,
+                execution: ToolExecutionContract::default(),
             });
         }
         let Some(object) = value.as_object() else {
@@ -3893,11 +4690,80 @@ impl CallbackToolSpec {
                 ));
             }
         };
+        let execution = object
+            .get("execution")
+            .cloned()
+            .map(serde_json::from_value::<meerkat_contracts::CallbackToolExecution>)
+            .transpose()
+            .map_err(|error| format!("tool '{name}' execution is invalid: {error}"))?
+            .map_or_else(
+                || Ok(ToolExecutionContract::default()),
+                callback_execution_contract,
+            )?;
         Ok(Self {
             name,
             description,
             input_schema,
+            execution,
         })
+    }
+}
+
+fn callback_execution_contract(
+    execution: meerkat_contracts::CallbackToolExecution,
+) -> Result<ToolExecutionContract, String> {
+    match execution {
+        meerkat_contracts::CallbackToolExecution::Fast => Ok(ToolExecutionContract::default()),
+        meerkat_contracts::CallbackToolExecution::Detached {
+            runner,
+            restart_class,
+            idempotency_scope,
+            submission_timeout_ms,
+            credential_scopes,
+        } => {
+            let runner = meerkat_core::RunnerIdentity::new(runner.name, runner.version)
+                .map_err(|error| error.to_string())?;
+            let restart_class = match restart_class {
+                meerkat_contracts::JobRestartClass::Adoptable => {
+                    meerkat_core::RestartClass::Adoptable
+                }
+                meerkat_contracts::JobRestartClass::CheckpointResumable => {
+                    meerkat_core::RestartClass::CheckpointResumable
+                }
+                meerkat_contracts::JobRestartClass::Replayable => {
+                    meerkat_core::RestartClass::Replayable
+                }
+                meerkat_contracts::JobRestartClass::NonResumable => {
+                    meerkat_core::RestartClass::NonResumable
+                }
+            };
+            let idempotency_scope = match idempotency_scope {
+                meerkat_contracts::JobIdempotencyScope::ToolCall => {
+                    meerkat_core::IdempotencyScope::ToolCall
+                }
+                meerkat_contracts::JobIdempotencyScope::InteractionAndArguments => {
+                    meerkat_core::IdempotencyScope::InteractionAndArguments
+                }
+                meerkat_contracts::JobIdempotencyScope::HostSemanticKey => {
+                    meerkat_core::IdempotencyScope::HostSemanticKey
+                }
+            };
+            let policy = meerkat_core::DetachedToolExecutionPolicy::new(
+                runner,
+                restart_class,
+                idempotency_scope,
+                Duration::from_millis(submission_timeout_ms),
+            )
+            .map_err(|error| error.to_string())?
+            .with_credential_scopes(credential_scopes);
+            ToolExecutionContract::new(
+                std::collections::BTreeSet::from([ToolExecutionMode::Detached]),
+                ToolExecutionMode::Detached,
+                None,
+                Some(policy),
+            )
+            .map_err(|error| error.to_string())
+        }
     }
 }
 
@@ -3907,34 +4773,567 @@ impl CallbackToolSpec {
 /// (`add_tools()` names or `register_tool()` name + description + schema).
 /// When the agent calls a tool, `dispatch()` sends `callback/call_tool` to
 /// Python and returns the result.
+#[derive(Clone)]
 struct CallbackToolDispatcher {
     bridge: StdioCallbackBridge,
     scope_id: String,
     tool_defs: Arc<[Arc<ToolDef>]>,
+    tool_catalog: Arc<[ToolCatalogEntry]>,
+    detached_jobs: Option<DetachedCallbackJobRuntime>,
+    reconcile_registered_catalog: bool,
 }
 
 impl CallbackToolDispatcher {
-    fn new(bridge: StdioCallbackBridge, scope_id: String, tools: Vec<CallbackToolSpec>) -> Self {
-        let tool_defs: Vec<Arc<ToolDef>> = tools
+    fn new(
+        bridge: StdioCallbackBridge,
+        scope_id: String,
+        tools: Vec<CallbackToolSpec>,
+        detached_jobs: Option<DetachedCallbackJobRuntime>,
+    ) -> Self {
+        let entries: Vec<(Arc<ToolDef>, ToolExecutionContract)> = tools
             .into_iter()
             .map(|tool| {
-                Arc::new(ToolDef {
-                    name: tool.name.into(),
-                    description: tool
-                        .description
-                        .unwrap_or_else(|| "Python callback tool".to_string()),
-                    input_schema: tool
-                        .input_schema
-                        .unwrap_or_else(|| json!({"type": "object"})),
-                    provenance: None,
-                })
+                (
+                    Arc::new(ToolDef {
+                        name: tool.name.into(),
+                        description: tool
+                            .description
+                            .unwrap_or_else(|| "Python callback tool".to_string()),
+                        input_schema: tool
+                            .input_schema
+                            .unwrap_or_else(|| json!({"type": "object"})),
+                        provenance: None,
+                    }),
+                    tool.execution,
+                )
             })
             .collect();
+        let tool_defs = entries
+            .iter()
+            .map(|(tool, _)| Arc::clone(tool))
+            .collect::<Vec<_>>();
+        let tool_catalog = entries
+            .into_iter()
+            .map(|(tool, execution)| {
+                ToolCatalogEntry::session_inline(tool, true).with_execution_contract(execution)
+            })
+            .collect::<Vec<_>>();
+        let reconcile_registered_catalog = detached_jobs
+            .as_ref()
+            .is_some_and(|runtime| runtime.register_callback_catalog(&tool_catalog));
         Self {
             bridge,
             scope_id,
             tool_defs: tool_defs.into(),
+            tool_catalog: tool_catalog.into(),
+            detached_jobs,
+            reconcile_registered_catalog,
         }
+    }
+
+    async fn submit_detached(
+        &self,
+        call: ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+        plan: &meerkat_core::ResolvedToolExecutionPlan,
+    ) -> Result<ToolDispatchOutcome, ToolError> {
+        let runtime = self.detached_jobs.clone().ok_or_else(|| {
+            ToolError::unavailable(
+                call.name,
+                meerkat_core::ToolUnavailableReason::ExecutionModeOwnerUnavailable,
+            )
+        })?;
+        let origin_session_id = context.origin_session_id().cloned().ok_or_else(|| {
+            ToolError::execution_failed(
+                "detached callback dispatch requires runtime-owned session identity".to_string(),
+            )
+        })?;
+        let interaction_lineage = context.interaction_lineage_id().ok_or_else(|| {
+            ToolError::execution_failed(
+                "detached callback dispatch requires runtime-owned interaction lineage".to_string(),
+            )
+        })?;
+        let arguments_sha256 = plan.canonical_arguments_sha256().ok_or_else(|| {
+            ToolError::execution_failed(
+                "detached callback dispatch requires a root-fenced canonical argument digest"
+                    .to_string(),
+            )
+        })?;
+        let policy = match plan.kind() {
+            meerkat_core::ResolvedExecutionKind::Detached(policy) => policy,
+            _ => {
+                return Err(ToolError::execution_failed(
+                    "detached callback owner received a non-detached execution plan".to_string(),
+                ));
+            }
+        };
+        let arguments: Value = serde_json::from_str(call.args.get())
+            .map_err(|error| ToolError::invalid_arguments(call.name, error.to_string()))?;
+        let arguments_hash = callback_sha256(arguments_sha256);
+        let lineage = interaction_lineage.to_string();
+        let submission_key = callback_submission_key(
+            &runtime.realm_id,
+            &origin_session_id,
+            &lineage,
+            call,
+            policy,
+            &arguments_hash,
+            &arguments,
+        )?;
+        let specification = runtime
+            .blob_store
+            .put_artifact(
+                "application/vnd.meerkat.callback-arguments+json",
+                call.args.get(),
+            )
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!(
+                    "failed to persist detached callback specification: {error}"
+                ))
+            })?;
+        let spec = meerkat::JobSpec::new(
+            runtime.realm_id.clone(),
+            origin_session_id,
+            meerkat::ExecutionIntentId::from_string(format!(
+                "intent:{lineage}:{}:{arguments_hash}",
+                call.name
+            ))
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            meerkat::InteractionLineageId::from_string(lineage)
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            meerkat::ToolIdentity::new(call.name, policy.runner().version())
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            meerkat::RunnerIdentity::new(policy.runner().name(), policy.runner().version())
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            callback_job_restart_class(policy.restart_class()),
+            meerkat::CanonicalArgumentsHash::new(arguments_hash)
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+            meerkat::JobSubmissionKey::new(submission_key)
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+        )
+        .with_runner_specification_ref(
+            meerkat::RunnerSpecificationRef::new(specification.blob_id.to_string())
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?,
+        )
+        .with_credential_context_refs(match plan.credential_context_refs() {
+            meerkat_core::ToolExecutionApplicability::Applicable(references) => references.clone(),
+            meerkat_core::ToolExecutionApplicability::NotApplicable => Vec::new(),
+        });
+        let receipt = runtime
+            .service
+            .submit(spec)
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        let projected = meerkat::project_job_receipt(receipt.clone());
+        let bridge = self.bridge.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                start_detached_callback_attempt(runtime, bridge, receipt.job_id).await
+            {
+                tracing::warn!(%error, "detached callback attempt start did not complete");
+            }
+        });
+        let content = serde_json::to_string(&projected).map_err(|error| {
+            ToolError::execution_failed(format!("failed to encode detached job receipt: {error}"))
+        })?;
+        Ok(ToolResult::new(call.id.to_string(), content, false).into())
+    }
+
+    fn owns_detached_callback_spec(&self, spec: &meerkat::JobSpec) -> bool {
+        self.tool_catalog.iter().any(|entry| {
+            entry.tool.name == spec.tool.name()
+                && entry.execution.detached_policy().is_some_and(|policy| {
+                    policy.runner().name() == spec.runner.name()
+                        && policy.runner().version() == spec.runner.version()
+                })
+        })
+    }
+
+    /// Rehydrate exact committed authority. Offering an attempt to the host
+    /// never claims, retries, or advances its fence.
+    async fn reconcile_detached_jobs(&self) -> Result<(), String> {
+        let Some(runtime) = self.detached_jobs.clone() else {
+            return Ok(());
+        };
+        let jobs = runtime.store.list_all(usize::MAX).await.map_err(|error| {
+            format!("failed to enumerate detached callbacks for reconciliation: {error}")
+        })?;
+        let mut attempts = Vec::new();
+        for job in jobs.into_iter().filter(|job| {
+            job.spec.realm_id == runtime.realm_id && self.owns_detached_callback_spec(&job.spec)
+        }) {
+            if matches!(
+                job.machine_state.lifecycle_phase,
+                meerkat::JobPhase::Running | meerkat::JobPhase::WaitingExternal
+            ) {
+                let attempt_id =
+                    job.machine_state
+                        .current_attempt_id
+                        .as_deref()
+                        .ok_or_else(|| {
+                            format!(
+                                "active detached callback {} has no committed attempt id",
+                                job.job_id
+                            )
+                        })?;
+                let runner_handle =
+                    job.machine_state.runner_handle.as_deref().ok_or_else(|| {
+                        format!(
+                            "active detached callback {} has no committed runner handle",
+                            job.job_id
+                        )
+                    })?;
+                let lease_expires_at_ms =
+                    job.machine_state.lease_expires_at_ms.ok_or_else(|| {
+                        format!(
+                            "active detached callback {} has no committed lease",
+                            job.job_id
+                        )
+                    })?;
+                attempts.push(meerkat_contracts::CallbackJobReconcileAttempt {
+                    authority: meerkat_contracts::JobAttemptAuthority {
+                        job_id: job.job_id.to_string(),
+                        attempt_id: attempt_id.to_string(),
+                        fence: job.machine_state.current_fence,
+                    },
+                    runner: meerkat_contracts::JobRunner {
+                        name: job.spec.runner.name().to_string(),
+                        version: job.spec.runner.version().to_string(),
+                    },
+                    restart_class: callback_wire_restart_class(job.spec.restart_class),
+                    runner_handle: runner_handle.to_string(),
+                    checkpoint_ref: job
+                        .machine_state
+                        .checkpoint_ref
+                        .as_ref()
+                        .map(ToString::to_string),
+                    lease_expires_at_ms,
+                });
+            }
+        }
+        if !attempts.is_empty() {
+            let offered_attempts = attempts.clone();
+            let offered = attempts
+                .iter()
+                .map(|attempt| attempt.authority.clone())
+                .collect::<Vec<_>>();
+            let result: meerkat_contracts::CallbackJobReconcileResult = serde_json::from_value(
+                self.bridge
+                    .call(
+                        "callback/job/reconcile",
+                        serde_json::to_value(meerkat_contracts::CallbackJobReconcileParams {
+                            attempts,
+                        })
+                        .map_err(|error| error.to_string())?,
+                    )
+                    .await?,
+            )
+            .map_err(|error| error.to_string())?;
+            if result
+                .live_attempts
+                .iter()
+                .any(|authority| !offered.contains(authority))
+            {
+                return Err(
+                    "callback/job/reconcile returned authority that was not offered".to_string(),
+                );
+            }
+            let now_ms = callback_unix_time_ms()?;
+            for attempt in offered_attempts.iter().filter(|attempt| {
+                attempt.lease_expires_at_ms <= now_ms
+                    && !result.live_attempts.contains(&attempt.authority)
+            }) {
+                let job_id =
+                    meerkat::JobId::new(&attempt.authority.job_id).map_err(|e| e.to_string())?;
+                let write = meerkat::AttemptWriteAuthority {
+                    attempt_id: meerkat::AttemptId::new(&attempt.authority.attempt_id)
+                        .map_err(|e| e.to_string())?,
+                    fence: meerkat::FenceToken::new(attempt.authority.fence),
+                };
+                match runtime
+                    .service
+                    .observe_lease_expired(&job_id, write, now_ms)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(
+                        meerkat::DetachedJobError::StaleRevision { .. }
+                        | meerkat::DetachedJobError::InvalidTransition { .. },
+                    ) => continue,
+                    Err(error) => return Err(error.to_string()),
+                }
+                match attempt.restart_class {
+                    meerkat_contracts::JobRestartClass::NonResumable => {
+                        runtime
+                            .service
+                            .classify_worker_loss(&job_id, now_ms)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                    meerkat_contracts::JobRestartClass::CheckpointResumable
+                        if attempt.checkpoint_ref.is_none() =>
+                    {
+                        runtime
+                            .service
+                            .mark_needs_attention(
+                                &job_id,
+                                now_ms,
+                                meerkat::JobFailureCode::new(
+                                    "checkpoint_resume_missing_checkpoint",
+                                )
+                                .map_err(|error| error.to_string())?,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                    meerkat_contracts::JobRestartClass::Adoptable
+                    | meerkat_contracts::JobRestartClass::CheckpointResumable
+                    | meerkat_contracts::JobRestartClass::Replayable => {
+                        runtime
+                            .service
+                            .schedule_retry(&job_id, now_ms)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+            }
+            for attempt in offered_attempts.iter().filter(|attempt| {
+                attempt.lease_expires_at_ms > now_ms
+                    || result.live_attempts.contains(&attempt.authority)
+            }) {
+                let runtime = runtime.clone();
+                let bridge = self.bridge.clone();
+                let authority = attempt.authority.clone();
+                spawn_callback_lease_tracker(runtime, bridge, authority);
+            }
+        }
+        self.start_due_detached_jobs().await
+    }
+
+    async fn start_due_detached_jobs(&self) -> Result<(), String> {
+        let Some(runtime) = self.detached_jobs.clone() else {
+            return Ok(());
+        };
+        let now_ms = callback_unix_time_ms()?;
+        let jobs = runtime.store.list_all(usize::MAX).await.map_err(|error| {
+            format!("failed to enumerate detached callbacks for runnable work: {error}")
+        })?;
+        for job in jobs.into_iter().filter(|job| {
+            job.spec.realm_id == runtime.realm_id
+                && self.owns_detached_callback_spec(&job.spec)
+                && (job.machine_state.lifecycle_phase == meerkat::JobPhase::Queued
+                    || job.machine_state.lifecycle_phase == meerkat::JobPhase::RetryScheduled)
+        }) {
+            let runtime = runtime.clone();
+            let bridge = self.bridge.clone();
+            let delay_ms = job
+                .machine_state
+                .retry_due_at_ms
+                .unwrap_or(now_ms)
+                .saturating_sub(now_ms);
+            tokio::spawn(async move {
+                if delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+                if let Err(error) =
+                    start_detached_callback_attempt(runtime, bridge, job.job_id).await
+                {
+                    tracing::warn!(%error, "runnable detached callback start did not complete");
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+fn spawn_callback_lease_tracker(
+    runtime: DetachedCallbackJobRuntime,
+    bridge: StdioCallbackBridge,
+    authority: meerkat_contracts::JobAttemptAuthority,
+) {
+    tokio::spawn(async move {
+        if let Err(error) = reconcile_missing_callback_after_lease(runtime, bridge, authority).await
+        {
+            tracing::warn!(%error, "detached callback lease tracking failed");
+        }
+    });
+}
+
+async fn reconcile_missing_callback_after_lease(
+    runtime: DetachedCallbackJobRuntime,
+    bridge: StdioCallbackBridge,
+    authority: meerkat_contracts::JobAttemptAuthority,
+) -> Result<(), String> {
+    let job_id = meerkat::JobId::new(&authority.job_id).map_err(|error| error.to_string())?;
+    loop {
+        let stored = runtime
+            .store
+            .get(&job_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("detached callback {job_id} disappeared before lease expiry"))?;
+        let exact_attempt = stored.machine_state.current_attempt_id.as_deref()
+            == Some(authority.attempt_id.as_str())
+            && stored.machine_state.current_fence == authority.fence
+            && matches!(
+                stored.machine_state.lifecycle_phase,
+                meerkat::JobPhase::Running | meerkat::JobPhase::WaitingExternal
+            );
+        if !exact_attempt {
+            return Ok(());
+        }
+        let lease_expires_at_ms = stored
+            .machine_state
+            .lease_expires_at_ms
+            .ok_or_else(|| format!("active detached callback {job_id} has no committed lease"))?;
+        let now_ms = callback_unix_time_ms()?;
+        if lease_expires_at_ms > now_ms {
+            tokio::time::sleep(Duration::from_millis(
+                lease_expires_at_ms.saturating_sub(now_ms).saturating_add(1),
+            ))
+            .await;
+            // Heartbeats may have extended the exact committed lease and
+            // checkpoint while this task slept. Rehydrate again before
+            // offering recovery so reopen never regresses durable authority.
+            continue;
+        }
+
+        let offered = meerkat_contracts::CallbackJobReconcileAttempt {
+            authority: authority.clone(),
+            runner: meerkat_contracts::JobRunner {
+                name: stored.spec.runner.name().to_string(),
+                version: stored.spec.runner.version().to_string(),
+            },
+            restart_class: callback_wire_restart_class(stored.spec.restart_class),
+            runner_handle: stored
+                .machine_state
+                .runner_handle
+                .as_ref()
+                .ok_or_else(|| {
+                    format!("active detached callback {job_id} has no committed runner handle")
+                })?
+                .clone(),
+            checkpoint_ref: stored
+                .machine_state
+                .checkpoint_ref
+                .as_ref()
+                .map(ToString::to_string),
+            lease_expires_at_ms,
+        };
+        let _live_attempts = match bridge
+            .call(
+                "callback/job/reconcile",
+                serde_json::to_value(meerkat_contracts::CallbackJobReconcileParams {
+                    attempts: vec![offered],
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .await
+        {
+            Ok(value) => {
+                let result: meerkat_contracts::CallbackJobReconcileResult =
+                    serde_json::from_value(value).map_err(|error| error.to_string())?;
+                if result
+                    .live_attempts
+                    .iter()
+                    .any(|candidate| candidate != &authority)
+                {
+                    return Err(
+                        "callback/job/reconcile returned authority that was not offered"
+                            .to_string(),
+                    );
+                }
+                result.live_attempts
+            }
+            // Once the committed lease has elapsed, an unavailable host is a
+            // missing worker observation. The generated machine still decides
+            // whether this becomes loss, retry, or needs-attention.
+            Err(error) => {
+                tracing::warn!(%error, %job_id, "host unavailable at detached callback lease boundary");
+                Vec::new()
+            }
+        };
+        let current = runtime
+            .store
+            .get(&job_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("detached callback {job_id} disappeared during reconcile"))?;
+        let still_exact = current.machine_state.current_attempt_id.as_deref()
+            == Some(authority.attempt_id.as_str())
+            && current.machine_state.current_fence == authority.fence
+            && matches!(
+                current.machine_state.lifecycle_phase,
+                meerkat::JobPhase::Running | meerkat::JobPhase::WaitingExternal
+            );
+        if !still_exact {
+            return Ok(());
+        }
+        let current_lease = current
+            .machine_state
+            .lease_expires_at_ms
+            .ok_or_else(|| format!("active detached callback {job_id} has no committed lease"))?;
+        let now_ms = callback_unix_time_ms()?;
+        if current_lease > now_ms {
+            continue;
+        }
+        let write = meerkat::AttemptWriteAuthority {
+            attempt_id: meerkat::AttemptId::new(&authority.attempt_id)
+                .map_err(|error| error.to_string())?,
+            fence: meerkat::FenceToken::new(authority.fence),
+        };
+        match runtime
+            .service
+            .observe_lease_expired(&job_id, write, now_ms)
+            .await
+        {
+            Ok(_) => {}
+            Err(
+                meerkat::DetachedJobError::StaleRevision { .. }
+                | meerkat::DetachedJobError::InvalidTransition { .. },
+            ) => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        }
+        let retry = match current.spec.restart_class {
+            meerkat::RestartClass::NonResumable => {
+                runtime
+                    .service
+                    .classify_worker_loss(&job_id, now_ms)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                false
+            }
+            meerkat::RestartClass::CheckpointResumable
+                if current.machine_state.checkpoint_ref.is_none() =>
+            {
+                runtime
+                    .service
+                    .mark_needs_attention(
+                        &job_id,
+                        now_ms,
+                        meerkat::JobFailureCode::new("checkpoint_resume_missing_checkpoint")
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                false
+            }
+            meerkat::RestartClass::Adoptable
+            | meerkat::RestartClass::CheckpointResumable
+            | meerkat::RestartClass::Replayable => {
+                runtime
+                    .service
+                    .schedule_retry(&job_id, now_ms)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                true
+            }
+        };
+        if retry {
+            start_detached_callback_attempt(runtime, bridge, job_id).await?;
+        }
+        return Ok(());
     }
 }
 
@@ -3942,6 +5341,42 @@ impl CallbackToolDispatcher {
 impl AgentToolDispatcher for CallbackToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         Arc::clone(&self.tool_defs)
+    }
+
+    fn tool_catalog_capabilities(&self) -> ToolCatalogCapabilities {
+        ToolCatalogCapabilities {
+            exact_catalog: true,
+            may_require_catalog_control_plane: false,
+        }
+    }
+
+    fn tool_catalog(&self) -> Arc<[ToolCatalogEntry]> {
+        Arc::clone(&self.tool_catalog)
+    }
+
+    fn resolve_execution_plan(
+        &self,
+        call: ToolCallView<'_>,
+        _dispatch_context: &meerkat_core::ToolDispatchContext,
+        resolution_context: &meerkat_core::ToolExecutionResolutionContext,
+    ) -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
+    {
+        let entry = self
+            .tool_catalog
+            .iter()
+            .find(|entry| entry.tool.name == call.name)
+            .ok_or_else(|| meerkat_core::ToolExecutionResolutionError::NotFound {
+                tool_name: call.name.to_string(),
+            })?;
+        let resolution_context =
+            resolution_context.with_deadline(ToolDeadlineContributor::finite(
+                ToolDeadlineOwner::ToolInternal,
+                Duration::from_mins(2),
+            ))?;
+        entry
+            .execution
+            .resolve_default(resolution_context.deadlines().clone())
+            .map_err(Into::into)
     }
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
@@ -3975,6 +5410,823 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
             .into()),
         }
     }
+
+    async fn dispatch_resolved_with_context(
+        &self,
+        call: ToolCallView<'_>,
+        context: &meerkat_core::ToolDispatchContext,
+        plan: &meerkat_core::ResolvedToolExecutionPlan,
+    ) -> Result<ToolDispatchOutcome, ToolError> {
+        match plan.mode() {
+            ToolExecutionMode::Fast => self.dispatch(call).await,
+            ToolExecutionMode::Detached => self.submit_detached(call, context, plan).await,
+            ToolExecutionMode::Streaming => Err(ToolError::unavailable(
+                call.name,
+                meerkat_core::ToolUnavailableReason::ExecutionModeOwnerUnavailable,
+            )),
+        }
+    }
+}
+
+fn callback_sha256(digest: [u8; 32]) -> String {
+    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn callback_submission_key(
+    realm_id: &str,
+    origin_session_id: &meerkat_core::SessionId,
+    interaction_lineage: &str,
+    call: ToolCallView<'_>,
+    policy: &meerkat_core::DetachedToolExecutionPolicy,
+    arguments_hash: &str,
+    arguments: &Value,
+) -> Result<String, ToolError> {
+    let scope = match policy.idempotency_scope() {
+        meerkat_core::IdempotencyScope::ToolCall => format!("tool-call:{}", call.id),
+        meerkat_core::IdempotencyScope::InteractionAndArguments => {
+            format!("interaction:{interaction_lineage}:arguments:{arguments_hash}")
+        }
+        meerkat_core::IdempotencyScope::HostSemanticKey => {
+            let semantic_key = arguments
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    ToolError::invalid_arguments(
+                        call.name,
+                        "host_semantic_key execution requires a non-empty string idempotency_key",
+                    )
+                })?;
+            format!(
+                "host-semantic:sha256:{:x}",
+                Sha256::digest(semantic_key.as_bytes())
+            )
+        }
+    };
+    Ok(format!(
+        "callback:{realm_id}:{origin_session_id}:{}:{}:{}:{scope}",
+        call.name,
+        policy.runner().name(),
+        policy.runner().version(),
+    ))
+}
+
+fn callback_job_restart_class(class: meerkat_core::RestartClass) -> meerkat::RestartClass {
+    match class {
+        meerkat_core::RestartClass::Adoptable => meerkat::RestartClass::Adoptable,
+        meerkat_core::RestartClass::CheckpointResumable => {
+            meerkat::RestartClass::CheckpointResumable
+        }
+        meerkat_core::RestartClass::Replayable => meerkat::RestartClass::Replayable,
+        meerkat_core::RestartClass::NonResumable => meerkat::RestartClass::NonResumable,
+    }
+}
+
+fn callback_wire_restart_class(class: meerkat::RestartClass) -> meerkat_contracts::JobRestartClass {
+    match class {
+        meerkat::RestartClass::Adoptable => meerkat_contracts::JobRestartClass::Adoptable,
+        meerkat::RestartClass::CheckpointResumable => {
+            meerkat_contracts::JobRestartClass::CheckpointResumable
+        }
+        meerkat::RestartClass::Replayable => meerkat_contracts::JobRestartClass::Replayable,
+        meerkat::RestartClass::NonResumable => meerkat_contracts::JobRestartClass::NonResumable,
+    }
+}
+
+async fn start_detached_callback_attempt(
+    runtime: DetachedCallbackJobRuntime,
+    bridge: StdioCallbackBridge,
+    job_id: meerkat::JobId,
+) -> Result<(), String> {
+    let stored = runtime
+        .store
+        .get(&job_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("detached callback job {job_id} disappeared after submission"))?;
+    let claimed_at_ms = callback_unix_time_ms()?;
+    let runnable = stored.machine_state.lifecycle_phase == meerkat::JobPhase::Queued
+        || (stored.machine_state.lifecycle_phase == meerkat::JobPhase::RetryScheduled
+            && stored
+                .machine_state
+                .retry_due_at_ms
+                .is_some_and(|due_at_ms| claimed_at_ms >= due_at_ms));
+    if !runnable {
+        return Ok(());
+    }
+    let lease_expires_at_ms = claimed_at_ms
+        .checked_add(120_000)
+        .ok_or_else(|| "detached callback lease timestamp overflowed".to_string())?;
+    let runner_handle = format!(
+        "callback:{job_id}:attempt:{}",
+        stored.machine_state.attempt_count.saturating_add(1)
+    );
+    let claim = match runtime
+        .service
+        .claim_attempt(
+            &job_id,
+            meerkat::AttemptClaim::new(
+                meerkat::WorkerId::new(format!("mobkit-callback:{}", std::process::id()))
+                    .map_err(|error| error.to_string())?,
+                claimed_at_ms,
+                lease_expires_at_ms,
+                meerkat::RunnerHandleRef::new(runner_handle.clone())
+                    .map_err(|error| error.to_string())?,
+            ),
+        )
+        .await
+    {
+        Ok(claim) => claim,
+        Err(
+            meerkat::DetachedJobError::StaleRevision { .. }
+            | meerkat::DetachedJobError::InvalidTransition { .. },
+        ) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let specification_ref = stored
+        .spec
+        .runner_specification_ref
+        .as_ref()
+        .ok_or_else(|| format!("detached callback job {job_id} has no runner specification"))?;
+    let specification = runtime
+        .blob_store
+        .get(&meerkat_core::BlobId::new(specification_ref.as_str()))
+        .await
+        .map_err(|error| error.to_string())?;
+    let arguments: Value =
+        serde_json::from_str(&specification.data).map_err(|error| error.to_string())?;
+    let credential_scopes = stored
+        .spec
+        .credential_context_refs
+        .iter()
+        .flat_map(|reference| match reference {
+            meerkat_core::ToolCredentialContextRef::OwningProfile { required_scopes }
+            | meerkat_core::ToolCredentialContextRef::AuthBinding {
+                required_scopes, ..
+            } => required_scopes.iter().cloned().collect::<Vec<_>>(),
+        })
+        .collect();
+    let params = meerkat_contracts::CallbackJobStartParams {
+        authority: meerkat_contracts::JobAttemptAuthority {
+            job_id: job_id.to_string(),
+            attempt_id: claim.attempt_id.to_string(),
+            fence: claim.fence.get(),
+        },
+        runner: meerkat_contracts::JobRunner {
+            name: stored.spec.runner.name().to_string(),
+            version: stored.spec.runner.version().to_string(),
+        },
+        restart_class: callback_wire_restart_class(stored.spec.restart_class),
+        runner_handle: runner_handle.clone(),
+        runner_specification_ref: Some(specification_ref.to_string()),
+        arguments,
+        credential_scopes,
+        resume_checkpoint: claim.resume_checkpoint.as_ref().map(ToString::to_string),
+    };
+    spawn_callback_lease_tracker(runtime.clone(), bridge.clone(), params.authority.clone());
+    let result: meerkat_contracts::CallbackJobStartResult = serde_json::from_value(
+        bridge
+            .call(
+                "callback/job/start",
+                serde_json::to_value(params).map_err(|error| error.to_string())?,
+            )
+            .await?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !result.accepted || result.runner_handle != runner_handle {
+        runtime
+            .service
+            .mark_needs_attention(
+                &job_id,
+                callback_unix_time_ms().unwrap_or(claimed_at_ms),
+                meerkat::JobFailureCode::new(if result.accepted {
+                    "callback_runner_handle_mismatch"
+                } else {
+                    "callback_start_rejected"
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn callback_unix_time_ms() -> Result<u64, String> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| "wall clock exceeds u64 milliseconds".to_string())
+}
+
+async fn callback_job_description(
+    runtime: &DetachedCallbackJobRuntime,
+    job_id: &meerkat::JobId,
+) -> Result<meerkat::JobDescription, String> {
+    runtime
+        .service
+        .describe_for_realm(&runtime.realm_id, job_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("detached job {job_id} does not exist in this realm"))
+}
+
+fn callback_write_authority(
+    authority: meerkat_contracts::JobAttemptAuthority,
+) -> Result<(meerkat::JobId, meerkat::AttemptWriteAuthority), String> {
+    Ok((
+        meerkat::JobId::new(authority.job_id).map_err(|error| error.to_string())?,
+        meerkat::AttemptWriteAuthority {
+            attempt_id: meerkat::AttemptId::new(authority.attempt_id)
+                .map_err(|error| error.to_string())?,
+            fence: meerkat::FenceToken::new(authority.fence),
+        },
+    ))
+}
+
+fn callback_job_rpc_response(id: Value, result: Result<Value, String>) -> Result<String, String> {
+    serde_json::to_string(&match result {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(message) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Handle the canonical Meerkat job surface over MobKit's inherited job
+/// store. Returns `None` for methods owned by the ordinary MobKit router.
+async fn handle_callback_job_rpc(
+    request_line: &str,
+    runtime: Option<&DetachedCallbackJobRuntime>,
+    bridge: &StdioCallbackBridge,
+) -> Option<String> {
+    const METHODS: &[&str] = &[
+        "jobs/get",
+        "jobs/list",
+        "jobs/cancel",
+        "jobs/progress",
+        "jobs/result",
+        "jobs/artifacts",
+        "jobs/retry",
+        "jobs/health",
+        "jobs/subscribe",
+        "jobs/unsubscribe",
+        "monitors/start",
+        "mobkit/jobs/heartbeat",
+        "mobkit/jobs/progress",
+        "mobkit/jobs/checkpoint",
+        "mobkit/jobs/complete",
+        "mobkit/jobs/fail",
+        "mobkit/jobs/cancel_ack",
+    ];
+    let request: Value = serde_json::from_str(request_line).ok()?;
+    let method = request.get("method").and_then(Value::as_str)?;
+    if !METHODS.contains(&method) {
+        return None;
+    }
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let Some(runtime) = runtime else {
+        return Some(
+            callback_job_rpc_response(
+                id,
+                Err(
+                    "durable jobs require persistent_state; semantic detached admission is disabled"
+                        .to_string(),
+                ),
+            )
+            .unwrap_or_default(),
+        );
+    };
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result: Result<Value, String> = async {
+        match method {
+            "jobs/get" => {
+                let params: meerkat_contracts::JobsGetParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::JobsGetResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/list" => {
+                let params: meerkat_contracts::JobsListParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let session = params
+                    .session_id
+                    .ok_or_else(|| "jobs/list requires session_id".to_string())
+                    .and_then(|raw| {
+                        meerkat_core::SessionId::parse(&raw).map_err(|error| error.to_string())
+                    })?;
+                let limit =
+                    usize::try_from(params.limit.unwrap_or(100).min(1_000)).unwrap_or(1_000);
+                let jobs = runtime
+                    .service
+                    .list_descriptions_for_origin(&runtime.realm_id, &session, limit)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(meerkat::project_job_description)
+                    .collect();
+                serde_json::to_value(meerkat_contracts::JobsListResult { jobs })
+                    .map_err(|error| error.to_string())
+            }
+            "jobs/cancel" => {
+                let params: meerkat_contracts::JobsCancelParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let stored = runtime
+                    .store
+                    .get(&job_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .filter(|job| job.spec.realm_id == runtime.realm_id)
+                    .ok_or_else(|| format!("detached job {job_id} does not exist in this realm"))?;
+                if matches!(
+                    stored.spec.runner.name(),
+                    "meerkat.shell" | "meerkat.monitor_script"
+                ) {
+                    let manager = runtime
+                        .monitor_manager(&stored.spec.origin_session_id)
+                        .await?;
+                    manager
+                        .cancel_job(&meerkat_tools::builtin::shell::JobId::from_string(
+                            job_id.to_string(),
+                        ))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                } else {
+                    let snapshot = runtime
+                        .service
+                        .request_cancel(&job_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if runtime.owns_callback_job(&stored.spec)
+                        && let Some(attempt_id) = snapshot.current_attempt_id.as_ref()
+                        && matches!(
+                            snapshot.phase,
+                            meerkat::JobPhase::Running | meerkat::JobPhase::WaitingExternal
+                        )
+                    {
+                        let cancel: meerkat_contracts::CallbackJobCancelResult =
+                            serde_json::from_value(
+                                bridge
+                                    .call(
+                                        "callback/job/cancel",
+                                        serde_json::to_value(
+                                            meerkat_contracts::CallbackJobCancelParams {
+                                                authority: meerkat_contracts::JobAttemptAuthority {
+                                                    job_id: job_id.to_string(),
+                                                    attempt_id: attempt_id.to_string(),
+                                                    fence: snapshot.current_fence.get(),
+                                                },
+                                            },
+                                        )
+                                        .map_err(|error| error.to_string())?,
+                                    )
+                                    .await?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if !cancel.accepted {
+                            return Err(
+                                "callback/job/cancel rejected the committed active attempt"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::JobsCancelResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/progress" => {
+                let params: meerkat_contracts::JobsProgressParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let job = meerkat::project_job_description(
+                    callback_job_description(runtime, &job_id).await?,
+                );
+                serde_json::to_value(meerkat_contracts::JobsProgressResult {
+                    job_id: job.job_id,
+                    phase: job.phase,
+                    progress: job.progress,
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/result" => {
+                let params: meerkat_contracts::JobsResultParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let job = meerkat::project_job_description(
+                    callback_job_description(runtime, &job_id).await?,
+                );
+                serde_json::to_value(meerkat_contracts::JobsResultResult {
+                    job_id: job.job_id,
+                    phase: job.phase,
+                    result: job.terminal_result,
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/artifacts" => {
+                let params: meerkat_contracts::JobsArtifactsParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let job = callback_job_description(runtime, &job_id).await?;
+                let reference = match job.terminal_result {
+                    Some(
+                        meerkat::JobTerminalResult::Succeeded {
+                            result_ref: Some(reference),
+                        }
+                        | meerkat::JobTerminalResult::Failed {
+                            detail_ref: Some(reference),
+                            ..
+                        },
+                    ) => Some(reference.to_string()),
+                    _ => None,
+                };
+                serde_json::to_value(meerkat_contracts::JobsArtifactsResult {
+                    job_id: job_id.to_string(),
+                    artifacts: reference
+                        .into_iter()
+                        .map(|reference| meerkat_contracts::JobArtifactRef { reference })
+                        .collect(),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/retry" => {
+                let params: meerkat_contracts::JobsRetryParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                let stored = runtime
+                    .store
+                    .get(&job_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .filter(|job| job.spec.realm_id == runtime.realm_id)
+                    .ok_or_else(|| format!("detached job {job_id} does not exist in this realm"))?;
+                let shell_owned = matches!(
+                    stored.spec.runner.name(),
+                    "meerkat.shell" | "meerkat.monitor_script"
+                );
+                runtime
+                    .service
+                    .schedule_retry(&job_id, params.retry_due_at_ms)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let now = callback_unix_time_ms()?;
+                let delay_ms = params.retry_due_at_ms.saturating_sub(now);
+                if shell_owned {
+                    let manager = runtime
+                        .monitor_manager(&stored.spec.origin_session_id)
+                        .await?;
+                    let public_job_id =
+                        meerkat_tools::builtin::shell::JobId::from_string(job_id.to_string());
+                    tokio::spawn(async move {
+                        if delay_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        }
+                        if let Err(error) = manager.get_status(&public_job_id).await {
+                            tracing::warn!(%error, "durable shell/monitor retry start failed");
+                        }
+                    });
+                } else if runtime.owns_callback_job(&stored.spec) {
+                    let runtime = (*runtime).clone();
+                    let bridge = bridge.clone();
+                    let retry_job_id = job_id.clone();
+                    tokio::spawn(async move {
+                        if delay_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        }
+                        if let Err(error) =
+                            start_detached_callback_attempt(runtime, bridge, retry_job_id).await
+                        {
+                            tracing::warn!(%error, "detached callback retry start failed");
+                        }
+                    });
+                } else {
+                    // Retry scheduling is machine authority. An unregistered
+                    // runner may be claimed by another host; this gateway
+                    // simply refrains from impersonating that execution owner.
+                }
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::JobsRetryResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/health" => {
+                let health = runtime
+                    .service
+                    .health_snapshot_for_realm(
+                        &runtime.realm_id,
+                        callback_unix_time_ms()?,
+                        usize::MAX,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let runtime_delivery_backlog = runtime.runtime_delivery_backlog().await?;
+                let delivery_backlog = health
+                    .delivery_backlog
+                    .saturating_add(runtime_delivery_backlog);
+                serde_json::to_value(meerkat_contracts::JobsHealthResult {
+                    detached_jobs: meerkat_contracts::JobHealthSummary {
+                        status: if health.is_degraded() || runtime_delivery_backlog > 0 {
+                            meerkat_contracts::JobHealthStatus::Degraded
+                        } else {
+                            meerkat_contracts::JobHealthStatus::Ok
+                        },
+                        queued: health.queued,
+                        running: health.running,
+                        awaiting_members: health.awaiting_members,
+                        stale_leases: health.stale_leases,
+                        needs_attention: health.needs_attention,
+                        delivery_backlog,
+                    },
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/subscribe" => {
+                let params: meerkat_contracts::JobsSubscribeParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                callback_job_description(runtime, &job_id).await?;
+                let delivery = match params.delivery {
+                    meerkat_contracts::JobDeliveryKind::Record => meerkat::JobDeliveryKind::Record,
+                    meerkat_contracts::JobDeliveryKind::Notification => {
+                        meerkat::JobDeliveryKind::Notification
+                    }
+                    meerkat_contracts::JobDeliveryKind::Event { handling_mode } => {
+                        meerkat::JobDeliveryKind::Event {
+                            handling_mode: handling_mode.into(),
+                        }
+                    }
+                };
+                runtime
+                    .service
+                    .subscribe(
+                        &job_id,
+                        meerkat::JobSubscription::new(
+                            meerkat::JobSubscriptionId::new(params.subscription_id)
+                                .map_err(|error| error.to_string())?,
+                            meerkat_core::SessionId::parse(&params.session_id)
+                                .map_err(|error| error.to_string())?,
+                            delivery,
+                        ),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::JobsSubscribeResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "jobs/unsubscribe" => {
+                let params: meerkat_contracts::JobsUnsubscribeParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(params.job_id).map_err(|error| error.to_string())?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .unsubscribe(
+                        &job_id,
+                        &meerkat::JobSubscriptionId::new(params.subscription_id)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::JobsUnsubscribeResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "monitors/start" => {
+                let params: meerkat_contracts::MonitorsStartParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let session_id = meerkat_core::SessionId::parse(&params.session_id)
+                    .map_err(|error| error.to_string())?;
+                let mut limits = meerkat_tools::builtin::shell::MonitorProtocolLimits::default();
+                if let Some(value) = params.max_line_bytes {
+                    limits.max_line_bytes = usize::try_from(value)
+                        .map_err(|_| "max_line_bytes exceeds this host's size limit".to_string())?;
+                }
+                if let Some(value) = params.max_notifications_per_window {
+                    limits.max_notifications_per_window = usize::try_from(value).map_err(|_| {
+                        "max_notifications_per_window exceeds this host's size limit".to_string()
+                    })?;
+                }
+                if let Some(value) = params.notification_window_ms {
+                    limits.notification_window_ms = value;
+                }
+                if let Some(value) = params.max_retained_diagnostic_bytes {
+                    limits.max_retained_diagnostic_bytes =
+                        usize::try_from(value).map_err(|_| {
+                            "max_retained_diagnostic_bytes exceeds this host's size limit"
+                                .to_string()
+                        })?;
+                }
+                let protocol = match params.protocol {
+                    meerkat_contracts::MonitorOutputProtocol::FramedJsonl => {
+                        meerkat_tools::builtin::shell::MonitorOutputProtocol::FramedJsonl
+                    }
+                    meerkat_contracts::MonitorOutputProtocol::Lines => {
+                        meerkat_tools::builtin::shell::MonitorOutputProtocol::Lines
+                    }
+                };
+                let restart_class = match params.restart_class {
+                    meerkat_contracts::JobRestartClass::Adoptable => {
+                        meerkat::RestartClass::Adoptable
+                    }
+                    meerkat_contracts::JobRestartClass::CheckpointResumable => {
+                        meerkat::RestartClass::CheckpointResumable
+                    }
+                    meerkat_contracts::JobRestartClass::Replayable => {
+                        meerkat::RestartClass::Replayable
+                    }
+                    meerkat_contracts::JobRestartClass::NonResumable => {
+                        meerkat::RestartClass::NonResumable
+                    }
+                };
+                let delivery = match params.delivery {
+                    meerkat_contracts::JobDeliveryKind::Record => meerkat::JobDeliveryKind::Record,
+                    meerkat_contracts::JobDeliveryKind::Notification => {
+                        meerkat::JobDeliveryKind::Notification
+                    }
+                    meerkat_contracts::JobDeliveryKind::Event { handling_mode } => {
+                        meerkat::JobDeliveryKind::Event {
+                            handling_mode: handling_mode.into(),
+                        }
+                    }
+                };
+                let manager = runtime.monitor_manager(&session_id).await?;
+                let job_id = manager
+                    .spawn_monitor_for_call(
+                        &params.command,
+                        params.working_dir.as_deref().map(std::path::Path::new),
+                        params.timeout_secs,
+                        &params.submission_key,
+                        meerkat_tools::builtin::shell::MonitorStartOptions {
+                            protocol,
+                            restart_class,
+                            limits,
+                            delivery,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let job_id =
+                    meerkat::JobId::new(job_id.to_string()).map_err(|error| error.to_string())?;
+                let job = callback_job_description(runtime, &job_id).await?;
+                serde_json::to_value(meerkat_contracts::MonitorsStartResult {
+                    job: meerkat::project_job_description(job),
+                })
+                .map_err(|error| error.to_string())
+            }
+            "mobkit/jobs/heartbeat" => {
+                let params: meerkat_contracts::MobkitJobHeartbeatParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .renew_lease(
+                        &job_id,
+                        write,
+                        params.heartbeat_at_ms,
+                        params.lease_expires_at_ms,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            "mobkit/jobs/progress" => {
+                let params: meerkat_contracts::MobkitJobProgressParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .report_progress(
+                        &job_id,
+                        write,
+                        meerkat::JobProgress::new(params.cursor, params.detail)
+                            .map_err(|error| error.to_string())?,
+                        params.observed_at_ms,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            "mobkit/jobs/checkpoint" => {
+                let params: meerkat_contracts::MobkitJobCheckpointParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .record_checkpoint(
+                        &job_id,
+                        write,
+                        meerkat::CheckpointRef::new(params.checkpoint_ref)
+                            .map_err(|error| error.to_string())?,
+                        params.observed_at_ms,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            "mobkit/jobs/complete" => {
+                let params: meerkat_contracts::MobkitJobCompleteParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .complete_attempt(
+                        &job_id,
+                        write,
+                        params.completed_at_ms,
+                        params
+                            .result_ref
+                            .map(meerkat::JobResultRef::new)
+                            .transpose()
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            "mobkit/jobs/fail" => {
+                let params: meerkat_contracts::MobkitJobFailParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .fail_attempt(
+                        &job_id,
+                        write,
+                        params.failed_at_ms,
+                        meerkat::JobFailureCode::new(params.code)
+                            .map_err(|error| error.to_string())?,
+                        params
+                            .detail_ref
+                            .map(meerkat::JobResultRef::new)
+                            .transpose()
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            "mobkit/jobs/cancel_ack" => {
+                let params: meerkat_contracts::MobkitJobCancelAckParams =
+                    serde_json::from_value(params).map_err(|error| error.to_string())?;
+                let (job_id, write) = callback_write_authority(params.authority)?;
+                callback_job_description(runtime, &job_id).await?;
+                runtime
+                    .service
+                    .acknowledge_cancel(&job_id, write, params.acknowledged_at_ms)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                callback_mutation_projection(runtime, &job_id).await
+            }
+            _ => unreachable!("method allowlist and match must stay in sync"),
+        }
+    }
+    .await;
+    Some(callback_job_rpc_response(id, result).unwrap_or_default())
+}
+
+async fn callback_mutation_projection(
+    runtime: &DetachedCallbackJobRuntime,
+    job_id: &meerkat::JobId,
+) -> Result<Value, String> {
+    let job = callback_job_description(runtime, job_id).await?;
+    serde_json::to_value(meerkat_contracts::MobkitJobMutationResult {
+        job: meerkat::project_job_description(job),
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// Wraps FactoryAgentBuilder — sends callback/build_agent to Python before building.
@@ -3985,6 +6237,7 @@ struct StdioCallbackAgentBuilder {
     /// Session store for loading sessions by ID when the Python builder
     /// sets `resume_session_id`. Only populated in persistent mode.
     session_store: Option<Arc<dyn meerkat::SessionStore>>,
+    detached_jobs: Option<DetachedCallbackJobRuntime>,
 }
 
 fn callback_build_agent_options(req: &CreateSessionRequest, scope_id: &str) -> Value {
@@ -4202,7 +6455,21 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                                     self.bridge.clone(),
                                     scope_id.clone(),
                                     tool_specs,
+                                    self.detached_jobs.clone(),
                                 );
+                                if dispatcher.reconcile_registered_catalog {
+                                    let reconciliation = dispatcher.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(error) =
+                                            reconciliation.reconcile_detached_jobs().await
+                                        {
+                                            tracing::warn!(
+                                                %error,
+                                                "detached callback reconciliation failed"
+                                            );
+                                        }
+                                    });
+                                }
                                 let build = modified_req.build.get_or_insert_with(|| {
                                     meerkat_core::service::SessionBuildOptions::default()
                                 });
@@ -4469,6 +6736,38 @@ external_addressable = true
             meerkat_mobkit::storage_layout::default_ephemeral_scratch_root(),
         ),
     };
+    let callback_job_store: Option<Arc<dyn meerkat::DetachedJobStore>> =
+        persistent_state.as_ref().map(|state_path| {
+            let path = meerkat_store::realm_paths_in(
+                state_path,
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+            )
+            .jobs_sqlite_path;
+            if let Some(parent) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(parent)
+            {
+                fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    format!(
+                        "failed to create detached job store directory {}: {error}",
+                        parent.display()
+                    ),
+                );
+            }
+            match meerkat::SqliteDetachedJobStore::open(path.clone()) {
+                Ok(store) => Arc::new(store) as Arc<dyn meerkat::DetachedJobStore>,
+                Err(error) => fail_init(
+                    &request_id,
+                    STORAGE_RESOLUTION_CODE,
+                    meerkat_mobkit::storage_health::JobStoreResolutionError {
+                        path,
+                        message: error.to_string(),
+                    }
+                    .to_string(),
+                ),
+            }
+        });
 
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
@@ -4736,6 +7035,7 @@ external_addressable = true
         transcript_edit_service,
         workgraph_service,
         live_inputs,
+        gateway_detached_jobs,
     ) = if let Some(ref state_path) = persistent_state {
         if let Err(e) = std::fs::create_dir_all(state_path) {
             fail_init(
@@ -4864,6 +7164,15 @@ external_addressable = true
             session_store.clone(),
         )));
         inner_builder.default_blob_store = Some(blob_store.clone());
+        inner_builder.default_detached_job_store = callback_job_store.clone();
+        if let Some(job_store) = callback_job_store.as_ref() {
+            inner_builder.default_shell_job_delivery_projector =
+                Some(Arc::new(meerkat::JobOutboxProjector::new_for_realm(
+                    Arc::clone(job_store),
+                    meerkat_runtime::RuntimeDeliveryInbox::new(Arc::clone(&runtime_store)),
+                    meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                )));
+        }
         // Attach meerkat's per-session schedule tools so SDK-hosted members whose
         // profile sets tools.schedule=true get the meerkat_schedule_* surface (the
         // slot lives on the inner FactoryAgentBuilder and propagates through the
@@ -4961,11 +7270,28 @@ external_addressable = true
         };
         let workgraph_service = workgraph.as_ref().map(|(service, _, _)| service.clone());
         let agent_mob_tools_slot = Arc::clone(&inner_builder.default_mob_tools);
+        let detached_jobs = callback_job_store.as_ref().map(|store| {
+            DetachedCallbackJobRuntime::new(
+                meerkat_mobkit::storage_provider::MEERKAT_LEVEL_REALM_ID,
+                Arc::clone(store),
+                blob_store.clone(),
+            )
+            .with_runtime_delivery_store(Arc::clone(&runtime_store))
+            .with_monitor_shell(
+                state_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(state_path)
+                    .to_path_buf(),
+                shell,
+            )
+        });
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
             session_store: Some(session_store.clone()),
+            detached_jobs: detached_jobs.clone(),
         };
         // Keep the CONCRETE typed service for the firing host (the runtime-backed
         // host needs PersistentSessionService<StdioCallbackAgentBuilder>, not the
@@ -4977,6 +7303,11 @@ external_addressable = true
             Arc::clone(&runtime_store),
             blob_store,
         ));
+        if let Some(detached_jobs) = detached_jobs.as_ref() {
+            let delivery_service: Arc<dyn meerkat_mob::MobSessionService> =
+                concrete_service.clone();
+            detached_jobs.attach_delivery_service(delivery_service);
+        }
         let schedule_host_inputs = schedule_tools.map(|tools| {
             (
                 tools.service,
@@ -5061,6 +7392,10 @@ external_addressable = true
             ),
             schedule_slot,
             workgraph_slot,
+            meerkat_mobkit::storage_health::StorageSlotSummary::persistent(
+                "jobs",
+                "SqliteDetachedJobStore",
+            ),
             gateway_event_log_slot(&gateway_options),
         ];
         // Configured agent memory is a durable disk-backed slot under the
@@ -5098,6 +7433,7 @@ external_addressable = true
             transcript_edit_service,
             workgraph_service,
             live_inputs,
+            detached_jobs,
         )
     } else {
         // Ephemeral mode (original behavior).
@@ -5234,6 +7570,7 @@ external_addressable = true
             bridge: bridge.clone(),
             has_session_builder,
             session_store: None,
+            detached_jobs: None,
         };
         let mut transcript_edit_service: Option<
             Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
@@ -5277,6 +7614,7 @@ external_addressable = true
                     bridge: bridge.clone(),
                     has_session_builder,
                     session_store: Some(session_store.clone()),
+                    detached_jobs: None,
                 };
                 let concrete = Arc::new(meerkat_session::PersistentSessionService::new(
                     callback_builder,
@@ -5350,6 +7688,11 @@ external_addressable = true
                 "declared default of the ephemeral launch mode",
             ),
             ephemeral_workgraph_slot,
+            meerkat_mobkit::storage_health::StorageSlotSummary::declared_ephemeral(
+                "jobs",
+                "disabled",
+                "semantic detached admission is unavailable in ephemeral gateway mode",
+            ),
             gateway_event_log_slot(&gateway_options),
         ];
         if identity_continuity_store.is_some() {
@@ -5385,6 +7728,7 @@ external_addressable = true
             None,
             transcript_edit_service,
             workgraph_service,
+            None,
             None,
         )
     };
@@ -6250,6 +8594,22 @@ external_addressable = true
     };
 
     let runtime = Arc::new(runtime);
+    if let Some(detached_jobs) = gateway_detached_jobs.as_ref() {
+        match detached_jobs.health_projection().await {
+            Ok(projection) => runtime.set_job_health_projection(Some(projection)),
+            Err(error) => {
+                tracing::warn!(%error, "initial durable callback health projection failed");
+                runtime.set_job_health_projection(Some(json!({
+                    "status": "degraded",
+                    "detached_jobs": {
+                        "status": "degraded",
+                        "reason": "job_health_projection_failed"
+                    }
+                })));
+            }
+        }
+        detached_jobs.arm_delivery_driver(Arc::clone(&runtime));
+    }
     // Bind the steward's late runtime seams and wire gating decisions back
     // to staged promotion commits (§10.2).
     steward_late_runtime.bind(runtime.clone());
@@ -6411,16 +8771,29 @@ external_addressable = true
             let identity_ctx = identity_ctx.clone();
             let http_base_url = http_base_url_shared.clone();
             let live_rpc = live_rpc.clone();
+            let gateway_detached_jobs = gateway_detached_jobs.clone();
+            let callback_bridge = bridge.clone();
             inflight.spawn(async move {
-                let response = meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc(
-                    &runtime,
+                let response = match handle_callback_job_rpc(
                     &request_line,
-                    timeout,
-                    Some(http_base_url.as_ref()),
-                    identity_ctx.as_deref(),
-                    live_rpc.as_ref(),
+                    gateway_detached_jobs.as_ref(),
+                    &callback_bridge,
                 )
-                .await;
+                .await
+                {
+                    Some(response) => response,
+                    None => {
+                        meerkat_mobkit::rpc::handle_unified_rpc_json_with_live_arc(
+                            &runtime,
+                            &request_line,
+                            timeout,
+                            Some(http_base_url.as_ref()),
+                            identity_ctx.as_deref(),
+                            live_rpc.as_ref(),
+                        )
+                        .await
+                    }
+                };
                 if !response.is_empty() {
                     let _ = stdout_tx.send(response).await;
                 }

@@ -329,3 +329,29 @@ async fn bundle_meerkat_level_passes_the_upstream_profiles() {
     .await
     .expect("the bundle's meerkat artifact store must satisfy the artifact profile");
 }
+
+#[tokio::test]
+async fn bundle_meerkat_level_supplies_the_inherited_jobs_authority() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = bundle();
+    let set = open_fresh_meerkat_realm(&provider, dir.path()).await;
+    let service = meerkat::DetachedJobService::new(set.job_store);
+    let session =
+        meerkat_core::SessionId::parse("019f74fb-1907-7b21-932d-ab22c4d1f532").expect("session");
+    let receipt = service
+        .submit(meerkat::JobSpec::new(
+            "bundle-conformance",
+            session,
+            meerkat::ExecutionIntentId::from_string("intent:bundle").expect("intent"),
+            meerkat::InteractionLineageId::from_string("lineage:bundle").expect("lineage"),
+            meerkat::ToolIdentity::new("scan", "1").expect("tool"),
+            meerkat::RunnerIdentity::new("scan.runner", "1").expect("runner"),
+            meerkat::RestartClass::NonResumable,
+            meerkat::CanonicalArgumentsHash::new(format!("sha256:{}", "b".repeat(64)))
+                .expect("arguments"),
+            meerkat::JobSubmissionKey::new("bundle:jobs:1").expect("submission"),
+        ))
+        .await
+        .expect("submit");
+    assert!(service.get(&receipt.job_id).await.expect("get").is_some());
+}

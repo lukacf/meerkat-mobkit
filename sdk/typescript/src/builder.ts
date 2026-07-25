@@ -19,6 +19,7 @@
 import { existsSync } from "node:fs";
 import type { SessionAgentBuilder, ErrorCallback } from "./agent-builder.js";
 import type { MobKitRuntime } from "./runtime.js";
+import type { JobCredentialResolver } from "./jobs.js";
 import type {
   ContinuityStore,
   LeaseProvider,
@@ -127,6 +128,7 @@ export interface MobKitBuilderConfig {
   rosterProvider: RosterProvider | null;
   agentCustomizer: AgentCustomizer | null;
   topologyProvider: TopologyProvider | null;
+  jobCredentialResolver: JobCredentialResolver | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -165,6 +167,7 @@ function defaultConfig(): MobKitBuilderConfig {
     rosterProvider: null,
     agentCustomizer: null,
     topologyProvider: null,
+    jobCredentialResolver: null,
   };
 }
 
@@ -624,6 +627,18 @@ export class MobKitBuilder {
   /** Set a TopologyProvider. */
   topologyProvider(provider: TopologyProvider): this {
     this._config.topologyProvider = provider;
+    return this;
+  }
+
+  /**
+   * Resolve scoped credentials immediately before each committed detached
+   * attempt. Resolved values remain host-local and never cross job RPC.
+   */
+  jobCredentials(resolver: JobCredentialResolver): this {
+    if (typeof resolver !== "function") {
+      throw new TypeError("job credential resolver must be callable");
+    }
+    this._config.jobCredentialResolver = resolver;
     return this;
   }
 

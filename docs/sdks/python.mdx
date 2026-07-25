@@ -34,6 +34,58 @@ async def main():
 asyncio.run(main())
 ```
 
+## Durable detached tools
+
+Declare long-running host work explicitly instead of holding
+`callback/call_tool` open:
+
+```python
+from meerkat_mobkit import DetachedJobExecution, DetachedJobResult
+
+async def run_scan(ctx):
+    await ctx.progress(1, "scan started")
+    # ctx.arguments is the persisted non-secret specification.
+    # ctx.credentials is resolved for this committed attempt only.
+    result_ref = await perform_scan(ctx.arguments, ctx.credentials)
+    return DetachedJobResult(result_ref)
+
+class AppAgentBuilder:
+    async def build_agent(self, options):
+        options.register_tool(
+            "security_scan",
+            lambda args: {"error": "detached owner required"},
+            description="Run a durable security scan",
+            execution=DetachedJobExecution(
+                runner="homecore.security_scan",
+                version="v1",
+                restart_class="checkpoint_resumable",
+                idempotency_scope="interaction_and_arguments",
+                submission_timeout_ms=30_000,
+                credential_scopes=("unifi.read",),
+                handler=run_scan,
+            ),
+        )
+
+runtime = await (
+    MobKit.builder()
+    .persistent_state("state/mobkit")
+    .job_credentials(resolve_profile_credentials)
+    .session_service(AppAgentBuilder())
+    .build()
+)
+
+job = await runtime.jobs.get(job_id)
+await runtime.jobs.cancel(job_id)
+```
+
+The gateway durably accepts the job and returns a receipt; host work then runs
+outside the agent turn. Start, reconcile, and cancel are short control-plane
+callbacks subject to the 120-second public contract (the Python host and wire
+margins are 125 and 130 seconds). On reconnect, MobKit offers the exact
+committed attempt, fence, lease, checkpoint, and runner handle. Reopening does
+not mint a new fence; only a machine-authorized claim or retry can do that.
+Resolved credentials are attempt-local and never enter durable job state.
+
 ## Identity-First API
 
 For household-style apps (HomeCore), the identity-first API provides durable lifecycle management.

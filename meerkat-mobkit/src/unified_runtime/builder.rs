@@ -1560,7 +1560,8 @@ impl UnifiedRuntimeBuilder {
                 crate::storage_health::StorageResolutionError::Blob(
                     crate::storage_health::BlobStoreResolutionError::OpenFailed { .. },
                 )
-                | crate::storage_health::StorageResolutionError::RuntimeStore(_) => {
+                | crate::storage_health::StorageResolutionError::RuntimeStore(_)
+                | crate::storage_health::StorageResolutionError::JobStore(_) => {
                     UnifiedRuntimeBuilderError::Io(error.to_string())
                 }
             })?

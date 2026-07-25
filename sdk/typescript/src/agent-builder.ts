@@ -8,6 +8,20 @@
 import { SessionBuildOptions, type ToolHandler } from "./models.js";
 import { ToolResultContent } from "./tool-content.js";
 import {
+  DetachedJobContext,
+  DetachedJobExecution,
+  DetachedJobReporter,
+  DetachedJobResult,
+  jobAuthorityToDict,
+  parseDetachedJobAuthority,
+  sameJobAuthority,
+  type DetachedJobAuthority,
+  type DetachedJobHandler,
+  type DetachedJobRpc,
+  type DetachedJobRunner,
+  type JobCredentialResolver,
+} from "./jobs.js";
+import {
   parseErrorEvent,
   parseContinuityRecord,
   parseSessionSnapshot,
@@ -58,6 +72,21 @@ export interface SessionAgentBuilder {
 
 export type ErrorCallback = (event: ErrorEvent) => void | Promise<void>;
 
+interface RegisteredJobRunner {
+  readonly execution: DetachedJobExecution;
+  readonly profileName: string | null;
+}
+
+interface ActiveJobAttempt {
+  readonly authority: DetachedJobAuthority;
+  readonly runnerKey: string;
+  readonly runnerHandle: string;
+  readonly controller: AbortController;
+  task: Promise<void> | null;
+  adopted: boolean;
+  superseded: boolean;
+}
+
 // -- CallbackDispatcher ---------------------------------------------------
 
 /**
@@ -80,6 +109,13 @@ export class CallbackDispatcher {
   private _rosterProvider: RosterProvider | null = null;
   private _agentCustomizer: AgentCustomizer | null = null;
   private _topologyProvider: TopologyProvider | null = null;
+  private _jobRpc: DetachedJobRpc | null = null;
+  private _jobCredentialResolver: JobCredentialResolver | null = null;
+  private readonly _jobRunners = new Map<string, RegisteredJobRunner>();
+  private readonly _jobAttempts = new Map<string, ActiveJobAttempt>();
+  private readonly _jobHighestFence = new Map<string, number>();
+  private readonly _jobTasks = new Set<Promise<void>>();
+  private readonly _jobMutationTails = new Map<string, Promise<void>>();
 
   registerBuilder(builder: SessionAgentBuilder): void {
     this._builder = builder;
@@ -107,6 +143,26 @@ export class CallbackDispatcher {
 
   registerTopologyProvider(provider: TopologyProvider): void {
     this._topologyProvider = provider;
+  }
+
+  registerJobRpc(rpc: DetachedJobRpc): void {
+    if (typeof rpc !== "function") {
+      throw new TypeError("job rpc must be callable");
+    }
+    this._jobRpc = rpc;
+  }
+
+  registerJobCredentialResolver(resolver: JobCredentialResolver): void {
+    if (typeof resolver !== "function") {
+      throw new TypeError("job credential resolver must be callable");
+    }
+    this._jobCredentialResolver = resolver;
+  }
+
+  async waitForJobTasks(): Promise<void> {
+    while (this._jobTasks.size > 0) {
+      await Promise.allSettled([...this._jobTasks]);
+    }
   }
 
   /** Remove all tool handlers for a scope. Call when a session ends. */
@@ -204,6 +260,9 @@ export class CallbackDispatcher {
         toolNames.push(name);
       }
       this._scopeTools.set(scopeId, toolNames);
+      for (const execution of opts.jobExecutions.values()) {
+        this._registerJobRunner(execution, opts.profileName);
+      }
 
       return opts.toDict();
     }
@@ -235,6 +294,18 @@ export class CallbackDispatcher {
         return { content_blocks: result.blocks };
       }
       return { content: result };
+    }
+
+    if (method === "callback/job/start") {
+      return this._startJob(params);
+    }
+
+    if (method === "callback/job/reconcile") {
+      return this._reconcileJobs(params);
+    }
+
+    if (method === "callback/job/cancel") {
+      return this._cancelJob(params);
     }
 
     // -- Continuity callbacks -----------------------------------------------
@@ -472,5 +543,337 @@ export class CallbackDispatcher {
     }
 
     throw new Error(`unknown callback method: ${method}`);
+  }
+
+  // -- Detached callback job shell ----------------------------------------
+
+  private _registerJobRunner(
+    execution: DetachedJobExecution,
+    profileName: string | null,
+  ): void {
+    const existing = this._jobRunners.get(execution.runnerKey);
+    if (existing && existing.profileName !== profileName) {
+      throw new Error(
+        `detached runner "${execution.runner}"@${execution.version} is already ` +
+          `bound to profile "${String(existing.profileName)}"; refusing ` +
+          `conflicting profile "${String(profileName)}"`,
+      );
+    }
+    this._jobRunners.set(execution.runnerKey, { execution, profileName });
+  }
+
+  private static _runnerKey(params: Record<string, unknown>): string {
+    const runner = params.runner;
+    if (typeof runner !== "object" || runner === null) {
+      throw new Error("job callback requires a runner object");
+    }
+    const raw = runner as Record<string, unknown>;
+    if (typeof raw.name !== "string" || raw.name === "") {
+      throw new Error("job callback runner requires a non-empty name");
+    }
+    if (typeof raw.version !== "string" || raw.version === "") {
+      throw new Error("job callback runner requires a non-empty version");
+    }
+    return `${raw.name}\u0000${raw.version}`;
+  }
+
+  private async _resolveJobCredentials(
+    registration: RegisteredJobRunner,
+    scopes: readonly string[],
+  ): Promise<Readonly<Record<string, unknown>>> {
+    if (scopes.length === 0) return {};
+    if (this._jobCredentialResolver === null) {
+      throw new Error(
+        "detached callback requires credential scopes but no execution-time " +
+          "credential resolver is configured",
+      );
+    }
+    const resolved = await this._jobCredentialResolver(
+      registration.profileName,
+      scopes,
+    );
+    if (typeof resolved !== "object" || resolved === null || Array.isArray(resolved)) {
+      throw new TypeError("job credential resolver must return an object");
+    }
+    return resolved;
+  }
+
+  private async _startJob(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const authority = parseDetachedJobAuthority(params.authority);
+    return this._withJobMutation(
+      authority.jobId,
+      () => this._startJobLocked(params, authority),
+    );
+  }
+
+  private async _withJobMutation<T>(
+    jobId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this._jobMutationTails.get(jobId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this._jobMutationTails.set(jobId, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this._jobMutationTails.get(jobId) === tail) {
+        this._jobMutationTails.delete(jobId);
+      }
+    }
+  }
+
+  private async _startJobLocked(
+    params: Record<string, unknown>,
+    authority: DetachedJobAuthority,
+  ): Promise<Record<string, unknown>> {
+    const runnerKey = CallbackDispatcher._runnerKey(params);
+    const registration = this._jobRunners.get(runnerKey);
+    const runnerHandle = params.runner_handle;
+    if (typeof runnerHandle !== "string" || runnerHandle === "") {
+      throw new Error("callback/job/start requires a non-empty runner_handle");
+    }
+    if (registration === undefined || this._jobRpc === null) {
+      return { accepted: false, runner_handle: runnerHandle };
+    }
+
+    const highest = this._jobHighestFence.get(authority.jobId);
+    const active = this._jobAttempts.get(authority.jobId);
+    if (highest !== undefined && authority.fence < highest) {
+      return { accepted: false, runner_handle: runnerHandle };
+    }
+    if (highest === authority.fence) {
+      if (
+        active !== undefined &&
+        sameJobAuthority(active.authority, authority) &&
+        active.runnerHandle === runnerHandle &&
+        active.task !== null
+      ) {
+        return { accepted: true, runner_handle: runnerHandle };
+      }
+      return { accepted: false, runner_handle: runnerHandle };
+    }
+
+    const scopes = params.credential_scopes ?? [];
+    if (
+      !Array.isArray(scopes) ||
+      !scopes.every((scope) => typeof scope === "string" && scope !== "")
+    ) {
+      throw new Error("credential_scopes must be a list of non-empty strings");
+    }
+    let credentials: Readonly<Record<string, unknown>>;
+    try {
+      credentials = await this._resolveJobCredentials(
+        registration,
+        scopes as string[],
+      );
+    } catch {
+      return { accepted: false, runner_handle: runnerHandle };
+    }
+
+    if (active !== undefined) {
+      active.superseded = true;
+      active.controller.abort();
+    }
+
+    const controller = new AbortController();
+    const reporter = new DetachedJobReporter(authority, this._jobRpc);
+    const context = new DetachedJobContext(
+      authority,
+      runnerHandle,
+      params.arguments,
+      credentials,
+      typeof params.resume_checkpoint === "string"
+        ? params.resume_checkpoint
+        : null,
+      controller.signal,
+      reporter,
+    );
+    const attempt: ActiveJobAttempt = {
+      authority,
+      runnerKey,
+      runnerHandle,
+      controller,
+      task: null,
+      adopted: false,
+      superseded: false,
+    };
+    this._jobHighestFence.set(authority.jobId, authority.fence);
+    this._jobAttempts.set(authority.jobId, attempt);
+    const task = this._runJob(
+      attempt,
+      registration.execution.handler,
+      context,
+      reporter,
+    );
+    attempt.task = task;
+    this._jobTasks.add(task);
+    void task.finally(() => this._jobTasks.delete(task));
+    return { accepted: true, runner_handle: runnerHandle };
+  }
+
+  private async _runJob(
+    attempt: ActiveJobAttempt,
+    runner: DetachedJobHandler,
+    context: DetachedJobContext,
+    reporter: DetachedJobReporter,
+  ): Promise<void> {
+    try {
+      const result = typeof runner === "function"
+        ? await runner(context)
+        : await runner.run(context);
+      if (attempt.superseded) return;
+      if (context.signal.aborted) {
+        await reporter.cancelAck();
+      } else if (result instanceof DetachedJobResult) {
+        await reporter.complete(result.resultRef);
+      } else if (result === undefined || result === null) {
+        await reporter.complete(null);
+      } else {
+        throw new TypeError(
+          "detached runner must return DetachedJobResult or undefined; " +
+            "persist result bytes and return only their reference",
+        );
+      }
+    } catch {
+      if (!attempt.superseded) {
+        try {
+          if (context.signal.aborted) {
+            await reporter.cancelAck();
+          } else {
+            await reporter.fail("host_runner_failed");
+          }
+        } catch {
+          // The durable runtime remains authoritative and reconciles an
+          // ambiguous report after transport recovery.
+        }
+      }
+    } finally {
+      const current = this._jobAttempts.get(attempt.authority.jobId);
+      if (current === attempt && !attempt.adopted) {
+        this._jobAttempts.delete(attempt.authority.jobId);
+      }
+    }
+  }
+
+  private async _renewReconciledAttempt(
+    authority: DetachedJobAuthority,
+  ): Promise<boolean> {
+    if (this._jobRpc === null) return false;
+    const nowMs = Date.now();
+    try {
+      await new DetachedJobReporter(authority, this._jobRpc).heartbeat({
+        heartbeatAtMs: nowMs,
+        leaseExpiresAtMs: nowMs + 120_000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async _reconcileJobs(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!Array.isArray(params.attempts)) {
+      throw new Error("callback/job/reconcile requires attempts");
+    }
+    const live: Record<string, unknown>[] = [];
+    for (const candidate of params.attempts) {
+      if (typeof candidate !== "object" || candidate === null) {
+        throw new Error("reconcile attempts must be objects");
+      }
+      const raw = candidate as Record<string, unknown>;
+      const authority = parseDetachedJobAuthority(raw.authority);
+      const runnerKey = CallbackDispatcher._runnerKey(raw);
+      const runnerHandle = raw.runner_handle;
+      if (typeof runnerHandle !== "string" || runnerHandle === "") {
+        throw new Error("reconcile attempt requires runner_handle");
+      }
+      const active = this._jobAttempts.get(authority.jobId);
+      if (
+        active !== undefined &&
+        sameJobAuthority(active.authority, authority) &&
+        active.runnerKey === runnerKey &&
+        active.runnerHandle === runnerHandle
+      ) {
+        if (
+          !active.controller.signal.aborted &&
+          (active.adopted || active.task !== null) &&
+          await this._renewReconciledAttempt(authority)
+        ) {
+          live.push(jobAuthorityToDict(authority));
+        }
+        continue;
+      }
+
+      const registration = this._jobRunners.get(runnerKey);
+      if (raw.restart_class !== "adoptable") {
+        // A reconstruction hook may adopt only work whose generated lifecycle
+        // declaration permits adoption. Replay/resume requires a later
+        // machine-authorized claim.
+        continue;
+      }
+      const runner = registration?.execution.handler;
+      const reconcile = typeof runner === "object" && runner !== null
+        ? (runner as DetachedJobRunner).reconcile
+        : undefined;
+      if (reconcile === undefined || await reconcile.call(runner, raw) !== true) {
+        continue;
+      }
+      const highest = this._jobHighestFence.get(authority.jobId);
+      if (highest !== undefined && authority.fence < highest) continue;
+      this._jobHighestFence.set(authority.jobId, authority.fence);
+      this._jobAttempts.set(authority.jobId, {
+        authority,
+        runnerKey,
+        runnerHandle,
+        controller: new AbortController(),
+        task: null,
+        adopted: true,
+        superseded: false,
+      });
+      if (!await this._renewReconciledAttempt(authority)) {
+        const current = this._jobAttempts.get(authority.jobId);
+        if (
+          current !== undefined &&
+          sameJobAuthority(current.authority, authority)
+        ) {
+          this._jobAttempts.delete(authority.jobId);
+        }
+        continue;
+      }
+      live.push(jobAuthorityToDict(authority));
+    }
+    return { live_attempts: live };
+  }
+
+  private async _cancelJob(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const authority = parseDetachedJobAuthority(params.authority);
+    const active = this._jobAttempts.get(authority.jobId);
+    if (
+      active === undefined ||
+      !sameJobAuthority(active.authority, authority)
+    ) {
+      return { accepted: false };
+    }
+    active.controller.abort();
+    const runner = this._jobRunners.get(active.runnerKey)?.execution.handler;
+    const cancel = typeof runner === "object" && runner !== null
+      ? (runner as DetachedJobRunner).cancel
+      : undefined;
+    if (cancel !== undefined) {
+      await cancel.call(runner, jobAuthorityToDict(authority));
+    }
+    return { accepted: true };
   }
 }

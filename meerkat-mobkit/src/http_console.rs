@@ -122,6 +122,8 @@ pub struct ConsoleJsonState {
     /// leave this absent; unified runtimes always pass their handle, even
     /// while policy mode is disabled, so query remains available.
     pub(crate) topology: Option<crate::topology_control::TopologyRuntimeHandle>,
+    /// Rebuildable detached-job observability supplied by the unified host.
+    pub(crate) job_health_projection: Option<Arc<std::sync::RwLock<Option<serde_json::Value>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +271,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         identity_roster: None,
         workgraph: None,
         topology: None,
+        job_health_projection: None,
     })
 }
 
@@ -304,6 +307,7 @@ pub fn console_json_router_with_aggregator_and_access(
         identity_roster: None,
         workgraph: None,
         topology: None,
+        job_health_projection: None,
     })
 }
 
@@ -361,6 +365,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -384,6 +389,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     identity_roster: Option<Arc<crate::identity_first::MutableRosterProvider>>,
     workgraph: Option<meerkat::WorkGraphService>,
     topology: Option<crate::topology_control::TopologyRuntimeHandle>,
+    job_health_projection: Option<Arc<std::sync::RwLock<Option<serde_json::Value>>>>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
@@ -435,6 +441,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         identity_roster,
         workgraph,
         topology,
+        job_health_projection,
     })
 }
 
@@ -586,6 +593,7 @@ pub async fn console_rpc_handler(
             );
         }
     };
+    let request_method = parsed_request.method.clone();
 
     // Auth enforcement:
     // - When require_app_auth is true: validate bearer token (OIDC + allowlist)
@@ -650,7 +658,50 @@ pub async fn console_rpc_handler(
         state.topology.as_ref(),
     ))
     .await;
+    let response_value = decorate_console_job_projection(
+        response_value,
+        &request_method,
+        state.job_health_projection.as_ref(),
+    );
     (StatusCode::OK, Json::<Value>(response_value))
+}
+
+fn decorate_console_job_projection(
+    mut response: Value,
+    method: &str,
+    projection_slot: Option<&Arc<std::sync::RwLock<Option<Value>>>>,
+) -> Value {
+    let projection = projection_slot.and_then(|slot| {
+        slot.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    });
+    let Some(projection) = projection else {
+        return response;
+    };
+    match method {
+        "mobkit/status" | "mobkit/capabilities" => {
+            response["result"]["detached_jobs"] = projection
+                .get("detached_jobs")
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+        "mobkit/member_status" => {
+            if let Some(session_id) = response["result"]["current_session_id"].as_str()
+                && let Some(session_jobs) = projection
+                    .get("by_session")
+                    .and_then(|by_session| by_session.get(session_id))
+            {
+                response["result"]["detached_jobs"] = session_jobs.clone();
+                response["result"]["awaiting_detached"] = session_jobs
+                    .get("awaiting_detached")
+                    .cloned()
+                    .unwrap_or(Value::Bool(false));
+            }
+        }
+        _ => {}
+    }
+    response
 }
 
 #[derive(Debug, serde::Deserialize)]

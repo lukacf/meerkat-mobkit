@@ -17,7 +17,13 @@ from __future__ import annotations
 
 # Builder + Runtime
 from .builder import MobKit, MobKitBuilder
-from .runtime import MobKitRuntime, ToolCaller
+from .runtime import JobsHandle, MobKitRuntime, MonitorsHandle, ToolCaller
+from .jobs import (
+    DetachedJobAuthority,
+    DetachedJobContext,
+    DetachedJobExecution,
+    DetachedJobResult,
+)
 from .identity_first_models import (
     IdentityBootstrapCounts,
     IdentityBootstrapEntry,
@@ -193,6 +199,12 @@ __all__ = [
     "MobKit",
     "MobKitBuilder",
     "MobKitRuntime",
+    "JobsHandle",
+    "MonitorsHandle",
+    "DetachedJobAuthority",
+    "DetachedJobContext",
+    "DetachedJobExecution",
+    "DetachedJobResult",
     "IdentityBootstrapMode",
     "IdentityBootstrapState",
     "IdentityBootstrapCounts",

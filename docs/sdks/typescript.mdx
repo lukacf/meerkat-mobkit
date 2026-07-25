@@ -46,6 +46,55 @@ const evaluation = await handle.schedulingEvaluate([
 ], Date.now());
 ```
 
+## Durable detached tools
+
+Long-running host work must declare detached execution rather than keeping a
+tool callback open:
+
+```typescript
+import { DetachedJobExecution, DetachedJobResult, MobKit } from "@rkat/mobkit-sdk";
+
+const runtime = await MobKit.builder()
+  .persistentState("state/mobkit")
+  .jobCredentials(resolveProfileCredentials)
+  .sessionService({
+    async buildAgent(draft) {
+      draft.registerTool(
+        "security_scan",
+        async () => ({ error: "detached owner required" }),
+        {
+          description: "Run a durable security scan",
+          execution: new DetachedJobExecution({
+            runner: "homecore.security_scan",
+            version: "v1",
+            restartClass: "checkpoint_resumable",
+            idempotencyScope: "interaction_and_arguments",
+            submissionTimeoutMs: 30_000,
+            credentialScopes: ["unifi.read"],
+            handler: async (ctx) => {
+              await ctx.progress(1, "scan started");
+              const resultRef = await performScan(ctx.arguments, ctx.credentials);
+              return new DetachedJobResult(resultRef);
+            },
+          }),
+        },
+      );
+    },
+  })
+  .build();
+
+const job = await runtime.jobs.get(jobId);
+await runtime.jobs.cancel(jobId);
+```
+
+The gateway durably accepts the job and returns a receipt; host work runs
+outside the agent turn. Start, reconcile, and cancel remain short callbacks
+inside the 120-second public contract (125-second host and 130-second wire
+margins). Reconnect offers the exact committed attempt, fence, lease,
+checkpoint, and runner handle. Reopening never mints a fence; only a
+machine-authorized claim or retry does. Credentials are resolved per attempt
+and never serialized into durable job state.
+
 For identity-first builds with a `rosterProvider`, `.agentMemory()` enables optional identity-scoped hot memory injection from `<persistentState>/agent-memory` with contextual recall by default. Options include `realm`, `selection`, `maxEntries`, `recallTimeoutMs`, `recallFailurePolicy`, and `instructionHeader`; automatic injection defaults to a 500 ms timeout and skips the memory block if recall fails. Write records with `handle.rememberAgentMemory(identity, { title, body, tags, realm })`, read them with `handle.recallAgentMemory(identity, { realm, selection, queryText, queryTerms, maxEntries })`, and delete them with `handle.forgetAgentMemory(identity, memoryId, { realm })`; new records are available on the next identity-first send and during later materialize/resume/respawn/reset flows. Forgetting a record removes it from future recall/injection, but does not erase text already delivered into an active model context.
 
 ## Type definitions

@@ -226,6 +226,115 @@ def _normalize_upload_item(
     return _read_upload_source(item, media_type="image/png", filename=filename)
 
 
+class JobsHandle:
+    """Safe application-facing durable-job surface."""
+
+    def __init__(self, runtime: MobKitRuntime) -> None:
+        self._runtime = runtime
+
+    async def get(self, job_id: str) -> Any:
+        return await self._runtime._rpc("jobs/get", {"job_id": job_id})
+
+    async def list(
+        self,
+        *,
+        session_id: str,
+        limit: int | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"session_id": session_id}
+        if limit is not None:
+            params["limit"] = limit
+        return await self._runtime._rpc("jobs/list", params)
+
+    async def cancel(self, job_id: str) -> Any:
+        return await self._runtime._rpc("jobs/cancel", {"job_id": job_id})
+
+    async def progress(self, job_id: str) -> Any:
+        return await self._runtime._rpc("jobs/progress", {"job_id": job_id})
+
+    async def result(self, job_id: str) -> Any:
+        return await self._runtime._rpc("jobs/result", {"job_id": job_id})
+
+    async def artifacts(self, job_id: str) -> Any:
+        return await self._runtime._rpc("jobs/artifacts", {"job_id": job_id})
+
+    async def retry(self, job_id: str, *, retry_due_at_ms: int) -> Any:
+        return await self._runtime._rpc(
+            "jobs/retry",
+            {"job_id": job_id, "retry_due_at_ms": retry_due_at_ms},
+        )
+
+    async def health(self) -> Any:
+        return await self._runtime._rpc("jobs/health", {})
+
+    async def subscribe(
+        self,
+        job_id: str,
+        *,
+        subscription_id: str,
+        session_id: str,
+        delivery: dict[str, Any],
+    ) -> Any:
+        return await self._runtime._rpc(
+            "jobs/subscribe",
+            {
+                "job_id": job_id,
+                "subscription_id": subscription_id,
+                "session_id": session_id,
+                "delivery": delivery,
+            },
+        )
+
+    async def unsubscribe(self, job_id: str, *, subscription_id: str) -> Any:
+        return await self._runtime._rpc(
+            "jobs/unsubscribe",
+            {"job_id": job_id, "subscription_id": subscription_id},
+        )
+
+
+class MonitorsHandle:
+    """Durable monitor convenience surface; lifecycle remains job-owned."""
+
+    def __init__(self, runtime: MobKitRuntime) -> None:
+        self._runtime = runtime
+
+    async def start(
+        self,
+        *,
+        session_id: str,
+        submission_key: str,
+        command: str,
+        timeout_secs: int,
+        restart_class: str,
+        delivery: dict[str, Any],
+        protocol: str = "framed_jsonl",
+        working_dir: str | None = None,
+        max_line_bytes: int | None = None,
+        max_notifications_per_window: int | None = None,
+        notification_window_ms: int | None = None,
+        max_retained_diagnostic_bytes: int | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {
+            "session_id": session_id,
+            "submission_key": submission_key,
+            "command": command,
+            "timeout_secs": timeout_secs,
+            "protocol": protocol,
+            "restart_class": restart_class,
+            "delivery": delivery,
+        }
+        for key, value in (
+            ("working_dir", working_dir),
+            ("max_line_bytes", max_line_bytes),
+            ("max_notifications_per_window", max_notifications_per_window),
+            ("notification_window_ms", notification_window_ms),
+            ("max_retained_diagnostic_bytes", max_retained_diagnostic_bytes),
+        ):
+            if value is not None:
+                params[key] = value
+        return await self._runtime._rpc("monitors/start", params)
+
+
 class MobKitRuntime:
     """Running MobKit runtime instance.
 
@@ -251,6 +360,8 @@ class MobKitRuntime:
         self._rust_http_base: str | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._shutdown_task: asyncio.Task[None] | None = None
+        self.jobs = JobsHandle(self)
+        self.monitors = MonitorsHandle(self)
 
     async def __aenter__(self) -> MobKitRuntime:
         if not self._running:
@@ -348,6 +459,13 @@ class MobKitRuntime:
             self._transport = transport
             self._rust_http_base = None
             try:
+                # Detached host work reports asynchronously through ordinary
+                # gateway RPC after the short callback/job/start response.
+                self._dispatcher.register_job_rpc(self._rpc)
+                if self._config.job_credential_resolver is not None:
+                    self._dispatcher.register_job_credential_resolver(
+                        self._config.job_credential_resolver
+                    )
                 # Register builder FIRST — init may trigger callback/build_agent
                 if self._config.session_builder and isinstance(
                     self._config.session_builder, SessionAgentBuilder

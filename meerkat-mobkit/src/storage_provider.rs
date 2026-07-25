@@ -234,6 +234,8 @@ pub(crate) struct ProviderMeerkatStores {
     pub runtime_declaration: DurabilityDeclaration,
     pub workgraph_store: Arc<dyn meerkat::WorkGraphStore>,
     pub workgraph_declaration: DurabilityDeclaration,
+    pub job_store: Arc<dyn meerkat::DetachedJobStore>,
+    pub job_declaration: DurabilityDeclaration,
 }
 
 impl ProviderMeerkatStores {
@@ -243,6 +245,10 @@ impl ProviderMeerkatStores {
 
     pub(crate) fn workgraph_slot_summary(&self) -> crate::storage_health::StorageSlotSummary {
         self.slot_summary(&self.workgraph_declaration)
+    }
+
+    pub(crate) fn job_slot_summary(&self) -> crate::storage_health::StorageSlotSummary {
+        self.slot_summary(&self.job_declaration)
     }
 
     fn slot_summary(
@@ -334,12 +340,15 @@ pub(crate) async fn open_provider_meerkat_stores(
     };
     let runtime_declaration = declaration("runtime")?;
     let workgraph_declaration = declaration("workgraph")?;
+    let job_declaration = declaration("jobs")?;
     Ok(ProviderMeerkatStores {
         provider_name,
         runtime_store: set.runtime_store,
         runtime_declaration,
         workgraph_store: set.workgraph_store,
         workgraph_declaration,
+        job_store: set.job_store,
+        job_declaration,
     })
 }
 

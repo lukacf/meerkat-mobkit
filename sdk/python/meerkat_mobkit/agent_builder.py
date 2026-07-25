@@ -2,14 +2,48 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import inspect
 import logging
-from typing import Any, Callable, Protocol, runtime_checkable
+import time
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
+from .jobs import (
+    CredentialResolver,
+    DetachedJobAuthority,
+    DetachedJobContext,
+    DetachedJobExecution,
+    DetachedJobResult,
+    DetachedJobRpc,
+    _DetachedJobReporter,
+)
 from .models import SessionBuildOptions
 from .types import ErrorEvent
 
 _log = logging.getLogger("meerkat_mobkit")
+
+
+@dataclass
+class _RegisteredJobRunner:
+    execution: DetachedJobExecution
+    profile_name: str | None
+
+
+@dataclass
+class _ActiveJobAttempt:
+    authority: DetachedJobAuthority
+    runner_key: tuple[str, str]
+    runner_handle: str
+    cancellation: asyncio.Event
+    task: asyncio.Task[None] | None
+    adopted: bool = False
+    superseded: bool = False
+
+
+@dataclass
+class _JobMutationLock:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 @runtime_checkable
@@ -66,6 +100,15 @@ class CallbackDispatcher:
         # Host-runnable schedule-fire handlers, keyed by runnable name
         # (callback/schedule_fire from runtime_options.host_runnables targets)
         self._schedule_fire_handlers: dict[str, Any] = {}
+        # Detached jobs remain machine-owned in Meerkat. These maps hold only
+        # the host process's mechanical runner/task projection.
+        self._job_rpc: DetachedJobRpc | None = None
+        self._job_credential_resolver: CredentialResolver | None = None
+        self._job_runners: dict[tuple[str, str], _RegisteredJobRunner] = {}
+        self._job_attempts: dict[str, _ActiveJobAttempt] = {}
+        self._job_highest_fence: dict[str, int] = {}
+        self._job_tasks: set[asyncio.Task[None]] = set()
+        self._job_mutation_locks: dict[str, _JobMutationLock] = {}
 
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
@@ -102,6 +145,26 @@ class CallbackDispatcher:
         if not callable(handler):
             raise TypeError(f"handler must be callable, got {type(handler).__name__}: {handler!r}")
         self._schedule_fire_handlers[name] = handler
+
+    def register_job_rpc(self, rpc: DetachedJobRpc) -> None:
+        """Bind the ordinary gateway RPC path used by asynchronous reporters."""
+        if not callable(rpc):
+            raise TypeError(f"job rpc must be callable, got {type(rpc).__name__}")
+        self._job_rpc = rpc
+
+    def register_job_credential_resolver(self, resolver: CredentialResolver) -> None:
+        """Bind execution-time credential resolution for detached attempts."""
+        if not callable(resolver):
+            raise TypeError(
+                f"job credential resolver must be callable, got {type(resolver).__name__}"
+            )
+        self._job_credential_resolver = resolver
+
+    async def wait_for_job_tasks(self) -> None:
+        """Wait for the current in-process host tasks (test/shutdown helper)."""
+        while self._job_tasks:
+            tasks = list(self._job_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def release_scope(self, scope_id: str) -> None:
         """Remove all tool handlers for a scope. Call when a session ends."""
@@ -159,6 +222,8 @@ class CallbackDispatcher:
                 self._tool_handlers[(scope_id, name)] = handler
                 tool_names.append(name)
             self._scope_tools[scope_id] = tool_names
+            for execution in opts.job_executions.values():
+                self._register_job_runner(execution, opts.profile_name)
             return opts.to_dict()
 
         if method == "callback/call_tool":
@@ -183,6 +248,15 @@ class CallbackDispatcher:
             if isinstance(result, ToolResultContent):
                 return {"content_blocks": result.blocks}
             return {"content": result}
+
+        if method == "callback/job/start":
+            return await self._start_job(params)
+
+        if method == "callback/job/reconcile":
+            return await self._reconcile_jobs(params)
+
+        if method == "callback/job/cancel":
+            return await self._cancel_job(params)
 
         if method == "callback/schedule_fire":
             runnable = params.get("runnable", "")
@@ -213,6 +287,316 @@ class CallbackDispatcher:
             return await self._handle_agent_customizer(method, params)
 
         raise ValueError(f"unknown callback method: {method}")
+
+    # --- Detached callback job shell -------------------------------------
+
+    def _register_job_runner(
+        self,
+        execution: DetachedJobExecution,
+        profile_name: str | None,
+    ) -> None:
+        key = execution.runner_key
+        existing = self._job_runners.get(key)
+        if existing is not None and existing.profile_name != profile_name:
+            raise ValueError(
+                f"detached runner {execution.runner!r}@{execution.version} is already "
+                f"bound to profile {existing.profile_name!r}; refusing conflicting "
+                f"profile {profile_name!r}"
+            )
+        self._job_runners[key] = _RegisteredJobRunner(execution, profile_name)
+
+    @staticmethod
+    def _runner_key(params: Mapping[str, Any]) -> tuple[str, str]:
+        runner = params.get("runner")
+        if not isinstance(runner, Mapping):
+            raise ValueError("job callback requires a runner object")
+        name = runner.get("name")
+        version = runner.get("version")
+        if not isinstance(name, str) or not name:
+            raise ValueError("job callback runner requires a non-empty name")
+        if not isinstance(version, str) or not version:
+            raise ValueError("job callback runner requires a non-empty version")
+        return (name, version)
+
+    async def _resolve_job_credentials(
+        self,
+        registration: _RegisteredJobRunner,
+        scopes: tuple[str, ...],
+    ) -> Mapping[str, Any]:
+        if not scopes:
+            return {}
+        resolver = self._job_credential_resolver
+        if resolver is None:
+            raise ValueError(
+                "detached callback requires credential scopes but no execution-time "
+                "credential resolver is configured"
+            )
+        resolved = resolver(registration.profile_name, scopes)
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
+        if not isinstance(resolved, Mapping):
+            raise TypeError("job credential resolver must return a mapping")
+        return resolved
+
+    async def _start_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        authority_raw = params.get("authority")
+        if not isinstance(authority_raw, Mapping):
+            raise ValueError("callback/job/start requires authority")
+        authority = DetachedJobAuthority.from_dict(authority_raw)
+        mutation = self._job_mutation_locks.setdefault(
+            authority.job_id,
+            _JobMutationLock(asyncio.Lock()),
+        )
+        mutation.users += 1
+        try:
+            async with mutation.lock:
+                return await self._start_job_locked(params, authority)
+        finally:
+            mutation.users -= 1
+            if mutation.users == 0:
+                self._job_mutation_locks.pop(authority.job_id, None)
+
+    async def _start_job_locked(
+        self,
+        params: dict[str, Any],
+        authority: DetachedJobAuthority,
+    ) -> dict[str, Any]:
+        runner_key = self._runner_key(params)
+        registration = self._job_runners.get(runner_key)
+        runner_handle = params.get("runner_handle")
+        if not isinstance(runner_handle, str) or not runner_handle:
+            raise ValueError("callback/job/start requires a non-empty runner_handle")
+        if registration is None or self._job_rpc is None:
+            return {"accepted": False, "runner_handle": runner_handle}
+
+        highest = self._job_highest_fence.get(authority.job_id)
+        active = self._job_attempts.get(authority.job_id)
+        if highest is not None and authority.fence < highest:
+            return {"accepted": False, "runner_handle": runner_handle}
+        if highest == authority.fence:
+            if (
+                active is not None
+                and active.authority == authority
+                and active.runner_handle == runner_handle
+                and (active.task is None or not active.task.done())
+            ):
+                return {"accepted": True, "runner_handle": runner_handle}
+            # A completed/foreign attempt at the same fence is never replayed
+            # merely because its start callback was delivered again.
+            return {"accepted": False, "runner_handle": runner_handle}
+
+        scopes_raw = params.get("credential_scopes", [])
+        if not isinstance(scopes_raw, list) or not all(
+            isinstance(scope, str) and scope for scope in scopes_raw
+        ):
+            raise ValueError("credential_scopes must be a list of non-empty strings")
+        try:
+            credentials = await self._resolve_job_credentials(
+                registration,
+                tuple(scopes_raw),
+            )
+        except Exception:
+            # Credential material never crosses the callback boundary. A
+            # resolution failure is a clean start rejection so Meerkat's
+            # machine can classify the committed attempt as attention-needed.
+            return {"accepted": False, "runner_handle": runner_handle}
+
+        # A strictly newer fence can only arrive from a later committed
+        # machine claim. Supersede the old host shell; this does not mint or
+        # mutate authority.
+        if active is not None:
+            active.superseded = True
+            active.cancellation.set()
+            if active.task is not None and not active.task.done():
+                active.task.cancel()
+
+        cancellation = asyncio.Event()
+        reporter = _DetachedJobReporter(authority, self._job_rpc)
+        context = DetachedJobContext(
+            authority=authority,
+            runner_handle=runner_handle,
+            arguments=params.get("arguments"),
+            credentials=credentials,
+            resume_checkpoint=(
+                params.get("resume_checkpoint")
+                if isinstance(params.get("resume_checkpoint"), str)
+                else None
+            ),
+            cancellation=cancellation,
+            reporter=reporter,
+        )
+        attempt = _ActiveJobAttempt(
+            authority=authority,
+            runner_key=runner_key,
+            runner_handle=runner_handle,
+            cancellation=cancellation,
+            task=None,
+        )
+        self._job_highest_fence[authority.job_id] = authority.fence
+        self._job_attempts[authority.job_id] = attempt
+        task = asyncio.create_task(
+            self._run_job(attempt, registration.execution.handler, context, reporter),
+            name=f"mobkit-job-{authority.job_id}-{authority.attempt_id}",
+        )
+        attempt.task = task
+        self._job_tasks.add(task)
+        task.add_done_callback(self._job_tasks.discard)
+        return {"accepted": True, "runner_handle": runner_handle}
+
+    async def _run_job(
+        self,
+        attempt: _ActiveJobAttempt,
+        runner: Any,
+        context: DetachedJobContext,
+        reporter: _DetachedJobReporter,
+    ) -> None:
+        run = getattr(runner, "run", runner)
+        try:
+            if inspect.iscoroutinefunction(run):
+                result = await run(context)
+            else:
+                result = await asyncio.to_thread(run, context)
+                if inspect.isawaitable(result):
+                    result = await result
+            if attempt.superseded:
+                return
+            if context.cancelled:
+                await reporter.cancel_ack()
+            elif isinstance(result, DetachedJobResult):
+                await reporter.complete(result.result_ref)
+            elif result is None:
+                await reporter.complete(None)
+            else:
+                raise TypeError(
+                    "detached runner must return DetachedJobResult or None; "
+                    "persist result bytes and return only their reference"
+                )
+        except asyncio.CancelledError:
+            if not attempt.superseded:
+                context.cancellation.set()
+                try:
+                    await reporter.cancel_ack()
+                except Exception:
+                    _log.exception("detached job cancel acknowledgement failed")
+        except Exception:
+            if not attempt.superseded:
+                try:
+                    # Do not copy exception text across the durable boundary:
+                    # it can contain arguments or resolved secret material.
+                    await reporter.fail("host_runner_failed")
+                except Exception:
+                    _log.exception("detached job failure report failed")
+        finally:
+            current = self._job_attempts.get(attempt.authority.job_id)
+            if current is attempt and not attempt.adopted:
+                self._job_attempts.pop(attempt.authority.job_id, None)
+
+    async def _renew_reconciled_attempt(
+        self,
+        authority: DetachedJobAuthority,
+    ) -> bool:
+        if self._job_rpc is None:
+            return False
+        now_ms = time.time_ns() // 1_000_000
+        try:
+            await _DetachedJobReporter(authority, self._job_rpc).heartbeat(
+                heartbeat_at_ms=now_ms,
+                lease_expires_at_ms=now_ms + 120_000,
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _reconcile_jobs(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw_attempts = params.get("attempts")
+        if not isinstance(raw_attempts, list):
+            raise ValueError("callback/job/reconcile requires attempts")
+        live: list[dict[str, Any]] = []
+        for raw_attempt in raw_attempts:
+            if not isinstance(raw_attempt, dict):
+                raise ValueError("reconcile attempts must be objects")
+            authority_raw = raw_attempt.get("authority")
+            if not isinstance(authority_raw, Mapping):
+                raise ValueError("reconcile attempt requires authority")
+            authority = DetachedJobAuthority.from_dict(authority_raw)
+            runner_key = self._runner_key(raw_attempt)
+            runner_handle = raw_attempt.get("runner_handle")
+            if not isinstance(runner_handle, str) or not runner_handle:
+                raise ValueError("reconcile attempt requires runner_handle")
+            active = self._job_attempts.get(authority.job_id)
+            if active is not None and (
+                active.authority == authority
+                and active.runner_key == runner_key
+                and active.runner_handle == runner_handle
+            ):
+                if (
+                    not active.cancellation.is_set()
+                    and (active.task is None or not active.task.done())
+                    and await self._renew_reconciled_attempt(authority)
+                ):
+                    live.append(authority.to_dict())
+                continue
+
+            registration = self._job_runners.get(runner_key)
+            if raw_attempt.get("restart_class") != "adoptable":
+                # A reconstruction hook may adopt only work whose generated
+                # lifecycle declaration permits adoption. Replay/resume is a
+                # later machine-authorized claim, never a host inference.
+                continue
+            reconcile = (
+                getattr(registration.execution.handler, "reconcile", None)
+                if registration is not None
+                else None
+            )
+            if not callable(reconcile):
+                continue
+            adopted = reconcile(raw_attempt)
+            if inspect.isawaitable(adopted):
+                adopted = await adopted
+            if adopted is not True:
+                continue
+            highest = self._job_highest_fence.get(authority.job_id)
+            if highest is not None and authority.fence < highest:
+                continue
+            self._job_highest_fence[authority.job_id] = authority.fence
+            self._job_attempts[authority.job_id] = _ActiveJobAttempt(
+                authority=authority,
+                runner_key=runner_key,
+                runner_handle=runner_handle,
+                cancellation=asyncio.Event(),
+                task=None,
+                adopted=True,
+            )
+            if not await self._renew_reconciled_attempt(authority):
+                current = self._job_attempts.get(authority.job_id)
+                if current is not None and current.authority == authority:
+                    self._job_attempts.pop(authority.job_id, None)
+                continue
+            live.append(authority.to_dict())
+        return {"live_attempts": live}
+
+    async def _cancel_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        authority_raw = params.get("authority")
+        if not isinstance(authority_raw, Mapping):
+            raise ValueError("callback/job/cancel requires authority")
+        authority = DetachedJobAuthority.from_dict(authority_raw)
+        active = self._job_attempts.get(authority.job_id)
+        if active is None or active.authority != authority:
+            return {"accepted": False}
+        active.cancellation.set()
+        registration = self._job_runners.get(active.runner_key)
+        cancel = (
+            getattr(registration.execution.handler, "cancel", None)
+            if registration is not None
+            else None
+        )
+        if callable(cancel):
+            result = cancel(authority.to_dict())
+            if inspect.isawaitable(result):
+                await result
+        if active.task is not None and not active.task.done():
+            active.task.cancel()
+        return {"accepted": True}
 
     # --- Provider dispatch helpers ---
 
