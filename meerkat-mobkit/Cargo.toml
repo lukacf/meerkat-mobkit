@@ -73,7 +73,9 @@ meerkat-session = { version = "=0.8.6", features = ["session-store"] }
 # the per-file migration ledger, per-operation maintenance fence guards
 # (every in-crate opener, M3), and the doctor's read-only ledger reads (M1).
 meerkat-sqlite = "=0.8.6"
-meerkat-store = { version = "=0.8.6", features = ["sqlite"] }
+# `memory` is the parked-delta backend for pre-registration incremental
+# writes in the continuity adapter (nothing parked is ever durable).
+meerkat-store = { version = "=0.8.6", features = ["sqlite", "memory"] }
 meerkat-tools = "=0.8.6"
 tempfile = "3"
 async-trait = "0.1"

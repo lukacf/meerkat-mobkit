@@ -57,9 +57,11 @@ pub trait CallbackBridge: Send + Sync {
 /// `as_incremental_sessions` keeps the trait's `None` default deliberately:
 /// the callback wire protocol carries only whole-snapshot verbs
 /// (`continuity/save_snapshot` and friends), so SDK-hosted stores cannot
-/// advertise the incremental session-delta capability without new callback
-/// methods. Identity-first launches persisting through this store therefore
-/// stay on the loudly-reported whole-blob path (H2).
+/// advertise the cursor-carrying session-delta capability
+/// ([`ContinuityIncrementalSessions`](super::contracts::ContinuityIncrementalSessions))
+/// without new callback methods. Identity-first launches persisting through
+/// this store therefore stay on the loudly-reported whole-blob path (H2) —
+/// unlike the bundled `LocalContinuityStore`, which ships the channel.
 pub struct GatewayContinuityStore {
     bridge: Box<dyn CallbackBridge>,
 }

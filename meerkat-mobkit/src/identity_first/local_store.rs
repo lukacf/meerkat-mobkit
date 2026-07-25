@@ -4,12 +4,24 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension};
+use meerkat_core::SessionStoreError;
+use meerkat_core::session_store::{
+    SessionHead, SessionHeadCas, StrandLayout, TranscriptStrandId, reconstruct_rewrite_record,
+    session_head_cas_token, strand_layout_for_history, validate_commit_rewrite_transition,
+    validate_save_head_transition,
+};
+use meerkat_core::types::Message;
+use meerkat_core::{Session, TranscriptRewriteCommit, TranscriptRewriteRecord};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use super::contracts::{ContinuityStore, SessionSnapshotMatchCandidate};
+use super::contracts::{
+    ContinuityIncrementalSessions, ContinuityStore, ContinuityWriteCursor,
+    SessionSnapshotMatchCandidate,
+};
 use super::types::{
     AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration, ContinuityRecord,
     ContinuityResolveState, ContinuityStoreError, FencingToken, SessionSnapshot,
@@ -34,10 +46,100 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS continuity_records (
         data           BLOB NOT NULL
     );";
 
+/// Head-canonical session representation (M4b): the durable trio meerkat's
+/// incremental persistence contract needs, plus the `(identity, generation)`
+/// stamps every mobkit continuity row carries so reset rollback and identity
+/// deletion can scope their deletes — including strand rows written in the
+/// crash window between `append_messages` and the head write that adopts
+/// them.
+const SCHEMA_HEAD_CANONICAL: &str = "CREATE TABLE IF NOT EXISTS continuity_session_heads (
+        session_id     TEXT PRIMARY KEY,
+        identity       TEXT NOT NULL,
+        generation     INTEGER NOT NULL,
+        checkpoint_version INTEGER NOT NULL,
+        fencing_token  INTEGER NOT NULL,
+        head_revision  TEXT NOT NULL,
+        message_count  INTEGER NOT NULL,
+        rewrite_count  INTEGER NOT NULL,
+        head_json      BLOB NOT NULL,
+        cas_token      TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS continuity_strand_messages (
+        session_id     TEXT NOT NULL,
+        strand         TEXT NOT NULL,
+        seq            INTEGER NOT NULL,
+        message_json   BLOB NOT NULL,
+        identity       TEXT NOT NULL,
+        generation     INTEGER NOT NULL,
+        created_at_ms  INTEGER NOT NULL,
+        PRIMARY KEY (session_id, strand, seq)
+    );
+    CREATE TABLE IF NOT EXISTS continuity_session_rewrites (
+        session_id     TEXT NOT NULL,
+        rewrite_idx    INTEGER NOT NULL,
+        parent_strand  TEXT NOT NULL,
+        parent_len     INTEGER NOT NULL,
+        strand         TEXT NOT NULL,
+        strand_len     INTEGER NOT NULL,
+        commit_json    BLOB NOT NULL,
+        identity       TEXT NOT NULL,
+        generation     INTEGER NOT NULL,
+        created_at_ms  INTEGER NOT NULL,
+        PRIMARY KEY (session_id, rewrite_idx)
+    );
+    CREATE INDEX IF NOT EXISTS continuity_records_session_idx
+        ON continuity_records(session_id);
+    CREATE INDEX IF NOT EXISTS continuity_heads_identity_gen_idx
+        ON continuity_session_heads(identity, generation);
+    CREATE INDEX IF NOT EXISTS continuity_strands_identity_gen_idx
+        ON continuity_strand_messages(identity, generation);
+    CREATE INDEX IF NOT EXISTS continuity_rewrites_identity_gen_idx
+        ON continuity_session_rewrites(identity, generation);";
+
+/// Ledger version that records "this file carries the head-canonical
+/// channel". A binary whose `mobkit-continuity` domain tops out below this
+/// refuses the file typed at open — correctly, because it would keep writing
+/// `session_snapshots.data` while head rows are the byte authority. The
+/// lockout is therefore only allowed to exist once head rows can exist:
+/// see [`LocalContinuityStore::open`].
+pub const HEAD_CANONICAL_SCHEMA_VERSION: i64 = 2;
+
 /// The continuity store's schema domain in the per-file migration ledger.
 /// Migration 0001 is the historical two-table DDL (all `CREATE ... IF NOT
-/// EXISTS`, so a pre-ledger file converges without its rows being touched).
+/// EXISTS`, so a pre-ledger file converges without its rows being touched);
+/// migration 0002 adds the head-canonical trio (DDL-only, additive, zero row
+/// rewrites).
+///
+/// **This domain is NEVER applied by a plain [`LocalContinuityStore::open`].**
+/// Applying it stamps v2, which locks every `<= 0.8.5` binary out of the file
+/// (`SqliteStoreError::SchemaFromTheFuture`). That lockout is load-bearing
+/// only once a head row exists, so it is committed at exactly two moments:
+/// by a delta write that actually creates head state (armed inside that
+/// write's own transaction, so a REFUSED write leaves the file at v1), and
+/// by explicit operator action (`storage-migrate --apply`). Merely
+/// launching a new gateway leaves rollback to the previous release intact.
 pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
+    meerkat_sqlite::SchemaDomain {
+        name: "mobkit-continuity",
+        migrations: &[
+            meerkat_sqlite::Migration {
+                version: 1,
+                name: "base-schema",
+                apply: migration_0001_continuity_schema,
+            },
+            meerkat_sqlite::Migration {
+                version: 2,
+                name: "head-canonical-sessions",
+                apply: migration_0002_head_canonical_sessions,
+            },
+        ],
+    };
+
+/// The open-time domain: migration 0001 only. Opening a fresh or pre-ledger
+/// file converges it to v1 exactly as every previous release did, and an
+/// already-v2 file is left alone (the version check below runs against the
+/// FULL domain, so a v2 file is not "from the future").
+const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
     meerkat_sqlite::SchemaDomain {
         name: "mobkit-continuity",
         migrations: &[meerkat_sqlite::Migration {
@@ -49,6 +151,108 @@ pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
 
 fn migration_0001_continuity_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
     tx.execute_batch(SCHEMA)
+}
+
+fn migration_0002_head_canonical_sessions(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    tx.execute_batch(SCHEMA_HEAD_CANONICAL)
+}
+
+/// Open-time schema convergence that never commits the one-way v2 bump.
+///
+/// Returns whether the file already carries the head-canonical channel.
+///
+/// - future version (> the full domain) => refused typed, nothing mutated;
+/// - already v2 => nothing applied, delta channel ready;
+/// - already v1 => nothing applied (the v2 bump waits for a delta write);
+/// - no ledger row (fresh or pre-ledger file) => baseline v1 applied, exactly
+///   as before this release.
+fn converge_schema_at_open(conn: &mut Connection) -> Result<bool, ContinuityStoreError> {
+    meerkat_sqlite::refuse_future_schema(conn, &MOBKIT_CONTINUITY_DOMAIN)
+        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    let version = meerkat_sqlite::domain_version(conn, MOBKIT_CONTINUITY_DOMAIN.name)
+        .map_err(|e| mechanics_err("read continuity ledger", e))?;
+    match version {
+        Some(version) if version >= HEAD_CANONICAL_SCHEMA_VERSION => Ok(true),
+        Some(_) => Ok(false),
+        None => {
+            meerkat_sqlite::apply_domain_migrations(conn, &MOBKIT_CONTINUITY_BASELINE_DOMAIN)
+                .map_err(|e| mechanics_err("apply schema", e))?;
+            Ok(false)
+        }
+    }
+}
+
+/// Bring the head-canonical tables into existence INSIDE the caller's
+/// transaction, WITHOUT recording the ledger bump.
+///
+/// This is the half of the v1 -> v2 upgrade that is safe to speculate on:
+/// the DDL is additive and `IF NOT EXISTS`, it applies the domain's own
+/// migration bodies (never a second copy of the schema), and — because
+/// SQLite runs DDL transactionally — a rollback removes the tables again.
+/// The ledger stamp, which is the part that locks older binaries out, is
+/// [`stamp_head_canonical_ledger_in_txn`] and is written only after the
+/// enclosing write has actually created head state.
+///
+/// Refuses a file whose ledger is ahead of this binary, exactly as
+/// `apply_domain_migrations` would, and refuses a file that has lost its
+/// continuity ledger row (every opener converges one; its absence under a
+/// write transaction is corruption, not a fresh file).
+fn converge_head_canonical_schema_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
+    meerkat_sqlite::refuse_future_schema(tx, &MOBKIT_CONTINUITY_DOMAIN)
+        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    let current = meerkat_sqlite::domain_version(tx, MOBKIT_CONTINUITY_DOMAIN.name)
+        .map_err(|e| mechanics_err("read continuity ledger", e))?
+        .ok_or_else(|| {
+            ContinuityStoreError::Corruption(
+                "continuity ledger has no mobkit-continuity row; the file's migration ledger was \
+                 removed after it was opened"
+                    .to_string(),
+            )
+        })?;
+    for migration in MOBKIT_CONTINUITY_DOMAIN
+        .migrations
+        .iter()
+        .filter(|migration| migration.version > current)
+    {
+        (migration.apply)(tx).map_err(|e| sqlite_err("apply head-canonical schema", e))?;
+    }
+    Ok(())
+}
+
+/// Record the one-way `mobkit-continuity` v2 bump in the caller's
+/// transaction — the moment binaries older than this release start being
+/// refused the file.
+///
+/// Written last, so it commits atomically with the head state that earns
+/// it. A no-op stamp (file already at v2) is harmless: the row already
+/// carries this value.
+fn stamp_head_canonical_ledger_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
+    tx.execute(
+        "INSERT INTO main.meerkat_schema (domain, version) VALUES (?1, ?2)
+         ON CONFLICT(domain) DO UPDATE SET version = excluded.version",
+        rusqlite::params![
+            MOBKIT_CONTINUITY_DOMAIN.name,
+            MOBKIT_CONTINUITY_DOMAIN.supported_version()
+        ],
+    )
+    .map_err(|e| sqlite_err("stamp head-canonical ledger", e))?;
+    Ok(())
+}
+
+/// Commit the head-canonical schema (ledger `mobkit-continuity` v1 -> v2).
+///
+/// Called from `storage-migrate --apply` under the exclusive maintenance
+/// fence — the explicit-operator route. (The implicit route, the first
+/// delta write that creates head state, arms the same bump inside its own
+/// write transaction; see [`LocalContinuityStore::delta_write`].) The DDL
+/// is additive and `IF NOT EXISTS`; the ledger stamp is what makes the
+/// upgrade one-way.
+pub(crate) fn apply_head_canonical_schema(
+    conn: &mut Connection,
+) -> Result<meerkat_sqlite::LedgerReport, meerkat_sqlite::SqliteStoreError> {
+    meerkat_sqlite::apply_domain_migrations(conn, &MOBKIT_CONTINUITY_DOMAIN)
 }
 
 /// Classify a raw SQLite failure at the store boundary: busy/locked is
@@ -166,9 +370,40 @@ struct LocalContinuityStoreInner {
     db_path: PathBuf,
     writer: Mutex<Connection>,
     readers: ReadConnections,
+    /// Whether this file carries the head-canonical channel (ledger
+    /// `mobkit-continuity` >= 2). Latched, never cleared: schema evolution
+    /// is one-way. Read paths that observe the tables appearing under them
+    /// (another handle on the same file committed the bump) latch it too, so
+    /// a stale `false` can never make this handle serve the frozen blob
+    /// archive as authority.
+    head_canonical_schema: AtomicBool,
 }
 
 impl LocalContinuityStoreInner {
+    fn schema_is_head_canonical(&self) -> bool {
+        self.head_canonical_schema.load(Ordering::Acquire)
+    }
+
+    /// Whether the head-canonical tables are queryable on this connection.
+    /// Cheap after the first `true` (one relaxed atomic load).
+    fn head_tables_available(&self, conn: &Connection) -> Result<bool, ContinuityStoreError> {
+        if self.schema_is_head_canonical() {
+            return Ok(true);
+        }
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' \
+                 AND name = 'continuity_session_heads')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| sqlite_err("probe head-canonical tables", e))?;
+        if exists {
+            self.head_canonical_schema.store(true, Ordering::Release);
+        }
+        Ok(exists)
+    }
+
     /// Per-operation maintenance-fence guard: the writer and reader pool
     /// hold their connections for the store's lifetime, so the fence
     /// cannot ride the open — every operation takes its own shared guard,
@@ -235,8 +470,11 @@ impl LocalContinuityStore {
 
         let mut writer = meerkat_sqlite::open(path, meerkat_sqlite::ConnectionProfile::PRIMARY)
             .map_err(|e| mechanics_err("open writer", e))?;
-        meerkat_sqlite::apply_domain_migrations(&mut writer, &MOBKIT_CONTINUITY_DOMAIN)
-            .map_err(|e| mechanics_err("apply schema", e))?;
+        // Deliberately NOT `apply_domain_migrations(.., &MOBKIT_CONTINUITY_DOMAIN)`:
+        // opening a state directory with a new binary must not commit the
+        // one-way ledger v2 bump that locks the previous release out of the
+        // file. See `converge_schema_at_open`.
+        let head_canonical = converge_schema_at_open(&mut writer)?;
 
         let mut readers = Vec::with_capacity(READ_POOL_SIZE);
         for index in 0..READ_POOL_SIZE {
@@ -254,6 +492,7 @@ impl LocalContinuityStore {
                 db_path: path.to_path_buf(),
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Pool(ReadConnectionPool::new(readers)),
+                head_canonical_schema: AtomicBool::new(head_canonical),
             }),
         })
     }
@@ -279,6 +518,30 @@ impl LocalContinuityStore {
         })?
     }
 
+    /// Commit the head-canonical schema (ledger `mobkit-continuity` v1 -> v2)
+    /// into an existing database file as an explicit operator action.
+    ///
+    /// This is the `storage-migrate --apply` route. It is separate from
+    /// [`Self::open`] on purpose: the bump locks binaries older than this
+    /// release out of the file (`SchemaFromTheFuture`), so launching a new
+    /// gateway must never commit it as a side effect. Runs under whatever
+    /// exclusive maintenance fence the caller already holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContinuityStoreError::Io` when the file cannot be opened or
+    /// the migration cannot be applied.
+    pub fn apply_head_canonical_schema_at(
+        path: impl AsRef<Path>,
+    ) -> Result<bool, ContinuityStoreError> {
+        let mut conn =
+            meerkat_sqlite::open(path.as_ref(), meerkat_sqlite::ConnectionProfile::PRIMARY)
+                .map_err(|e| mechanics_err("open writer for head-canonical migration", e))?;
+        let report = apply_head_canonical_schema(&mut conn)
+            .map_err(|e| mechanics_err("apply head-canonical schema", e))?;
+        Ok(report.migrated())
+    }
+
     /// Open an in-memory store (for testing).
     ///
     /// # Errors
@@ -287,13 +550,15 @@ impl LocalContinuityStore {
     pub fn in_memory() -> Result<Self, ContinuityStoreError> {
         let mut writer =
             Connection::open_in_memory().map_err(|e| sqlite_err("in-memory open", e))?;
-        meerkat_sqlite::apply_domain_migrations(&mut writer, &MOBKIT_CONTINUITY_DOMAIN)
-            .map_err(|e| mechanics_err("apply schema", e))?;
+        // Same staged convergence as the file path, so the lazy v2 bump is
+        // exercised identically in tests and in production.
+        let head_canonical = converge_schema_at_open(&mut writer)?;
         Ok(Self {
             inner: Arc::new(LocalContinuityStoreInner {
                 db_path: PathBuf::from(":memory:"),
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Writer,
+                head_canonical_schema: AtomicBool::new(head_canonical),
             }),
         })
     }
@@ -313,16 +578,26 @@ impl LocalContinuityStore {
     /// Returns `ContinuityStoreError::Io` on a query failure.
     pub fn max_fencing_token(&self) -> Result<u64, ContinuityStoreError> {
         self.inner.with_reader(|connection| {
-            connection
-                .query_row(
-                    "SELECT COALESCE(MAX(t), 0) FROM (
+            // The head-canonical arm only exists once the file carries the
+            // channel; on a v1 file the union of the two historical tables
+            // IS the whole high-water.
+            let sql = if self.inner.head_tables_available(connection)? {
+                "SELECT COALESCE(MAX(t), 0) FROM (
                         SELECT MAX(fencing_token) AS t FROM continuity_records
                         UNION ALL
                         SELECT MAX(fencing_token) AS t FROM session_snapshots
-                    )",
-                    [],
-                    |row| row.get::<_, u64>(0),
-                )
+                        UNION ALL
+                        SELECT MAX(fencing_token) AS t FROM continuity_session_heads
+                    )"
+            } else {
+                "SELECT COALESCE(MAX(t), 0) FROM (
+                        SELECT MAX(fencing_token) AS t FROM continuity_records
+                        UNION ALL
+                        SELECT MAX(fencing_token) AS t FROM session_snapshots
+                    )"
+            };
+            connection
+                .query_row(sql, [], |row| row.get::<_, u64>(0))
                 .map_err(|e| sqlite_err("max_fencing_token", e))
         })
     }
@@ -344,6 +619,670 @@ impl LocalContinuityStore {
                 ContinuityStoreError::Io(format!("{operation_name} blocking worker failed: {e}"))
             })?
     }
+}
+
+// ---------------------------------------------------------------------------
+// Head-canonical session representation (M4b)
+//
+// Canonical-representation rule, per session: a `continuity_session_heads`
+// row exists => head+rows are the SOLE durable authority for that session,
+// and its `session_snapshots` row (if any) is a frozen archive that is never
+// read or written again. No head row => the legacy blob behavior is
+// byte-for-byte unchanged. This mirrors meerkat-store's own rule for
+// `session_heads` vs `sessions` and is what makes the delta channel a
+// REPLACEMENT of the byte authority rather than a second one beside it.
+//
+// Guard semantics are meerkat's published validators verbatim
+// (`validate_save_head_transition`, `validate_commit_rewrite_transition`,
+// `strand_layout_for_history`, `reconstruct_rewrite_record`), so this store
+// mirror can never accept or reject something the meerkat service would not.
+// ---------------------------------------------------------------------------
+
+/// Map a continuity-store failure onto the session-store error surface the
+/// incremental verbs speak, exactly as the whole-blob adapter save does.
+fn session_err(context: &str, error: ContinuityStoreError) -> SessionStoreError {
+    SessionStoreError::Internal(format!("{context}: {error}"))
+}
+
+fn sqlite_session_err(context: &str, error: rusqlite::Error) -> SessionStoreError {
+    session_err(context, sqlite_err(context, error))
+}
+
+fn now_millis() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+/// The stored head row plus its CAS token.
+type StoredHead = (SessionHead, String);
+
+fn head_row_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<Option<StoredHead>, SessionStoreError> {
+    let row = tx
+        .query_row(
+            "SELECT head_json, cas_token FROM continuity_session_heads WHERE session_id = ?1",
+            rusqlite::params![id.to_string()],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| sqlite_session_err("query session head", e))?;
+    let Some((head_json, cas_token)) = row else {
+        return Ok(None);
+    };
+    let head: SessionHead =
+        serde_json::from_slice(&head_json).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    Ok(Some((head, cas_token)))
+}
+
+/// The `(identity, generation)` a head row belongs to, when one exists.
+fn head_owner_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<Option<(String, u64)>, ContinuityStoreError> {
+    tx.query_row(
+        "SELECT identity, generation FROM continuity_session_heads WHERE session_id = ?1",
+        rusqlite::params![id.to_string()],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )
+    .optional()
+    .map_err(|e| sqlite_err("query head owner", e))
+}
+
+fn write_head_row_in_txn(
+    tx: &Transaction<'_>,
+    head: &SessionHead,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<String, SessionStoreError> {
+    let head_json = serde_json::to_vec(head).map_err(SessionStoreError::from)?;
+    let cas_token = session_head_cas_token(head)?;
+    let message_count = i64::try_from(head.message_count)
+        .map_err(|_| SessionStoreError::Corrupted(head.id.clone()))?;
+    let rewrite_count = i64::try_from(head.rewrite_count)
+        .map_err(|_| SessionStoreError::Corrupted(head.id.clone()))?;
+    tx.execute(
+        "INSERT INTO continuity_session_heads (
+            session_id, identity, generation, checkpoint_version, fencing_token,
+            head_revision, message_count, rewrite_count, head_json, cas_token
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(session_id) DO UPDATE SET
+            identity = excluded.identity,
+            generation = excluded.generation,
+            checkpoint_version = excluded.checkpoint_version,
+            fencing_token = excluded.fencing_token,
+            head_revision = excluded.head_revision,
+            message_count = excluded.message_count,
+            rewrite_count = excluded.rewrite_count,
+            head_json = excluded.head_json,
+            cas_token = excluded.cas_token",
+        rusqlite::params![
+            head.id.to_string(),
+            identity.as_str(),
+            generation.get(),
+            version.get(),
+            fencing_token.get(),
+            head.head_revision,
+            message_count,
+            rewrite_count,
+            head_json,
+            cas_token,
+        ],
+    )
+    .map_err(|e| sqlite_session_err("upsert session head", e))?;
+    Ok(cas_token)
+}
+
+fn strand_row_count_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    strand: &TranscriptStrandId,
+) -> Result<u64, SessionStoreError> {
+    let count: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM continuity_strand_messages \
+             WHERE session_id = ?1 AND strand = ?2",
+            rusqlite::params![id.to_string(), strand.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|e| sqlite_session_err("count strand rows", e))?;
+    u64::try_from(count).map_err(|_| SessionStoreError::Corrupted(id.clone()))
+}
+
+fn strand_row_bytes_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    strand: &TranscriptStrandId,
+    range: std::ops::Range<u64>,
+) -> Result<Vec<Vec<u8>>, SessionStoreError> {
+    if range.start >= range.end {
+        return Ok(Vec::new());
+    }
+    let start = i64::try_from(range.start).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let end = i64::try_from(range.end).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let mut statement = tx
+        .prepare_cached(
+            "SELECT message_json FROM continuity_strand_messages
+             WHERE session_id = ?1 AND strand = ?2 AND seq >= ?3 AND seq < ?4
+             ORDER BY seq ASC",
+        )
+        .map_err(|e| sqlite_session_err("prepare strand read", e))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![id.to_string(), strand.as_str(), start, end],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .map_err(|e| sqlite_session_err("read strand rows", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| sqlite_session_err("read strand rows", e))?;
+    if rows.len() as u64 != range.end - range.start {
+        return Err(SessionStoreError::Corrupted(id.clone()));
+    }
+    Ok(rows)
+}
+
+fn strand_messages_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    strand: &TranscriptStrandId,
+    range: std::ops::Range<u64>,
+) -> Result<Vec<Message>, SessionStoreError> {
+    strand_row_bytes_in_txn(tx, id, strand, range)?
+        .into_iter()
+        .map(|bytes| {
+            serde_json::from_slice::<Message>(&bytes)
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))
+        })
+        .collect()
+}
+
+/// Append rows under the trait's contiguity / idempotency / immutability
+/// contract: `base_seq` may not exceed the current row count; overlapping
+/// rows must be byte-identical; shrink is structurally inexpressible.
+fn insert_strand_rows_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    strand: &TranscriptStrandId,
+    base_seq: u64,
+    messages: &[Message],
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+) -> Result<(), SessionStoreError> {
+    let existing = strand_row_count_in_txn(tx, id, strand)?;
+    if base_seq > existing {
+        return Err(SessionStoreError::TranscriptContinuityViolation {
+            id: id.clone(),
+            previous_revision: format!("strand-rows:{existing}"),
+            incoming_revision: format!("append-base-seq:{base_seq}"),
+            reason: format!(
+                "append at base_seq {base_seq} would leave a gap in strand {strand} with \
+                 {existing} rows"
+            ),
+        });
+    }
+    let serialized: Vec<Vec<u8>> = messages
+        .iter()
+        .map(|message| serde_json::to_vec(message).map_err(SessionStoreError::from))
+        .collect::<Result<_, _>>()?;
+    let overlap_end = existing.min(base_seq + serialized.len() as u64);
+    if overlap_end > base_seq {
+        let stored = strand_row_bytes_in_txn(tx, id, strand, base_seq..overlap_end)?;
+        for (offset, stored_bytes) in stored.iter().enumerate() {
+            if stored_bytes != &serialized[offset] {
+                return Err(SessionStoreError::TranscriptContinuityViolation {
+                    id: id.clone(),
+                    previous_revision: format!("strand:{strand} seq:{}", base_seq + offset as u64),
+                    incoming_revision: "divergent-bytes".to_string(),
+                    reason: format!(
+                        "append would overwrite immutable row (strand {strand}, seq {}) with \
+                         different bytes",
+                        base_seq + offset as u64
+                    ),
+                });
+            }
+        }
+    }
+    let created_at_ms = now_millis();
+    for (offset, bytes) in serialized.iter().enumerate() {
+        let seq = base_seq + offset as u64;
+        if seq < existing {
+            continue;
+        }
+        let seq_i64 = i64::try_from(seq).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+        tx.execute(
+            "INSERT INTO continuity_strand_messages
+                (session_id, strand, seq, message_json, identity, generation, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                id.to_string(),
+                strand.as_str(),
+                seq_i64,
+                bytes,
+                identity.as_str(),
+                generation.get(),
+                created_at_ms,
+            ],
+        )
+        .map_err(|e| sqlite_session_err("insert strand row", e))?;
+    }
+    Ok(())
+}
+
+struct RewriteRow {
+    commit: TranscriptRewriteCommit,
+    parent_strand: TranscriptStrandId,
+    parent_len: u64,
+    strand: TranscriptStrandId,
+    strand_len: u64,
+}
+
+fn rewrite_row_count_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<u64, SessionStoreError> {
+    let count: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM continuity_session_rewrites WHERE session_id = ?1",
+            rusqlite::params![id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(|e| sqlite_session_err("count rewrite rows", e))?;
+    u64::try_from(count).map_err(|_| SessionStoreError::Corrupted(id.clone()))
+}
+
+fn rewrite_rows_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    max_idx_exclusive: u64,
+) -> Result<Vec<RewriteRow>, SessionStoreError> {
+    let limit =
+        i64::try_from(max_idx_exclusive).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let mut statement = tx
+        .prepare_cached(
+            "SELECT commit_json, parent_strand, parent_len, strand, strand_len
+             FROM continuity_session_rewrites
+             WHERE session_id = ?1 AND rewrite_idx < ?2
+             ORDER BY rewrite_idx ASC",
+        )
+        .map_err(|e| sqlite_session_err("prepare rewrite read", e))?;
+    let rows = statement
+        .query_map(rusqlite::params![id.to_string(), limit], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| sqlite_session_err("read rewrite rows", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| sqlite_session_err("read rewrite rows", e))?;
+    rows.into_iter()
+        .map(
+            |(commit_json, parent_strand, parent_len, strand, strand_len)| {
+                let commit: TranscriptRewriteCommit = serde_json::from_slice(&commit_json)
+                    .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+                Ok(RewriteRow {
+                    commit,
+                    parent_strand: TranscriptStrandId::from_persisted(parent_strand),
+                    parent_len: u64::try_from(parent_len)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))?,
+                    strand: TranscriptStrandId::from_persisted(strand),
+                    strand_len: u64::try_from(strand_len)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))?,
+                })
+            },
+        )
+        .collect()
+}
+
+fn insert_rewrite_row_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    rewrite_idx: u64,
+    row: &RewriteRow,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+) -> Result<(), SessionStoreError> {
+    let commit_json = serde_json::to_vec(&row.commit).map_err(SessionStoreError::from)?;
+    let idx = i64::try_from(rewrite_idx).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let parent_len =
+        i64::try_from(row.parent_len).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let strand_len =
+        i64::try_from(row.strand_len).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    tx.execute(
+        "INSERT OR REPLACE INTO continuity_session_rewrites
+            (session_id, rewrite_idx, parent_strand, parent_len, strand, strand_len,
+             commit_json, identity, generation, created_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            id.to_string(),
+            idx,
+            row.parent_strand.as_str(),
+            parent_len,
+            row.strand.as_str(),
+            strand_len,
+            commit_json,
+            identity.as_str(),
+            generation.get(),
+            now_millis(),
+        ],
+    )
+    .map_err(|e| sqlite_session_err("insert rewrite row", e))?;
+    Ok(())
+}
+
+fn blob_session_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<Option<Session>, SessionStoreError> {
+    let data = tx
+        .query_row(
+            "SELECT data FROM session_snapshots WHERE session_id = ?1",
+            rusqlite::params![id.to_string()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|e| sqlite_session_err("read archived snapshot", e))?;
+    let Some(data) = data else {
+        return Ok(None);
+    };
+    let session: Session = serde_json::from_slice(&data)
+        .map_err(|error| SessionStoreError::Serialization(error.to_string()))?;
+    Ok(Some(session))
+}
+
+fn layout_for_blob_session(
+    session: &Session,
+) -> Result<(StrandLayout, SessionHead), SessionStoreError> {
+    let state = session.transcript_history_state().map_err(|err| {
+        SessionStoreError::InvalidTranscriptRewrite {
+            id: session.id().clone(),
+            reason: format!("stored transcript history state is malformed: {err}"),
+        }
+    })?;
+    let layout = strand_layout_for_history(session.id(), state.as_ref(), session.messages())?;
+    let head = SessionHead::from_session(
+        session,
+        layout.head_strand.clone(),
+        layout.rewrites.len() as u64,
+    )?;
+    Ok((layout, head))
+}
+
+/// One-time per-session migration inside the caller's transaction: lay the
+/// legacy blob out as strands + rewrite rows + a head row. The blob row is
+/// left untouched as a frozen archive and is never read again once the head
+/// row exists. Reads never migrate.
+fn migrate_legacy_blob_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<Option<StoredHead>, SessionStoreError> {
+    let Some(session) = blob_session_in_txn(tx, id)? else {
+        return Ok(None);
+    };
+    let (layout, head) = layout_for_blob_session(&session)?;
+    for (strand, rows) in &layout.strands {
+        insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
+    }
+    for (idx, rewrite) in layout.rewrites.iter().enumerate() {
+        insert_rewrite_row_in_txn(
+            tx,
+            id,
+            idx as u64,
+            &RewriteRow {
+                commit: rewrite.commit.clone(),
+                parent_strand: rewrite.parent_strand.clone(),
+                parent_len: rewrite.parent_len,
+                strand: rewrite.strand.clone(),
+                strand_len: rewrite.strand_len,
+            },
+            identity,
+            generation,
+        )?;
+    }
+    let token = write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
+    Ok(Some((head, token)))
+}
+
+/// Head row if present, otherwise migrate a legacy blob in this transaction.
+/// The FIRST delta write migrates; reads synthesize without writing.
+fn ensure_head_canonical_for_write_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<Option<StoredHead>, SessionStoreError> {
+    if let Some(existing) = head_row_in_txn(tx, id)? {
+        return Ok(Some(existing));
+    }
+    migrate_legacy_blob_in_txn(tx, id, identity, generation, version, fencing_token)
+}
+
+fn materialize_slim_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    head: &SessionHead,
+) -> Result<Session, SessionStoreError> {
+    let messages = strand_messages_in_txn(tx, id, &head.strand, 0..head.message_count)?;
+    head.clone().into_session(messages)
+}
+
+/// Head-canonical compat write for a WHOLE-document verb: delta-append when
+/// the incoming transcript extends the persisted head strand, otherwise a
+/// `rebase:` strand switch. The archived blob row is never touched.
+fn write_head_canonical_session_in_txn(
+    tx: &Transaction<'_>,
+    session: &Session,
+    head: &SessionHead,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<(), SessionStoreError> {
+    let id = session.id();
+    let live = session.messages();
+    let prev_count = usize::try_from(head.message_count)
+        .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+    let plain_append = live.len() >= prev_count
+        && meerkat_core::transcript_messages_digest(&live[..prev_count])
+            .map_err(SessionStoreError::from)?
+            == head.head_revision;
+    let strand = if plain_append {
+        if live.len() > prev_count {
+            insert_strand_rows_in_txn(
+                tx,
+                id,
+                &head.strand,
+                head.message_count,
+                &live[prev_count..],
+                identity,
+                generation,
+            )?;
+        }
+        head.strand.clone()
+    } else {
+        let live_digest =
+            meerkat_core::transcript_messages_digest(live).map_err(SessionStoreError::from)?;
+        let rebased = TranscriptStrandId::rebase(&live_digest);
+        insert_strand_rows_in_txn(tx, id, &rebased, 0, live, identity, generation)?;
+        rebased
+    };
+    let new_head = SessionHead::from_session(session, strand, head.rewrite_count)?;
+    write_head_row_in_txn(tx, &new_head, identity, generation, version, fencing_token)?;
+    Ok(())
+}
+
+/// The continuity write discipline, enforced inside the same transaction as
+/// the rows it authorizes. Byte-for-byte the checks
+/// `save_session_snapshot_owned` runs for a whole-blob save, so a delta
+/// mutation can never be accepted where a whole-document save would be
+/// refused (or the reverse). Returns whether a continuity record exists for
+/// the identity — the caller advances it in the same transaction.
+fn enforce_continuity_cursor_in_txn(
+    tx: &Transaction<'_>,
+    identity: &AgentIdentity,
+    session_id: &meerkat_core::types::SessionId,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+) -> Result<bool, ContinuityStoreError> {
+    let existing = tx
+        .query_row(
+            "SELECT session_id, generation, fencing_token, checkpoint_version
+             FROM continuity_records WHERE identity = ?1",
+            rusqlite::params![identity.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| sqlite_err("query continuity record", e))?;
+
+    let record_was_present = existing.is_some();
+    if let Some((current_session_id, current_generation, current_token, current_version)) = existing
+    {
+        if current_session_id != session_id.to_string() || current_generation != generation.get() {
+            return Err(ContinuityStoreError::NotFound {
+                identity: identity.clone(),
+            });
+        }
+        if fencing_token.get() < current_token {
+            return Err(ContinuityStoreError::StaleFencingToken {
+                identity: identity.clone(),
+                presented: fencing_token,
+                current: FencingToken::new(current_token),
+            });
+        }
+        if version.get() <= current_version {
+            return Err(ContinuityStoreError::StaleCheckpointVersion {
+                identity: identity.clone(),
+                presented: version,
+                current: CheckpointVersion::new(current_version),
+            });
+        }
+    }
+    Ok(record_was_present)
+}
+
+fn advance_continuity_record_in_txn(
+    tx: &Transaction<'_>,
+    identity: &AgentIdentity,
+    session_id: &meerkat_core::types::SessionId,
+    generation: ContinuityGeneration,
+    version: CheckpointVersion,
+    fencing_token: FencingToken,
+    record_was_present: bool,
+) -> Result<(), ContinuityStoreError> {
+    tx.execute(
+        "UPDATE continuity_records
+         SET checkpoint_version = ?1, fencing_token = ?2
+         WHERE identity = ?3 AND session_id = ?4 AND generation = ?5",
+        rusqlite::params![
+            version.get(),
+            fencing_token.get(),
+            identity.as_str(),
+            session_id.to_string(),
+            generation.get(),
+        ],
+    )
+    .map_err(|e| sqlite_err("advance continuity record", e))?;
+    if record_was_present && tx.changes() == 0 {
+        return Err(ContinuityStoreError::NotFound {
+            identity: identity.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// The blob row's ownership check: a session's `session_snapshots` row may
+/// never be written — nor superseded by head rows — under a different
+/// identity or a different generation than the one that owns it.
+///
+/// ONE function, called by BOTH write paths (`save_session_snapshot_owned`
+/// and every `delta_write`), because two write paths onto the same durable
+/// session must not have different accept/reject boundaries. A generation
+/// bump always mints a fresh session id, so a mismatch here is genuine
+/// cross-owner corruption, never an ordinary lifecycle transition.
+fn ensure_snapshot_owner_in_txn(
+    tx: &Transaction<'_>,
+    session_id: &meerkat_core::types::SessionId,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+) -> Result<(), ContinuityStoreError> {
+    let existing_snapshot_owner = tx
+        .query_row(
+            "SELECT identity, generation FROM session_snapshots WHERE session_id = ?1",
+            rusqlite::params![session_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+        )
+        .optional()
+        .map_err(|e| sqlite_err("query snapshot owner", e))?;
+    if let Some((snapshot_identity, snapshot_generation)) = existing_snapshot_owner
+        && (snapshot_identity != identity.as_str() || snapshot_generation != generation.get())
+    {
+        return Err(ContinuityStoreError::Corruption(format!(
+            "session snapshot {session_id} is owned by {snapshot_identity}/generation \
+             {snapshot_generation}, not {identity}/generation {generation}"
+        )));
+    }
+    Ok(())
+}
+
+/// The head row's ownership check, mirroring the whole-blob path's
+/// snapshot-owner corruption check: a session's durable representation may
+/// never be written by a different identity or a different generation.
+fn ensure_head_owner_in_txn(
+    tx: &Transaction<'_>,
+    session_id: &meerkat_core::types::SessionId,
+    identity: &AgentIdentity,
+    generation: ContinuityGeneration,
+) -> Result<(), ContinuityStoreError> {
+    if let Some((head_identity, head_generation)) = head_owner_in_txn(tx, session_id)?
+        && (head_identity != identity.as_str() || head_generation != generation.get())
+    {
+        return Err(ContinuityStoreError::Corruption(format!(
+            "session head {session_id} is owned by {head_identity}/generation \
+             {head_generation}, not {identity}/generation {generation}"
+        )));
+    }
+    Ok(())
+}
+
+fn delete_head_canonical_rows_in_txn(
+    tx: &Transaction<'_>,
+    predicate: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<(), ContinuityStoreError> {
+    for table in [
+        "continuity_session_heads",
+        "continuity_strand_messages",
+        "continuity_session_rewrites",
+    ] {
+        tx.execute(&format!("DELETE FROM {table} WHERE {predicate}"), params)
+            .map_err(|e| sqlite_err("delete head-canonical rows", e))?;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -414,6 +1353,26 @@ impl ContinuityStore for LocalContinuityStore {
         let session_id = session_id.clone();
         self.run_blocking("load_session_snapshot", move |inner| {
             inner.with_reader(|connection| {
+                // Head-canonical sessions serve the slim materialization of
+                // head+rows; their `session_snapshots` row (if any) is a
+                // frozen archive and is never read again.
+                if inner.head_tables_available(connection)? {
+                    let tx = connection
+                        .unchecked_transaction()
+                        .map_err(|e| sqlite_err("begin read tx", e))?;
+                    if let Some((head, _token)) = head_row_in_txn(&tx, &session_id)
+                        .map_err(|e| ContinuityStoreError::Io(e.to_string()))?
+                    {
+                        let session = materialize_slim_in_txn(&tx, &session_id, &head)
+                            .map_err(|e| ContinuityStoreError::Io(e.to_string()))?;
+                        let data = serde_json::to_vec(&session).map_err(|e| {
+                            ContinuityStoreError::Io(format!(
+                                "serialize head-canonical session snapshot: {e}"
+                            ))
+                        })?;
+                        return Ok(Some(SessionSnapshot { data }));
+                    }
+                }
                 let mut stmt = connection
                     .prepare_cached("SELECT data FROM session_snapshots WHERE session_id = ?1")
                     .map_err(|e| sqlite_err("prepare", e))?;
@@ -435,6 +1394,21 @@ impl ContinuityStore for LocalContinuityStore {
     ) -> Result<bool, ContinuityStoreError> {
         self.run_blocking("session_snapshot_matches_current", move |inner| {
             inner.with_reader(|connection| {
+                // The whole-blob byte-equality probe is a blob-authority
+                // concept. On a head-canonical session there is no candidate
+                // blob to compare against, so the conservative trait default
+                // applies and the caller takes its ordinary guard path.
+                if inner.head_tables_available(connection)?
+                    && head_owner_in_txn(
+                        &connection
+                            .unchecked_transaction()
+                            .map_err(|e| sqlite_err("begin read tx", e))?,
+                        &candidate.session_id,
+                    )?
+                    .is_some()
+                {
+                    return Ok(false);
+                }
                 connection
                     .query_row(
                         "SELECT EXISTS(
@@ -480,28 +1454,50 @@ impl ContinuityStore for LocalContinuityStore {
             "delete_session_snapshot_if_current_revision",
             move |inner| {
                 inner.with_writer(|connection| {
+                    let head_tables = inner.head_tables_available(connection)?;
                     let tx = connection
                         .transaction()
                         .map_err(|e| sqlite_err("begin tx", e))?;
 
-                    let data = tx
-                        .query_row(
-                            "SELECT data FROM session_snapshots WHERE session_id = ?1",
-                            rusqlite::params![session_id.to_string()],
-                            |row| row.get::<_, Vec<u8>>(0),
-                        )
-                        .optional()
-                        .map_err(|e| sqlite_err("query snapshot", e))?;
+                    // Head-canonical sessions derive the CAS token from the
+                    // slim materialization of head+rows, then drop head,
+                    // strands, rewrites AND the frozen archive in one tx.
+                    let head = if head_tables {
+                        head_row_in_txn(&tx, &session_id)
+                            .map_err(|e| ContinuityStoreError::Io(e.to_string()))?
+                    } else {
+                        None
+                    };
+                    let session = match head.as_ref() {
+                        Some((head, _token)) => Some(
+                            materialize_slim_in_txn(&tx, &session_id, head)
+                                .map_err(|e| ContinuityStoreError::Io(e.to_string()))?,
+                        ),
+                        None => {
+                            let data = tx
+                                .query_row(
+                                    "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                                    rusqlite::params![session_id.to_string()],
+                                    |row| row.get::<_, Vec<u8>>(0),
+                                )
+                                .optional()
+                                .map_err(|e| sqlite_err("query snapshot", e))?;
+                            match data {
+                                Some(data) => {
+                                    Some(serde_json::from_slice::<Session>(&data).map_err(|e| {
+                                        ContinuityStoreError::Io(format!(
+                                            "deserialize session snapshot for revision check: {e}"
+                                        ))
+                                    })?)
+                                }
+                                None => None,
+                            }
+                        }
+                    };
 
-                    let Some(data) = data else {
+                    let Some(session) = session else {
                         return Ok(false);
                     };
-                    let session: meerkat_core::Session =
-                        serde_json::from_slice(&data).map_err(|e| {
-                            ContinuityStoreError::Io(format!(
-                                "deserialize session snapshot for revision check: {e}"
-                            ))
-                        })?;
                     let current_revision =
                         meerkat_core::session_store::session_projection_cas_token(&session)
                             .map_err(|e| ContinuityStoreError::Io(e.to_string()))?;
@@ -515,9 +1511,19 @@ impl ContinuityStore for LocalContinuityStore {
                             rusqlite::params![session_id.to_string()],
                         )
                         .map_err(|e| sqlite_err("delete snapshot", e))?;
+                    let head_deleted = if head_tables {
+                        delete_head_canonical_rows_in_txn(
+                            &tx,
+                            "session_id = ?1",
+                            rusqlite::params![session_id.to_string()],
+                        )?;
+                        head.is_some()
+                    } else {
+                        false
+                    };
                     tx.commit()
                         .map_err(|e| sqlite_err("commit snapshot delete", e))?;
-                    Ok(deleted > 0)
+                    Ok(deleted > 0 || head_deleted)
                 })
             },
         )
@@ -555,118 +1561,105 @@ impl ContinuityStore for LocalContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         self.run_blocking("save_session_snapshot", move |inner| {
             inner.with_writer(|connection| {
-                // Keep the check, snapshot upsert, and record version/fence
+                let head_tables = inner.head_tables_available(connection)?;
+                // Keep the check, snapshot write, and record version/fence
                 // advance in one writer transaction.
                 let tx = connection
                     .unchecked_transaction()
                     .map_err(|e| sqlite_err("begin tx", e))?;
 
-                let mut stmt = tx
-                    .prepare_cached(
-                        "SELECT session_id, generation, fencing_token, checkpoint_version
-                         FROM continuity_records WHERE identity = ?1",
-                    )
-                    .map_err(|e| sqlite_err("prepare", e))?;
-                let existing = stmt
-                    .query_row(rusqlite::params![identity.as_str()], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, u64>(1)?,
-                            row.get::<_, u64>(2)?,
-                            row.get::<_, u64>(3)?,
-                        ))
-                    })
-                    .optional()
-                    .map_err(|e| sqlite_err("query", e))?;
-                drop(stmt);
+                let record_was_present = enforce_continuity_cursor_in_txn(
+                    &tx,
+                    &identity,
+                    &session_id,
+                    generation,
+                    version,
+                    fencing_token,
+                )?;
 
-                let record_was_present = existing.is_some();
-                if let Some((
-                    current_session_id,
-                    current_generation,
-                    current_token,
-                    current_version,
-                )) = existing
-                {
-                    if current_session_id != session_id.to_string()
-                        || current_generation != generation.get()
-                    {
-                        return Err(ContinuityStoreError::NotFound {
-                            identity: identity.clone(),
-                        });
+                ensure_snapshot_owner_in_txn(&tx, &session_id, &identity, generation)?;
+                if head_tables {
+                    ensure_head_owner_in_txn(&tx, &session_id, &identity, generation)?;
+                }
+
+                // Representation-aware write. A head row means head+rows are
+                // this session's byte authority: convert the incoming
+                // document into delta rows + a small head instead of
+                // upserting the blob, and leave the frozen archive row
+                // untouched. Without a head row the legacy blob semantics
+                // are byte-for-byte unchanged — an ordinary whole-document
+                // save never migrates a session and never stamps ledger v2.
+                let head = if head_tables {
+                    head_row_in_txn(&tx, &session_id)
+                        .map_err(|e| ContinuityStoreError::Io(e.to_string()))?
+                } else {
+                    None
+                };
+                match head {
+                    Some((head, _token)) => {
+                        // Once head+rows are a session's byte authority, a
+                        // whole-document write has to be expressible as rows.
+                        // Falling back to the blob row here would be the
+                        // two-write-authorities failure the representation
+                        // rule exists to prevent (the blob would be silently
+                        // never read again), so this refuses instead.
+                        let session: Session = serde_json::from_slice(&snapshot.data)
+                            .map_err(|e| {
+                                ContinuityStoreError::Io(format!(
+                                    "session {session_id} is head-canonical: a whole-document \
+                                     save must carry a serialized session document, not opaque \
+                                     bytes ({e})"
+                                ))
+                            })?;
+                        if session.id() != &session_id {
+                            return Err(ContinuityStoreError::Corruption(format!(
+                                "session snapshot for {session_id} carries session {}",
+                                session.id()
+                            )));
+                        }
+                        write_head_canonical_session_in_txn(
+                            &tx,
+                            &session,
+                            &head,
+                            &identity,
+                            generation,
+                            version,
+                            fencing_token,
+                        )
+                        .map_err(|e| ContinuityStoreError::Io(e.to_string()))?;
                     }
-                    if fencing_token.get() < current_token {
-                        return Err(ContinuityStoreError::StaleFencingToken {
-                            identity: identity.clone(),
-                            presented: fencing_token,
-                            current: FencingToken::new(current_token),
-                        });
-                    }
-                    if version.get() <= current_version {
-                        return Err(ContinuityStoreError::StaleCheckpointVersion {
-                            identity: identity.clone(),
-                            presented: version,
-                            current: CheckpointVersion::new(current_version),
-                        });
+                    None => {
+                        tx.execute(
+                            "INSERT INTO session_snapshots (session_id, identity, generation, checkpoint_version, fencing_token, data)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                             ON CONFLICT(session_id) DO UPDATE SET
+                                identity = excluded.identity,
+                                generation = excluded.generation,
+                                checkpoint_version = excluded.checkpoint_version,
+                                fencing_token = excluded.fencing_token,
+                                data = excluded.data",
+                            rusqlite::params![
+                                session_id.to_string(),
+                                identity.as_str(),
+                                generation.get(),
+                                version.get(),
+                                fencing_token.get(),
+                                &snapshot.data,
+                            ],
+                        )
+                        .map_err(|e| sqlite_err("upsert snapshot", e))?;
                     }
                 }
 
-                let existing_snapshot_owner = tx
-                    .query_row(
-                        "SELECT identity, generation FROM session_snapshots WHERE session_id = ?1",
-                        rusqlite::params![session_id.to_string()],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
-                    )
-                    .optional()
-                    .map_err(|e| sqlite_err("query snapshot owner", e))?;
-                if let Some((snapshot_identity, snapshot_generation)) = existing_snapshot_owner
-                    && (snapshot_identity != identity.as_str()
-                        || snapshot_generation != generation.get())
-                {
-                    return Err(ContinuityStoreError::Corruption(format!(
-                        "session snapshot {session_id} is owned by {snapshot_identity}/generation \
-                         {snapshot_generation}, not {identity}/generation {generation}"
-                    )));
-                }
-
-                tx.execute(
-                    "INSERT INTO session_snapshots (session_id, identity, generation, checkpoint_version, fencing_token, data)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(session_id) DO UPDATE SET
-                        identity = excluded.identity,
-                        generation = excluded.generation,
-                        checkpoint_version = excluded.checkpoint_version,
-                        fencing_token = excluded.fencing_token,
-                        data = excluded.data",
-                    rusqlite::params![
-                        session_id.to_string(),
-                        identity.as_str(),
-                        generation.get(),
-                        version.get(),
-                        fencing_token.get(),
-                        &snapshot.data,
-                    ],
-                )
-                .map_err(|e| sqlite_err("upsert snapshot", e))?;
-
-                tx.execute(
-                    "UPDATE continuity_records
-                     SET checkpoint_version = ?1, fencing_token = ?2
-                     WHERE identity = ?3 AND session_id = ?4 AND generation = ?5",
-                    rusqlite::params![
-                        version.get(),
-                        fencing_token.get(),
-                        identity.as_str(),
-                        session_id.to_string(),
-                        generation.get(),
-                    ],
-                )
-                .map_err(|e| sqlite_err("update continuity after snapshot", e))?;
-                if record_was_present && tx.changes() == 0 {
-                    return Err(ContinuityStoreError::NotFound {
-                        identity: identity.clone(),
-                    });
-                }
+                advance_continuity_record_in_txn(
+                    &tx,
+                    &identity,
+                    &session_id,
+                    generation,
+                    version,
+                    fencing_token,
+                    record_was_present,
+                )?;
 
                 tx.commit()
                     .map_err(|e| sqlite_err("commit tx", e))?;
@@ -754,6 +1747,7 @@ impl ContinuityStore for LocalContinuityStore {
         let previous = previous.cloned();
         self.run_blocking("rollback_continuity_record", move |inner| {
             inner.with_writer(|connection| {
+                let head_tables = inner.head_tables_available(connection)?;
                 if previous
                     .as_ref()
                     .is_some_and(|record| record.identity != expected_attempt.identity)
@@ -812,9 +1806,10 @@ impl ContinuityStore for LocalContinuityStore {
                 }
 
                 // Only the provisional reset generation is abandoned. Older
-                // snapshots remain the rollback authority for the restored
-                // row, while a concurrently advanced generation is protected
-                // by the exact CAS above.
+                // snapshots — blob rows AND head-canonical head/strand/
+                // rewrite rows alike — remain the rollback authority for the
+                // restored row, while a concurrently advanced generation is
+                // protected by the exact CAS above.
                 tx.execute(
                     "DELETE FROM session_snapshots WHERE identity = ?1 AND generation = ?2",
                     rusqlite::params![
@@ -823,6 +1818,16 @@ impl ContinuityStore for LocalContinuityStore {
                     ],
                 )
                 .map_err(|e| sqlite_err("delete attempted snapshots", e))?;
+                if head_tables {
+                    delete_head_canonical_rows_in_txn(
+                        &tx,
+                        "identity = ?1 AND generation = ?2",
+                        rusqlite::params![
+                            expected_attempt.identity.as_str(),
+                            expected_attempt.generation.get(),
+                        ],
+                    )?;
+                }
 
                 if let Some(previous) = previous {
                     tx.execute(
@@ -858,28 +1863,26 @@ impl ContinuityStore for LocalContinuityStore {
         .await
     }
 
-    /// M4b deferral (deliberate `None`): the bundled store does NOT ship the
-    /// incremental session-delta channel yet.
+    /// M4b landed: the bundled store ships the session-delta channel because
+    /// head+rows are now its canonical durable session representation, not a
+    /// second authority beside `session_snapshots.data`.
     ///
-    /// Shipping it honestly requires making head+rows the canonical durable
-    /// representation of a session in this database, which conflicts with
-    /// everything that treats `session_snapshots.data` as the byte authority
-    /// today: the exact-match no-op probe and the parse-derived CAS revision
-    /// tokens (`session_snapshot_matches_current`,
-    /// `delete_session_snapshot_if_current_revision`), explicit whole-document
-    /// checkpoints (`checkpoint_session`), and H3's lazy checkpoint adoption,
-    /// which takes byte custody of the stored BLOB at restore. A delta channel
-    /// bolted beside the blob would create two write authorities over one
-    /// session in one store with no reconciliation rule — the
-    /// "independently-adopted byte-divergent pair" failure class. The
-    /// capability seam ([`ContinuityStore::as_incremental_sessions`]) and the
-    /// adapter forwarding are in place; the store-side channel lands when the
-    /// snapshot representation itself moves to head+rows, gated by the
-    /// meerkat-store-conformance incremental profile.
-    fn as_incremental_sessions(
-        &self,
-    ) -> Option<Arc<dyn meerkat_core::session_store::IncrementalSessionStore>> {
-        None
+    /// The deferral note this replaces named the exact hazard — a delta
+    /// channel bolted beside the blob would create two write authorities
+    /// over one session with no reconciliation rule. The rule now exists and
+    /// every whole-snapshot verb honors it: a
+    /// `continuity_session_heads` row means head+rows are the sole byte
+    /// authority for that session, its blob row is a frozen archive that is
+    /// never read or written again, whole-document saves convert into delta
+    /// rows + a head, the exact-match probe declines, CAS tokens derive from
+    /// the slim materialization, and delete/rollback scope all four tables.
+    ///
+    /// Advertising the capability does NOT mutate the file: the head-canonical
+    /// ledger bump is committed by a delta write that actually creates head
+    /// state, inside that write's own transaction (see [`Self::open`] and
+    /// [`LocalContinuityStore::delta_write`]).
+    fn as_incremental_sessions(&self) -> Option<Arc<dyn ContinuityIncrementalSessions>> {
+        Some(Arc::new(self.clone()))
     }
 
     async fn delete_continuity_record(
@@ -890,6 +1893,7 @@ impl ContinuityStore for LocalContinuityStore {
         let identity = identity.clone();
         self.run_blocking("delete_continuity_record", move |inner| {
             inner.with_writer(|connection| {
+                let head_tables = inner.head_tables_available(connection)?;
                 // Keep the fence check and both deletes in one transaction so
                 // failures cannot leave a half-deleted identity.
                 let tx = connection
@@ -924,6 +1928,13 @@ impl ContinuityStore for LocalContinuityStore {
                     rusqlite::params![identity.as_str()],
                 )
                 .map_err(|e| sqlite_err("delete snapshots", e))?;
+                if head_tables {
+                    delete_head_canonical_rows_in_txn(
+                        &tx,
+                        "identity = ?1",
+                        rusqlite::params![identity.as_str()],
+                    )?;
+                }
                 tx.execute(
                     "DELETE FROM continuity_records WHERE identity = ?1",
                     rusqlite::params![identity.as_str()],
@@ -932,6 +1943,471 @@ impl ContinuityStore for LocalContinuityStore {
                 tx.commit().map_err(|e| sqlite_err("commit tx", e))?;
                 Ok(())
             })
+        })
+        .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The session-delta channel (M4b)
+// ---------------------------------------------------------------------------
+
+impl LocalContinuityStore {
+    /// Run one delta mutation inside ONE writer transaction that enforces
+    /// and advances the continuity cursor — and, on a file that does not
+    /// carry the head-canonical channel yet, converges the schema and arms
+    /// the one-way ledger bump in that same transaction.
+    ///
+    /// Crash consistency: the head-canonical DDL, the rows, the head row,
+    /// the `continuity_records` advance and the ledger v2 stamp commit
+    /// together or not at all. So the durable cursor can never point past
+    /// durable data, a partial append can never leave a torn document, and
+    /// — the property this ordering exists for — **a REFUSED write never
+    /// arms the v1-writer lockout**: a guard rejection or a typed operation
+    /// refusal rolls the DDL and the stamp back with everything else, and
+    /// the file stays rollback-safe at v1 with zero head rows. Head rows
+    /// existing without the stamp is likewise impossible, so an older
+    /// binary can never mistake a frozen blob archive for authority.
+    async fn delta_write<T, F>(
+        &self,
+        operation_name: &'static str,
+        cursor: &ContinuityWriteCursor,
+        session_id: meerkat_core::types::SessionId,
+        operation: F,
+    ) -> Result<T, SessionStoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Transaction<'_>, &ContinuityWriteCursor) -> Result<T, SessionStoreError>
+            + Send
+            + 'static,
+    {
+        let cursor = cursor.clone();
+        // The typed session-store error the guards produce rides OUT as a
+        // value, never laundered into `Internal`: the accept/reject boundary
+        // this store mirrors must be indistinguishable from the meerkat
+        // service's, conflict codes included. A carried `Err` skips the
+        // commit, so the transaction rolls back on drop.
+        let outcome: Result<Result<T, SessionStoreError>, ContinuityStoreError> = self
+            .run_blocking(operation_name, move |inner| {
+                inner.with_writer(|connection| {
+                    let tx = connection
+                        .unchecked_transaction()
+                        .map_err(|e| sqlite_err("begin tx", e))?;
+                    // Converge the head-canonical schema INSIDE this
+                    // transaction (SQLite DDL is transactional): the tables
+                    // have to exist before the operation can write a row,
+                    // but they vanish again with a rollback. The ledger
+                    // stamp that makes the bump one-way is deliberately NOT
+                    // written here — it is the last thing before commit,
+                    // once the write has actually created head state.
+                    let arm_lockout = !inner.schema_is_head_canonical();
+                    if arm_lockout {
+                        converge_head_canonical_schema_in_txn(&tx)?;
+                    }
+                    let record_was_present = enforce_continuity_cursor_in_txn(
+                        &tx,
+                        &cursor.identity,
+                        &session_id,
+                        cursor.generation,
+                        cursor.checkpoint_version,
+                        cursor.fencing_token,
+                    )?;
+                    // Both owner guards, in the same order and with the same
+                    // meaning the whole-document verb applies. A delta
+                    // mutation must not be accepted where a whole-document
+                    // save onto the same durable session would be refused.
+                    ensure_snapshot_owner_in_txn(
+                        &tx,
+                        &session_id,
+                        &cursor.identity,
+                        cursor.generation,
+                    )?;
+                    ensure_head_owner_in_txn(
+                        &tx,
+                        &session_id,
+                        &cursor.identity,
+                        cursor.generation,
+                    )?;
+                    let value = match operation(&tx, &cursor) {
+                        Ok(value) => value,
+                        Err(typed) => return Ok(Err(typed)),
+                    };
+                    advance_continuity_record_in_txn(
+                        &tx,
+                        &cursor.identity,
+                        &session_id,
+                        cursor.generation,
+                        cursor.checkpoint_version,
+                        cursor.fencing_token,
+                        record_was_present,
+                    )?;
+                    if arm_lockout {
+                        // Earned: this transaction created head state.
+                        stamp_head_canonical_ledger_in_txn(&tx)?;
+                    }
+                    tx.commit().map_err(|e| sqlite_err("commit tx", e))?;
+                    // Latch only after the commit that made it true.
+                    if arm_lockout {
+                        inner.head_canonical_schema.store(true, Ordering::Release);
+                    }
+                    Ok(Ok(value))
+                })
+            })
+            .await;
+        match outcome {
+            Ok(typed) => typed,
+            Err(error) => Err(session_err(operation_name, error)),
+        }
+    }
+
+    /// Read one delta view. Head-canonical sessions read their rows; a
+    /// blob-only session is served from the deterministic read-only strand
+    /// layout of its archived document (never a write), so the CAS token a
+    /// caller derives before migration matches the one the first migrating
+    /// write persists.
+    async fn delta_read<T, F>(
+        &self,
+        operation_name: &'static str,
+        operation: F,
+    ) -> Result<T, SessionStoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Transaction<'_>, bool) -> Result<T, SessionStoreError> + Send + 'static,
+    {
+        let outcome: Result<Result<T, SessionStoreError>, ContinuityStoreError> = self
+            .run_blocking(operation_name, move |inner| {
+                inner.with_reader(|connection| {
+                    let head_tables = inner.head_tables_available(connection)?;
+                    let tx = connection
+                        .unchecked_transaction()
+                        .map_err(|e| sqlite_err("begin read tx", e))?;
+                    Ok(operation(&tx, head_tables))
+                })
+            })
+            .await;
+        match outcome {
+            Ok(typed) => typed,
+            Err(error) => Err(session_err(operation_name, error)),
+        }
+    }
+}
+
+#[async_trait]
+impl ContinuityIncrementalSessions for LocalContinuityStore {
+    async fn append_messages(
+        &self,
+        cursor: &ContinuityWriteCursor,
+        id: &meerkat_core::types::SessionId,
+        strand: &TranscriptStrandId,
+        base_seq: u64,
+        messages: &[Message],
+    ) -> Result<(), SessionStoreError> {
+        let session_id = id.clone();
+        let strand = strand.clone();
+        let messages = messages.to_vec();
+        let migrate_id = session_id.clone();
+        self.delta_write(
+            "continuity append_messages",
+            cursor,
+            session_id,
+            move |tx, cursor| {
+                // First delta write on a blob-only session migrates it inside
+                // this transaction; the blob stays as a frozen archive.
+                ensure_head_canonical_for_write_in_txn(
+                    tx,
+                    &migrate_id,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )?;
+                insert_strand_rows_in_txn(
+                    tx,
+                    &migrate_id,
+                    &strand,
+                    base_seq,
+                    &messages,
+                    &cursor.identity,
+                    cursor.generation,
+                )
+            },
+        )
+        .await
+    }
+
+    async fn commit_rewrite(
+        &self,
+        cursor: &ContinuityWriteCursor,
+        id: &meerkat_core::types::SessionId,
+        record: &TranscriptRewriteRecord,
+        expected: SessionHeadCas,
+    ) -> Result<SessionHead, SessionStoreError> {
+        let session_id = id.clone();
+        let record = record.clone();
+        let target = session_id.clone();
+        self.delta_write(
+            "continuity commit_rewrite",
+            cursor,
+            session_id,
+            move |tx, cursor| {
+                let stored = ensure_head_canonical_for_write_in_txn(
+                    tx,
+                    &target,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )?
+                .ok_or_else(|| SessionStoreError::InvalidTranscriptRewrite {
+                    id: target.clone(),
+                    reason: "rewrite target has no persisted session head".to_string(),
+                })?;
+                let (stored_head, stored_token) = &stored;
+                // CAS races and stale parents surface as
+                // TranscriptRevisionConflict BEFORE the parent strand read,
+                // which would otherwise fail on an unrelated shape.
+                match &expected {
+                    SessionHeadCas::Create => {
+                        return Err(SessionStoreError::TranscriptRevisionConflict {
+                            id: target.clone(),
+                            expected: "<create>".to_string(),
+                            actual: stored_token.clone(),
+                        });
+                    }
+                    SessionHeadCas::IfToken(expected_token) => {
+                        if expected_token != stored_token {
+                            return Err(SessionStoreError::TranscriptRevisionConflict {
+                                id: target.clone(),
+                                expected: expected_token.clone(),
+                                actual: stored_token.clone(),
+                            });
+                        }
+                    }
+                }
+                if record.commit.parent_revision != stored_head.head_revision {
+                    return Err(SessionStoreError::TranscriptRevisionConflict {
+                        id: target,
+                        expected: record.commit.parent_revision,
+                        actual: stored_head.head_revision.clone(),
+                    });
+                }
+                let before = record.commit.messages_before as u64;
+                if before > strand_row_count_in_txn(tx, &target, &stored_head.strand)? {
+                    return Err(SessionStoreError::InvalidTranscriptRewrite {
+                        id: target,
+                        reason: format!(
+                            "commit messages_before {before} exceeds persisted rows of strand {}",
+                            stored_head.strand
+                        ),
+                    });
+                }
+                let parent_rows =
+                    strand_messages_in_txn(tx, &target, &stored_head.strand, 0..before)?;
+                let parent_digest = meerkat_core::transcript_messages_digest(&parent_rows)
+                    .map_err(SessionStoreError::from)?;
+                let next = validate_commit_rewrite_transition(
+                    &target,
+                    &record,
+                    stored_head,
+                    stored_token,
+                    &expected,
+                    &parent_digest,
+                )?;
+                insert_rewrite_row_in_txn(
+                    tx,
+                    &target,
+                    stored_head.rewrite_count,
+                    &RewriteRow {
+                        commit: record.commit.clone(),
+                        parent_strand: stored_head.strand.clone(),
+                        parent_len: before,
+                        strand: next.strand.clone(),
+                        strand_len: record.commit.messages_after as u64,
+                    },
+                    &cursor.identity,
+                    cursor.generation,
+                )?;
+                insert_strand_rows_in_txn(
+                    tx,
+                    &target,
+                    &next.strand,
+                    0,
+                    &record.revision_body.messages,
+                    &cursor.identity,
+                    cursor.generation,
+                )?;
+                Ok(next)
+            },
+        )
+        .await
+    }
+
+    async fn save_head(
+        &self,
+        cursor: &ContinuityWriteCursor,
+        head: &SessionHead,
+        expected: SessionHeadCas,
+    ) -> Result<(), SessionStoreError> {
+        let session_id = head.id.clone();
+        let head = head.clone();
+        self.delta_write(
+            "continuity save_head",
+            cursor,
+            session_id,
+            move |tx, cursor| {
+                let stored = ensure_head_canonical_for_write_in_txn(
+                    tx,
+                    &head.id,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )?;
+                let strand_len = strand_row_count_in_txn(tx, &head.id, &head.strand)?;
+                let recorded = rewrite_row_count_in_txn(tx, &head.id)?;
+                validate_save_head_transition(
+                    &head,
+                    stored.as_ref().map(|(h, t)| (h, t.as_str())),
+                    &expected,
+                    strand_len,
+                    recorded,
+                )?;
+                write_head_row_in_txn(
+                    tx,
+                    &head,
+                    &cursor.identity,
+                    cursor.generation,
+                    cursor.checkpoint_version,
+                    cursor.fencing_token,
+                )?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    async fn load_head(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionHead>, SessionStoreError> {
+        let id = id.clone();
+        self.delta_read("continuity load_head", move |tx, head_tables| {
+            if head_tables && let Some((head, _token)) = head_row_in_txn(tx, &id)? {
+                return Ok(Some(head));
+            }
+            let Some(session) = blob_session_in_txn(tx, &id)? else {
+                return Ok(None);
+            };
+            let (_layout, head) = layout_for_blob_session(&session)?;
+            Ok(Some(head))
+        })
+        .await
+    }
+
+    async fn load_canonical_head(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionHead>, SessionStoreError> {
+        let id = id.clone();
+        self.delta_read("continuity load_canonical_head", move |tx, head_tables| {
+            if !head_tables {
+                return Ok(None);
+            }
+            Ok(head_row_in_txn(tx, &id)?.map(|(head, _token)| head))
+        })
+        .await
+    }
+
+    async fn load_messages(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        strand: &TranscriptStrandId,
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<Message>, SessionStoreError> {
+        let id = id.clone();
+        let strand = strand.clone();
+        self.delta_read("continuity load_messages", move |tx, head_tables| {
+            if head_tables && head_row_in_txn(tx, &id)?.is_some() {
+                return strand_messages_in_txn(tx, &id, &strand, range);
+            }
+            let Some(session) = blob_session_in_txn(tx, &id)? else {
+                return Err(SessionStoreError::NotFound(id));
+            };
+            let (layout, _head) = layout_for_blob_session(&session)?;
+            let rows = layout
+                .strands
+                .iter()
+                .find(|(sid, _)| *sid == strand)
+                .map(|(_, rows)| rows.as_slice())
+                .ok_or_else(|| SessionStoreError::Corrupted(id.clone()))?;
+            let start = usize::try_from(range.start)
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            let end =
+                usize::try_from(range.end).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            if start > end || end > rows.len() {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            Ok(rows[start..end].to_vec())
+        })
+        .await
+    }
+
+    async fn load_rewrites(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Vec<TranscriptRewriteRecord>, SessionStoreError> {
+        let id = id.clone();
+        self.delta_read("continuity load_rewrites", move |tx, head_tables| {
+            if head_tables && let Some((head, _token)) = head_row_in_txn(tx, &id)? {
+                let rows = rewrite_rows_in_txn(tx, &id, head.rewrite_count)?;
+                return rows
+                    .into_iter()
+                    .map(|row| {
+                        let parent_messages =
+                            strand_messages_in_txn(tx, &id, &row.parent_strand, 0..row.parent_len)?;
+                        let revision_messages =
+                            strand_messages_in_txn(tx, &id, &row.strand, 0..row.strand_len)?;
+                        reconstruct_rewrite_record(
+                            &id,
+                            row.commit,
+                            parent_messages,
+                            revision_messages,
+                        )
+                    })
+                    .collect();
+            }
+            let Some(session) = blob_session_in_txn(tx, &id)? else {
+                return Ok(Vec::new());
+            };
+            let (layout, _head) = layout_for_blob_session(&session)?;
+            layout
+                .rewrites
+                .iter()
+                .map(|rewrite| {
+                    let parent_len = usize::try_from(rewrite.parent_len)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+                    let strand_len = usize::try_from(rewrite.strand_len)
+                        .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+                    let parent_messages = layout
+                        .strands
+                        .iter()
+                        .find(|(sid, _)| *sid == rewrite.parent_strand)
+                        .map(|(_, rows)| rows[..parent_len].to_vec())
+                        .ok_or_else(|| SessionStoreError::Corrupted(id.clone()))?;
+                    let revision_messages = layout
+                        .strands
+                        .iter()
+                        .find(|(sid, _)| *sid == rewrite.strand)
+                        .map(|(_, rows)| rows[..strand_len].to_vec())
+                        .ok_or_else(|| SessionStoreError::Corrupted(id.clone()))?;
+                    reconstruct_rewrite_record(
+                        &id,
+                        rewrite.commit.clone(),
+                        parent_messages,
+                        revision_messages,
+                    )
+                })
+                .collect()
         })
         .await
     }
@@ -1804,5 +3280,904 @@ mod tests {
             resolved.get(&identity),
             Some(ContinuityResolveState::Ready { .. })
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // M4b: the head-canonical session-delta channel
+    // -----------------------------------------------------------------
+
+    fn session_with(texts: &[&str]) -> Session {
+        let mut session = Session::new();
+        for text in texts {
+            session.push(meerkat_core::Message::User(
+                meerkat_core::UserMessage::text((*text).to_string()),
+            ));
+        }
+        session
+    }
+
+    fn cursor(
+        identity: &AgentIdentity,
+        generation: u64,
+        version: u64,
+        token: u64,
+    ) -> ContinuityWriteCursor {
+        ContinuityWriteCursor {
+            identity: identity.clone(),
+            generation: ContinuityGeneration::new(generation),
+            checkpoint_version: CheckpointVersion::new(version),
+            fencing_token: FencingToken::new(token),
+        }
+    }
+
+    fn ledger_version(path: &Path) -> Option<i64> {
+        let probe = Connection::open(path).expect("probe");
+        meerkat_sqlite::domain_version(&probe, "mobkit-continuity").expect("ledger")
+    }
+
+    async fn seed_record(
+        store: &LocalContinuityStore,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        token: u64,
+    ) {
+        store
+            .upsert_continuity_record(&record(identity, session_id), FencingToken::new(token))
+            .await
+            .expect("seed continuity record");
+    }
+
+    /// BLOCKER PIN: opening a state directory with this binary must NOT
+    /// commit the one-way ledger bump. Rollback to the previous release stays
+    /// possible until a delta write actually creates a head row.
+    #[tokio::test]
+    async fn open_never_stamps_the_head_canonical_ledger_bump() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            assert_eq!(store.max_fencing_token().expect("floor"), 0);
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(1),
+            "a plain open must leave the file at the rollback-safe baseline"
+        );
+
+        // Reopening, resolving, whole-blob saving: still no bump.
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let session_id = meerkat_core::types::SessionId::new();
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            seed_record(&store, &identity, &session_id, 1).await;
+            store
+                .save_session_snapshot(
+                    &identity,
+                    &session_id,
+                    ContinuityGeneration::new(0),
+                    CheckpointVersion::new(1),
+                    FencingToken::new(1),
+                    &SessionSnapshot {
+                        data: serde_json::to_vec(&session_with(&["blob turn"])).unwrap(),
+                    },
+                )
+                .await
+                .expect("whole-blob save");
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(1),
+            "ordinary whole-document saves must not commit the head-canonical bump"
+        );
+
+        // The first DELTA write is where the v1-writer lockout becomes
+        // load-bearing, and only there is the bump committed.
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            let head_session = session_with(&["delta turn"]);
+            let delta_session_id = head_session.id().clone();
+            let delta_identity = AgentIdentity::parse("triage:delta").unwrap();
+            seed_record(&store, &delta_identity, &delta_session_id, 2).await;
+            let root = TranscriptStrandId::root();
+            store
+                .append_messages(
+                    &cursor(&delta_identity, 0, 1, 2),
+                    &delta_session_id,
+                    &root,
+                    0,
+                    head_session.messages(),
+                )
+                .await
+                .expect("first delta write");
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(HEAD_CANONICAL_SCHEMA_VERSION),
+            "the first delta write commits the head-canonical ledger bump"
+        );
+    }
+
+    fn head_tables_exist(path: &Path) -> bool {
+        let probe = Connection::open(path).expect("probe");
+        probe
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' \
+                 AND name = 'continuity_session_heads')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("probe head tables")
+    }
+
+    /// ROLLBACK-SAFETY PIN: the one-way v1-writer lockout must be EARNED by
+    /// a write that actually creates head state. A delta write refused by a
+    /// guard, or refused by the operation's own CAS, leaves the file exactly
+    /// as it found it — ledger v1, no head-canonical tables — so rolling
+    /// back to the previous release stays possible.
+    #[tokio::test]
+    async fn a_refused_delta_write_never_arms_the_v1_writer_lockout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:refused").unwrap();
+        let document = session_with(&["refused turn"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        let head = SessionHead::from_session(&document, root.clone(), 0).expect("head");
+
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 5).await;
+
+            // (1) refused by a GUARD, before the operation runs at all.
+            let stale = store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 4),
+                    &session_id,
+                    &root,
+                    0,
+                    document.messages(),
+                )
+                .await
+                .expect_err("a stale fencing token must refuse the delta write");
+            assert!(
+                stale.to_string().contains("stale fencing token"),
+                "unexpected guard refusal: {stale}"
+            );
+
+            // (2) refused by the OPERATION's own CAS, after the guards pass.
+            let conflict = store
+                .save_head(
+                    &cursor(&identity, 0, 1, 5),
+                    &head,
+                    SessionHeadCas::IfToken("row-sha256:nothing-like-this".to_string()),
+                )
+                .await
+                .expect_err("a head CAS that cannot match must refuse the delta write");
+            assert!(
+                matches!(
+                    conflict,
+                    SessionStoreError::TranscriptRevisionConflict { .. }
+                ),
+                "unexpected operation refusal: {conflict}"
+            );
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(1),
+            "a REFUSED delta write must not arm the one-way v1-writer lockout"
+        );
+        assert!(
+            !head_tables_exist(&path),
+            "a refused delta write must roll its speculative head-canonical DDL back"
+        );
+
+        // The same file still upgrades on a write that DOES create head state.
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 5),
+                    &session_id,
+                    &root,
+                    0,
+                    document.messages(),
+                )
+                .await
+                .expect("an accepted delta write");
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(HEAD_CANONICAL_SCHEMA_VERSION),
+            "a write that creates head state arms the lockout in the same transaction"
+        );
+        assert!(head_tables_exist(&path));
+    }
+
+    /// ALIGNMENT PIN: the delta channel and the whole-document verb are two
+    /// write paths onto ONE durable session, so their accept/reject boundary
+    /// must be identical. A session whose `session_snapshots` row is owned by
+    /// another `(identity, generation)` is refused by BOTH — the intruder
+    /// here holds a perfectly valid continuity cursor of its own, so nothing
+    /// but the shared ownership guard can reject it.
+    #[tokio::test]
+    async fn delta_writes_refuse_the_foreign_snapshot_owner_the_blob_path_refuses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let owner = AgentIdentity::parse("triage:owner").unwrap();
+        let intruder = AgentIdentity::parse("triage:intruder").unwrap();
+        let document = session_with(&["owned turn"]);
+        let session_id = document.id().clone();
+        let snapshot = SessionSnapshot {
+            data: serde_json::to_vec(&document).unwrap(),
+        };
+
+        let store = LocalContinuityStore::open(&path).expect("open");
+        seed_record(&store, &owner, &session_id, 1).await;
+        store
+            .save_session_snapshot(
+                &owner,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &snapshot,
+            )
+            .await
+            .expect("the owner's whole-document save");
+
+        // The intruder's own continuity record points at the same session id
+        // and is current, so the cursor guard passes for it.
+        seed_record(&store, &intruder, &session_id, 2).await;
+
+        let blob_refusal = store
+            .save_session_snapshot(
+                &intruder,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(2),
+                &snapshot,
+            )
+            .await
+            .expect_err("the whole-document verb refuses a foreign snapshot owner");
+        assert!(
+            matches!(blob_refusal, ContinuityStoreError::Corruption(_)),
+            "unexpected whole-document refusal: {blob_refusal}"
+        );
+
+        let delta_refusal = store
+            .append_messages(
+                &cursor(&intruder, 0, 1, 2),
+                &session_id,
+                &TranscriptStrandId::root(),
+                0,
+                document.messages(),
+            )
+            .await
+            .expect_err("the delta channel must refuse exactly what the blob path refuses");
+        assert!(
+            delta_refusal.to_string().contains("is owned by")
+                && delta_refusal.to_string().contains("triage:owner"),
+            "the delta refusal must be the same ownership corruption: {delta_refusal}"
+        );
+
+        // Refused means refused: no rows, and no earned lockout either.
+        drop(store);
+        assert!(
+            !head_tables_exist(&path),
+            "a refused delta write must leave no head-canonical rows behind"
+        );
+        assert_eq!(ledger_version(&path), Some(1));
+    }
+
+    /// A v2 file reopens cleanly (never re-applied, never refused) and keeps
+    /// serving head-canonical sessions.
+    #[tokio::test]
+    async fn head_canonical_file_reopens_and_keeps_serving_head_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one", "two"]);
+        let session_id = document.id().clone();
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 1).await;
+            let root = TranscriptStrandId::root();
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 1),
+                    &session_id,
+                    &root,
+                    0,
+                    document.messages(),
+                )
+                .await
+                .expect("append");
+            let head = SessionHead::from_session(&document, root, 0).expect("head");
+            store
+                .save_head(&cursor(&identity, 0, 2, 1), &head, SessionHeadCas::Create)
+                .await
+                .expect("save head");
+        }
+        assert_eq!(ledger_version(&path), Some(HEAD_CANONICAL_SCHEMA_VERSION));
+
+        let store = LocalContinuityStore::open(&path).expect("reopen a head-canonical file");
+        assert_eq!(ledger_version(&path), Some(HEAD_CANONICAL_SCHEMA_VERSION));
+        let head = store
+            .load_canonical_head(&session_id)
+            .await
+            .expect("load canonical head")
+            .expect("head row survives reopen");
+        assert_eq!(head.message_count, 2);
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .await
+            .expect("snapshot")
+            .expect("head-canonical sessions serve a synthesized snapshot");
+        let loaded: Session = serde_json::from_slice(&snapshot.data).expect("decode");
+        assert_eq!(loaded.messages(), document.messages());
+    }
+
+    /// Lazy per-session migration: the first delta write on a blob-only
+    /// session converts it in the caller's transaction, the document loads
+    /// back identically, and the blob row survives untouched as a frozen
+    /// archive.
+    #[tokio::test]
+    async fn first_delta_write_migrates_the_blob_and_leaves_it_as_a_frozen_archive() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one", "two"]);
+        let session_id = document.id().clone();
+        let blob = serde_json::to_vec(&document).unwrap();
+        seed_record(&store, &identity, &session_id, 1).await;
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: blob.clone() },
+            )
+            .await
+            .unwrap();
+        let before = store
+            .load_session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Read-only head synthesis must NOT migrate.
+        let synthesized = store.load_head(&session_id).await.unwrap().unwrap();
+        assert!(
+            store
+                .load_canonical_head(&session_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "reads never migrate a blob-only session"
+        );
+
+        let mut extended = document.clone();
+        extended.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("three".to_string()),
+        ));
+        store
+            .append_messages(
+                &cursor(&identity, 0, 2, 1),
+                &session_id,
+                &synthesized.strand,
+                synthesized.message_count,
+                &extended.messages()[2..],
+            )
+            .await
+            .expect("first delta write migrates");
+        let migrated = store
+            .load_canonical_head(&session_id)
+            .await
+            .unwrap()
+            .expect("head row exists after the first delta write");
+        assert_eq!(migrated.head_revision, synthesized.head_revision);
+        assert_eq!(
+            session_head_cas_token(&migrated).unwrap(),
+            session_head_cas_token(&synthesized).unwrap(),
+            "the deterministic layout makes the pre-migration token match the persisted one"
+        );
+
+        // The head still covers the pre-append prefix: the document is
+        // unchanged until a head write adopts the appended rows.
+        let after = store
+            .load_session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let after_doc: Session = serde_json::from_slice(&after.data).unwrap();
+        let before_doc: Session = serde_json::from_slice(&before.data).unwrap();
+        assert_eq!(
+            after_doc.messages(),
+            before_doc.messages(),
+            "unadopted tail rows are invisible to loads (the crash-window contract)"
+        );
+
+        // The archived blob row is byte-identical and never read again.
+        let archived = store
+            .run_blocking("read-archive", {
+                let session_id = session_id.clone();
+                move |inner| {
+                    inner.with_reader(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                                rusqlite::params![session_id.to_string()],
+                                |row| row.get::<_, Vec<u8>>(0),
+                            )
+                            .map_err(|e| sqlite_err("read archive", e))
+                    })
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(archived, blob, "the archived blob must stay byte-identical");
+    }
+
+    /// A whole-document save on a head-canonical session converts into delta
+    /// rows + a head and must NOT rewrite the frozen archive (the
+    /// two-write-authorities tripwire).
+    #[tokio::test]
+    async fn whole_document_save_on_a_head_canonical_session_leaves_the_archive_untouched() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one"]);
+        let session_id = document.id().clone();
+        let blob = serde_json::to_vec(&document).unwrap();
+        seed_record(&store, &identity, &session_id, 1).await;
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot { data: blob.clone() },
+            )
+            .await
+            .unwrap();
+        // Migrate + adopt through the delta channel. The service's own flow:
+        // `load_head` synthesizes deterministically from the blob, so the
+        // token it derives is the one the migrating write persists and the
+        // `IfToken` CAS matches.
+        let head = store.load_head(&session_id).await.unwrap().unwrap();
+        store
+            .save_head(
+                &cursor(&identity, 0, 2, 1),
+                &head,
+                SessionHeadCas::IfToken(session_head_cas_token(&head).unwrap()),
+            )
+            .await
+            .expect("the pre-migration token matches the migrating write");
+        store
+            .save_head(&cursor(&identity, 0, 3, 1), &head, SessionHeadCas::Create)
+            .await
+            .expect_err("Create must conflict once the head row exists");
+
+        let mut extended = document.clone();
+        extended.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("two".to_string()),
+        ));
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(4),
+                FencingToken::new(1),
+                &SessionSnapshot {
+                    data: serde_json::to_vec(&extended).unwrap(),
+                },
+            )
+            .await
+            .expect("whole-document save converts on a head-canonical session");
+
+        let served = store
+            .load_session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let served_doc: Session = serde_json::from_slice(&served.data).unwrap();
+        assert_eq!(served_doc.messages(), extended.messages());
+        let archived = store
+            .run_blocking("read-archive", {
+                let session_id = session_id.clone();
+                move |inner| {
+                    inner.with_reader(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                                rusqlite::params![session_id.to_string()],
+                                |row| row.get::<_, Vec<u8>>(0),
+                            )
+                            .map_err(|e| sqlite_err("read archive", e))
+                    })
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            archived, blob,
+            "a head-canonical write must never touch the frozen blob archive"
+        );
+    }
+
+    /// Per-mutation continuity discipline: the delta verbs apply exactly the
+    /// fence / version / binding CAS the whole-blob verb applies, and a
+    /// refused mutation commits nothing.
+    #[tokio::test]
+    async fn delta_writes_enforce_fence_and_version_cas_per_mutation() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        store
+            .upsert_continuity_record(&record(&identity, &session_id), FencingToken::new(5))
+            .await
+            .unwrap();
+
+        let stale_fence = store
+            .append_messages(
+                &cursor(&identity, 0, 1, 2),
+                &session_id,
+                &root,
+                0,
+                document.messages(),
+            )
+            .await
+            .expect_err("a stale fencing token must be refused per append");
+        assert!(
+            stale_fence.to_string().contains("stale fencing token"),
+            "unexpected error: {stale_fence}"
+        );
+        assert!(
+            store
+                .load_canonical_head(&session_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused delta write commits nothing"
+        );
+
+        store
+            .append_messages(
+                &cursor(&identity, 0, 1, 5),
+                &session_id,
+                &root,
+                0,
+                document.messages(),
+            )
+            .await
+            .expect("a current fence is admitted");
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .unwrap();
+        let ContinuityResolveState::Ready { record: advanced } = &resolved[&identity] else {
+            panic!("record must stay ready");
+        };
+        assert_eq!(
+            advanced.checkpoint_version,
+            CheckpointVersion::new(1),
+            "the durable cursor advances atomically with the rows"
+        );
+
+        let stale_version = store
+            .append_messages(
+                &cursor(&identity, 0, 1, 5),
+                &session_id,
+                &root,
+                1,
+                document.messages(),
+            )
+            .await
+            .expect_err("a non-advancing checkpoint version must be refused per append");
+        assert!(
+            stale_version
+                .to_string()
+                .contains("stale checkpoint version"),
+            "unexpected error: {stale_version}"
+        );
+
+        let foreign = AgentIdentity::parse("triage:other").unwrap();
+        let other_session = meerkat_core::types::SessionId::new();
+        store
+            .upsert_continuity_record(&record(&foreign, &other_session), FencingToken::new(6))
+            .await
+            .unwrap();
+        let cross = store
+            .append_messages(
+                &cursor(&foreign, 0, 9, 6),
+                &session_id,
+                &root,
+                1,
+                document.messages(),
+            )
+            .await
+            .expect_err("a foreign identity must not write another session's rows");
+        assert!(
+            cross.to_string().contains("not found") || cross.to_string().contains("owned by"),
+            "unexpected error: {cross}"
+        );
+    }
+
+    /// CAS delete over a head-canonical session: the token derives from the
+    /// slim materialization and the delete scrubs head + strands + rewrites
+    /// + the archive in one transaction.
+    #[tokio::test]
+    async fn cas_delete_over_head_canonical_rows_removes_every_table() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one", "two"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        seed_record(&store, &identity, &session_id, 1).await;
+        store
+            .append_messages(
+                &cursor(&identity, 0, 1, 1),
+                &session_id,
+                &root,
+                0,
+                document.messages(),
+            )
+            .await
+            .unwrap();
+        let head = SessionHead::from_session(&document, root, 0).unwrap();
+        store
+            .save_head(&cursor(&identity, 0, 2, 1), &head, SessionHeadCas::Create)
+            .await
+            .unwrap();
+
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let served: Session = serde_json::from_slice(&snapshot.data).unwrap();
+        let token = meerkat_core::session_store::session_projection_cas_token(&served).unwrap();
+        assert!(
+            !store
+                .delete_session_snapshot_if_current_revision(&session_id, "row-sha256:stale")
+                .await
+                .unwrap(),
+            "a stale token must decline"
+        );
+        assert!(
+            store
+                .delete_session_snapshot_if_current_revision(&session_id, &token)
+                .await
+                .unwrap(),
+            "the token derived from head+rows must be accepted"
+        );
+        assert!(
+            store
+                .load_session_snapshot(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .load_canonical_head(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Reset rollback keeps the PRIOR generation's head+rows as the rollback
+    /// authority and deletes only the attempted generation's.
+    #[tokio::test]
+    async fn rollback_scopes_head_canonical_rows_to_the_attempted_generation() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let previous_doc = session_with(&["previous"]);
+        let previous_session = previous_doc.id().clone();
+        let root = TranscriptStrandId::root();
+        let mut previous = record(&identity, &previous_session);
+        store
+            .upsert_continuity_record(&previous, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .append_messages(
+                &cursor(&identity, 0, 1, 1),
+                &previous_session,
+                &root,
+                0,
+                previous_doc.messages(),
+            )
+            .await
+            .unwrap();
+        let previous_head = SessionHead::from_session(&previous_doc, root.clone(), 0).unwrap();
+        store
+            .save_head(
+                &cursor(&identity, 0, 2, 1),
+                &previous_head,
+                SessionHeadCas::Create,
+            )
+            .await
+            .unwrap();
+        previous.checkpoint_version = CheckpointVersion::new(2);
+
+        let attempted_doc = session_with(&["attempted"]);
+        let attempted_session = attempted_doc.id().clone();
+        let mut attempted = record(&identity, &attempted_session);
+        attempted.agent_runtime_id = AgentRuntimeId::parse("rt:triage:main:1").unwrap();
+        attempted.generation = ContinuityGeneration::new(1);
+        store
+            .upsert_continuity_record(&attempted, FencingToken::new(2))
+            .await
+            .unwrap();
+        store
+            .append_messages(
+                &cursor(&identity, 1, 1, 2),
+                &attempted_session,
+                &root,
+                0,
+                attempted_doc.messages(),
+            )
+            .await
+            .unwrap();
+        let attempted_head = SessionHead::from_session(&attempted_doc, root, 0).unwrap();
+        store
+            .save_head(
+                &cursor(&identity, 1, 2, 2),
+                &attempted_head,
+                SessionHeadCas::Create,
+            )
+            .await
+            .unwrap();
+
+        store
+            .rollback_continuity_record(&attempted, Some(&previous), FencingToken::new(2))
+            .await
+            .expect("rollback");
+
+        assert!(
+            store
+                .load_canonical_head(&attempted_session)
+                .await
+                .unwrap()
+                .is_none(),
+            "the attempted generation's head+rows are abandoned"
+        );
+        let restored = store
+            .load_canonical_head(&previous_session)
+            .await
+            .unwrap()
+            .expect("the prior generation stays the rollback authority");
+        assert_eq!(restored.head_revision, previous_head.head_revision);
+        let served = store
+            .load_session_snapshot(&previous_session)
+            .await
+            .unwrap()
+            .expect("the restored session still loads");
+        let doc: Session = serde_json::from_slice(&served.data).unwrap();
+        assert_eq!(doc.messages(), previous_doc.messages());
+    }
+
+    /// Identity deletion scrubs all four tables atomically, and the fencing
+    /// floor spans the head table so the lease provider never regresses.
+    #[tokio::test]
+    async fn identity_delete_scrubs_head_rows_and_the_floor_spans_the_head_table() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        seed_record(&store, &identity, &session_id, 1).await;
+        store
+            .append_messages(
+                &cursor(&identity, 0, 1, 9),
+                &session_id,
+                &root,
+                0,
+                document.messages(),
+            )
+            .await
+            .unwrap();
+        let head = SessionHead::from_session(&document, root, 0).unwrap();
+        store
+            .save_head(&cursor(&identity, 0, 2, 9), &head, SessionHeadCas::Create)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.max_fencing_token().unwrap(),
+            9,
+            "the head table participates in the fencing floor"
+        );
+
+        store
+            .delete_continuity_record(&identity, FencingToken::new(10))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .load_canonical_head(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .load_session_snapshot(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let remaining_rows = store
+            .run_blocking("count-strands", move |inner| {
+                inner.with_reader(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM continuity_strand_messages",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .map_err(|e| sqlite_err("count strands", e))
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining_rows, 0,
+            "strand rows are scrubbed with the identity"
+        );
+    }
+
+    /// The exact-bytes no-op probe is a blob-authority concept: on a
+    /// head-canonical session it declines so the caller takes its ordinary
+    /// guard path.
+    #[tokio::test]
+    async fn exact_snapshot_probe_declines_for_head_canonical_sessions() {
+        let store = LocalContinuityStore::in_memory().unwrap();
+        let identity = AgentIdentity::parse("triage:main").unwrap();
+        let document = session_with(&["one"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        seed_record(&store, &identity, &session_id, 1).await;
+        store
+            .append_messages(
+                &cursor(&identity, 0, 1, 1),
+                &session_id,
+                &root,
+                0,
+                document.messages(),
+            )
+            .await
+            .unwrap();
+        let head = SessionHead::from_session(&document, root, 0).unwrap();
+        store
+            .save_head(&cursor(&identity, 0, 2, 1), &head, SessionHeadCas::Create)
+            .await
+            .unwrap();
+
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !store
+                .session_snapshot_matches_current(SessionSnapshotMatchCandidate {
+                    identity,
+                    session_id,
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(2),
+                    fencing_token: FencingToken::new(1),
+                    snapshot: Arc::new(snapshot),
+                })
+                .await
+                .unwrap(),
+            "head-canonical sessions must decline the whole-blob byte probe"
+        );
     }
 }

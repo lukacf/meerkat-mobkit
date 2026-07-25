@@ -15,7 +15,7 @@ mod types;
 pub use adapters::{
     ContinuityIncrementalSessionStore, ContinuitySessionStoreAdapter, DiscoveryRosterAdapter,
     EdgeDiscoveryTopologyAdapter, MutableRosterProvider, SessionHookCustomizerAdapter,
-    agent_discovery_to_durable,
+    SessionRuntimeState, agent_discovery_to_durable,
 };
 pub use agent_memory::{
     AgentMemoryConfig, AgentMemoryCustomizer, AgentMemoryError, AgentMemoryForgetResult,
@@ -39,7 +39,9 @@ pub use gateway_bridges::{
     GatewayRosterProvider, GatewayTopologyProvider,
 };
 pub use local_lease::LocalLeaseProvider;
-pub use local_store::LocalContinuityStore;
+pub use local_store::{
+    HEAD_CANONICAL_SCHEMA_VERSION as HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION, LocalContinuityStore,
+};
 pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
     lazy_register_flow, restore_flow, restore_flow_for_bootstrap,
