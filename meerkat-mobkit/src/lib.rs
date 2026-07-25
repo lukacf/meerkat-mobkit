@@ -32,6 +32,7 @@ pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
 pub mod storage_doctor;
+pub mod storage_downgrade;
 pub mod storage_health;
 pub mod storage_layout;
 pub mod storage_marker_stamp;
@@ -196,6 +197,7 @@ pub use storage_doctor::{
     MobKitStorageMigrator, diagnose_state_dir, diagnose_state_dir_blocking,
     diagnose_state_dir_with_runtime,
 };
+pub use storage_downgrade::{MobKitDowngradeReport, downgrade_state_dir, render_downgrade_report};
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
     StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,

@@ -78,7 +78,7 @@ use serde::{Deserialize, Serialize};
 /// skips the per-decode legacy heal probe. The constant is crate-private
 /// upstream; the `freshly_written_documents_probe_current` test pins this
 /// mirror against the pinned meerkat's writer.
-const TRANSCRIPT_DIGEST_FORMAT_CURRENT: u32 = 2;
+pub(crate) const TRANSCRIPT_DIGEST_FORMAT_CURRENT: u32 = 2;
 
 /// How long a standalone (dry-run) walk waits for in-flight store
 /// operations to drain before reporting the fence as unavailable.

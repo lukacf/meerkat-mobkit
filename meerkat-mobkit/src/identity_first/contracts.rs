@@ -335,6 +335,43 @@ pub trait ContinuityIncrementalSessions: Send + Sync {
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::session_store::SessionHead>, meerkat_core::SessionStoreError>;
 
+    /// The head-canonical document, materialized from the head row and its
+    /// strand rows **inside ONE substrate read transaction**. `None` means
+    /// the session is still blob-canonical.
+    ///
+    /// Not `load_canonical_head` + `load_messages`. Head and rows are two
+    /// halves of one document and a concurrent delta write advances both;
+    /// reading them under two independent transactions can observe an old
+    /// head against new rows (or the reverse), which materializes a torn
+    /// document — `message_count` disagreeing with the rows behind it, or a
+    /// `head_revision` that no longer digests the transcript it names.
+    /// Implementations MUST take a single snapshot; there is deliberately
+    /// no default body, because the obvious one is exactly the torn
+    /// composition this method exists to replace.
+    async fn load_canonical_session(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::Session>, meerkat_core::SessionStoreError>;
+
+    /// The head-canonical document **and** its adopted rewrite commits,
+    /// under ONE substrate read transaction — the `previous` shape the
+    /// published head-canonical save guards expect.
+    ///
+    /// Same single-snapshot obligation as [`Self::load_canonical_session`],
+    /// widened to the rewrite ledger: a guard that compared a fresh
+    /// document against a stale commit list (or the reverse) would accept
+    /// or refuse a save on a state that never existed.
+    async fn load_canonical_previous(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<
+        Option<(
+            meerkat_core::Session,
+            Vec<meerkat_core::TranscriptRewriteCommit>,
+        )>,
+        meerkat_core::SessionStoreError,
+    >;
+
     async fn load_messages(
         &self,
         id: &meerkat_core::types::SessionId,

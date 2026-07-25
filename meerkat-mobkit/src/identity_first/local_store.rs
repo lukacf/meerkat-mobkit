@@ -221,6 +221,47 @@ fn converge_head_canonical_schema_in_txn(tx: &Transaction<'_>) -> Result<(), Con
     Ok(())
 }
 
+/// Whether the file's `mobkit-continuity` ledger row already carries the
+/// one-way v2 lockout, read INSIDE the caller's transaction.
+///
+/// The authority for "is the lockout committed" is this row and nothing
+/// else. In particular it is NOT
+/// [`LocalContinuityStoreInner::schema_is_head_canonical`], which answers
+/// the different question "are the head tables queryable" and latches
+/// `true` the moment the tables are observed. Those two facts diverge on
+/// purpose: a delta write that creates strand rows but no head row commits
+/// the DDL and leaves the ledger at v1 (see
+/// [`LocalContinuityStore::delta_write`]), so the tables can exist on a
+/// file that is still rollback-safe. Deciding the stamp from the table
+/// probe would then skip the bump forever once that state exists — head
+/// rows with no lockout, the exact hazard the lockout is for.
+fn head_canonical_ledger_stamped_in_txn(
+    tx: &Transaction<'_>,
+) -> Result<bool, ContinuityStoreError> {
+    let version = meerkat_sqlite::domain_version(tx, MOBKIT_CONTINUITY_DOMAIN.name)
+        .map_err(|e| mechanics_err("read continuity ledger", e))?;
+    Ok(version.is_some_and(|version| version >= HEAD_CANONICAL_SCHEMA_VERSION))
+}
+
+/// Does this session have a persisted head row right now?
+///
+/// The predicate that earns the one-way ledger bump. A head row is what
+/// makes head+rows a session's sole byte authority; strand rows that no
+/// head adopts are not part of any document (every read path gates on the
+/// head row), so a file carrying only those is still correctly served by an
+/// older binary from its blob.
+fn session_head_exists_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<bool, ContinuityStoreError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM continuity_session_heads WHERE session_id = ?1)",
+        rusqlite::params![id.to_string()],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| sqlite_err("probe session head row", e))
+}
+
 /// Record the one-way `mobkit-continuity` v2 bump in the caller's
 /// transaction — the moment binaries older than this release start being
 /// refused the file.
@@ -249,10 +290,183 @@ fn stamp_head_canonical_ledger_in_txn(tx: &Transaction<'_>) -> Result<(), Contin
 /// write transaction; see [`LocalContinuityStore::delta_write`].) The DDL
 /// is additive and `IF NOT EXISTS`; the ledger stamp is what makes the
 /// upgrade one-way.
+///
+/// The inverse is [`LocalContinuityStore::downgrade_head_canonical_at`].
 pub(crate) fn apply_head_canonical_schema(
     conn: &mut Connection,
 ) -> Result<meerkat_sqlite::LedgerReport, meerkat_sqlite::SqliteStoreError> {
     meerkat_sqlite::apply_domain_migrations(conn, &MOBKIT_CONTINUITY_DOMAIN)
+}
+
+/// Lift a session-store failure into the continuity-store error the
+/// maintenance verbs speak. `Corrupted` keeps its class; everything else is
+/// an I/O-shaped store failure, matching how the whole-snapshot read verb
+/// already reports head-canonical materialization failures.
+fn continuity_err(context: &str, error: SessionStoreError) -> ContinuityStoreError {
+    match error {
+        SessionStoreError::Corrupted(id) => {
+            ContinuityStoreError::Corruption(format!("{context}: session {id} is corrupted"))
+        }
+        other => ContinuityStoreError::Io(format!("{context}: {other}")),
+    }
+}
+
+/// The `(identity, generation, checkpoint_version, fencing_token)` stamps a
+/// head row carries. The re-materialized blob inherits them verbatim so the
+/// downgraded file's `session_snapshots` row stays consistent with its
+/// `continuity_records` cursor.
+struct HeadRowOwner {
+    identity: AgentIdentity,
+    generation: ContinuityGeneration,
+    checkpoint_version: CheckpointVersion,
+    fencing_token: FencingToken,
+}
+
+fn head_canonical_tables_present_in_txn(
+    tx: &Transaction<'_>,
+) -> Result<bool, ContinuityStoreError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' \
+         AND name = 'continuity_session_heads')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|e| sqlite_err("probe head-canonical tables", e))
+}
+
+fn head_canonical_session_ids_in_txn(
+    tx: &Transaction<'_>,
+) -> Result<Vec<meerkat_core::types::SessionId>, ContinuityStoreError> {
+    let mut statement = tx
+        .prepare("SELECT session_id FROM continuity_session_heads ORDER BY session_id")
+        .map_err(|e| sqlite_err("prepare head census", e))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| sqlite_err("read head census", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| sqlite_err("read head census", e))?;
+    rows.into_iter()
+        .map(|raw| {
+            meerkat_core::types::SessionId::parse(&raw).map_err(|error| {
+                ContinuityStoreError::Corruption(format!(
+                    "invalid session_id {raw:?} in continuity_session_heads: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn head_row_identity_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<HeadRowOwner, ContinuityStoreError> {
+    let (identity, generation, checkpoint_version, fencing_token) = tx
+        .query_row(
+            "SELECT identity, generation, checkpoint_version, fencing_token
+             FROM continuity_session_heads WHERE session_id = ?1",
+            rusqlite::params![id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| sqlite_err("read head row owner", e))?;
+    Ok(HeadRowOwner {
+        identity: AgentIdentity::parse(&identity).map_err(|error| {
+            ContinuityStoreError::Corruption(format!(
+                "invalid identity {identity:?} on head row {id}: {error}"
+            ))
+        })?,
+        generation: ContinuityGeneration::new(generation),
+        checkpoint_version: CheckpointVersion::new(checkpoint_version),
+        fencing_token: FencingToken::new(fencing_token),
+    })
+}
+
+/// Write the re-materialized whole document over the session's frozen blob
+/// archive. Unconditional upsert: the archive is by definition stale (it is
+/// the pre-migration document), and the head+rows it is being replaced by
+/// are the authority this transaction is about to delete.
+fn write_downgraded_snapshot_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    owner: &HeadRowOwner,
+    data: &[u8],
+) -> Result<(), ContinuityStoreError> {
+    tx.execute(
+        "INSERT INTO session_snapshots
+            (session_id, identity, generation, checkpoint_version, fencing_token, data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(session_id) DO UPDATE SET
+            identity = excluded.identity,
+            generation = excluded.generation,
+            checkpoint_version = excluded.checkpoint_version,
+            fencing_token = excluded.fencing_token,
+            data = excluded.data",
+        rusqlite::params![
+            id.to_string(),
+            owner.identity.as_str(),
+            owner.generation.get(),
+            owner.checkpoint_version.get(),
+            owner.fencing_token.get(),
+            data,
+        ],
+    )
+    .map_err(|e| sqlite_err("write downgraded snapshot", e))?;
+    Ok(())
+}
+
+/// Strand rows belonging to no head row. See
+/// [`HeadCanonicalDowngrade::orphan_rows_discarded`].
+fn orphan_strand_row_count_in_txn(tx: &Transaction<'_>) -> Result<u64, ContinuityStoreError> {
+    let count: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM continuity_strand_messages AS row
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM continuity_session_heads AS head
+                 WHERE head.session_id = row.session_id
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| sqlite_err("count orphan strand rows", e))?;
+    u64::try_from(count)
+        .map_err(|_| ContinuityStoreError::Corruption("negative orphan row count".to_string()))
+}
+
+/// Drop the head-canonical trio, returning the file to the v1 table shape.
+/// Only ever legal once every head row has been re-materialized into
+/// `session_snapshots` in the SAME transaction.
+fn drop_head_canonical_schema_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS continuity_session_rewrites;
+         DROP TABLE IF EXISTS continuity_strand_messages;
+         DROP TABLE IF EXISTS continuity_session_heads;",
+    )
+    .map_err(|e| sqlite_err("drop head-canonical schema", e))
+}
+
+/// Rewind the `mobkit-continuity` ledger row to the baseline version, which
+/// is what lifts the `SchemaFromTheFuture` lockout on older binaries.
+///
+/// Written LAST in the downgrade transaction, for the mirror of the reason
+/// the stamp is written last in [`LocalContinuityStore::delta_write`]: the
+/// lockout may only be lifted together with the head state that earned it,
+/// so a downgrade that fails part-way leaves both in place.
+fn rewind_head_canonical_ledger_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
+    tx.execute(
+        "UPDATE main.meerkat_schema SET version = ?2 WHERE domain = ?1",
+        rusqlite::params![
+            MOBKIT_CONTINUITY_DOMAIN.name,
+            MOBKIT_CONTINUITY_BASELINE_DOMAIN.supported_version()
+        ],
+    )
+    .map_err(|e| sqlite_err("rewind continuity ledger", e))?;
+    Ok(())
 }
 
 /// Classify a raw SQLite failure at the store boundary: busy/locked is
@@ -370,18 +584,33 @@ struct LocalContinuityStoreInner {
     db_path: PathBuf,
     writer: Mutex<Connection>,
     readers: ReadConnections,
-    /// Whether this file carries the head-canonical channel (ledger
-    /// `mobkit-continuity` >= 2). Latched, never cleared: schema evolution
-    /// is one-way. Read paths that observe the tables appearing under them
-    /// (another handle on the same file committed the bump) latch it too, so
-    /// a stale `false` can never make this handle serve the frozen blob
-    /// archive as authority.
+    /// Whether the head-canonical TABLES are queryable on this file.
+    /// Latched, never cleared: schema evolution is one-way. Read paths that
+    /// observe the tables appearing under them (another handle on the same
+    /// file committed the DDL) latch it too, so a stale `false` can never
+    /// make this handle serve the frozen blob archive as authority.
+    ///
+    /// This is deliberately NOT "the ledger carries the v2 lockout" — see
+    /// [`Self::ledger_is_head_canonical`]. Tables can exist on a file whose
+    /// ledger is still v1.
     head_canonical_schema: AtomicBool,
+    /// Whether the file's `mobkit-continuity` ledger row already carries the
+    /// committed one-way v2 lockout. Latched from a fact that is itself
+    /// one-way; a `false` here only means "not known to be stamped", and the
+    /// write path re-reads the ledger row inside its own transaction before
+    /// acting on it.
+    head_canonical_ledger: AtomicBool,
 }
 
 impl LocalContinuityStoreInner {
     fn schema_is_head_canonical(&self) -> bool {
         self.head_canonical_schema.load(Ordering::Acquire)
+    }
+
+    /// Cached "the one-way lockout is already committed on this file".
+    /// Only ever used to SKIP work; never to decide that a bump is owed.
+    fn ledger_is_head_canonical(&self) -> bool {
+        self.head_canonical_ledger.load(Ordering::Acquire)
     }
 
     /// Whether the head-canonical tables are queryable on this connection.
@@ -492,7 +721,11 @@ impl LocalContinuityStore {
                 db_path: path.to_path_buf(),
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Pool(ReadConnectionPool::new(readers)),
+                // A stamped ledger implies the tables; the reverse does not
+                // hold, so the table latch is seeded from the same fact and
+                // widened later by `head_tables_available`.
                 head_canonical_schema: AtomicBool::new(head_canonical),
+                head_canonical_ledger: AtomicBool::new(head_canonical),
             }),
         })
     }
@@ -542,6 +775,125 @@ impl LocalContinuityStore {
         Ok(report.migrated())
     }
 
+    /// Undo the head-canonical upgrade: re-materialize every head+rows
+    /// session back into a whole-document `session_snapshots` blob, drop the
+    /// head-canonical trio, and rewind the `mobkit-continuity` ledger row to
+    /// v1 — which is what lifts the `SchemaFromTheFuture` lockout and lets a
+    /// previous release open the file again.
+    ///
+    /// This is the rollback path for the one-way v2 bump. Without it the
+    /// only recovery from a bad upgrade is restoring `continuity.*` from a
+    /// backup taken before the first post-upgrade turn, which is a rollback
+    /// window of ONE turn — every boundary save routes through the
+    /// incremental branch as soon as the capability is advertised.
+    ///
+    /// Everything happens in ONE transaction, and the ledger rewind is the
+    /// last statement in it, mirroring the stamp ordering in
+    /// [`Self::delta_write`]: the lockout is lifted only together with the
+    /// blobs that make lifting it safe. `apply == false` performs the whole
+    /// reconstruction, including the per-document reader simulation, and
+    /// then rolls back — a dry run that proves the real run will work rather
+    /// than guessing.
+    ///
+    /// Fidelity is reported per session, never assumed: see
+    /// [`DowngradeFidelity`]. A session whose retained rewrite history
+    /// cannot be re-inlined into a document a reader accepts is written in
+    /// slim form (live transcript, no history graph) and named in the
+    /// report.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContinuityStoreError` when the file cannot be opened, its
+    /// ledger is ahead of this binary, a session cannot be materialized at
+    /// all, or the file is in the structurally impossible state of holding
+    /// head rows without the v2 stamp.
+    pub fn downgrade_head_canonical_at(
+        path: impl AsRef<Path>,
+        apply: bool,
+    ) -> Result<HeadCanonicalDowngrade, ContinuityStoreError> {
+        let path = path.as_ref();
+        let mut conn = meerkat_sqlite::open(path, meerkat_sqlite::ConnectionProfile::PRIMARY)
+            .map_err(|e| mechanics_err("open writer for head-canonical downgrade", e))?;
+        meerkat_sqlite::refuse_future_schema(&conn, &MOBKIT_CONTINUITY_DOMAIN)
+            .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| sqlite_err("begin downgrade tx", e))?;
+
+        let ledger_before = meerkat_sqlite::domain_version(&tx, MOBKIT_CONTINUITY_DOMAIN.name)
+            .map_err(|e| mechanics_err("read continuity ledger", e))?;
+        let stamped = ledger_before.is_some_and(|v| v >= HEAD_CANONICAL_SCHEMA_VERSION);
+        let tables_present = head_canonical_tables_present_in_txn(&tx)?;
+        let session_ids = if tables_present {
+            head_canonical_session_ids_in_txn(&tx)?
+        } else {
+            Vec::new()
+        };
+
+        // A head row with no stamp is the invariant `delta_write` exists to
+        // preserve. If it is violated, the file's rollback safety was never
+        // real and silently "fixing" it here would hide that.
+        if !stamped && !session_ids.is_empty() {
+            return Err(ContinuityStoreError::Corruption(format!(
+                "continuity file holds {} head-canonical session(s) but its mobkit-continuity \
+                 ledger is at {:?}; head rows without the v2 stamp mean an older binary was free \
+                 to write the frozen blob archive as authority",
+                session_ids.len(),
+                ledger_before
+            )));
+        }
+
+        let mut report = HeadCanonicalDowngrade {
+            applied: apply,
+            ledger_before,
+            ledger_after: ledger_before,
+            sessions: Vec::new(),
+            orphan_rows_discarded: 0,
+            channel_dropped: false,
+        };
+        if !stamped && !tables_present {
+            // Already v1-shaped. Nothing to undo.
+            return Ok(report);
+        }
+
+        for id in &session_ids {
+            let Some((head, _token)) = head_row_in_txn(&tx, id)
+                .map_err(|e| continuity_err("read head row for downgrade", e))?
+            else {
+                continue;
+            };
+            let identity = head_row_identity_in_txn(&tx, id)?;
+            let (data, fidelity) = downgraded_document_in_txn(&tx, id, &head)
+                .map_err(|e| continuity_err("re-materialize downgraded document", e))?;
+            write_downgraded_snapshot_in_txn(&tx, id, &identity, &data)?;
+            report.sessions.push(DowngradedSession {
+                session_id: id.to_string(),
+                identity: identity.identity.as_str().to_string(),
+                messages: head.message_count,
+                rewrites: head.rewrite_count,
+                bytes: data.len() as u64,
+                fidelity,
+            });
+        }
+
+        report.orphan_rows_discarded = orphan_strand_row_count_in_txn(&tx)?;
+        drop_head_canonical_schema_in_txn(&tx)?;
+        report.channel_dropped = true;
+        if stamped {
+            rewind_head_canonical_ledger_in_txn(&tx)?;
+            report.ledger_after = Some(MOBKIT_CONTINUITY_BASELINE_DOMAIN.supported_version());
+        }
+
+        if apply {
+            tx.commit().map_err(|e| sqlite_err("commit downgrade", e))?;
+        } else {
+            tx.rollback()
+                .map_err(|e| sqlite_err("roll back downgrade dry run", e))?;
+            report.ledger_after = ledger_before;
+        }
+        Ok(report)
+    }
+
     /// Open an in-memory store (for testing).
     ///
     /// # Errors
@@ -559,6 +911,7 @@ impl LocalContinuityStore {
                 writer: Mutex::new(writer),
                 readers: ReadConnections::Writer,
                 head_canonical_schema: AtomicBool::new(head_canonical),
+                head_canonical_ledger: AtomicBool::new(head_canonical),
             }),
         })
     }
@@ -898,6 +1251,25 @@ fn rewrite_row_count_in_txn(
     u64::try_from(count).map_err(|_| SessionStoreError::Corrupted(id.clone()))
 }
 
+/// The adopted rewrite records of a head-canonical session, reconstructed
+/// from the persisted rows in the caller's transaction. One place, so the
+/// read verb and the downgrade verb cannot reconstruct history differently.
+fn rewrite_records_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    max_idx_exclusive: u64,
+) -> Result<Vec<TranscriptRewriteRecord>, SessionStoreError> {
+    rewrite_rows_in_txn(tx, id, max_idx_exclusive)?
+        .into_iter()
+        .map(|row| {
+            let parent_messages =
+                strand_messages_in_txn(tx, id, &row.parent_strand, 0..row.parent_len)?;
+            let revision_messages = strand_messages_in_txn(tx, id, &row.strand, 0..row.strand_len)?;
+            reconstruct_rewrite_record(id, row.commit, parent_messages, revision_messages)
+        })
+        .collect()
+}
+
 fn rewrite_rows_in_txn(
     tx: &Transaction<'_>,
     id: &meerkat_core::types::SessionId,
@@ -1034,6 +1406,22 @@ fn migrate_legacy_blob_in_txn(
     let Some(session) = blob_session_in_txn(tx, id)? else {
         return Ok(None);
     };
+    // Clear any ORPHAN rows first — strand/rewrite rows for this session
+    // that no head row adopts.
+    //
+    // They exist because an append that creates no head state commits its
+    // rows and leaves the ledger at v1 (the rollback-safety rule in
+    // `delta_write`), so an interrupted creation window, or a rollback to a
+    // previous release followed by a re-upgrade, can leave rows behind that
+    // disagree with the blob this migration is about to lay out. Without
+    // this, `insert_strand_rows_in_txn` would refuse the divergence as an
+    // immutability violation and the session would be permanently
+    // unwritable.
+    //
+    // Safe unconditionally: this function is reached only with NO head row
+    // for `id`, and every read path gates on the head row, so nothing can
+    // observe these rows. The blob is the authority being migrated.
+    delete_orphan_head_canonical_rows_in_txn(tx, id)?;
     let (layout, head) = layout_for_blob_session(&session)?;
     for (strand, rows) in &layout.strands {
         insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
@@ -1056,6 +1444,226 @@ fn migrate_legacy_blob_in_txn(
     }
     let token = write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
     Ok(Some((head, token)))
+}
+
+/// What one continuity database's head-canonical downgrade did (or, in dry
+/// run, would do).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeadCanonicalDowngrade {
+    /// `false` for a dry run: the whole reconstruction ran and was rolled
+    /// back, so the counts below are real, not estimated.
+    pub applied: bool,
+    /// `mobkit-continuity` ledger version observed on entry.
+    pub ledger_before: Option<i64>,
+    /// Ledger version after the run (unchanged for a dry run).
+    pub ledger_after: Option<i64>,
+    /// Whether the head-canonical trio was dropped.
+    pub channel_dropped: bool,
+    /// One entry per re-materialized session.
+    pub sessions: Vec<DowngradedSession>,
+    /// Strand rows that no head row adopts, discarded with the channel.
+    ///
+    /// These exist because an append that creates no head state commits its
+    /// rows and its DDL but NOT the ledger stamp (that is what keeps the
+    /// file rollback-safe — see [`LocalContinuityStore::delta_write`]). They
+    /// are not part of any document and no reader can reach them, so
+    /// dropping them loses nothing a reader could observe; an interrupted
+    /// creation sequence simply re-appends them. Reported rather than
+    /// silently swept, because "the downgrade deleted rows" should never be
+    /// something an operator has to discover from a row count.
+    #[serde(default)]
+    pub orphan_rows_discarded: u64,
+}
+
+impl HeadCanonicalDowngrade {
+    /// Sessions whose retained rewrite history could not be re-inlined.
+    /// Non-empty means the downgrade is lossy — turn content is intact,
+    /// branch/rewind history for these sessions is not.
+    #[must_use]
+    pub fn lossy_sessions(&self) -> Vec<&DowngradedSession> {
+        self.sessions
+            .iter()
+            .filter(|session| matches!(session.fidelity, DowngradeFidelity::HistoryDropped { .. }))
+            .collect()
+    }
+
+    /// Whether this run left (or would leave) the file readable by a
+    /// pre-head-canonical binary.
+    #[must_use]
+    pub fn lockout_lifted(&self) -> bool {
+        self.ledger_after
+            .is_none_or(|version| version < HEAD_CANONICAL_SCHEMA_VERSION)
+    }
+}
+
+/// One session re-materialized from head+rows into a whole-document blob.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DowngradedSession {
+    pub session_id: String,
+    pub identity: String,
+    pub messages: u64,
+    pub rewrites: u64,
+    pub bytes: u64,
+    #[serde(flatten)]
+    pub fidelity: DowngradeFidelity,
+}
+
+/// How faithfully one session's whole-document blob was reconstructed from
+/// its head+rows during a downgrade.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "fidelity")]
+pub enum DowngradeFidelity {
+    /// The document carries the live transcript AND the retained rewrite
+    /// history graph, re-inlined from the rewrite rows, and a simulated
+    /// reader accepted it.
+    Full,
+    /// The session had no adopted rewrites, so the live transcript IS the
+    /// whole document — there is no history to re-inline and nothing is lost.
+    NoHistory,
+    /// The rewrite rows could not be re-inlined into a document a reader
+    /// would accept, so the live transcript was written WITHOUT the retained
+    /// history graph. The turn content is intact; branch/rewind history for
+    /// this session is not. Never silent: the verb reports it per session.
+    HistoryDropped { reason: String },
+}
+
+/// Rebuild the whole-document blob a v1-shaped binary expects from a
+/// session's head+rows, and prove a reader would accept it.
+///
+/// This is the inverse of [`migrate_legacy_blob_in_txn`]. The forward
+/// direction projected `(retained history, live messages)` into strands +
+/// rewrite rows + a head via meerkat's `strand_layout_for_history`; this
+/// direction folds them back with meerkat's own published inverses
+/// ([`reconstruct_rewrite_record`], `Session::apply_transcript_history_state`).
+///
+/// The reconstruction is never trusted on its own. Every document is
+/// serialized, decoded back through the ordinary `Session` deserializer —
+/// the exact path a reader takes — and then re-checked: same id, same live
+/// transcript, a history graph that validates, the same adopted commits,
+/// and a document `strand_layout_for_history` can project again (so a later
+/// re-upgrade reproduces these rows). A document that fails any of that is
+/// NOT written; the session falls back to the slim form, which carries no
+/// history state at all and so has nothing for an older reader's validator
+/// to reject. Reader simulation runs against THIS binary's meerkat-core;
+/// that is the honest limit of the check, and the fallback is the shape
+/// that predates the feature entirely.
+fn downgraded_document_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+    head: &SessionHead,
+) -> Result<(Vec<u8>, DowngradeFidelity), SessionStoreError> {
+    let slim = materialize_slim_in_txn(tx, id, head)?;
+    let slim_bytes = serde_json::to_vec(&slim).map_err(SessionStoreError::from)?;
+    if head.rewrite_count == 0 {
+        return Ok((slim_bytes, DowngradeFidelity::NoHistory));
+    }
+    let fallback = |reason: String| {
+        Ok((
+            slim_bytes.clone(),
+            DowngradeFidelity::HistoryDropped { reason },
+        ))
+    };
+    let records = match rewrite_records_in_txn(tx, id, head.rewrite_count) {
+        Ok(records) => records,
+        Err(error) => return fallback(format!("rewrite rows unreadable: {error}")),
+    };
+    let expected_commits: Vec<TranscriptRewriteCommit> =
+        records.iter().map(|record| record.commit.clone()).collect();
+    let state = transcript_history_state_from_records(head, &slim, &records);
+    let mut document = slim.clone();
+    if let Err(error) = document.apply_transcript_history_state(state) {
+        return fallback(format!("history graph rejected on re-inline: {error}"));
+    }
+    let bytes = match serde_json::to_vec(&document) {
+        Ok(bytes) => bytes,
+        Err(error) => return fallback(format!("history document not serializable: {error}")),
+    };
+    match verify_downgraded_document(id, &bytes, slim.messages(), &expected_commits) {
+        Ok(()) => Ok((bytes, DowngradeFidelity::Full)),
+        Err(reason) => fallback(reason),
+    }
+}
+
+/// The retained-history graph implied by a session's rewrite rows plus its
+/// live transcript.
+///
+/// The live messages are the head body: `apply_transcript_history_state`
+/// requires a body whose revision is `state.head`, and the head of a
+/// downgraded document is by definition the transcript the session is
+/// currently on.
+fn transcript_history_state_from_records(
+    head: &SessionHead,
+    slim: &Session,
+    records: &[TranscriptRewriteRecord],
+) -> meerkat_core::TranscriptHistoryState {
+    let mut revisions: Vec<meerkat_core::TranscriptRevisionBody> = Vec::new();
+    let mut push = |body: meerkat_core::TranscriptRevisionBody| {
+        if !revisions
+            .iter()
+            .any(|existing| existing.revision == body.revision)
+        {
+            revisions.push(body);
+        }
+    };
+    for record in records {
+        push(record.parent_body.clone());
+        push(record.revision_body.clone());
+    }
+    push(meerkat_core::TranscriptRevisionBody {
+        revision: head.head_revision.clone(),
+        parent_revision: records.last().map(|last| last.commit.revision.clone()),
+        messages: slim.messages().to_vec(),
+        created_at: head.updated_at,
+    });
+    meerkat_core::TranscriptHistoryState {
+        head: head.head_revision.clone(),
+        commits: records.iter().map(|r| r.commit.clone()).collect(),
+        revisions,
+        // The rows this graph came from were written by a build that mints
+        // content-addressed revisions, so the marker is honest and a reader
+        // skips the per-decode legacy-heal probe.
+        digest_format: crate::storage_marker_stamp::TRANSCRIPT_DIGEST_FORMAT_CURRENT,
+    }
+}
+
+/// Decode a candidate downgraded document exactly as a reader would and
+/// re-check every property the downgrade claims about it.
+fn verify_downgraded_document(
+    id: &meerkat_core::types::SessionId,
+    bytes: &[u8],
+    expected_messages: &[Message],
+    expected_commits: &[TranscriptRewriteCommit],
+) -> Result<(), String> {
+    let decoded: Session = serde_json::from_slice(bytes)
+        .map_err(|error| format!("document will not decode: {error}"))?;
+    if decoded.id() != id {
+        return Err(format!(
+            "document decodes as session {} instead of {id}",
+            decoded.id()
+        ));
+    }
+    if decoded.messages() != expected_messages {
+        return Err("document's live transcript does not match the head's strand rows".to_string());
+    }
+    decoded
+        .validate_transcript_history_state()
+        .map_err(|error| format!("re-inlined history state fails validation: {error}"))?;
+    let state = decoded
+        .transcript_history_state()
+        .map_err(|error| format!("re-inlined history state will not decode: {error}"))?;
+    let commits = state.as_ref().map(|s| s.commits.as_slice()).unwrap_or(&[]);
+    if commits != expected_commits {
+        return Err(format!(
+            "document retains {} adopted commit(s), the rewrite rows hold {}",
+            commits.len(),
+            expected_commits.len()
+        ));
+    }
+    // Round-trip closure: a later re-upgrade must be able to project these
+    // exact rows back out of the document it is about to read.
+    layout_for_blob_session(&decoded)
+        .map_err(|error| format!("document cannot be re-projected into strands: {error}"))?;
+    Ok(())
 }
 
 /// Head row if present, otherwise migrate a legacy blob in this transaction.
@@ -1265,6 +1873,26 @@ fn ensure_head_owner_in_txn(
             "session head {session_id} is owned by {head_identity}/generation \
              {head_generation}, not {identity}/generation {generation}"
         )));
+    }
+    Ok(())
+}
+
+/// Drop the strand and rewrite rows of a session that has NO head row.
+///
+/// Callers must have established that (`migrate_legacy_blob_in_txn` is the
+/// only one, and it runs only when `head_row_in_txn` returned `None`). The
+/// head table is deliberately untouched: this clears orphans, it is not a
+/// session delete.
+fn delete_orphan_head_canonical_rows_in_txn(
+    tx: &Transaction<'_>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<(), SessionStoreError> {
+    for table in ["continuity_strand_messages", "continuity_session_rewrites"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE session_id = ?1"),
+            rusqlite::params![id.to_string()],
+        )
+        .map_err(|e| sqlite_session_err("delete orphan head-canonical rows", e))?;
     }
     Ok(())
 }
@@ -1962,12 +2590,32 @@ impl LocalContinuityStore {
     /// the `continuity_records` advance and the ledger v2 stamp commit
     /// together or not at all. So the durable cursor can never point past
     /// durable data, a partial append can never leave a torn document, and
-    /// — the property this ordering exists for — **a REFUSED write never
-    /// arms the v1-writer lockout**: a guard rejection or a typed operation
-    /// refusal rolls the DDL and the stamp back with everything else, and
-    /// the file stays rollback-safe at v1 with zero head rows. Head rows
-    /// existing without the stamp is likewise impossible, so an older
-    /// binary can never mistake a frozen blob archive for authority.
+    /// — the property this ordering exists for — **a write that does not
+    /// leave a head row behind never arms the v1-writer lockout**.
+    ///
+    /// Two ways a write fails to earn the bump, and both leave the file
+    /// rollback-safe at v1:
+    ///
+    /// - it is REFUSED (a guard rejection or a typed operation refusal):
+    ///   the DDL and the stamp roll back with everything else, and the file
+    ///   keeps zero head rows;
+    /// - it is ACCEPTED but creates no head state. `append_messages` on a
+    ///   session with neither a head row nor a blob to migrate is the real
+    ///   case: the service appends and then adopts under two separate
+    ///   locks, so the append commits alone. Strand rows that no head
+    ///   adopts are not part of any document — every read path gates on the
+    ///   head row — so an older binary still correctly serves that session
+    ///   from its blob, and locking it out of the whole file would be a
+    ///   brick bought for nothing. The rows and the (additive, `IF NOT
+    ///   EXISTS`) DDL commit; the stamp waits for the adopting head write.
+    ///
+    /// The converse — a head row with no stamp — remains impossible, so an
+    /// older binary can never mistake a frozen blob archive for authority.
+    /// That is why the "is the lockout owed" question is answered from the
+    /// ledger row inside this transaction
+    /// ([`head_canonical_ledger_stamped_in_txn`]) and never from the
+    /// table-existence latch, which this method can now leave `true` on a
+    /// v1 file.
     async fn delta_write<T, F>(
         &self,
         operation_name: &'static str,
@@ -1993,15 +2641,21 @@ impl LocalContinuityStore {
                     let tx = connection
                         .unchecked_transaction()
                         .map_err(|e| sqlite_err("begin tx", e))?;
+                    // Is the one-way lockout still owed? Answered from the
+                    // ledger row itself, inside this transaction — the
+                    // cached flag may only SKIP the read, never decide that
+                    // no bump is owed.
+                    let lockout_owed = !inner.ledger_is_head_canonical()
+                        && !head_canonical_ledger_stamped_in_txn(&tx)?;
                     // Converge the head-canonical schema INSIDE this
                     // transaction (SQLite DDL is transactional): the tables
                     // have to exist before the operation can write a row,
                     // but they vanish again with a rollback. The ledger
                     // stamp that makes the bump one-way is deliberately NOT
                     // written here — it is the last thing before commit,
-                    // once the write has actually created head state.
-                    let arm_lockout = !inner.schema_is_head_canonical();
-                    if arm_lockout {
+                    // and only once the write has actually left a head row
+                    // behind.
+                    if lockout_owed {
                         converge_head_canonical_schema_in_txn(&tx)?;
                     }
                     let record_was_present = enforce_continuity_cursor_in_txn(
@@ -2041,14 +2695,25 @@ impl LocalContinuityStore {
                         cursor.fencing_token,
                         record_was_present,
                     )?;
-                    if arm_lockout {
-                        // Earned: this transaction created head state.
+                    // Earned only by head state that will be durable when
+                    // this transaction commits. An accepted append that
+                    // adopts nothing leaves the file at v1.
+                    let stamp_lockout =
+                        lockout_owed && session_head_exists_in_txn(&tx, &session_id)?;
+                    if stamp_lockout {
                         stamp_head_canonical_ledger_in_txn(&tx)?;
                     }
                     tx.commit().map_err(|e| sqlite_err("commit tx", e))?;
-                    // Latch only after the commit that made it true.
-                    if arm_lockout {
+                    // Latch only after the commit that made each fact true,
+                    // and keep the two facts apart: the DDL committed
+                    // whenever the bump was owed, so the tables are
+                    // queryable either way, but the lockout latch tracks
+                    // the ledger row alone.
+                    if lockout_owed {
                         inner.head_canonical_schema.store(true, Ordering::Release);
+                    }
+                    if stamp_lockout || !lockout_owed {
+                        inner.head_canonical_ledger.store(true, Ordering::Release);
                     }
                     Ok(Ok(value))
                 })
@@ -2318,6 +2983,60 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
         .await
     }
 
+    async fn load_canonical_session(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<Session>, SessionStoreError> {
+        let id = id.clone();
+        self.delta_read(
+            "continuity load_canonical_session",
+            move |tx, head_tables| {
+                if !head_tables {
+                    return Ok(None);
+                }
+                // ONE snapshot over head + rows. `materialize_slim_in_txn`
+                // re-derives the transcript digest against `head_revision`, so a
+                // torn pair would surface as `Corrupted` rather than silently —
+                // but under a single transaction the pair cannot tear at all.
+                let Some((head, _token)) = head_row_in_txn(tx, &id)? else {
+                    return Ok(None);
+                };
+                materialize_slim_in_txn(tx, &id, &head).map(Some)
+            },
+        )
+        .await
+    }
+
+    async fn load_canonical_previous(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<(Session, Vec<meerkat_core::TranscriptRewriteCommit>)>, SessionStoreError>
+    {
+        let id = id.clone();
+        self.delta_read(
+            "continuity load_canonical_previous",
+            move |tx, head_tables| {
+                if !head_tables {
+                    return Ok(None);
+                }
+                let Some((head, _token)) = head_row_in_txn(tx, &id)? else {
+                    return Ok(None);
+                };
+                let rewrite_count = head.rewrite_count;
+                let session = materialize_slim_in_txn(tx, &id, &head)?;
+                // The commits alone — deliberately not `load_rewrites`,
+                // which reconstructs both message bodies of every rewrite
+                // and would make a guard read O(rewrites x transcript).
+                let adopted = rewrite_rows_in_txn(tx, &id, rewrite_count)?
+                    .into_iter()
+                    .map(|row| row.commit)
+                    .collect();
+                Ok(Some((session, adopted)))
+            },
+        )
+        .await
+    }
+
     async fn load_messages(
         &self,
         id: &meerkat_core::types::SessionId,
@@ -2359,22 +3078,7 @@ impl ContinuityIncrementalSessions for LocalContinuityStore {
         let id = id.clone();
         self.delta_read("continuity load_rewrites", move |tx, head_tables| {
             if head_tables && let Some((head, _token)) = head_row_in_txn(tx, &id)? {
-                let rows = rewrite_rows_in_txn(tx, &id, head.rewrite_count)?;
-                return rows
-                    .into_iter()
-                    .map(|row| {
-                        let parent_messages =
-                            strand_messages_in_txn(tx, &id, &row.parent_strand, 0..row.parent_len)?;
-                        let revision_messages =
-                            strand_messages_in_txn(tx, &id, &row.strand, 0..row.strand_len)?;
-                        reconstruct_rewrite_record(
-                            &id,
-                            row.commit,
-                            parent_messages,
-                            revision_messages,
-                        )
-                    })
-                    .collect();
+                return rewrite_records_in_txn(tx, &id, head.rewrite_count);
             }
             let Some(session) = blob_session_in_txn(tx, &id)? else {
                 return Ok(Vec::new());
@@ -3370,8 +4074,10 @@ mod tests {
             "ordinary whole-document saves must not commit the head-canonical bump"
         );
 
-        // The first DELTA write is where the v1-writer lockout becomes
-        // load-bearing, and only there is the bump committed.
+        // The delta write that CREATES HEAD STATE is where the v1-writer
+        // lockout becomes load-bearing, and only there is the bump
+        // committed. An append that adopts nothing does not earn it — see
+        // `an_accepted_delta_write_that_creates_no_head_state_stays_at_v1`.
         {
             let store = LocalContinuityStore::open(&path).expect("reopen");
             let head_session = session_with(&["delta turn"]);
@@ -3389,12 +4095,147 @@ mod tests {
                 )
                 .await
                 .expect("first delta write");
+            assert_eq!(
+                ledger_version(&path),
+                Some(1),
+                "an append that no head adopts creates no authority an older binary \
+                 could misread, so it must not commit the lockout"
+            );
+            let head = SessionHead::from_session(&head_session, root, 0).expect("head");
+            store
+                .save_head(
+                    &cursor(&delta_identity, 0, 2, 2),
+                    &head,
+                    SessionHeadCas::Create,
+                )
+                .await
+                .expect("adopting head write");
         }
         assert_eq!(
             ledger_version(&path),
             Some(HEAD_CANONICAL_SCHEMA_VERSION),
-            "the first delta write commits the head-canonical ledger bump"
+            "the delta write that creates head state commits the head-canonical bump"
         );
+    }
+
+    /// ROLLBACK-SAFETY PIN (N1): the lockout must be earned by HEAD STATE,
+    /// not merely by an accepted write.
+    ///
+    /// `append_messages` on a session with neither a head row nor a blob to
+    /// migrate — the real creation-window shape, because the service appends
+    /// and adopts under two separate locks — commits rows and no head. Rows
+    /// no head adopts are not part of any document (every read path gates on
+    /// the head row), so an older binary still correctly serves that session
+    /// from its blob. Arming the one-way lockout there buys a brick for
+    /// nothing.
+    ///
+    /// The second half is the trap the first half sets: the DDL DOES commit
+    /// with those rows, so the file now has head-canonical tables at ledger
+    /// v1. A binary that decided "is the bump owed?" from a table probe
+    /// would latch "already head-canonical" on the next open and never stamp
+    /// again — head rows with no lockout, which is the very state the
+    /// lockout exists to prevent. The reopen below is what catches that.
+    #[tokio::test]
+    async fn an_accepted_delta_write_that_creates_no_head_state_stays_at_v1() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:append-only").unwrap();
+        let document = session_with(&["creation-window turn"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 1).await;
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 1),
+                    &session_id,
+                    &root,
+                    0,
+                    document.messages(),
+                )
+                .await
+                .expect("an append with no adopting head is a legitimate accepted write");
+        }
+
+        assert_eq!(
+            ledger_version(&path),
+            Some(1),
+            "an ACCEPTED write that creates zero head state must leave the file \
+             rollback-safe at v1"
+        );
+        assert!(
+            head_tables_exist(&path),
+            "the rows are durable, so their (additive, IF NOT EXISTS) DDL committed with them"
+        );
+        // The v1-shaped reader the lockout protects: it must still open.
+        {
+            let probe = Connection::open(&path).expect("probe");
+            meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN).expect(
+                "a previous release must still open a file whose only head-canonical \
+                 content is rows no head adopts",
+            );
+        }
+        {
+            let probe = Connection::open(&path).expect("probe");
+            let heads: i64 = probe
+                .query_row("SELECT COUNT(*) FROM continuity_session_heads", [], |row| {
+                    row.get(0)
+                })
+                .expect("count heads");
+            assert_eq!(heads, 0, "no head row was created");
+            let rows: i64 = probe
+                .query_row(
+                    "SELECT COUNT(*) FROM continuity_strand_messages",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count rows");
+            assert_eq!(rows, 1, "the appended row is durable");
+        }
+
+        // Reopen (a fresh handle, ledger v1, tables present) and land the
+        // adopting head. This MUST still stamp.
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            // A restore reads before it writes, and the read observes the
+            // tables. That is precisely what latches the "head tables are
+            // queryable" flag — which is NOT the same fact as "the lockout
+            // is committed". A binary that conflated them would now be
+            // convinced the bump is already done and never stamp again.
+            assert!(
+                store
+                    .load_canonical_head(&session_id)
+                    .await
+                    .expect("canonical head probe")
+                    .is_none(),
+                "rows no head adopts are not a document"
+            );
+            let head = SessionHead::from_session(&document, root.clone(), 0).expect("head");
+            store
+                .save_head(&cursor(&identity, 0, 2, 1), &head, SessionHeadCas::Create)
+                .await
+                .expect("the adopting head write");
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(HEAD_CANONICAL_SCHEMA_VERSION),
+            "the write that finally creates head state must commit the lockout, even \
+             though the tables already existed when the handle opened"
+        );
+        {
+            let probe = Connection::open(&path).expect("probe");
+            match meerkat_sqlite::refuse_future_schema(&probe, &V0_8_5_CONTINUITY_DOMAIN) {
+                Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture { domain, .. }) => {
+                    assert_eq!(domain, "mobkit-continuity");
+                }
+                other => panic!(
+                    "once a head row exists the file must be closed to binaries that would keep \
+                     writing the frozen blob archive as authority, got {other:?}"
+                ),
+            }
+        }
     }
 
     fn head_tables_exist(path: &Path) -> bool {
@@ -3471,7 +4312,11 @@ mod tests {
             "a refused delta write must roll its speculative head-canonical DDL back"
         );
 
-        // The same file still upgrades on a write that DOES create head state.
+        // The same file still upgrades on a write that DOES create head
+        // state. The append alone does not: it adopts nothing, so it commits
+        // its rows and its DDL and leaves the file rollback-safe (pinned by
+        // `an_accepted_delta_write_that_creates_no_head_state_stays_at_v1`).
+        // The head write is what earns the bump.
         {
             let store = LocalContinuityStore::open(&path).expect("reopen");
             store
@@ -3484,6 +4329,15 @@ mod tests {
                 )
                 .await
                 .expect("an accepted delta write");
+            assert_eq!(
+                ledger_version(&path),
+                Some(1),
+                "an accepted append that no head adopts is still rollback-safe"
+            );
+            store
+                .save_head(&cursor(&identity, 0, 2, 5), &head, SessionHeadCas::Create)
+                .await
+                .expect("the adopting head write");
         }
         assert_eq!(
             ledger_version(&path),
@@ -4179,5 +5033,559 @@ mod tests {
                 .unwrap(),
             "head-canonical sessions must decline the whole-blob byte probe"
         );
+    }
+
+    // ----------------------------------------------------------------
+    // Downgrade: the rollback path for the one-way v2 ledger bump.
+    // ----------------------------------------------------------------
+
+    /// The v0.8.5 continuity schema domain, declared LOCALLY on purpose.
+    ///
+    /// Not `MOBKIT_CONTINUITY_BASELINE_DOMAIN`: that constant is this
+    /// binary's internal staging device and is free to grow. What these
+    /// tests must model is the previous RELEASE's version ceiling, which is
+    /// frozen at 1 forever. Declaring it here means a future migration
+    /// cannot quietly raise the bar the "old binary" is held to and turn
+    /// these tests green for the wrong reason.
+    const V0_8_5_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::SchemaDomain {
+        name: "mobkit-continuity",
+        migrations: &[meerkat_sqlite::Migration {
+            version: 1,
+            name: "base-schema",
+            apply: migration_0001_continuity_schema,
+        }],
+    };
+
+    /// A stand-in for a release that predates the head-canonical channel:
+    /// it supports `mobkit-continuity` up to v1 and reads sessions ONLY from
+    /// `session_snapshots.data`.
+    ///
+    /// `refuse_future_schema` against that ceiling is exactly the check such
+    /// a binary runs at open (the head-canonical migration simply does not
+    /// exist in it), so this reproduces the real `SchemaFromTheFuture`
+    /// lockout without needing the old binary on disk.
+    fn v1_shaped_binary_opens(path: &Path) -> Result<(), meerkat_sqlite::SqliteStoreError> {
+        let conn = Connection::open(path).expect("probe");
+        meerkat_sqlite::refuse_future_schema(&conn, &V0_8_5_CONTINUITY_DOMAIN)
+    }
+
+    /// The previous release must refuse this file, and refuse it for the
+    /// RIGHT reason. Asserting the typed `SchemaFromTheFuture` (not merely
+    /// "some error") is what makes this a negative control: if the upgrade
+    /// ever silently stops stamping, this assertion fails instead of the
+    /// downgrade test passing vacuously.
+    fn assert_locked_out_of_previous_release(path: &Path) {
+        match v1_shaped_binary_opens(path) {
+            Err(meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture { domain, .. }) => {
+                assert_eq!(domain, "mobkit-continuity");
+            }
+            other => panic!(
+                "expected the previous release to be locked out with SchemaFromTheFuture, got \
+                 {other:?}"
+            ),
+        }
+    }
+
+    /// What a v1-shaped binary would read for a session: the whole-document
+    /// blob, and nothing else.
+    fn v1_shaped_binary_reads(
+        path: &Path,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Option<Session> {
+        let conn = Connection::open(path).expect("probe");
+        let data: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("read snapshot");
+        data.map(|bytes| serde_json::from_slice(&bytes).expect("v1 reader decodes the document"))
+    }
+
+    /// ROLLBACK PIN: upgrade -> turns -> downgrade -> a v1-shaped binary can
+    /// still open the file AND read every turn taken after the upgrade.
+    ///
+    /// This is the property that replaces "back up `continuity.*` before the
+    /// first post-upgrade turn". That guidance had a one-turn rollback window
+    /// and threw away every turn since; this keeps them.
+    #[tokio::test]
+    async fn downgrade_round_trips_head_canonical_sessions_back_to_a_v1_readable_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:downgrade").unwrap();
+        let root = TranscriptStrandId::root();
+
+        // ── Pre-upgrade: a v1 file with a whole-document blob. ───────────
+        let mut document = session_with(&["turn one"]);
+        let session_id = document.id().clone();
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 1).await;
+            store
+                .save_session_snapshot(
+                    &identity,
+                    &session_id,
+                    ContinuityGeneration::new(0),
+                    CheckpointVersion::new(1),
+                    FencingToken::new(1),
+                    &SessionSnapshot {
+                        data: serde_json::to_vec(&document).unwrap(),
+                    },
+                )
+                .await
+                .expect("pre-upgrade whole-blob save");
+        }
+        assert_eq!(ledger_version(&path), Some(1));
+        v1_shaped_binary_opens(&path).expect("a v1 file opens on the previous release");
+
+        // ── Upgrade + turns: delta writes migrate the blob and take the
+        //    file head-canonical, then two more turns append O(delta). ────
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            let mut version = 1u64;
+            for (index, text) in ["turn two", "turn three"].iter().enumerate() {
+                let base = document.messages().len() as u64;
+                document.push(meerkat_core::Message::User(
+                    meerkat_core::UserMessage::text((*text).to_string()),
+                ));
+                version += 1;
+                store
+                    .append_messages(
+                        &cursor(&identity, 0, version, 1),
+                        &session_id,
+                        &root,
+                        base,
+                        &document.messages()[base as usize..],
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("append turn {index}: {e}"));
+                // The migrating append already created a head from the blob,
+                // so every head save here is a CAS against the current one.
+                let stored = store
+                    .load_canonical_head(&session_id)
+                    .await
+                    .expect("stored head")
+                    .expect("the migrating append created the head");
+                let head = SessionHead::from_session(&document, root.clone(), stored.rewrite_count)
+                    .expect("head");
+                version += 1;
+                let expected =
+                    SessionHeadCas::IfToken(session_head_cas_token(&stored).expect("token"));
+                store
+                    .save_head(&cursor(&identity, 0, version, 1), &head, expected)
+                    .await
+                    .unwrap_or_else(|e| panic!("save head {index}: {e}"));
+            }
+        }
+        assert_eq!(
+            ledger_version(&path),
+            Some(HEAD_CANONICAL_SCHEMA_VERSION),
+            "the turns took the file head-canonical"
+        );
+        assert!(head_tables_exist(&path));
+        assert_locked_out_of_previous_release(&path);
+        assert_eq!(
+            v1_shaped_binary_reads(&path, &session_id)
+                .expect("frozen archive still on disk")
+                .messages()
+                .len(),
+            1,
+            "the frozen blob archive is stale — a v1 binary would silently lose two turns \
+             if it could open the file at all"
+        );
+
+        // ── Dry run: does the whole reconstruction, changes nothing. ─────
+        let dry = LocalContinuityStore::downgrade_head_canonical_at(&path, false)
+            .expect("dry run must succeed");
+        assert!(!dry.applied);
+        assert_eq!(dry.sessions.len(), 1);
+        assert_eq!(dry.sessions[0].messages, 3);
+        assert_eq!(dry.sessions[0].fidelity, DowngradeFidelity::NoHistory);
+        assert_eq!(
+            ledger_version(&path),
+            Some(HEAD_CANONICAL_SCHEMA_VERSION),
+            "a dry run must roll back"
+        );
+        assert!(head_tables_exist(&path), "a dry run must roll back the DDL");
+
+        // ── Apply. ───────────────────────────────────────────────────────
+        let applied = LocalContinuityStore::downgrade_head_canonical_at(&path, true)
+            .expect("downgrade must succeed");
+        assert!(applied.applied);
+        assert!(applied.channel_dropped);
+        assert!(applied.lockout_lifted());
+        assert!(
+            applied.lossy_sessions().is_empty(),
+            "a session with no rewrites loses nothing"
+        );
+
+        assert_eq!(ledger_version(&path), Some(1), "the lockout is lifted");
+        assert!(
+            !head_tables_exist(&path),
+            "the file is back to the v1 table shape"
+        );
+        v1_shaped_binary_opens(&path)
+            .expect("the previous release must be able to open the downgraded file");
+        let recovered =
+            v1_shaped_binary_reads(&path, &session_id).expect("the document is a v1 blob again");
+        assert_eq!(
+            recovered.messages(),
+            document.messages(),
+            "every post-upgrade turn survives the downgrade"
+        );
+        assert_eq!(recovered.id(), &session_id);
+
+        // ── And the downgraded file is a working v1 file, not a husk: it
+        //    reopens, serves the blob, and can be re-upgraded. ────────────
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen after downgrade");
+            let snapshot = store
+                .load_session_snapshot(&session_id)
+                .await
+                .expect("load")
+                .expect("present");
+            let served: Session = serde_json::from_slice(&snapshot.data).expect("decode");
+            assert_eq!(served.messages(), document.messages());
+            // Re-upgrade: the first delta write migrates the restored blob
+            // back into head+rows.
+            let mut next = served;
+            next.push(meerkat_core::Message::User(
+                meerkat_core::UserMessage::text("turn four".to_string()),
+            ));
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 10, 1),
+                    &session_id,
+                    &root,
+                    3,
+                    &next.messages()[3..],
+                )
+                .await
+                .expect("re-upgrade append");
+            assert_eq!(
+                store
+                    .load_canonical_head(&session_id)
+                    .await
+                    .expect("head")
+                    .expect("the restored blob migrated back into head+rows")
+                    .message_count,
+                3,
+                "the migrating append rebuilt the head from the downgraded blob"
+            );
+        }
+    }
+
+    /// The downgrade must carry a session's RETAINED REWRITE HISTORY back
+    /// into the blob, not just its live transcript. The head-canonical
+    /// representation deliberately keeps that history out of line (in
+    /// `continuity_session_rewrites`), so a downgrade that wrote only the
+    /// slim materialization would silently drop every branch point.
+    #[tokio::test]
+    async fn downgrade_re_inlines_retained_transcript_history() {
+        use super::super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("agent:rewrites").unwrap();
+        let root = TranscriptStrandId::root();
+
+        let mut original = Session::new();
+        original.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("first".to_string()),
+        ));
+        original.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("second".to_string()),
+        ));
+        let session_id = original.id().clone();
+
+        let commit;
+        let revision_messages;
+        {
+            let store = Arc::new(LocalContinuityStore::open(&path).expect("open"));
+            let adapter = Arc::new(ContinuitySessionStoreAdapter::new(
+                store.clone() as Arc<dyn ContinuityStore>
+            ));
+            let incremental = meerkat::SessionStore::as_incremental(adapter.clone())
+                .expect("the bundled store advertises the delta channel");
+            seed_record(&store, &identity, &session_id, 1).await;
+            adapter
+                .register_session(
+                    &session_id,
+                    SessionRuntimeState {
+                        identity: identity.clone(),
+                        generation: ContinuityGeneration::new(0),
+                        fencing_token: FencingToken::new(1),
+                        checkpoint_version: CheckpointVersion::new(0),
+                    },
+                )
+                .await
+                .expect("register");
+            incremental
+                .append_messages(&session_id, &root, 0, original.messages())
+                .await
+                .expect("seed rows");
+            let head = SessionHead::from_session(&original, root.clone(), 0).expect("head");
+            incremental
+                .save_head(&head, SessionHeadCas::Create)
+                .await
+                .expect("adopt head");
+
+            // A real rewrite, minted by meerkat's own transcript-edit API.
+            let mut rewritten = original.clone();
+            commit = rewritten
+                .commit_transcript_rewrite(
+                    meerkat_core::TranscriptRewriteSelection::MessageRange { start: 1, end: 2 },
+                    vec![meerkat_core::Message::User(
+                        meerkat_core::UserMessage::text("second, rewritten".to_string()),
+                    )],
+                    meerkat_core::TranscriptRewriteReason::new("manual"),
+                    Some("downgrade-test".to_string()),
+                    None,
+                )
+                .expect("commit rewrite");
+            meerkat::SessionStore::save_transcript_rewrite(adapter.as_ref(), &rewritten, &commit)
+                .await
+                .expect("head-canonical rewrite must be admitted");
+            revision_messages = rewritten.messages().to_vec();
+        }
+
+        let report =
+            LocalContinuityStore::downgrade_head_canonical_at(&path, true).expect("downgrade");
+        assert_eq!(report.sessions.len(), 1);
+        assert_eq!(
+            report.sessions[0].rewrites, 1,
+            "the session carries one adopted rewrite"
+        );
+        assert_eq!(
+            report.sessions[0].fidelity,
+            DowngradeFidelity::Full,
+            "the rewrite history must be re-inlined, not dropped: {:?}",
+            report.sessions[0].fidelity
+        );
+        assert!(report.lossy_sessions().is_empty());
+
+        v1_shaped_binary_opens(&path).expect("the downgraded file opens on the previous release");
+        let recovered = v1_shaped_binary_reads(&path, &session_id).expect("blob restored");
+        assert_eq!(
+            recovered.messages(),
+            revision_messages.as_slice(),
+            "the live transcript is the post-rewrite one"
+        );
+        let state = recovered
+            .transcript_history_state()
+            .expect("history decodes")
+            .expect("history is present in the downgraded blob");
+        assert_eq!(
+            state.commits,
+            vec![commit],
+            "the adopted rewrite commit must survive the downgrade"
+        );
+        recovered
+            .validate_transcript_history_state()
+            .expect("the re-inlined history graph must validate for the reader");
+        // Round-trip closure: re-upgrading must reproduce the same rewrite.
+        let (layout, _head) = layout_for_blob_session(&recovered).expect("re-project");
+        assert_eq!(
+            layout.rewrites.len(),
+            1,
+            "a later re-upgrade must recover the same rewrite row from this blob"
+        );
+    }
+
+    /// Head rows without the v2 stamp are structurally impossible. If the
+    /// downgrade ever sees them the file's rollback safety was never real,
+    /// and quietly "fixing" it would hide that.
+    #[tokio::test]
+    async fn downgrade_refuses_head_rows_that_carry_no_lockout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:impossible").unwrap();
+        let document = session_with(&["turn"]);
+        let session_id = document.id().clone();
+        let root = TranscriptStrandId::root();
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 1).await;
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 1),
+                    &session_id,
+                    &root,
+                    0,
+                    document.messages(),
+                )
+                .await
+                .expect("append");
+            let head = SessionHead::from_session(&document, root, 0).expect("head");
+            store
+                .save_head(&cursor(&identity, 0, 2, 1), &head, SessionHeadCas::Create)
+                .await
+                .expect("head");
+        }
+        // Forge the impossible state: head rows, ledger rewound to v1.
+        {
+            let conn = Connection::open(&path).expect("forge");
+            conn.execute(
+                "UPDATE meerkat_schema SET version = 1 WHERE domain = 'mobkit-continuity'",
+                [],
+            )
+            .expect("rewind ledger");
+        }
+        let error = LocalContinuityStore::downgrade_head_canonical_at(&path, true)
+            .expect_err("head rows without the stamp must be refused, not silently repaired");
+        assert!(
+            matches!(error, ContinuityStoreError::Corruption(_)),
+            "the refusal must be typed corruption: {error}"
+        );
+        assert!(
+            head_tables_exist(&path),
+            "a refused downgrade must not have mutated the file"
+        );
+    }
+
+    /// N1-INTERACTION PIN: keeping the file at v1 for an append that adopts
+    /// nothing is what makes rollback possible — and it is also what lets
+    /// ORPHAN strand rows outlive a rollback.
+    ///
+    /// Sequence: an append lands, the adopting head write never does (crash,
+    /// or the operator rolls back mid-creation-window). The previous release
+    /// can now open the file — that is the whole point — and it writes
+    /// whole-document blobs, including ones that DIVERGE from the orphan
+    /// rows (a compaction, a rewind). Re-upgrading then migrates that blob
+    /// into head+rows over the orphans.
+    ///
+    /// Before this was handled, `insert_strand_rows_in_txn` refused the
+    /// divergence as an immutability violation and the session became
+    /// permanently unwritable. The migration clears orphans first: they are
+    /// unreachable by construction (every read path gates on the head row),
+    /// and the blob is the authority being migrated.
+    #[tokio::test]
+    async fn re_upgrading_over_orphan_rows_that_diverge_from_the_blob_succeeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        let identity = AgentIdentity::parse("triage:orphans").unwrap();
+        let root = TranscriptStrandId::root();
+        let interrupted = session_with(&["draft turn that was never adopted"]);
+        let session_id = interrupted.id().clone();
+
+        // 1. An append with no adopting head: rows land, ledger stays v1.
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            seed_record(&store, &identity, &session_id, 1).await;
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 1, 1),
+                    &session_id,
+                    &root,
+                    0,
+                    interrupted.messages(),
+                )
+                .await
+                .expect("append");
+        }
+        assert_eq!(ledger_version(&path), Some(1));
+        v1_shaped_binary_opens(&path).expect("rollback is possible — that is the point");
+
+        // 2. The previous release writes a whole-document blob that diverges
+        //    from the orphan rows at seq 0.
+        let divergent = {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            // The same session id carrying a transcript that differs from
+            // the orphan rows at seq 0 — a compaction, say.
+            let rebuilt = rebuild_with_messages(
+                &interrupted,
+                vec![meerkat_core::Message::User(
+                    meerkat_core::UserMessage::text("post-rollback compaction".to_string()),
+                )],
+            );
+            store
+                .save_session_snapshot(
+                    &identity,
+                    &session_id,
+                    ContinuityGeneration::new(0),
+                    CheckpointVersion::new(2),
+                    FencingToken::new(1),
+                    &SessionSnapshot {
+                        data: serde_json::to_vec(&rebuilt).unwrap(),
+                    },
+                )
+                .await
+                .expect("post-rollback whole-blob save");
+            rebuilt
+        };
+
+        // 3. Re-upgrade: the first delta write migrates the divergent blob.
+        {
+            let store = LocalContinuityStore::open(&path).expect("reopen");
+            let mut next = divergent.clone();
+            next.push(meerkat_core::Message::User(
+                meerkat_core::UserMessage::text("turn after re-upgrade".to_string()),
+            ));
+            let base = divergent.messages().len() as u64;
+            store
+                .append_messages(
+                    &cursor(&identity, 0, 3, 1),
+                    &session_id,
+                    &root,
+                    base,
+                    &next.messages()[base as usize..],
+                )
+                .await
+                .expect(
+                    "the migrating append must clear orphan rows the blob diverges from, \
+                     not refuse the session forever",
+                );
+            let migrated = store
+                .load_canonical_head(&session_id)
+                .await
+                .expect("head")
+                .expect("the blob migrated into head+rows");
+            assert_eq!(
+                migrated.message_count,
+                divergent.messages().len() as u64,
+                "the migrated head describes the BLOB, which is the authority"
+            );
+            let rows = store
+                .load_messages(&session_id, &migrated.strand, 0..migrated.message_count)
+                .await
+                .expect("rows");
+            assert_eq!(
+                rows,
+                divergent.messages(),
+                "the orphan rows must be gone, replaced by the blob's transcript"
+            );
+        }
+    }
+
+    /// Rebuild a session document on the SAME id with a different transcript.
+    fn rebuild_with_messages(source: &Session, messages: Vec<meerkat_core::Message>) -> Session {
+        let head = SessionHead {
+            message_count: messages.len() as u64,
+            head_revision: meerkat_core::transcript_messages_digest(&messages).expect("digest"),
+            ..SessionHead::from_session(source, TranscriptStrandId::root(), 0).expect("head")
+        };
+        head.into_session(messages).expect("rebuild")
+    }
+
+    /// A file that never took the upgrade has nothing to undo, and the verb
+    /// must say so without touching it.
+    #[tokio::test]
+    async fn downgrade_is_a_no_op_on_a_file_that_never_upgraded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("continuity.sqlite3");
+        {
+            let store = LocalContinuityStore::open(&path).expect("open");
+            assert_eq!(store.max_fencing_token().expect("floor"), 0);
+        }
+        let report = LocalContinuityStore::downgrade_head_canonical_at(&path, true)
+            .expect("no-op downgrade");
+        assert!(report.sessions.is_empty());
+        assert!(!report.channel_dropped);
+        assert_eq!(report.ledger_before, Some(1));
+        assert_eq!(report.ledger_after, Some(1));
+        assert!(report.lockout_lifted());
+        v1_shaped_binary_opens(&path).expect("still v1");
     }
 }
