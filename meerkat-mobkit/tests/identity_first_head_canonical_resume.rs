@@ -1328,7 +1328,7 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     let inflated_baseline = continuity_substrate_bytes(&state);
     let runtime_store_baseline = runtime_substrate_bytes(&state);
     let inflated_encode_baseline = meerkat_core::checkpoint::global_session_encode_bytes();
-    for offset in 1..=MEASURED_TURNS {
+    for _ in 1..=MEASURED_TURNS {
         turn += 1;
         identity_runtime
             .send(
