@@ -624,20 +624,26 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            # Fresh reset may expose the initial save for the new generation,
-            # and now also the save from the retire cleanup that follows it.
+            # Under M4b the value here is 2, and the writer is the
+            # CREATION-WINDOW FLUSH of the replacement session, not reset's
+            # retire cleanup (this comment previously guessed cleanup; the
+            # trace disproved that — cleanup only no-ops against the
+            # superseded OLD session and the new record has already
+            # committed when the debt runs). The initial session document
+            # rides the delta channel as TWO mutations — append_messages
+            # plus the adopting save_head — each minting one checkpoint
+            # version from the session's single allocator: append = 1, head
+            # adoption = 2. First boot reports the same 2 with no reset
+            # anywhere near it. Pinned deterministically in Rust:
+            #   meerkat-mobkit/tests/identity_first_builder.rs
+            #     reset_checkpoint_version_is_the_initial_document_flush_not_cleanup
+            #   meerkat-mobkit/src/identity_first/adapters.rs
+            #     incremental_mutations_park_before_registration_and_flush_on_register
             #
-            # This bound was 0/1/None while reset's retire cleanup always
-            # FAILED: M4b's incremental store refused the post-abandon
-            # terminal write, so identity-authority release was skipped and
-            # the flow stopped early (the same defect that made the gateway
-            # report runtime_cleanup_completed=false and leak provider
-            # grants). With that write acknowledged as a no-op, the reset
-            # completes and records one additional continuity checkpoint —
-            # deterministically 2, observed across repeated runs.
-            #
-            # NOTE: that the extra checkpoint is DESIRABLE rather than merely
-            # harmless is not proven here; it is tracked for confirmation.
+            # The other bound members stay legal for wirings this live lane
+            # can drift through: None/0 when the creation save lands after
+            # registration (status snapshots the registration-time version),
+            # 1 for a whole-blob (pre-M4b) flush.
             assert after.checkpoint_version in (0, 1, 2, None)
         finally:
             await rt.shutdown()
