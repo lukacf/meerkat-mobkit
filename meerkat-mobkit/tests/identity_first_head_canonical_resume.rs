@@ -192,21 +192,39 @@ fn continuity_db(state: &Path) -> std::path::PathBuf {
         .path
 }
 
-/// Every file the persistent runtime store owns. The runtime snapshot is the
+/// The layout-authoritative runtime store path (`runtime.sqlite` today, but
+/// derived rather than hardcoded so a layout rename cannot silently turn the
+/// snapshot/restore harness into a no-op).
+fn runtime_db(state: &Path) -> std::path::PathBuf {
+    MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None).runtime_db()
+}
+
+/// Every file the persistent runtime store owns: the db plus whichever
+/// -wal/-shm/-journal sidecars exist right now. The runtime snapshot is the
 /// OTHER document a resume can be handed, so a test that wants to prove the
 /// head-canonical read path must be able to move this set around.
 fn runtime_store_files(state: &Path) -> Vec<std::path::PathBuf> {
-    ["runtime.sqlite", "runtime.sqlite-wal", "runtime.sqlite-shm"]
+    let db = runtime_db(state);
+    ["", "-wal", "-shm", "-journal"]
         .iter()
-        .map(|name| state.join(name))
+        .map(|suffix| std::path::PathBuf::from(format!("{}{suffix}", db.display())))
         .filter(|path| path.exists())
         .collect()
 }
 
-/// Copy the runtime store aside (a point-in-time runtime snapshot).
+/// Copy the runtime store aside (a point-in-time runtime snapshot). Fails
+/// loudly when nothing exists to copy: a silent no-op here would leave every
+/// divergence assertion downstream vacuously green.
 fn save_runtime_store(state: &Path, into: &Path) {
+    let files = runtime_store_files(state);
+    assert!(
+        !files.is_empty(),
+        "no runtime store files exist at {} — the snapshot harness is watching the wrong \
+         location and the manufactured divergence would never arm",
+        runtime_db(state).display()
+    );
     std::fs::create_dir_all(into).expect("snapshot dir");
-    for path in runtime_store_files(state) {
+    for path in files {
         let name = path.file_name().expect("file name");
         std::fs::copy(&path, into.join(name)).expect("copy runtime store file");
     }
@@ -214,15 +232,73 @@ fn save_runtime_store(state: &Path, into: &Path) {
 
 /// Restore a previously saved runtime store, replacing whatever is there now.
 /// This manufactures the field shape the advisory describes: a runtime
-/// snapshot that lags the durable continuity head.
+/// snapshot that lags the durable continuity head. Fails loudly when the
+/// stash restores nothing.
 fn restore_runtime_store(state: &Path, from: &Path) {
     for path in runtime_store_files(state) {
         std::fs::remove_file(&path).expect("clear current runtime store file");
     }
+    let store_dir = runtime_db(state)
+        .parent()
+        .expect("runtime db has a parent directory")
+        .to_path_buf();
+    let mut restored = 0_usize;
     for entry in std::fs::read_dir(from).expect("read snapshot dir") {
         let entry = entry.expect("snapshot entry");
-        std::fs::copy(entry.path(), state.join(entry.file_name())).expect("restore runtime file");
+        std::fs::copy(entry.path(), store_dir.join(entry.file_name()))
+            .expect("restore runtime file");
+        restored += 1;
     }
+    assert!(
+        restored > 0,
+        "runtime store stash at {} was empty — nothing was restored, the divergence was \
+         never armed",
+        from.display()
+    );
+}
+
+/// Message count of the runtime store's persisted session snapshot for
+/// `session_id`, read from `runtime_session_snapshots` and parsed from the
+/// persisted envelope (`{id, messages, ...}` — plain UTF-8 JSON per the
+/// store's `JsonColumnBytes` contract). `None` when no snapshot names the
+/// session.
+fn runtime_snapshot_message_count(state: &Path, session_id: &str) -> Option<i64> {
+    let db = runtime_db(state);
+    assert!(
+        db.exists(),
+        "runtime store {} does not exist — cannot verify the manufactured divergence",
+        db.display()
+    );
+    let conn = rusqlite::Connection::open(&db).expect("open runtime store");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("set runtime store busy timeout");
+    assert!(
+        table_exists(&conn, "runtime_session_snapshots"),
+        "runtime store {} has no runtime_session_snapshots table — the divergence probe is \
+         reading the wrong store",
+        db.display()
+    );
+    let mut stmt = conn
+        .prepare("SELECT session_snapshot FROM runtime_session_snapshots")
+        .expect("prepare runtime snapshots");
+    let blobs = stmt
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .expect("query runtime snapshots")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect runtime snapshots");
+    for blob in blobs {
+        let value: serde_json::Value =
+            serde_json::from_slice(&blob).expect("parse persisted session envelope");
+        if value.get("id").and_then(serde_json::Value::as_str) == Some(session_id) {
+            let count = value
+                .get("messages")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .expect("persisted session envelope has a messages array");
+            return Some(i64::try_from(count).expect("message count fits"));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +467,55 @@ async fn wait_for_single_head_at_least(state: &Path, floor: i64, what: &str) -> 
         );
         sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// On-disk byte total of one SQLite database family: the db file plus its
+/// -wal/-shm/-journal sidecars.
+fn sqlite_family_bytes(db: &Path) -> u64 {
+    ["", "-wal", "-shm", "-journal"]
+        .iter()
+        .map(|suffix| std::path::PathBuf::from(format!("{}{suffix}", db.display())))
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+/// On-disk byte total of the continuity substrate.
+///
+/// The continuity store runs `journal_mode=WAL`
+/// (`src/identity_first/local_store.rs`), where every committed transaction
+/// APPENDS its touched pages to the -wal file until a checkpoint folds them
+/// into the db. Between checkpoints the growth of this total is therefore a
+/// gross-durable-write-volume witness that NO writer into the store can
+/// bypass: the continuity adapter, a mobkit checkpointer loop, and a raw
+/// `serde_json::to_vec` whole-blob path all land their pages here.
+fn continuity_substrate_bytes(state: &Path) -> u64 {
+    sqlite_family_bytes(&continuity_db(state))
+}
+
+/// On-disk byte total of the runtime store family — the state dir's OTHER
+/// per-turn writer. Meerkat's boundary contract persists a whole-session
+/// runtime snapshot at run boundaries (`runtime_session_snapshots`), so this
+/// one is EXPECTED to scale with document size; the envelope test prints it
+/// for visibility next to the continuity numbers and never asserts on it.
+fn runtime_substrate_bytes(state: &Path) -> u64 {
+    sqlite_family_bytes(&runtime_db(state))
+}
+
+/// Best-effort `wal_checkpoint(TRUNCATE)` so a measured window starts from an
+/// (almost) empty log. Failure is tolerated and printed: the window math
+/// measures deltas, so an untruncated baseline only leaves slack — and a
+/// mid-window auto-checkpoint shows up as non-positive growth, which the
+/// caller's anti-vacuity guard turns into a loud failure instead of a pass.
+fn truncate_continuity_wal(state: &Path) {
+    let conn = rusqlite::Connection::open(continuity_db(state)).expect("open continuity db");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("set continuity checkpoint busy timeout");
+    let result: Result<(i64, i64, i64), rusqlite::Error> =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        });
+    eprintln!("PROBE wal_checkpoint(TRUNCATE) before the measured window: {result:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +783,12 @@ async fn stale_runtime_snapshot_resumes_from_the_committed_head() {
     };
 
     // --- Manufacture the divergence --------------------------------------
+    let head_session =
+        assert_durable_continuity_document(&state, "before runtime-snapshot rollback").heads[0]
+            .0
+            .clone();
+    let fresh_runtime_messages = runtime_snapshot_message_count(&state, &head_session)
+        .expect("boot 2's clean shutdown must leave a runtime snapshot for the session");
     restore_runtime_store(&state, &stashed_runtime);
     let census = assert_durable_continuity_document(&state, "after runtime-snapshot rollback");
     assert!(
@@ -670,9 +801,29 @@ async fn stale_runtime_snapshot_resumes_from_the_committed_head() {
         census.heads[0].1, head_after_boot_2,
         "rolling the RUNTIME store back must not touch the continuity head; census: {census:?}"
     );
+    // POSITIVE proof the divergence is armed, not assumed: the restored
+    // runtime store must hold a snapshot for this session that is strictly
+    // BEHIND both the snapshot it replaced and the durable continuity head.
+    // Without this read, a renamed or relocated runtime store would make
+    // save/restore silent no-ops and everything below would pass vacuously
+    // (boot 3 would resume from boot 2's perfectly fresh snapshot).
+    let stale_runtime_messages = runtime_snapshot_message_count(&state, &head_session)
+        .expect("the restored runtime store must hold the boot-1 snapshot for the session");
+    assert!(
+        stale_runtime_messages < fresh_runtime_messages,
+        "divergence NOT armed: the rollback left the runtime snapshot at \
+         {stale_runtime_messages} messages, not behind the boot-2 snapshot it was supposed to \
+         replace ({fresh_runtime_messages}); the restore replaced nothing"
+    );
+    assert!(
+        stale_runtime_messages < head_after_boot_2,
+        "divergence NOT armed: the restored runtime snapshot ({stale_runtime_messages} \
+         messages) is not behind the durable continuity head ({head_after_boot_2})"
+    );
     eprintln!(
-        "PROBE divergence armed: runtime snapshot pinned at head={head_after_boot_1} messages, \
-         durable continuity head at {head_after_boot_2} messages"
+        "PROBE divergence armed: runtime snapshot rolled back to {stale_runtime_messages} \
+         messages (boot-2 snapshot held {fresh_runtime_messages}), durable continuity head at \
+         {head_after_boot_2} messages"
     );
 
     // --- Boot 3: resume must serve the committed head, not the stale one --
@@ -964,31 +1115,65 @@ async fn archived_session_reads_as_archived_never_as_missing() {
 /// 14 MB documents cost ~60 s and 94 MB ~180 s PER one-word turn, because the
 /// boundary re-serialized whole documents every turn).
 ///
-/// `meerkat_core::checkpoint::global_session_encode_bytes()` counts the bytes
-/// of every WHOLE-SESSION boundary serialization. Its two producers are
-/// `BoundSessionCommit::sealed` (meerkat-core's run-boundary commit,
-/// `meerkat-core/src/lifecycle/core_executor.rs`) and the stamped-snapshot
-/// install in meerkat-session's persistent service
-/// (`meerkat-session/src/persistent.rs`). Meerkat's boundary contract still
-/// allows a small, constant number of whole-document encodes per turn; the
-/// acceptance claim pinned HERE is that the gateway composition (the
-/// continuity session-store adapter plus everything mobkit layers on it) does
-/// not ADD per-turn whole-document serializations beyond that contract.
+/// PRIMARY signal: growth of the continuity substrate files themselves
+/// (db + WAL/journal sidecars, via [`continuity_substrate_bytes`]) across the
+/// measured turns, with the WAL truncated at the window's start. In WAL mode
+/// every committed transaction appends its touched pages to the log, so this
+/// growth is gross durable write volume that NO writer into the store can
+/// bypass — the continuity adapter, a mobkit checkpointer loop, and a raw
+/// `serde_json::to_vec` whole-blob path all land their pages there. This is
+/// the acceptance signal.
 ///
-/// Calibration honesty: the transcript in this test is a few KB, so meerkat's
-/// own boundary encodes amount to at most a few tens of KB per turn. The
-/// 256 KiB/turn envelope is therefore deliberately generous — what it trips
-/// on is a whole-document serialize STORM (per-tick checkpointer blobs, an
-/// O(document) re-encode loop in the adapter), which is the shape of the
-/// field regression, not a +/-1 change in the boundary's encode count. The
-/// PROBE line prints the measured per-turn bytes next to a
-/// serialized-transcript proxy so the release coordinator can pin a tighter,
-/// doubling-trip ceiling from the first honest run of this lane.
+/// SECONDARY signal: `meerkat_core::checkpoint::global_session_encode_bytes()`
+/// — whole-session serializations minted by core's own seams only
+/// (`BoundSessionCommit::sealed` in `meerkat-core/src/lifecycle/core_executor.rs`
+/// and the stamped-snapshot install in `meerkat-session/src/persistent.rs`).
+/// It CANNOT see adapter- or mobkit-side serializations, so it must never be
+/// the acceptance signal; it is kept to isolate core's own contribution when
+/// the primary envelope trips.
+///
+/// SCALING window (the proof the envelope measures overhead, not document
+/// size): after the small-document window, the transcript is inflated past
+/// the envelope itself (two stuffing turns of 160 KiB each, > 256 KiB of
+/// document) and two more small turns are measured. O(1) transactional
+/// overhead passes unchanged; an O(document) writer cannot stay under an
+/// envelope the document itself now exceeds — a compile-time assertion pins
+/// that geometry. The runtime store's growth is printed beside it because
+/// meerkat's boundary contract DOES persist a whole-session runtime snapshot
+/// per run boundary — expected to scale, deliberately not asserted, and the
+/// reason the continuity substrate is measured separately at all. The
+/// core-seam counter is likewise not asserted in this window: one whole-
+/// document encode per boundary is core's stated contract, so it scales with
+/// the document by design.
+///
+/// Calibration (first honest run, 2026-07-28, small-document window):
+/// 72,116 B/turn of continuity substrate growth = 17-18 WAL pages per turn,
+/// against an 18 KiB document and 34 KiB request proxy. That is FIXED
+/// page-granularity transaction overhead, not document bytes — a turn
+/// commits several continuity transactions (strand append, head save,
+/// continuity-record/checkpoint update), and every commit re-logs each
+/// touched B-tree page plus the db header page as whole 4 KiB WAL frames.
+/// The scaling window proves the O(1) claim; the 256 KiB envelope (~60
+/// pages) keeps ~3.5x headroom over that floor while still tripping any
+/// O(document) writer once a document exceeds it. Follow-up candidate (not
+/// a test concern): batching the per-turn continuity mutations into fewer
+/// transactions would shave the repeated header-page frames. A zero-growth
+/// window fails loudly (anti-vacuity guard) instead of passing, and the
+/// PROBE lines print every per-turn number next to a serialized-transcript
+/// proxy for future recalibration.
 #[tokio::test(flavor = "multi_thread")]
 async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envelope() {
     const WARMUP_TURNS: usize = 2;
     const MEASURED_TURNS: usize = 2;
+    const STUFFING_TURNS: usize = 2;
+    const STUFFING_BYTES_PER_TURN: usize = 160 * 1024;
+    const PER_TURN_DURABLE_ENVELOPE_BYTES: i64 = 256 * 1024;
     const PER_TURN_ENCODE_ENVELOPE_BYTES: u64 = 256 * 1024;
+    // The scaling window is only a proof if the inflated document exceeds
+    // the envelope: below that, an O(document) writer would pass it.
+    const _: () = assert!(
+        STUFFING_TURNS * STUFFING_BYTES_PER_TURN > PER_TURN_DURABLE_ENVELOPE_BYTES as usize
+    );
 
     let _counter_window = PROCESS_COUNTER_WINDOW.lock().await;
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1034,7 +1219,11 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
     let census = assert_durable_continuity_document(&state, "after warm-up");
     eprintln!("PROBE census after warm-up: {census:?}");
 
-    let baseline = meerkat_core::checkpoint::global_session_encode_bytes();
+    // Start the measured window from a truncated WAL so substrate growth over
+    // the window is the gross write volume of exactly these turns.
+    truncate_continuity_wal(&state);
+    let substrate_baseline = continuity_substrate_bytes(&state);
+    let encode_baseline = meerkat_core::checkpoint::global_session_encode_bytes();
     for offset in 1..=MEASURED_TURNS {
         let turn = WARMUP_TURNS + offset;
         identity_runtime
@@ -1058,23 +1247,152 @@ async fn steady_state_head_canonical_turns_stay_inside_the_boundary_encode_envel
         );
         head_floor = observed;
     }
-    let encoded = meerkat_core::checkpoint::global_session_encode_bytes() - baseline;
-    let per_turn = encoded / u64::try_from(MEASURED_TURNS).expect("measured turn count fits");
+    let substrate_grown = i64::try_from(continuity_substrate_bytes(&state))
+        .expect("substrate size fits")
+        - i64::try_from(substrate_baseline).expect("substrate baseline fits");
+    let encoded = meerkat_core::checkpoint::global_session_encode_bytes() - encode_baseline;
+    let measured_turns = i64::try_from(MEASURED_TURNS).expect("measured turn count fits");
+    let per_turn_durable = substrate_grown / measured_turns;
+    let per_turn_encoded =
+        encoded / u64::try_from(MEASURED_TURNS).expect("measured turn count fits");
     let transcript_proxy_bytes = capture.last().map_or(0, |request| request.len());
     eprintln!(
-        "PROBE boundary encode bytes: {encoded}B across {MEASURED_TURNS} measured turns \
-         ({per_turn}B/turn); serialized LLM-request proxy for the whole transcript: \
-         {transcript_proxy_bytes}B"
+        "PROBE durable substrate bytes: {substrate_baseline}B + {substrate_grown}B over \
+         {MEASURED_TURNS} measured turns ({per_turn_durable}B/turn); core-seam encode bytes: \
+         {encoded}B ({per_turn_encoded}B/turn); serialized LLM-request proxy for the whole \
+         transcript: {transcript_proxy_bytes}B"
+    );
+
+    // Anti-vacuity guard: two committed turns MUST have written durable
+    // bytes. Zero or negative growth means this probe is watching the wrong
+    // files, or a mid-window checkpoint reset the log — either way the
+    // envelope below would be meaningless, so fail instead of passing.
+    assert!(
+        substrate_grown > 0,
+        "the two measured turns grew the continuity substrate by {substrate_grown}B — the \
+         measurement is vacuous (wrong files, or a mid-window WAL checkpoint); fix the probe \
+         before trusting the envelope"
+    );
+    // PRIMARY: the envelope on evidence no writer into the store can bypass.
+    assert!(
+        per_turn_durable < PER_TURN_DURABLE_ENVELOPE_BYTES,
+        "steady-state head-canonical turns wrote {per_turn_durable}B/turn into the continuity \
+         substrate (grew {substrate_grown}B over {MEASURED_TURNS} turns; whole-transcript \
+         proxy {transcript_proxy_bytes}B) — over the {PER_TURN_DURABLE_ENVELOPE_BYTES}B \
+         acceptance envelope. That is the field regression's shape: something is durably \
+         re-writing whole documents per turn."
+    );
+    // SECONDARY: core's own encode seams only (see the doc comment for what
+    // this counter cannot see). Kept to attribute a primary trip, never as
+    // the acceptance signal.
+    assert!(
+        per_turn_encoded < PER_TURN_ENCODE_ENVELOPE_BYTES,
+        "meerkat-core's own boundary seams serialized {per_turn_encoded}B/turn of whole-session \
+         encodes (measured {encoded}B over {MEASURED_TURNS} turns) — over the \
+         {PER_TURN_ENCODE_ENVELOPE_BYTES}B envelope on the core seams alone"
+    );
+
+    // --- Scaling window: overhead must be O(1) in document size -------------
+    // Inflate the transcript past the envelope, then re-measure two small
+    // turns. See the doc comment: an O(document) writer cannot stay under an
+    // envelope the document itself now exceeds.
+    let mut turn = WARMUP_TURNS + MEASURED_TURNS;
+    for stuffing in 1..=STUFFING_TURNS {
+        turn += 1;
+        identity_runtime
+            .send(
+                &id(MEMBER),
+                &meerkat_core::ContentInput::Text(format!(
+                    "stuffing turn {stuffing}: {}",
+                    "x".repeat(STUFFING_BYTES_PER_TURN)
+                )),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("stuffing turn {stuffing}: send: {e}"));
+        wait_for_turn(&capture, turn, &format!("stuffing turn {stuffing}")).await;
+        let (session, observed) = wait_for_single_head_at_least(
+            &state,
+            head_floor + 2,
+            &format!("stuffing turn {stuffing}'s boundary save"),
+        )
+        .await;
+        assert_eq!(
+            Some(&session),
+            head_session.as_ref(),
+            "stuffing turns must stay on the durable head"
+        );
+        head_floor = observed;
+    }
+
+    truncate_continuity_wal(&state);
+    let inflated_baseline = continuity_substrate_bytes(&state);
+    let runtime_store_baseline = runtime_substrate_bytes(&state);
+    let inflated_encode_baseline = meerkat_core::checkpoint::global_session_encode_bytes();
+    for offset in 1..=MEASURED_TURNS {
+        turn += 1;
+        identity_runtime
+            .send(
+                &id(MEMBER),
+                &meerkat_core::ContentInput::Text(format!("post-stuff measured turn {turn}")),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("post-stuff measured turn {turn}: send: {e}"));
+        wait_for_turn(&capture, turn, &format!("post-stuff measured turn {turn}")).await;
+        let (session, observed) = wait_for_single_head_at_least(
+            &state,
+            head_floor + 2,
+            &format!("post-stuff measured turn {turn}'s boundary save"),
+        )
+        .await;
+        assert_eq!(
+            Some(&session),
+            head_session.as_ref(),
+            "post-stuff measured turns must stay on the durable head"
+        );
+        head_floor = observed;
+    }
+    let inflated_grown = i64::try_from(continuity_substrate_bytes(&state))
+        .expect("inflated substrate size fits")
+        - i64::try_from(inflated_baseline).expect("inflated baseline fits");
+    let runtime_store_grown = i64::try_from(runtime_substrate_bytes(&state))
+        .expect("runtime store size fits")
+        - i64::try_from(runtime_store_baseline).expect("runtime store baseline fits");
+    let inflated_encoded =
+        meerkat_core::checkpoint::global_session_encode_bytes() - inflated_encode_baseline;
+    let inflated_per_turn = inflated_grown / measured_turns;
+    let inflated_proxy_bytes = capture.last().map_or(0, |request| request.len());
+    eprintln!(
+        "PROBE inflated-document window: continuity substrate grew {inflated_grown}B over \
+         {MEASURED_TURNS} turns ({inflated_per_turn}B/turn; small-document window was \
+         {per_turn_durable}B/turn); runtime store grew {runtime_store_grown}B (whole-snapshot \
+         boundary contract, expected to scale); core-seam encode bytes {inflated_encoded}B \
+         (contractual whole-document encode, expected to scale); transcript proxy now \
+         {inflated_proxy_bytes}B"
     );
 
     runtime.shutdown().await;
 
+    // The stuffing must actually have inflated the replayed document, or the
+    // scaling proof below proves nothing.
     assert!(
-        per_turn < PER_TURN_ENCODE_ENVELOPE_BYTES,
-        "steady-state head-canonical turns produced {per_turn}B/turn of whole-session boundary \
-         serializations (measured {encoded}B over {MEASURED_TURNS} turns; whole-transcript \
-         proxy {transcript_proxy_bytes}B) — over the {PER_TURN_ENCODE_ENVELOPE_BYTES}B \
-         acceptance envelope. That is the field regression's shape: something at the boundary \
-         is re-serializing whole documents per turn."
+        inflated_proxy_bytes > STUFFING_TURNS * STUFFING_BYTES_PER_TURN,
+        "the stuffing turns did not inflate the replayed transcript (proxy \
+         {inflated_proxy_bytes}B for {STUFFING_TURNS} x {STUFFING_BYTES_PER_TURN}B of \
+         stuffing) — the scaling window is vacuous"
+    );
+    assert!(
+        inflated_grown > 0,
+        "the post-stuff measured turns grew the continuity substrate by {inflated_grown}B — \
+         the scaling measurement is vacuous (wrong files, or a mid-window WAL checkpoint)"
+    );
+    // The O(1) claim itself: per-turn durable growth on a >256 KiB document
+    // must stay inside the same envelope the small document used.
+    assert!(
+        inflated_per_turn < PER_TURN_DURABLE_ENVELOPE_BYTES,
+        "per-turn durable growth SCALED with document size: {inflated_per_turn}B/turn against \
+         a ~{}KiB document (small-document window: {per_turn_durable}B/turn). The continuity \
+         boundary is durably re-writing whole documents per turn — the field regression's \
+         shape, hidden behind a small fixture until now.",
+        (STUFFING_TURNS * STUFFING_BYTES_PER_TURN) / 1024
     );
 }

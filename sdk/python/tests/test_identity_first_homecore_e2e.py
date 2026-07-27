@@ -624,27 +624,33 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            # Under M4b the value here is 2, and the writer is the
-            # CREATION-WINDOW FLUSH of the replacement session, not reset's
-            # retire cleanup (this comment previously guessed cleanup; the
-            # trace disproved that — cleanup only no-ops against the
-            # superseded OLD session and the new record has already
-            # committed when the debt runs). The initial session document
-            # rides the delta channel as TWO mutations — append_messages
-            # plus the adopting save_head — each minting one checkpoint
-            # version from the session's single allocator: append = 1, head
-            # adoption = 2. First boot reports the same 2 with no reset
-            # anywhere near it. Pinned deterministically in Rust:
+            # Under M4b a healthy head-canonical reset reports EXACTLY 2, and
+            # the writer is the CREATION-WINDOW FLUSH of the replacement
+            # session, not reset's retire cleanup (this comment previously
+            # guessed cleanup; the trace disproved that — cleanup only no-ops
+            # against the superseded OLD session and the new record has
+            # already committed when the debt runs). The initial session
+            # document rides the delta channel as TWO mutations —
+            # append_messages plus the adopting save_head — each minting one
+            # checkpoint version from the session's single allocator:
+            # append = 1, head adoption = 2. First boot reports the same 2
+            # with no reset anywhere near it, and reset() commits the flush
+            # BEFORE it returns, so this status read cannot race it. Pinned
+            # deterministically in Rust (reset record, post-reset status, and
+            # the durable continuity record all assert exactly 2):
             #   meerkat-mobkit/tests/identity_first_builder.rs
             #     reset_checkpoint_version_is_the_initial_document_flush_not_cleanup
             #   meerkat-mobkit/src/identity_first/adapters.rs
             #     incremental_mutations_park_before_registration_and_flush_on_register
             #
-            # The other bound members stay legal for wirings this live lane
-            # can drift through: None/0 when the creation save lands after
-            # registration (status snapshots the registration-time version),
-            # 1 for a whole-blob (pre-M4b) flush.
-            assert after.checkpoint_version in (0, 1, 2, None)
+            # This bound was previously `in (0, 1, 2, None)`, which admitted
+            # the exact failure shapes this end-to-end lane exists to catch
+            # on the shipped rpc_gateway: None/0 means the creation-window
+            # flush never landed durably by status time, and 1 means the
+            # whole-blob (pre-M4b) fallback wrote the document as a single
+            # mutation. If this assertion fires with one of those values,
+            # that is the finding — not test flake.
+            assert after.checkpoint_version == 2
         finally:
             await rt.shutdown()
 
