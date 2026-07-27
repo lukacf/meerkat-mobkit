@@ -36,12 +36,27 @@ fn is_missing_bridge_session_snapshot_error(error: &str) -> bool {
     error.contains("missing bridge session snapshot")
 }
 
-/// meerkat's spawn-with-resume answer for "the durable session snapshot does
-/// not exist" (`actor.rs` resume path). Distinct from
-/// [`is_missing_bridge_session_snapshot_error`], which is the *delivery*-time
-/// revival wording: this one is the resume-spawn rejection.
-fn is_missing_durable_session_snapshot_error(error: &str) -> bool {
-    error.contains("missing durable session snapshot")
+/// TYPED respawn authorization: ONLY meerkat's typed
+/// `SessionUnavailableForResume { reason: Absent }` — "no durable session
+/// exists for this id" — permits falling back to a fresh respawn. Archived-
+/// but-intact, recovery-held, quarantined, and every unknown failure must
+/// preserve the identity/session binding and fail the delivery loudly:
+/// those documents carry transcripts, and no wording change can turn them
+/// into "absent". (The pre-0.8.9 form matched the prose "missing durable
+/// session snapshot" by substring — a recovery or archived error whose
+/// message drifted into that wording could authorize abandoning a live
+/// transcript. Distinct from
+/// [`is_missing_bridge_session_snapshot_error`], which is the
+/// *delivery*-time revival wording and only routes INTO the repair attempt,
+/// never authorizes a fresh respawn.)
+fn durable_snapshot_is_typed_absent(error: &meerkat_mob::MobError) -> bool {
+    matches!(
+        error,
+        meerkat_mob::MobError::SessionUnavailableForResume {
+            reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
+            ..
+        }
+    )
 }
 
 fn is_repairable_bridge_delivery_error(error: &str) -> bool {
@@ -1008,10 +1023,13 @@ impl MobSessionBridge {
                 );
                 Ok(())
             }
-            // meerkat's answer for "the durable session snapshot does not
-            // exist": there is no transcript to preserve, so the caller may
-            // fall back to a fresh respawn.
-            Err(err) if is_missing_durable_session_snapshot_error(&err.to_string()) => {
+            // meerkat's TYPED answer for "the durable session snapshot does
+            // not exist": there is no transcript to preserve, so the caller
+            // may fall back to a fresh respawn. A variant match on purpose —
+            // every other resume refusal (archived-but-intact, recovery
+            // hold, quarantine, unknown) falls to the arm below and
+            // preserves the binding.
+            Err(err) if durable_snapshot_is_typed_absent(&err) => {
                 Err(RepairResumeFailure::DurableSnapshotMissing {
                     detail: err.to_string(),
                 })
@@ -2274,25 +2292,40 @@ mod tests {
     /// The delivery-repair fallback ladder hinges on telling "the durable
     /// snapshot is gone" (fresh respawn is legitimate recovery) apart from
     /// every other resume failure (fresh respawn would abandon a live
-    /// transcript — the OB3 `identity_alias_respawn_rotation` class).
+    /// transcript — the OB3 `identity_alias_respawn_rotation` class). The
+    /// classification is a TYPED variant match: only
+    /// `SessionUnavailableForResume { reason: Absent }` authorizes the
+    /// fallback, and no error WORDING can impersonate it.
     #[test]
     fn repair_fallback_only_on_missing_durable_snapshot() {
-        assert!(is_missing_durable_session_snapshot_error(
+        let session_id = meerkat_core::types::SessionId::new();
+        assert!(durable_snapshot_is_typed_absent(
+            &meerkat_mob::MobError::SessionUnavailableForResume {
+                session_id: session_id.clone(),
+                reason: meerkat_mob::error::SessionResumeUnavailableReason::Absent,
+                runtime_state: None,
+            }
+        ));
+        // Archived-but-intact carries a transcript: never a fresh respawn.
+        assert!(!durable_snapshot_is_typed_absent(
+            &meerkat_mob::MobError::SessionUnavailableForResume {
+                session_id,
+                reason:
+                    meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
+                runtime_state: Some("archived".to_string()),
+            }
+        ));
+        // The wording attack the substring classifier was vulnerable to: an
+        // arbitrary error whose MESSAGE contains the magic prose must not
+        // authorize a fresh respawn.
+        let impersonator = meerkat_mob::MobError::Internal(
             "missing durable session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'"
-        ));
-        // The delivery-time revival wording is a DIFFERENT condition (it
-        // triggers repair, not the fallback) and must not match.
-        assert!(!is_missing_durable_session_snapshot_error(
-            "missing bridge session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'"
-        ));
-        // Continuity violations and ordinary failures must never authorize a
-        // fresh respawn.
-        assert!(!is_missing_durable_session_snapshot_error(
-            "session save rejected: incoming transcript is not a continuation of persisted revision"
-        ));
-        assert!(!is_missing_durable_session_snapshot_error(
-            "model provider returned rate limit"
-        ));
+                .to_string(),
+        );
+        assert!(impersonator
+            .to_string()
+            .contains("missing durable session snapshot"));
+        assert!(!durable_snapshot_is_typed_absent(&impersonator));
     }
 
     #[tokio::test]

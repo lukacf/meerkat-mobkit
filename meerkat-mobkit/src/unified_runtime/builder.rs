@@ -56,6 +56,12 @@ pub struct UnifiedRuntimeBuilder {
     // --- New convenience path ---
     definition_source: Option<DefinitionSource>,
     persistent_state_path: Option<PathBuf>,
+    /// Root `continuity_from_state_dir` opened, retained so `build()` can
+    /// refuse a silent authority fork: session authority in one directory's
+    /// continuity.sqlite3 with runtime/blob/workgraph stores in another is
+    /// exactly the split-storage class the layout's twin detection refuses
+    /// elsewhere.
+    continuity_state_dir: Option<PathBuf>,
     session_hook: Option<Arc<dyn SessionHook>>,
     custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
     meerkat_config: Option<meerkat::Config>,
@@ -204,6 +210,69 @@ impl UnifiedRuntimeBuilder {
     ) -> Self {
         self.lease_provider = Some(provider);
         self
+    }
+
+    /// Open the state directory's identity substrate and install BOTH halves,
+    /// composing the SHIPPED GATEWAY's session topology on the builder.
+    ///
+    /// # Why this exists (doctrine D2, and a real coverage hole)
+    ///
+    /// `persistent_state()` + `roster_provider()` alone does NOT reproduce the
+    /// gateway. The gateway opens the local identity substrate FIRST and makes
+    /// its [`ContinuitySessionStoreAdapter`] meerkat's `SessionStore`, so ALL
+    /// session I/O — heads, strand rows, resume reads — rides
+    /// `continuity.sqlite3` (see `bin/rpc_gateway.rs`, the
+    /// `identity_session_store_adapter` binding). The builder, by contrast,
+    /// only installs that adapter when an EXTERNAL continuity store is
+    /// supplied; on the plain `persistent_state()` arm it opens a
+    /// `SqliteSessionStore` for sessions and opens the local continuity store
+    /// later, for identity metadata only. A test written against that arm
+    /// exercises neither the continuity adapter nor the head-canonical resume
+    /// path, and will pass while proving nothing.
+    ///
+    /// This method closes that hole for embedders and tests that WANT the
+    /// gateway shape, through the same [`crate::gateway_wiring`] seam the
+    /// binaries use — including the fencing floor, which must resume above the
+    /// persisted high-water or restore aborts every restart with a stale
+    /// token.
+    ///
+    /// # Not a default
+    ///
+    /// It is deliberately opt-in. Flipping the plain `persistent_state()` arm
+    /// over would move an existing deployment's session authority from
+    /// `sessions.sqlite3` to an empty `continuity.sqlite3` — every durable
+    /// member would resume onto nothing. That is a data migration, not a
+    /// wiring default.
+    ///
+    /// Pair with [`persistent_state`](Self::persistent_state) pointing at the
+    /// SAME directory and with [`roster_provider`](Self::roster_provider).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the state directory cannot be created, when the continuity
+    /// slot cannot be resolved (file-name twins), or when the substrate cannot
+    /// be opened — never degrades to a zero fencing floor.
+    pub async fn continuity_from_state_dir(
+        mut self,
+        state_dir: impl AsRef<std::path::Path>,
+    ) -> Result<Self, UnifiedRuntimeBuilderError> {
+        let state_dir = state_dir.as_ref();
+        std::fs::create_dir_all(state_dir).map_err(|e| {
+            UnifiedRuntimeBuilderError::Io(format!(
+                "failed to create state directory at {}: {e}",
+                state_dir.display()
+            ))
+        })?;
+        let continuity_db = MobKitStorageLayout::with_injected_roots(state_dir.to_path_buf(), None)
+            .continuity_db()?
+            .path;
+        let substrate = crate::gateway_wiring::open_identity_substrate(&continuity_db)
+            .await
+            .map_err(UnifiedRuntimeBuilderError::Io)?;
+        self.continuity_store = Some(substrate.continuity_store);
+        self.lease_provider = Some(substrate.lease_provider);
+        self.continuity_state_dir = Some(state_dir.to_path_buf());
+        Ok(self)
     }
 
     /// Set the desired identity roster provider for identity-first bootstrap.
@@ -587,6 +656,23 @@ impl UnifiedRuntimeBuilder {
             .map_err(UnifiedRuntimeBuilderError::ConflictingConfiguration)?;
 
         let has_persistent_state = self.persistent_state_path.is_some();
+        // Same-root pairing is a documented requirement of
+        // `continuity_from_state_dir`; enforce it instead of letting two
+        // different directories silently fork session authority from the
+        // runtime/blob/workgraph stores.
+        if let (Some(continuity_dir), Some(state_path)) = (
+            self.continuity_state_dir.as_ref(),
+            self.persistent_state_path.as_ref(),
+        ) && continuity_dir != state_path
+        {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                "continuity_from_state_dir opened {} but persistent_state points at {}; \
+                 the identity substrate and the runtime stores must share ONE state \
+                 directory, or session authority forks from the stores it must pair with",
+                continuity_dir.display(),
+                state_path.display()
+            )));
+        }
         // One path root per realm: the state directory and a scratch root
         // are competing path authorities.
         if has_persistent_state && self.scratch_dir.is_some() {

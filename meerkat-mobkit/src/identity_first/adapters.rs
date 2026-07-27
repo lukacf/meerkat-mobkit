@@ -445,6 +445,24 @@ pub struct ContinuitySessionStoreAdapter {
     /// marker is published and ordinary unregistration clears it after the
     /// retained Mob cleanup anchor reaches structural absence.
     superseded_sessions: Mutex<HashSet<String>>,
+    /// Sessions that have landed at least one DURABLE write in this
+    /// process, whichever verb landed it: a routed delta, a registration
+    /// flush of parked deltas, a head-canonical rewrite commit, or a
+    /// whole-blob snapshot save.
+    ///
+    /// `route_delta_write` is evaluated independently per call, so an
+    /// `append_messages` that routed `Durable` can be followed by a
+    /// `save_head` that routes `Park` if the session unregistered in between.
+    /// That parks the adopting head in memory while the strand rows are
+    /// already durable: on the next open the head still names the previous
+    /// revision and the reader serves an OLDER transcript than what is
+    /// persisted. This set makes that transition detectable — and a durable
+    /// write path that forgets to mark it re-opens the parked-replay
+    /// resurrection vector for sessions whose only durable history came
+    /// from that path (adversarial review, 2026-07-27: the registration
+    /// flush was exactly such a path). Every durable verb marks through
+    /// [`Self::mark_session_durably_written`].
+    durably_written_sessions: Mutex<HashSet<String>>,
     /// Per-session serialization for registry, pending, version, and durable
     /// load/guard/write transitions. Weak values let inactive locks be reclaimed
     /// without ever creating a second lock while an operation or waiter exists.
@@ -472,6 +490,7 @@ impl ContinuitySessionStoreAdapter {
             unregistered_sessions: Mutex::new(HashSet::new()),
             suspended_sessions: Mutex::new(HashSet::new()),
             superseded_sessions: Mutex::new(HashSet::new()),
+            durably_written_sessions: Mutex::new(HashSet::new()),
             session_locks: Mutex::new(HashMap::new()),
             lazy_checkpoint_adoption: false,
         }
@@ -765,7 +784,8 @@ impl ContinuitySessionStoreAdapter {
 
         if incremental.load_canonical_head(session_id).await?.is_some() {
             let session = head.clone().into_session(messages)?;
-            let data = serde_json::to_vec(&session)
+            let data = session
+                .to_persisted_bytes()
                 .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
             let version = self
                 .save_registered_snapshot(session_id, data, state.clone())
@@ -786,6 +806,11 @@ impl ContinuitySessionStoreAdapter {
                 meerkat_core::session_store::SessionHeadCas::Create,
             )
             .await?;
+        // The flushed rows and adopting head ARE durable writes: without
+        // this mark, a session whose only durable history came from the
+        // registration flush could later park a write and be resurrected by
+        // a replayed flush — the exact vector the guard exists to refuse.
+        self.mark_session_durably_written(session_id);
         Ok(ParkedFlush::Adopted(committed))
     }
 
@@ -873,6 +898,7 @@ impl ContinuitySessionStoreAdapter {
                 meerkat_core::session_store::SessionHeadCas::IfToken(token),
             )
             .await?;
+        self.mark_session_durably_written(id);
         Ok(true)
     }
 
@@ -1131,10 +1157,35 @@ impl ContinuitySessionStoreAdapter {
         if let Some(session) = self.load_head_canonical_session(id).await? {
             return Ok(Some(session));
         }
-        Ok(self
+        let fallback = self
             .load_persisted_session_with_bytes(id)
             .await?
-            .map(|(session, _)| session))
+            .map(|(session, _)| session);
+        // Falling back is the ordinary path for every blob-canonical session,
+        // so it is not worth a log line by itself. What IS worth one: a
+        // durable head row existing for this session while the caller is
+        // handed the whole-snapshot view (or nothing) — the reader may be
+        // acting on a document OLDER than the committed head, the advisory's
+        // stale-read shape. The probe is one indexed point-read on a path
+        // already paying a full blob read + parse, and it is diagnostic only:
+        // a probe failure must not fail the load.
+        if let Some(incremental) = self.incremental.as_ref() {
+            match incremental.load_canonical_head(id).await {
+                Ok(Some(_)) => tracing::warn!(
+                    session_id = %id,
+                    served_blob = fallback.is_some(),
+                    "head-canonical read declined while a durable head row exists; \
+                     serving the whole-snapshot fallback"
+                ),
+                Ok(None) => {}
+                Err(error) => tracing::debug!(
+                    session_id = %id,
+                    %error,
+                    "head-row probe failed during whole-snapshot fallback"
+                ),
+            }
+        }
+        Ok(fallback)
     }
 
     /// Head-first materialization for head-canonical sessions: one row-parse
@@ -1155,13 +1206,25 @@ impl ContinuitySessionStoreAdapter {
         id: &meerkat_core::types::SessionId,
     ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
         let Some(incremental) = self.incremental.as_ref() else {
+            // A head-canonical deployment losing its delta channel is a real
+            // fault: every head-canonical session on it becomes unreadable
+            // through this path. Warn, not debug.
+            tracing::warn!(
+                session_id = %id,
+                gate = "no_incremental_channel",
+                "head-canonical read declined"
+            );
             return Ok(None);
         };
         if self.parked_deltas.is_parked(id) {
-            // Pre-registration state is not durable authority.
+            // Pre-registration state is not durable authority. A legitimate
+            // window in every member creation, so debug.
+            tracing::debug!(session_id = %id, gate = "parked", "head-canonical read declined");
             return Ok(None);
         }
         let Some(session) = incremental.load_canonical_session(id).await? else {
+            // Blob-canonical sessions land here on every load; legitimate.
+            tracing::debug!(session_id = %id, gate = "no_head_row", "head-canonical read declined");
             return Ok(None);
         };
         if session.id() != id {
@@ -1186,7 +1249,11 @@ impl ContinuitySessionStoreAdapter {
         })?;
         match snapshot {
             Some(snap) => {
-                let session: meerkat_core::Session = serde_json::from_slice(&snap.data)
+                // Paired decode: adopts the digest midstates the producer
+                // recorded for these exact bytes, so resume-side guards and
+                // checkpoint verifications stay O(delta) instead of paying
+                // an O(document) reseed per read (flat-curve boundary).
+                let session = meerkat_core::Session::from_persisted_bytes(&snap.data)
                     .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
                 if session.id() != id {
                     return Err(meerkat_store::SessionStoreError::Serialization(format!(
@@ -1295,10 +1362,19 @@ impl ContinuitySessionStoreAdapter {
             .cloned();
         pending
             .map(|data| {
-                serde_json::from_slice(&data)
+                meerkat_core::Session::from_persisted_bytes(&data)
                     .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))
             })
             .transpose()
+    }
+
+    /// Mark one session as having landed a durable write in this process.
+    /// The parking guard's refusal rides this set; see the field docs.
+    fn mark_session_durably_written(&self, session_id: &meerkat_core::types::SessionId) {
+        self.durably_written_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_string());
     }
 
     async fn save_registered_snapshot(
@@ -1323,6 +1399,7 @@ impl ContinuitySessionStoreAdapter {
             .map_err(|e| {
                 meerkat_store::SessionStoreError::Internal(format!("continuity save: {e}"))
             })?;
+        self.mark_session_durably_written(session_id);
         Ok(checkpoint_version)
     }
 }
@@ -1351,7 +1428,8 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
         // validates the incoming document against its byte-identical durable
         // predecessor before the no-op is accepted.
         let snapshot = Arc::new(super::types::SessionSnapshot {
-            data: serde_json::to_vec(session)
+            data: session
+                .to_persisted_bytes()
                 .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?,
         });
         let sid_str = session.id().to_string();
@@ -1461,7 +1539,8 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             previous.as_ref(),
             commit,
         )?;
-        let data = serde_json::to_vec(session)
+        let data = session
+            .to_persisted_bytes()
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
 
@@ -1490,7 +1569,8 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             return Ok(());
         }
         self.ensure_session_mutation_allowed(session.id())?;
-        let data = serde_json::to_vec(session)
+        let data = session
+            .to_persisted_bytes()
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
         match self.lookup_session(&sid_str) {
@@ -1528,7 +1608,8 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             previous.as_ref(),
             expected_current_revision.as_deref(),
         )?;
-        let data = serde_json::to_vec(session)
+        let data = session
+            .to_persisted_bytes()
             .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let sid_str = session.id().to_string();
         match self.lookup_session(&sid_str) {
@@ -1571,7 +1652,8 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
             // `adopt_legacy_session`'s byte custody internally consistent
             // (the adopted bytes persist through the whole-document verb,
             // which converts them back into delta rows + a head).
-            let raw = serde_json::to_vec(&session)
+            let raw = session
+                .to_persisted_bytes()
                 .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
             return Ok(Some(
                 self.lazy_adopt_legacy_snapshot(id, session, &raw).await,
@@ -1774,6 +1856,17 @@ impl ContinuityIncrementalSessionStore {
         id: &meerkat_core::types::SessionId,
     ) -> Result<DeltaRoute, meerkat_store::SessionStoreError> {
         if self.adapter.session_was_superseded(id) {
+            // SAFE BECAUSE OF THE ORDERING, not merely by convention:
+            // `abandon_superseded_session` deletes the durable snapshot under
+            // an exact-CAS and only inserts into `superseded_sessions` AFTER
+            // that delete succeeds, all while holding this session's lock. So
+            // a session observed as superseded provably has no durable rows
+            // left for a skipped write to strand. (If supersession were ever
+            // marked BEFORE the delete, acknowledging a head write here would
+            // leave already-written strand rows adopted by nothing and the
+            // next read would serve an older transcript — silent data loss.
+            // Keep the marking after the delete.)
+            //
             // Every sibling write verb on this adapter already acknowledges a
             // post-abandon terminal write as a no-op (see `save`,
             // `save_transcript`, `save_transcript_rewrite`, and the CAS save
@@ -1787,8 +1880,35 @@ impl ContinuityIncrementalSessionStore {
         }
         self.adapter.ensure_session_mutation_allowed(id)?;
         match self.adapter.lookup_session(&id.to_string()) {
-            Some(state) => Ok(DeltaRoute::Durable(self.adapter.write_cursor(id, &state))),
-            None => Ok(DeltaRoute::Park),
+            Some(state) => {
+                self.adapter.mark_session_durably_written(id);
+                Ok(DeltaRoute::Durable(self.adapter.write_cursor(id, &state)))
+            }
+            None => {
+                // Parking is only correct for a session that has NEVER written
+                // durably in this process — the pre-registration window this
+                // route exists for. Once any delta of this session is durable,
+                // parking a later one (in particular the adopting head) leaves
+                // the durable strand rows adopted by nothing, and the next open
+                // serves an older transcript than what is persisted. Refuse so
+                // the caller learns its write did not land, instead of the loss
+                // surfacing as a reboot-time "transcript went backwards".
+                if self
+                    .adapter
+                    .durably_written_sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&id.to_string())
+                {
+                    return Err(meerkat_store::SessionStoreError::Internal(format!(
+                        "session {id} is no longer registered but landed durable writes in \
+                         this process (unregister, delete, or reset); refusing to park a \
+                         later write, which would strand those rows behind an unadvanced \
+                         head or resurrect a removed session on the next flush"
+                    )));
+                }
+                Ok(DeltaRoute::Park)
+            }
         }
     }
 
@@ -4521,7 +4641,7 @@ mod tests {
             .upsert_continuity_record(&record, FencingToken::new(1))
             .await
             .expect("seed record");
-        adapter
+        let registered_version = adapter
             .register_session(
                 session.id(),
                 SessionRuntimeState {
@@ -4545,9 +4665,27 @@ mod tests {
                 && cursor.fencing_token == FencingToken::new(1)),
             "every flushed mutation carries the registered continuity cursor"
         );
-        assert!(
-            cursors[0].checkpoint_version < cursors[1].checkpoint_version,
-            "each mutation mints a strictly advancing checkpoint version"
+        // Exact accounting, not just monotonicity: under M4b the initial
+        // document is TWO delta mutations, each minting one version from the
+        // session's single allocator — append = 1, head adoption = 2 — so
+        // registration reports the creation-window document at checkpoint
+        // version exactly 2. This is the writer behind the identity status
+        // (and the Python e2e reset bound in test_reset_advances_generation)
+        // reading 2 right after a member is materialized: it is the
+        // initial-document flush, not reset's retire cleanup, which only
+        // no-ops against the superseded OLD session.
+        assert_eq!(
+            (
+                cursors[0].checkpoint_version.get(),
+                cursors[1].checkpoint_version.get()
+            ),
+            (1, 2),
+            "the creation-window flush mints append at 1 and head adoption at 2"
+        );
+        assert_eq!(
+            registered_version.get(),
+            2,
+            "registration must report the flushed document's committed version"
         );
         let durable_rows = incremental
             .load_messages(session.id(), &root, 0..1)
@@ -5009,6 +5147,155 @@ mod tests {
             .expect("substrate head probe")
             .is_none(),
             "a superseded terminal write must not reach the substrate"
+        );
+    }
+
+    /// The OTHER half of the superseded-write contract, driven directly: a
+    /// rewrite COMMIT against a superseded session takes the typed REFUSAL
+    /// branch (`commit_rewrite`'s `DeltaRoute::SupersededNoOp` arm) — it is
+    /// not acknowledged, not parked, and writes nothing.
+    ///
+    /// The sibling test pins the no-op half (append/save_head are terminal
+    /// projections and are acknowledged). A rewrite commit is NOT terminal:
+    /// it carries new authority. Acknowledging it would fabricate a durable
+    /// commit that never happened; parking it would resurrect the abandoned
+    /// generation at the next registration. Refusal must stay typed.
+    ///
+    /// The fixture reproduces the real post-reset shape rather than a bare
+    /// marker: a registered session commits a durable head-canonical
+    /// document, then `abandon_superseded_session` (reset's own verb)
+    /// deletes it under exact CAS and publishes the superseded tombstone.
+    /// The rewrite commit arrives afterwards — a compaction racing a reset.
+    #[tokio::test]
+    async fn superseded_sessions_refuse_rewrite_commits_and_write_nothing() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let raw_channel = store
+            .as_incremental_sessions()
+            .expect("the bundled store advertises the delta channel");
+        let adapter = Arc::new(ContinuitySessionStoreAdapter::new(
+            store.clone() as Arc<dyn ContinuityStore>
+        ));
+        let incremental = meerkat::SessionStore::as_incremental(adapter.clone())
+            .expect("adapter forwards the delta channel");
+
+        // A registered session with a durable head-canonical document.
+        let mut session = meerkat_core::Session::new();
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("one".to_string()),
+        ));
+        session.push(meerkat_core::Message::User(
+            meerkat_core::UserMessage::text("two".to_string()),
+        ));
+        let identity = AgentIdentity::parse("agent:superseded-rewrite").expect("identity");
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:superseded-rewrite:0")
+                        .expect("runtime id"),
+                    session_id: session.id().clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                FencingToken::new(1),
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(1),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+        let root = meerkat_core::session_store::TranscriptStrandId::root();
+        incremental
+            .append_messages(session.id(), &root, 0, session.messages())
+            .await
+            .expect("seed rows");
+        let head =
+            meerkat_core::session_store::SessionHead::from_session(&session, root.clone(), 0)
+                .expect("head");
+        incremental
+            .save_head(&head, meerkat_core::session_store::SessionHeadCas::Create)
+            .await
+            .expect("adopt head");
+        let token = meerkat_core::session_store::session_head_cas_token(&head).expect("head token");
+
+        // The rewrite a late caller will try to commit.
+        let mut rewritten = session.clone();
+        let commit = rewritten
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 2 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::UserMessage::text("[summary]".to_string()),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("compaction"),
+                Some("superseded-rewrite-test".to_string()),
+                None,
+            )
+            .expect("commit rewrite");
+        let record =
+            rewrite_record_from_session_bodies(&rewritten, &commit).expect("rewrite record");
+
+        // Reset commits the replacement generation and abandons this session.
+        adapter
+            .abandon_superseded_session(session.id())
+            .await
+            .expect("abandon superseded session");
+        assert!(adapter.session_was_superseded(session.id()));
+        assert!(
+            raw_channel
+                .load_canonical_head(session.id())
+                .await
+                .expect("post-abandon head probe")
+                .is_none(),
+            "abandon must have deleted the durable document under exact CAS"
+        );
+
+        // The late rewrite commit takes the documented refusal branch.
+        let refused = incremental
+            .commit_rewrite(
+                session.id(),
+                &record,
+                meerkat_core::session_store::SessionHeadCas::IfToken(token),
+            )
+            .await
+            .expect_err("a rewrite commit against a superseded session must be refused");
+        assert!(
+            refused.to_string().contains("rewrite commits are refused"),
+            "the refusal must be the superseded rewrite branch, not a downstream \
+             CAS/park failure: {refused}"
+        );
+
+        // ...and it must not have written: nothing parked (the resurrection
+        // vector the parking layer exists to prevent)...
+        assert!(
+            !adapter.parked_deltas.is_parked(session.id()),
+            "a refused rewrite commit must not park anything"
+        );
+        // ...and nothing durable — no head resurrected, no rewrite record
+        // materialized.
+        assert!(
+            raw_channel
+                .load_canonical_head(session.id())
+                .await
+                .expect("post-refusal head probe")
+                .is_none(),
+            "a refused rewrite commit must not resurrect the durable head"
+        );
+        assert!(
+            raw_channel
+                .load_rewrites(session.id())
+                .await
+                .expect("post-refusal rewrite probe")
+                .is_empty(),
+            "a refused rewrite commit must not record the rewrite durably"
         );
     }
 
