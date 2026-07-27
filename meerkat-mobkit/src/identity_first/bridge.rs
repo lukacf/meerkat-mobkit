@@ -2310,8 +2310,7 @@ mod tests {
         assert!(!durable_snapshot_is_typed_absent(
             &meerkat_mob::MobError::SessionUnavailableForResume {
                 session_id,
-                reason:
-                    meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
+                reason: meerkat_mob::error::SessionResumeUnavailableReason::ArchivedNotRevivable,
                 runtime_state: Some("archived".to_string()),
             }
         ));
@@ -2322,9 +2321,11 @@ mod tests {
             "missing durable session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'"
                 .to_string(),
         );
-        assert!(impersonator
-            .to_string()
-            .contains("missing durable session snapshot"));
+        assert!(
+            impersonator
+                .to_string()
+                .contains("missing durable session snapshot")
+        );
         assert!(!durable_snapshot_is_typed_absent(&impersonator));
     }
 

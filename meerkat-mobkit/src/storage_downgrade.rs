@@ -212,9 +212,9 @@ struct DocumentFormatProbe {
 
 impl DocumentFormatProbe {
     fn barrier(&self, session_id: &str) -> Option<StampSchemaBarrier> {
-        let stamp_is_v3 = self.stamp_schema_version.is_some_and(|version| {
-            version >= SESSION_CHECKPOINT_STAMP_SCHEMA_VERSION_WITNESS_V3
-        });
+        let stamp_is_v3 = self
+            .stamp_schema_version
+            .is_some_and(|version| version >= SESSION_CHECKPOINT_STAMP_SCHEMA_VERSION_WITNESS_V3);
         let witness_is_v3 = self.witness_format.is_some_and(|format| {
             format >= persistence_versions::TRANSCRIPT_HISTORY_WITNESS_FORMAT
         });
@@ -319,16 +319,16 @@ fn collect_barriers(
         .prepare(sql)
         .map_err(|error| format!("prepare {what} census: {error}"))?;
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
         .map_err(|error| format!("query {what} census: {error}"))?;
     for row in rows {
         let (session_id, bytes) = row.map_err(|error| format!("read {what} row: {error}"))?;
         // Fail closed on an unprobeable document: the pass cannot prove the
         // absence of the barrier, so it must not claim the result readable.
         let probe = probe_document_format(&bytes).map_err(|error| {
-            format!(
-                "{what} for session {session_id} does not probe as a session document: {error}"
-            )
+            format!("{what} for session {session_id} does not probe as a session document: {error}")
         })?;
         if let Some(barrier) = probe.barrier(&session_id) {
             barriers.push(barrier);
@@ -745,10 +745,9 @@ mod tests {
         // A head whose metadata carries ONLY the typed v3 witness carrier —
         // the carrier axis must refuse on its own, without a stamp.
         let carrier_source = witness_v3_session("downgrade-carrier");
-        let witness =
-            meerkat_core::checkpoint::session_transcript_history_witness(&carrier_source)
-                .expect("derive witness")
-                .expect("graph-bearing documents carry a witness");
+        let witness = meerkat_core::checkpoint::session_transcript_history_witness(&carrier_source)
+            .expect("derive witness")
+            .expect("graph-bearing documents carry a witness");
         let carrier_only = serde_json::json!({
             "metadata": {
                 (meerkat_core::SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY):
@@ -764,7 +763,12 @@ mod tests {
         let report = downgrade_state_dir(state, MigrateMode::DryRun);
         assert!(report.has_errors(), "{report:?}");
         assert!(report.downgrade.is_none());
-        assert_eq!(report.stamp_barriers.len(), 2, "{:?}", report.stamp_barriers);
+        assert_eq!(
+            report.stamp_barriers.len(),
+            2,
+            "{:?}",
+            report.stamp_barriers
+        );
 
         let stamped_barrier = report
             .stamp_barriers
@@ -787,7 +791,10 @@ mod tests {
             .find(|barrier| barrier.session_id == "carrier-only-session")
             .expect("carrier-only barrier");
         assert_eq!(carrier_barrier.stamp_schema_version, None);
-        assert_eq!(carrier_barrier.witness_format, Some(witness.witness_format()));
+        assert_eq!(
+            carrier_barrier.witness_format,
+            Some(witness.witness_format())
+        );
     }
 
     #[test]

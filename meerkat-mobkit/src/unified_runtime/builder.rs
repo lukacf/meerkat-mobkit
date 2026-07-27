@@ -665,13 +665,15 @@ impl UnifiedRuntimeBuilder {
             self.persistent_state_path.as_ref(),
         ) && continuity_dir != state_path
         {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
-                "continuity_from_state_dir opened {} but persistent_state points at {}; \
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                format!(
+                    "continuity_from_state_dir opened {} but persistent_state points at {}; \
                  the identity substrate and the runtime stores must share ONE state \
                  directory, or session authority forks from the stores it must pair with",
-                continuity_dir.display(),
-                state_path.display()
-            )));
+                    continuity_dir.display(),
+                    state_path.display()
+                ),
+            ));
         }
         // One path root per realm: the state directory and a scratch root
         // are competing path authorities.
