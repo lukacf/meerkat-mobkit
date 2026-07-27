@@ -163,6 +163,13 @@ impl MobSessionService for CheckpointerCancelProbeSessionService {
             .await
     }
 
+    async fn load_session_for_resume(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+        self.inner.load_session_for_resume(session_id).await
+    }
+
     async fn archive_with_mob_lifecycle_authority_under_runtime_turn_boundary(
         &self,
         session_id: &SessionId,

@@ -1527,6 +1527,21 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for AdmissionStoreProbe {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, meerkat_core::service::SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: meerkat_core::service::CreateSessionRequest,
@@ -1672,6 +1687,21 @@ comms = true
 
     #[async_trait::async_trait]
     impl meerkat_mob::MobSessionService for SwitchableStore {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, meerkat_core::service::SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: meerkat_core::service::CreateSessionRequest,

@@ -2431,6 +2431,13 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
+            async fn load_session_for_resume(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+                self.inner.load_session_for_resume(session_id).await
+            }
+
             async fn create_session_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
@@ -3157,6 +3164,13 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    async fn load_session_for_resume(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+        self.inner.load_session_for_resume(session_id).await
+    }
+
     async fn create_session_under_runtime_turn_boundary(
         &self,
         req: meerkat_core::service::CreateSessionRequest,
@@ -7127,6 +7141,21 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: CreateSessionRequest,
@@ -7419,6 +7448,21 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: CreateSessionRequest,
