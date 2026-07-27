@@ -31,20 +31,24 @@
 //! `persistent_state` / `store_path` dir). MobKit state dirs are not
 //! realm-keyed; `DiagnoseScope::realm` is honored as an *identity* filter on
 //! the continuity checkpoint-evidence census and the continuity half of the
-//! storage-compatibility census, and ignored elsewhere.
+//! storage-compatibility census, and ignored elsewhere (the sessions and
+//! runtime halves census stores that carry no identity column).
 //!
 //! # Target-version storage-compatibility report
 //!
 //! Meerkat 0.8.9 introduced checkpoint-stamp schema 3 and transcript-history
 //! witness format 3; a session document at or past either axis refuses to
-//! load on older binaries. The doctor censuses every session-bearing store
-//! (the meerkat session store and the continuity store) per session:
-//! representation authority (whole-blob vs head-canonical), checkpoint-stamp
-//! schema, witness format, and pre-0.8.9 readability — by minimal raw-JSON
-//! field parses, never by decoding whole `Session`s (decoding runs
-//! validation and can refuse; a refusing document is itself a reportable
-//! fact, carried with its error string). [`DoctorOptions::verbose`] adds one
-//! finding per censused session.
+//! load on older binaries. The doctor censuses every session-bearing store —
+//! the meerkat session store, the continuity store, and the meerkat runtime
+//! store's retained `runtime_session_snapshots` (a full-envelope session
+//! copy kept across restarts and decoded on the authoritative resume path;
+//! the same three stores [`crate::storage_marker_stamp`] enumerates) — per
+//! session: representation authority (whole-blob vs head-canonical),
+//! checkpoint-stamp schema, witness format, and pre-0.8.9 readability — by
+//! minimal raw-JSON field parses, never by decoding whole `Session`s
+//! (decoding runs validation and can refuse; a refusing document is itself
+//! a reportable fact, carried with its error string).
+//! [`DoctorOptions::verbose`] adds one finding per censused session.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -65,6 +69,7 @@ use crate::auth::GATEWAY_PEER_KEY_FILE;
 use crate::blob_store::is_valid_blob_id_value;
 use crate::schedule_wiring::SCHEDULE_STORE_FILE;
 use crate::storage_health::ResolvedStorageSummary;
+use crate::storage_marker_stamp::SessionDocumentStore;
 use crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE;
 use crate::workgraph_wiring::WORKGRAPH_STORE_FILE;
 
@@ -486,6 +491,11 @@ fn sweep_state_dir(
         if family.name == "sessions" {
             for db_path in &present {
                 census_target_version_compat(db_path, CompatStore::Sessions, None, options, out);
+            }
+        }
+        if family.name == "runtime" {
+            for db_path in &present {
+                census_target_version_compat(db_path, CompatStore::Runtime, None, options, out);
             }
         }
         if family.name == "continuity" {
@@ -1047,6 +1057,8 @@ enum CompatStore {
     Sessions,
     /// The continuity store (`session_snapshots` + `continuity_session_heads`).
     Continuity,
+    /// The meerkat runtime store (`runtime_session_snapshots` table).
+    Runtime,
 }
 
 impl CompatStore {
@@ -1054,6 +1066,7 @@ impl CompatStore {
         match self {
             Self::Sessions => "sessions",
             Self::Continuity => "continuity",
+            Self::Runtime => "runtime",
         }
     }
 }
@@ -1374,6 +1387,7 @@ fn census_target_version_compat(
     let result = match store {
         CompatStore::Sessions => census_sessions_store_rows(&tx, &mut census),
         CompatStore::Continuity => census_continuity_rows(&tx, identity_filter, &mut census),
+        CompatStore::Runtime => census_runtime_rows(&tx, &mut census),
     };
     match result {
         Ok(CompatSweep::Censused) => emit_compat_census(store, db_path, &census, out),
@@ -1563,6 +1577,51 @@ fn census_continuity_rows(
                     error,
                 ),
             }
+        }
+    }
+    Ok(CompatSweep::Censused)
+}
+
+/// Compatibility rows of the runtime store: `runtime_session_snapshots`
+/// rows are retained full-envelope session documents, kept across restarts
+/// and decoded on the authoritative resume path — the same table/column
+/// shape the marker-stamp walker rewrites
+/// ([`SessionDocumentStore::RuntimeSnapshots`]), censused through the same
+/// envelope extraction the continuity census uses rather than a decoder of
+/// its own. Every row is whole-blob (the runtime store has no
+/// head-canonical channel) and carries no identity; rows are keyed by
+/// runtime id.
+fn census_runtime_rows(
+    conn: &Connection,
+    census: &mut CompatCensus,
+) -> Result<CompatSweep, rusqlite::Error> {
+    if !table_exists(
+        conn,
+        SessionDocumentStore::RuntimeSnapshots.required_table(),
+    )? {
+        return Ok(CompatSweep::NoSessionTables);
+    }
+    let mut statement = conn.prepare(
+        "SELECT runtime_id, session_snapshot FROM runtime_session_snapshots \
+         ORDER BY runtime_id",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let runtime_id: String = row.get(0)?;
+        let data: Vec<u8> = row.get(1)?;
+        match metadata_from_document_bytes(&data) {
+            Ok(metadata) => census.record(
+                runtime_id,
+                None,
+                RepresentationAuthority::WholeBlob,
+                &metadata,
+            ),
+            Err(error) => census.record_unreadable(
+                runtime_id,
+                None,
+                RepresentationAuthority::WholeBlob,
+                error,
+            ),
         }
     }
     Ok(CompatSweep::Censused)
@@ -2815,6 +2874,166 @@ mod tests {
             head_row.message.contains("head-canonical representation"),
             "{}",
             head_row.message
+        );
+    }
+
+    /// Pinned meerkat runtime-store snapshot schema (the marker-stamp
+    /// walker's fixture spelling).
+    const RUNTIME_SNAPSHOTS_DDL: &str = "CREATE TABLE runtime_session_snapshots (
+        runtime_id TEXT PRIMARY KEY,
+        session_snapshot BLOB NOT NULL
+    )";
+
+    fn insert_runtime_snapshot(conn: &Connection, runtime_id: &str, data: &[u8]) {
+        conn.execute(
+            "INSERT INTO runtime_session_snapshots (runtime_id, session_snapshot) \
+             VALUES (?1, ?2)",
+            rusqlite::params![runtime_id, data],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn compat_census_covers_the_runtime_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let db_path = state.join("runtime.sqlite");
+        create_db_with_table(&db_path, RUNTIME_SNAPSHOTS_DDL);
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            // Unstamped legacy session document: readable.
+            let (sid_legacy, data_legacy) = unstamped_session_payload();
+            insert_runtime_snapshot(
+                &conn,
+                &format!("session-runtime:{sid_legacy}"),
+                &data_legacy,
+            );
+            // Schema-3 stamp (implied witness 3): the retained witness-v3
+            // snapshot a rolled-back binary refuses on resume.
+            insert_runtime_snapshot(
+                &conn,
+                "session-runtime:v3",
+                &serde_json::to_vec(&serde_json::json!({
+                    "metadata": {
+                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                    }
+                }))
+                .unwrap(),
+            );
+            // Malformed stamp evidence: never certified, censuses unknown.
+            insert_runtime_snapshot(
+                &conn,
+                "session-runtime:malformed",
+                &serde_json::to_vec(&serde_json::json!({
+                    "metadata": {
+                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
+                    }
+                }))
+                .unwrap(),
+            );
+            // A payload that refuses even the minimal parse.
+            insert_runtime_snapshot(&conn, "session-runtime:garbage", b"not json");
+        }
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("runtime compat census finding");
+        assert_eq!(census.severity, FindingSeverity::Warning, "{census:?}");
+        for fragment in [
+            "runtime store",
+            "4 session(s)",
+            "0 head-canonical",
+            "4 whole-blob",
+            "unstamped: 1",
+            "3: 1",
+            "malformed: 1",
+            "1 readable by pre-0.8.9",
+            "1 require >= 0.8.9",
+            "2 readability-unknown",
+            "1 unreadable document(s)",
+        ] {
+            assert!(
+                census.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                census.message
+            );
+        }
+        let unreadable = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_SESSION_UNREADABLE)
+            .expect("unreadable finding");
+        assert!(
+            unreadable.message.contains("session-runtime:garbage"),
+            "{}",
+            unreadable.message
+        );
+
+        // Verbose rows carry the runtime-id key and the store label.
+        let verbose = diagnose_state_dir_blocking_with_options(
+            &scope(&[state]),
+            None,
+            DoctorOptions { verbose: true },
+        );
+        let v3_row = verbose
+            .findings
+            .iter()
+            .find(|f| {
+                f.code == FINDING_STORAGE_COMPAT_SESSION
+                    && f.message.contains("'session-runtime:v3'")
+            })
+            .expect("v3 runtime verbose row");
+        for fragment in [
+            "runtime store",
+            "whole-blob representation",
+            "checkpoint-stamp schema 3",
+            "requires >= 0.8.9",
+        ] {
+            assert!(
+                v3_row.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                v3_row.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_compat_census_tolerates_empty_and_absent_snapshot_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty = temp.path().join("empty");
+        let tableless = temp.path().join("tableless");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&tableless).unwrap();
+        create_db_with_table(&empty.join("runtime.sqlite"), RUNTIME_SNAPSHOTS_DDL);
+        create_db_with_table(
+            &tableless.join("runtime.sqlite"),
+            "CREATE TABLE runtime_rows (id TEXT PRIMARY KEY)",
+        );
+
+        // An empty snapshot table censuses zero sessions at info severity.
+        let diagnosis = diagnose_state_dir(&scope(&[&empty])).await;
+        assert!(!diagnosis.has_errors(), "{diagnosis:?}");
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("empty runtime census");
+        assert_eq!(census.severity, FindingSeverity::Info);
+        assert!(
+            census.message.contains("runtime store") && census.message.contains("0 session(s)"),
+            "{}",
+            census.message
+        );
+
+        // A runtime database without the snapshot table has nothing to say.
+        let diagnosis = diagnose_state_dir(&scope(&[&tableless])).await;
+        assert!(!diagnosis.has_errors(), "{diagnosis:?}");
+        assert!(
+            !codes(&diagnosis).contains(&FINDING_STORAGE_COMPAT_CENSUS),
+            "{diagnosis:?}"
         );
     }
 

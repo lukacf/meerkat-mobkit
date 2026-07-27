@@ -428,6 +428,8 @@ pub struct ContinuitySessionStoreAdapter {
     session_registry: Mutex<HashMap<String, SessionRuntimeState>>,
     /// Session saves that arrive before the bridge can publish the owning
     /// identity. These are flushed immediately when the session is registered.
+    /// Admission is gated by [`Self::ensure_unregistered_park_allowed`]: only
+    /// sessions with no durable history in this process may park here.
     pending_unregistered: Mutex<HashMap<String, Vec<u8>>>,
     /// Sessions that were explicitly unregistered. Later writes from those
     /// actors must fail closed instead of becoming pre-registration pending
@@ -461,7 +463,9 @@ pub struct ContinuitySessionStoreAdapter {
     /// resurrection vector for sessions whose only durable history came
     /// from that path (adversarial review, 2026-07-27: the registration
     /// flush was exactly such a path). Every durable verb marks through
-    /// [`Self::mark_session_durably_written`].
+    /// [`Self::mark_session_durably_written`]; every park site — the delta
+    /// route and the four whole-blob save verbs — refuses through
+    /// [`Self::ensure_unregistered_park_allowed`].
     durably_written_sessions: Mutex<HashSet<String>>,
     /// Per-session serialization for registry, pending, version, and durable
     /// load/guard/write transitions. Weak values let inactive locks be reclaimed
@@ -1377,6 +1381,38 @@ impl ContinuitySessionStoreAdapter {
             .insert(session_id.to_string());
     }
 
+    /// The parking guard: refuse to park a write for a session that already
+    /// landed a durable write in this process.
+    ///
+    /// Parking is only correct for a session that has NEVER written durably —
+    /// the pre-registration creation window it exists for. A session that
+    /// reaches a park site durably written (no registry entry, no
+    /// unregistered/suspended/superseded marker) was dropped by a delete or
+    /// reset path: parking its write acknowledges bytes that either die with
+    /// the process (acknowledged write loss) or flush durably at the next
+    /// `register_session` and resurrect the removed document. ONE helper for
+    /// the delta route and every whole-blob save verb, so the five park sites
+    /// cannot drift and operators see one refusal vocabulary.
+    fn ensure_unregistered_park_allowed(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        if self
+            .durably_written_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&session_id.to_string())
+        {
+            return Err(meerkat_store::SessionStoreError::Internal(format!(
+                "session {session_id} is no longer registered but landed durable writes in \
+                 this process (unregister, delete, or reset); refusing to park a \
+                 later write, which would strand those rows behind an unadvanced \
+                 head or resurrect a removed session on the next flush"
+            )));
+        }
+        Ok(())
+    }
+
     async fn save_registered_snapshot(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -1497,7 +1533,13 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 // PersistentSessionService can save during member creation
                 // before the bridge call returns. Hold that first snapshot
                 // until the identity runtime registers the real owner; never
-                // checkpoint under a synthetic `_session:*` identity.
+                // checkpoint under a synthetic `_session:*` identity. Only
+                // for that creation window, though: a durably-written session
+                // with no registry entry was removed (delete/reset), and
+                // parking its snapshot would acknowledge a write that can
+                // only be lost with the process or resurrected by the next
+                // registration flush.
+                self.ensure_unregistered_park_allowed(session.id())?;
                 tracing::warn!(
                     session_id = %sid_str,
                     "ContinuitySessionStoreAdapter: delaying save until runtime state is registered"
@@ -1550,6 +1592,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .await?;
             }
             None => {
+                self.ensure_unregistered_park_allowed(session.id())?;
                 let mut pending = self
                     .pending_unregistered
                     .lock()
@@ -1579,6 +1622,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .await?;
             }
             None => {
+                self.ensure_unregistered_park_allowed(session.id())?;
                 let mut pending = self
                     .pending_unregistered
                     .lock()
@@ -1619,6 +1663,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 Ok(())
             }
             None => {
+                self.ensure_unregistered_park_allowed(session.id())?;
                 let mut pending = self
                     .pending_unregistered
                     .lock()
@@ -1885,28 +1930,14 @@ impl ContinuityIncrementalSessionStore {
                 Ok(DeltaRoute::Durable(self.adapter.write_cursor(id, &state)))
             }
             None => {
-                // Parking is only correct for a session that has NEVER written
-                // durably in this process — the pre-registration window this
-                // route exists for. Once any delta of this session is durable,
-                // parking a later one (in particular the adopting head) leaves
-                // the durable strand rows adopted by nothing, and the next open
-                // serves an older transcript than what is persisted. Refuse so
-                // the caller learns its write did not land, instead of the loss
+                // The delta-specific harm behind the shared parking guard:
+                // once any delta of this session is durable, parking a later
+                // one (in particular the adopting head) leaves the durable
+                // strand rows adopted by nothing, and the next open serves an
+                // older transcript than what is persisted. Refuse so the
+                // caller learns its write did not land, instead of the loss
                 // surfacing as a reboot-time "transcript went backwards".
-                if self
-                    .adapter
-                    .durably_written_sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .contains(&id.to_string())
-                {
-                    return Err(meerkat_store::SessionStoreError::Internal(format!(
-                        "session {id} is no longer registered but landed durable writes in \
-                         this process (unregister, delete, or reset); refusing to park a \
-                         later write, which would strand those rows behind an unadvanced \
-                         head or resurrect a removed session on the next flush"
-                    )));
-                }
+                self.adapter.ensure_unregistered_park_allowed(id)?;
                 Ok(DeltaRoute::Park)
             }
         }
@@ -4017,6 +4048,271 @@ mod tests {
                 .expect("load after delete")
                 .is_none(),
             "delete must forget registry state when no persisted row exists"
+        );
+    }
+
+    /// Register `session` under `identity_name`, land one durable whole-blob
+    /// save, then delete it. This is the exact state the parking guard exists
+    /// for: no registry entry, no unregistered/suspended/superseded marker
+    /// (delete is not unregister), durable history in this process.
+    async fn register_save_delete(
+        store: &Arc<LocalContinuityStore>,
+        adapter: &ContinuitySessionStoreAdapter,
+        session: &meerkat_core::Session,
+        identity_name: &str,
+    ) -> AgentIdentity {
+        let identity = AgentIdentity::parse(identity_name).expect("identity");
+        let fencing_token = FencingToken::new(1);
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity_name}:0"))
+                        .expect("runtime id"),
+                    session_id: session.id().clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                fencing_token,
+            )
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token,
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+            )
+            .await
+            .expect("register");
+        meerkat::SessionStore::save(adapter, session)
+            .await
+            .expect("durable save");
+        meerkat::SessionStore::delete(adapter, session.id())
+            .await
+            .expect("delete");
+        identity
+    }
+
+    fn parked_pending_bytes(
+        adapter: &ContinuitySessionStoreAdapter,
+        id: &meerkat_core::types::SessionId,
+    ) -> bool {
+        adapter
+            .pending_unregistered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&id.to_string())
+    }
+
+    /// `delete` drops the registry entry without stamping the unregistered
+    /// marker, so before the guard a whole-blob save after delete parked
+    /// silently and acknowledged Ok — an acknowledged write that dies with
+    /// the process, or resurrects the deleted document at the next
+    /// registration flush. Same refusal `route_delta_write` already has.
+    #[tokio::test]
+    async fn whole_blob_save_after_delete_is_refused_not_parked() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        register_save_delete(&store, &adapter, &session, "agent:park-guard-save").await;
+
+        let refused = meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect_err("a whole-blob save after delete must refuse, not park");
+        assert!(
+            refused.to_string().contains("refusing to park"),
+            "the refusal must speak the parking guard's vocabulary: {refused}"
+        );
+        assert!(
+            !parked_pending_bytes(&adapter, session.id()),
+            "a refused save must leave nothing parked"
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_rewrite_after_delete_is_refused_not_parked() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let mut session = meerkat_core::Session::new();
+        session.append_external_user_content(meerkat_core::ContentInput::Text("first".to_string()));
+        session
+            .append_external_user_content(meerkat_core::ContentInput::Text("second".to_string()));
+        register_save_delete(&store, &adapter, &session, "agent:park-guard-rewrite").await;
+
+        let parent_revision = session.transcript_revision().expect("parent revision");
+        let mut rewritten = session.clone();
+        let commit = rewritten
+            .commit_transcript_rewrite(
+                meerkat_core::TranscriptRewriteSelection::MessageRange { start: 0, end: 1 },
+                vec![meerkat_core::Message::User(
+                    meerkat_core::UserMessage::text("compacted first".to_string()),
+                )],
+                meerkat_core::TranscriptRewriteReason::new("test"),
+                Some("mobkit-test".to_string()),
+                Some(parent_revision),
+            )
+            .expect("rewrite commit");
+
+        // For this shape the missing-previous rewrite guard fires before the
+        // parking arm (the deleted document is gone), and the parking guard
+        // backstops the arm itself. Either refusal is fine; what must never
+        // happen is Ok with bytes parked.
+        meerkat::SessionStore::save_transcript_rewrite(&adapter, &rewritten, &commit)
+            .await
+            .expect_err("a transcript rewrite after delete must refuse, not park");
+        assert!(
+            !parked_pending_bytes(&adapter, rewritten.id()),
+            "a refused rewrite must leave nothing parked"
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_projection_after_delete_is_refused_not_parked() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        register_save_delete(&store, &adapter, &session, "agent:park-guard-projection").await;
+
+        let refused = meerkat::SessionStore::save_authoritative_projection(&adapter, &session)
+            .await
+            .expect_err("an authoritative projection after delete must refuse, not park");
+        assert!(
+            refused.to_string().contains("refusing to park"),
+            "the refusal must speak the parking guard's vocabulary: {refused}"
+        );
+        assert!(
+            !parked_pending_bytes(&adapter, session.id()),
+            "a refused projection must leave nothing parked"
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_projection_cas_after_delete_is_refused_not_parked() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        register_save_delete(
+            &store,
+            &adapter,
+            &session,
+            "agent:park-guard-projection-cas",
+        )
+        .await;
+
+        // Post-delete there is no durable row, so `None` is the matching
+        // expectation: the CAS guard passes and the write reaches the parking
+        // arm, which must refuse.
+        let refused = meerkat::SessionStore::save_authoritative_projection_if_current_revision(
+            &adapter, &session, None,
+        )
+        .await
+        .expect_err("a projection CAS after delete must refuse, not park");
+        assert!(
+            refused.to_string().contains("refusing to park"),
+            "the refusal must speak the parking guard's vocabulary: {refused}"
+        );
+        assert!(
+            !parked_pending_bytes(&adapter, session.id()),
+            "a refused projection CAS must leave nothing parked"
+        );
+    }
+
+    /// The guard must not reach into the creation window: a session that has
+    /// never written durably in this process still parks its
+    /// pre-registration saves (member creation depends on it).
+    #[tokio::test]
+    async fn never_durable_unregistered_saves_still_park() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("creation-window save must park, not fail");
+        assert!(
+            parked_pending_bytes(&adapter, session.id()),
+            "the creation-window save must be parked for the registration flush"
+        );
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &session)
+            .await
+            .expect("creation-window authoritative projection must park, not fail");
+        meerkat::SessionStore::save_authoritative_projection_if_current_revision(
+            &adapter, &session, None,
+        )
+        .await
+        .expect("creation-window projection CAS must park, not fail");
+        assert!(
+            parked_pending_bytes(&adapter, session.id()),
+            "the creation window must keep parking after every whole-blob verb"
+        );
+    }
+
+    /// The resurrection vector, pinned end to end: save durably, delete,
+    /// attempt another save (refused, nothing parked), re-register the same
+    /// session id. Registration must find nothing to flush — the deleted
+    /// document stays deleted — and the id keeps working for genuinely new
+    /// durable writes.
+    #[tokio::test]
+    async fn register_after_delete_does_not_resurrect_refused_bytes() {
+        let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
+        let session = meerkat_core::Session::new();
+        let identity =
+            register_save_delete(&store, &adapter, &session, "agent:park-guard-register").await;
+
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect_err("the post-delete save must refuse");
+        assert!(
+            !parked_pending_bytes(&adapter, session.id()),
+            "the refused save must not queue pre-registration bytes"
+        );
+
+        // Re-register at the durable record's real cursor (delete removed the
+        // snapshot, not the continuity record).
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&identity))
+            .await
+            .expect("resolve");
+        let ContinuityResolveState::Ready { record } = resolved.get(&identity).expect("record")
+        else {
+            panic!("expected ready record");
+        };
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: record.generation,
+                    fencing_token: FencingToken::new(1),
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("re-registration after delete must not be bricked");
+        assert!(
+            meerkat::SessionStore::load(&adapter, session.id())
+                .await
+                .expect("load after re-register")
+                .is_none(),
+            "re-registration must not resurrect the deleted document"
+        );
+
+        // The id is not bricked: a registered save lands durably again.
+        meerkat::SessionStore::save(&adapter, &session)
+            .await
+            .expect("a registered save after re-registration lands durably");
+        assert!(
+            meerkat::SessionStore::load(&adapter, session.id())
+                .await
+                .expect("load after registered save")
+                .is_some(),
+            "the re-registered save must be durable, not parked"
         );
     }
 

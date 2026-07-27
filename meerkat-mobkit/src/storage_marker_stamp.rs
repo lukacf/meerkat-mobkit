@@ -122,8 +122,10 @@ pub enum SessionDocumentStore {
 
 impl SessionDocumentStore {
     /// The table whose absence classifies the file as "not this store"
-    /// (skipped by the verb, never an error).
-    fn required_table(self) -> &'static str {
+    /// (skipped by the verb, never an error). Crate-visible so the doctor's
+    /// storage-compatibility census walks the same table spellings this
+    /// walker owns.
+    pub(crate) fn required_table(self) -> &'static str {
         match self {
             Self::Continuity => "session_snapshots",
             Self::RuntimeSnapshots => "runtime_session_snapshots",

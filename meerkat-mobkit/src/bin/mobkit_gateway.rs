@@ -834,9 +834,10 @@ const STORAGE_DOWNGRADE_USAGE: &str = "usage: mobkit_gateway storage-downgrade -
      previous release open the file again, keeping every post-upgrade turn.\n\
      Dry-run by default; a dry run performs the ENTIRE reconstruction, \
      including the per-document reader simulation, and then rolls back, so a \
-     clean dry run is evidence the apply run will work. --apply mutates \
-     under the exclusive maintenance fence, in ONE transaction whose last \
-     statement is the ledger rewind.\n\
+     clean dry run is evidence the apply run will work. BOTH modes take the \
+     exclusive maintenance fence (a live gateway must be stopped first); \
+     --apply mutates in ONE transaction whose last statement is the ledger \
+     rewind.\n\
      Sessions whose retained transcript rewrite history cannot be re-inlined \
      into a document a reader accepts are written WITHOUT that history and \
      named individually in the report; their turn content is intact.\n\

@@ -60,7 +60,10 @@
 //! Not an estimate. A dry run performs the ENTIRE reconstruction —
 //! including the per-document reader simulation that decides fidelity — and
 //! then rolls the transaction back. So a clean dry run is evidence the apply
-//! run will succeed, not a guess that it might.
+//! run will succeed, not a guess that it might. Because that reconstruction
+//! runs on a write-capable connection (rolling back is a transaction
+//! property, not a connection property), a dry run acquires the SAME
+//! exclusive maintenance fence as apply — it never races a live gateway.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -77,9 +80,9 @@ use crate::identity_first::{DowngradeFidelity, HeadCanonicalDowngrade, LocalCont
 use crate::storage_layout::MobKitStorageLayout;
 use crate::storage_migrate::{MigrateMode, MobKitMaintenanceFence};
 
-/// How long an apply run waits for in-flight store operations to drain
-/// before reporting the fence as unavailable. Same budget the migrate pass
-/// uses.
+/// How long a run (either mode — dry run fences too) waits for in-flight
+/// store operations to drain before reporting the fence as unavailable.
+/// Same budget the migrate pass uses.
 const FENCE_DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The full `storage-downgrade` report for one state directory.
@@ -95,7 +98,10 @@ pub struct MobKitDowngradeReport {
     /// The continuity database resolved for this state dir, when one exists.
     #[serde(default)]
     pub continuity_db: Option<PathBuf>,
-    /// Databases the fence covers (in apply mode, the fence actually held).
+    /// Databases the fence actually held. Populated in BOTH modes: even a
+    /// dry run performs the full reconstruction on a write-capable
+    /// connection before rolling back, so it runs under the same fence as
+    /// apply.
     #[serde(default)]
     pub fenced_databases: Vec<PathBuf>,
     /// The per-database transactional outcome, when the pass got that far.
@@ -166,8 +172,9 @@ impl MobKitDowngradeReport {
 pub struct StampSchemaBarrier {
     /// The session whose document carries the barrier.
     pub session_id: String,
-    /// `schema_version` advertised by the document's checkpoint stamp,
-    /// when the stamp carries a readable one.
+    /// `schema_version` advertised by the document's checkpoint stamp;
+    /// `None` means the document carries no stamp at all (a stamp the
+    /// probe cannot read refuses the whole pass instead of reaching here).
     pub stamp_schema_version: Option<u32>,
     /// `witness_format` advertised by the document's typed
     /// transcript-history witness carrier, when the object form is present
@@ -196,7 +203,12 @@ impl fmt::Display for StampSchemaBarrier {
              by older binaries by representation conversion alone (the stamp/witness format \
              is the barrier, not the storage representation); the downgrade was refused \
              before modifying anything. Roll the fleet forward to 0.8.9+ or restore this \
-             session from a pre-0.8.9 backup."
+             session from a pre-0.8.9 backup. Restoring continuity.* alone is NOT enough: \
+             the runtime store (runtime.sqlite) retains its own full session snapshots, \
+             which a rolled-back binary decodes on resume — restore every session-bearing \
+             store from the same consistent backup set, and check with the doctor's \
+             storage-compatibility census that no store still holds documents requiring \
+             >= 0.8.9."
         )
     }
 }
@@ -204,7 +216,9 @@ impl fmt::Display for StampSchemaBarrier {
 /// The advertised format versions one stored document (or head projection)
 /// carries. Advertised only — no digest re-verification: the gate is about
 /// which stamps OTHER binaries will refuse, not about whether this document
-/// is intact.
+/// is intact. `None` always means the evidence is genuinely ABSENT;
+/// present-but-unreadable evidence never reaches this type — the probe
+/// refuses it as [`FormatEvidenceError`] instead.
 struct DocumentFormatProbe {
     stamp_schema_version: Option<u32>,
     witness_format: Option<u32>,
@@ -226,41 +240,132 @@ impl DocumentFormatProbe {
     }
 }
 
+/// Why one document's format evidence could not be read. Every variant
+/// fails the preflight closed: evidence the probe cannot read could be
+/// hiding the witness-v3 barrier, so it is never laundered into "nothing
+/// advertised on this axis" — the doctor classifies these same shapes
+/// malformed and reports readability unknown, and this pass must not
+/// out-certify it.
+#[derive(Debug)]
+enum FormatEvidenceError {
+    /// The envelope itself does not parse as a session document.
+    Envelope(serde_json::Error),
+    /// A checkpoint stamp is present but is not an object carrying a
+    /// numeric `schema_version`.
+    MalformedStamp(String),
+    /// A transcript-history witness carrier is present but is neither the
+    /// bare digest string (v2) nor an object carrying a numeric
+    /// `witness_format` (v3+).
+    MalformedWitnessCarrier(String),
+}
+
+impl fmt::Display for FormatEvidenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Envelope(error) => {
+                write!(f, "does not probe as a session document: {error}")
+            }
+            Self::MalformedStamp(reason) => {
+                write!(
+                    f,
+                    "carries a checkpoint stamp the probe cannot read ({reason})"
+                )
+            }
+            Self::MalformedWitnessCarrier(reason) => write!(
+                f,
+                "carries a transcript-history witness carrier the probe cannot read ({reason})"
+            ),
+        }
+    }
+}
+
+/// `schema_version` of one PRESENT checkpoint-stamp value. Mirrors the
+/// doctor's `classify_stamp_schema`: not an object, or an object without a
+/// numeric `schema_version`, is malformed evidence — never "no stamp".
+fn classify_stamp_schema(raw: &serde_json::value::RawValue) -> Result<u32, FormatEvidenceError> {
+    let malformed = FormatEvidenceError::MalformedStamp;
+    let value: serde_json::Value = serde_json::from_str(raw.get())
+        .map_err(|error| malformed(format!("not decodable: {error}")))?;
+    let Some(fields) = value.as_object() else {
+        return Err(malformed(
+            "checkpoint stamp is not a JSON object".to_string(),
+        ));
+    };
+    match fields
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(version) => u32::try_from(version)
+            .map_err(|_| malformed(format!("schema_version {version} overflows u32"))),
+        None => Err(malformed(
+            "checkpoint stamp carries no numeric schema_version".to_string(),
+        )),
+    }
+}
+
+/// Witness format advertised by one PRESENT carrier value. Mirrors the
+/// doctor's `classify_witness_format`: a bare digest string is the v2
+/// carrier and advertises nothing on this axis (`None`); an object carrier
+/// must advertise a numeric `witness_format`; every other shape is
+/// malformed evidence — never "nothing advertised".
+fn classify_witness_carrier(
+    raw: &serde_json::value::RawValue,
+) -> Result<Option<u32>, FormatEvidenceError> {
+    let malformed = FormatEvidenceError::MalformedWitnessCarrier;
+    let value: serde_json::Value = serde_json::from_str(raw.get())
+        .map_err(|error| malformed(format!("not decodable: {error}")))?;
+    match value {
+        serde_json::Value::String(_) => Ok(None),
+        serde_json::Value::Object(fields) => match fields
+            .get("witness_format")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(format) => u32::try_from(format)
+                .map(Some)
+                .map_err(|_| malformed(format!("witness_format {format} overflows u32"))),
+            None => Err(malformed(
+                "witness carrier object carries no numeric witness_format".to_string(),
+            )),
+        },
+        _ => Err(malformed(
+            "witness carrier is neither a digest string nor an object".to_string(),
+        )),
+    }
+}
+
 /// Cheap structural probe over raw document bytes: borrows the metadata map
 /// as raw slices so probing never materializes the (potentially huge)
 /// transcript-history state. Works for whole session documents and for
 /// `SessionHead` projections alike — both carry a `metadata` object, which
 /// is all this reads.
-fn probe_document_format(bytes: &[u8]) -> Result<DocumentFormatProbe, serde_json::Error> {
+///
+/// Fail-closed at the FIELD level, not just the envelope level: a stamp or
+/// carrier that is present but unreadable is an error, never `None` —
+/// otherwise malformed evidence would flow into
+/// [`DocumentFormatProbe::barrier`] as "no barrier" and the pass would
+/// claim "verified free of witness-v3 stamps" over evidence it could not
+/// read.
+fn probe_document_format(bytes: &[u8]) -> Result<DocumentFormatProbe, FormatEvidenceError> {
     #[derive(Deserialize)]
     struct EnvelopeProbe<'a> {
         #[serde(default, borrow)]
         metadata: HashMap<Cow<'a, str>, &'a serde_json::value::RawValue>,
     }
-    #[derive(Deserialize)]
-    struct StampSchemaProbe {
-        #[serde(default)]
-        schema_version: Option<u32>,
-    }
-    #[derive(Deserialize)]
-    struct WitnessCarrierProbe {
-        #[serde(default)]
-        witness_format: Option<u32>,
-    }
-    let envelope: EnvelopeProbe<'_> = serde_json::from_slice(bytes)?;
+    let envelope: EnvelopeProbe<'_> =
+        serde_json::from_slice(bytes).map_err(FormatEvidenceError::Envelope)?;
     let stamp_schema_version = envelope
         .metadata
         .get(meerkat_core::SESSION_CHECKPOINT_STAMP_KEY)
-        .and_then(|raw| serde_json::from_str::<StampSchemaProbe>(raw.get()).ok())
-        .and_then(|stamp| stamp.schema_version);
-    // The v2 carrier is a bare digest string; only the v3+ object form
-    // advertises a witness_format, so a failed object parse means "nothing
-    // advertised on this axis", never an error.
+        .copied()
+        .map(classify_stamp_schema)
+        .transpose()?;
     let witness_format = envelope
         .metadata
         .get(meerkat_core::SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY)
-        .and_then(|raw| serde_json::from_str::<WitnessCarrierProbe>(raw.get()).ok())
-        .and_then(|carrier| carrier.witness_format);
+        .copied()
+        .map(classify_witness_carrier)
+        .transpose()?
+        .flatten();
     Ok(DocumentFormatProbe {
         stamp_schema_version,
         witness_format,
@@ -325,11 +430,12 @@ fn collect_barriers(
         .map_err(|error| format!("query {what} census: {error}"))?;
     for row in rows {
         let (session_id, bytes) = row.map_err(|error| format!("read {what} row: {error}"))?;
-        // Fail closed on an unprobeable document: the pass cannot prove the
-        // absence of the barrier, so it must not claim the result readable.
-        let probe = probe_document_format(&bytes).map_err(|error| {
-            format!("{what} for session {session_id} does not probe as a session document: {error}")
-        })?;
+        // Fail closed on unreadable evidence — envelope-level AND
+        // field-level (a present-but-malformed stamp or carrier): the pass
+        // cannot prove the absence of the barrier, so it must not claim the
+        // result readable.
+        let probe = probe_document_format(&bytes)
+            .map_err(|error| format!("{what} for session {session_id} {error}"))?;
         if let Some(barrier) = probe.barrier(&session_id) {
             barriers.push(barrier);
         }
@@ -400,22 +506,23 @@ pub fn downgrade_state_dir(state_dir: &Path, mode: MigrateMode) -> MobKitDowngra
 
     // The fence covers the whole state directory, not just the continuity
     // file: a downgrade that ran while a gateway held other stores open
-    // would be racing the process that is about to be rolled back.
-    let fence = if apply {
-        match MobKitMaintenanceFence::acquire(state_dir, FENCE_DRAIN_DEADLINE) {
-            Ok(fence) => {
-                report.fenced_databases = fence.fenced_databases().to_vec();
-                Some(fence)
-            }
-            Err(error) => {
-                report
-                    .errors
-                    .push(format!("maintenance fence not acquirable: {error}"));
-                return report;
-            }
+    // would be racing the process that is about to be rolled back. BOTH
+    // modes hold it — a "dry" run performs the entire reconstruction on a
+    // write-capable connection (rolling back is a transaction property,
+    // not a connection property) — and holding it across the census below
+    // and the downgrade keeps the census evidence true for the file the
+    // downgrade actually sees.
+    let fence = match MobKitMaintenanceFence::acquire(state_dir, FENCE_DRAIN_DEADLINE) {
+        Ok(fence) => {
+            report.fenced_databases = fence.fenced_databases().to_vec();
+            fence
         }
-    } else {
-        None
+        Err(error) => {
+            report
+                .errors
+                .push(format!("maintenance fence not acquirable: {error}"));
+            return report;
+        }
     };
 
     // The witness-v3 stamp door (meerkat >= 0.8.9) is per DOCUMENT and is
@@ -825,5 +932,352 @@ mod tests {
                 "the readability claim must name what was verified: {rendered}"
             );
         }
+    }
+
+    /// FAIL-CLOSED PROBE PIN: a checkpoint stamp that is PRESENT but
+    /// unreadable must refuse the pass before any destructive step, in both
+    /// modes — never be laundered into "no stamp" and certified "verified
+    /// free of witness-v3 stamps". The doctor classifies this same shape
+    /// malformed and reports readability unknown; the downgrade must not
+    /// out-certify it.
+    #[test]
+    fn malformed_stamp_evidence_refuses_before_any_destruction() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let db = continuity_db_with_v1_ddl(state);
+        let malformed = serde_json::json!({
+            "metadata": {
+                (meerkat_core::SESSION_CHECKPOINT_STAMP_KEY): { "schema_version": "three" },
+            }
+        });
+        insert_snapshot(
+            &db,
+            "malformed-stamp-session",
+            &serde_json::to_vec(&malformed).expect("serialize"),
+        );
+
+        let before = file_digest(&db);
+        for mode in [MigrateMode::DryRun, MigrateMode::Apply] {
+            let report = downgrade_state_dir(state, mode);
+            assert!(report.has_errors(), "{report:?}");
+            assert!(
+                report.downgrade.is_none(),
+                "the refusal must precede the downgrade transaction"
+            );
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.contains("cannot prove")
+                        && error.contains("malformed-stamp-session")
+                        && error.contains("checkpoint stamp")
+                }),
+                "the refusal must name the session and the unreadable stamp: {:?}",
+                report.errors
+            );
+            let rendered = render_downgrade_report(&report);
+            assert!(
+                !rendered.contains("previous releases can open this file"),
+                "unreadable evidence must never be certified readable: {rendered}"
+            );
+        }
+        assert_eq!(
+            file_digest(&db),
+            before,
+            "a refused run must leave the file byte-identical"
+        );
+    }
+
+    /// The carrier axis fails closed the same way: an object carrier
+    /// without a numeric `witness_format`, or a carrier that is neither a
+    /// digest string nor an object, is unreadable evidence — a refusal,
+    /// not silence.
+    #[test]
+    fn malformed_witness_carrier_evidence_refuses_pre_destruction() {
+        for carrier in [
+            serde_json::json!({ "digest": "sha256:abc" }),
+            serde_json::json!(7),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let state = temp.path();
+            let db = continuity_db_with_v1_ddl(state);
+            let document = serde_json::json!({
+                "metadata": {
+                    (meerkat_core::SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY): carrier,
+                }
+            });
+            insert_snapshot(
+                &db,
+                "malformed-carrier-session",
+                &serde_json::to_vec(&document).expect("serialize"),
+            );
+
+            let report = downgrade_state_dir(state, MigrateMode::DryRun);
+            assert!(report.has_errors(), "{report:?}");
+            assert!(report.downgrade.is_none());
+            assert!(
+                report.errors.iter().any(|error| {
+                    error.contains("cannot prove")
+                        && error.contains("malformed-carrier-session")
+                        && error.contains("witness carrier")
+                }),
+                "the refusal must name the session and the unreadable carrier: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    /// The legitimate evidence shapes keep certifying: a document that was
+    /// never stamped, and a v2 bare-digest witness carrier under a numeric
+    /// pre-v3 stamp, are exactly what the downgrade exists to serve.
+    #[test]
+    fn absent_stamp_and_bare_digest_carrier_still_certify() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let db = continuity_db_with_v1_ddl(state);
+        let never_stamped = meerkat_core::Session::new();
+        insert_snapshot(
+            &db,
+            &never_stamped.id().to_string(),
+            &serde_json::to_vec(&never_stamped).expect("serialize"),
+        );
+        let bare_digest_carrier = serde_json::json!({
+            "metadata": {
+                (meerkat_core::SESSION_CHECKPOINT_STAMP_KEY): { "schema_version": 2 },
+                (meerkat_core::SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY):
+                    "sha256:deadbeef",
+            }
+        });
+        insert_snapshot(
+            &db,
+            "bare-digest-session",
+            &serde_json::to_vec(&bare_digest_carrier).expect("serialize"),
+        );
+
+        let report = downgrade_state_dir(state, MigrateMode::DryRun);
+        assert!(!report.has_errors(), "{:?}", report.errors);
+        assert!(
+            report.stamp_barriers.is_empty(),
+            "{:?}",
+            report.stamp_barriers
+        );
+        assert!(
+            report.downgrade.is_some(),
+            "the pass must reach the downgrade"
+        );
+    }
+
+    /// FENCED DRY RUN PIN: the default dry run executes the whole
+    /// reconstruction on a write-capable connection before rolling back, so
+    /// it must run under the SAME exclusive maintenance fence as apply —
+    /// never beside a live gateway — with the witness census taken under
+    /// that fence.
+    #[test]
+    fn dry_run_holds_the_maintenance_fence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        let session = schema_v1_session("downgrade-fenced");
+        let db = continuity_db_with_v1_ddl(state);
+        insert_snapshot(
+            &db,
+            &session.id().to_string(),
+            &serde_json::to_vec(&session).expect("serialize"),
+        );
+
+        // A clean dry run reports the databases its fence actually held.
+        let report = downgrade_state_dir(state, MigrateMode::DryRun);
+        assert!(!report.has_errors(), "{:?}", report.errors);
+        assert_eq!(report.fenced_databases, vec![db.clone()]);
+        assert!(meerkat_sqlite::fence_lock_path(&db).is_file());
+
+        // A foreign fence holder (another process's exclusive lock, with no
+        // in-process holder-registry entry) must refuse the dry run
+        // outright, exactly as it refuses apply.
+        let foreign = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(meerkat_sqlite::fence_lock_path(&db))
+            .expect("open foreign lock");
+        foreign.try_lock().expect("foreign exclusive lock");
+        let refused = downgrade_state_dir(state, MigrateMode::DryRun);
+        assert!(refused.has_errors());
+        assert!(
+            refused.errors[0].contains("maintenance fence not acquirable"),
+            "{:?}",
+            refused.errors
+        );
+        assert!(
+            refused.downgrade.is_none(),
+            "no write-capable connection may open while the fence is refused"
+        );
+        drop(foreign);
+    }
+
+    fn continuity_ledger_version(path: &Path) -> Option<i64> {
+        let conn = Connection::open(path).expect("probe");
+        meerkat_sqlite::domain_version(&conn, "mobkit-continuity").expect("ledger")
+    }
+
+    /// Drive a state dir's continuity file through the REAL upgrade: seed a
+    /// v1 whole-document blob, then take one delta-channel turn, which
+    /// migrates the session into head+rows and stamps the ledger at v2 —
+    /// the exact file shape `storage-downgrade` exists to roll back.
+    async fn stamped_head_canonical_state_dir(state: &Path) -> meerkat_core::types::SessionId {
+        use crate::identity_first::{
+            AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
+            ContinuityIncrementalSessions as _, ContinuityRecord, ContinuityStore as _,
+            ContinuityWriteCursor, FencingToken, SessionSnapshot,
+        };
+
+        let store =
+            LocalContinuityStore::open(state.join("continuity.sqlite3")).expect("open fixture");
+        let identity = AgentIdentity::parse("triage:downgrade").expect("identity");
+        let mut document = meerkat_core::Session::new();
+        document.push(Message::User(UserMessage::text("turn one".to_string())));
+        let session_id = document.id().clone();
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt-001").expect("runtime id"),
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(0),
+                },
+                FencingToken::new(1),
+            )
+            .await
+            .expect("seed record");
+        store
+            .save_session_snapshot(
+                &identity,
+                &session_id,
+                ContinuityGeneration::new(0),
+                CheckpointVersion::new(1),
+                FencingToken::new(1),
+                &SessionSnapshot {
+                    data: serde_json::to_vec(&document).expect("serialize"),
+                },
+            )
+            .await
+            .expect("pre-upgrade whole-blob save");
+
+        // One post-upgrade turn through the delta channel: the migrating
+        // append moves the blob into head+rows and stamps the ledger at v2.
+        let root = meerkat_core::TranscriptStrandId::root();
+        let base = document.messages().len() as u64;
+        document.push(Message::User(UserMessage::text("turn two".to_string())));
+        let cursor = ContinuityWriteCursor {
+            identity: identity.clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(2),
+            fencing_token: FencingToken::new(1),
+        };
+        store
+            .append_messages(
+                &cursor,
+                &session_id,
+                &root,
+                base,
+                &document.messages()[base as usize..],
+            )
+            .await
+            .expect("delta append");
+        let stored = store
+            .load_canonical_head(&session_id)
+            .await
+            .expect("stored head")
+            .expect("the migrating append created the head");
+        let head = meerkat_core::SessionHead::from_session(&document, root, stored.rewrite_count)
+            .expect("project head");
+        let token =
+            meerkat_core::session_store::session_head_cas_token(&stored).expect("cas token");
+        let save_cursor = ContinuityWriteCursor {
+            identity,
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(3),
+            fencing_token: FencingToken::new(1),
+        };
+        store
+            .save_head(
+                &save_cursor,
+                &head,
+                meerkat_core::session_store::SessionHeadCas::IfToken(token),
+            )
+            .await
+            .expect("save head");
+        session_id
+    }
+
+    /// DRY-RUN HONESTY PIN on the stamped path: a clean dry run over a
+    /// genuinely v2-stamped head-canonical file must report the outcome it
+    /// PROVED — the lockout would be lifted — and render the readability
+    /// line with the dry-run suffix, while leaving the file byte-identical.
+    /// Before this pin, the dry-run report reset `ledger_after` to the
+    /// pre-run version, `lockout_lifted()` returned false against its
+    /// documented "would leave" contract, and the report never told the
+    /// operator that `--apply` would reopen the file to previous releases.
+    #[tokio::test]
+    async fn stamped_dry_run_reports_would_lift_and_renders_the_dry_run_suffix() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path();
+        stamped_head_canonical_state_dir(state).await;
+        let db = state.join("continuity.sqlite3");
+        assert_eq!(
+            continuity_ledger_version(&db),
+            Some(2),
+            "premise: the fixture is genuinely stamped head-canonical"
+        );
+
+        let before = file_digest(&db);
+        let report = downgrade_state_dir(state, MigrateMode::DryRun);
+        assert!(!report.has_errors(), "{:?}", report.errors);
+        let downgrade = report.downgrade.as_ref().expect("the pass ran");
+        assert!(!downgrade.applied);
+        assert_eq!(downgrade.ledger_before, Some(2));
+        assert_eq!(
+            downgrade.ledger_after,
+            Some(1),
+            "the dry run reports the rewind it proved, not the on-disk state"
+        );
+        assert!(
+            report.lockout_lifted(),
+            "a clean dry run on a stamped file reports that --apply WOULD lift the lockout"
+        );
+        assert_eq!(
+            file_digest(&db),
+            before,
+            "a dry run must leave the file byte-identical"
+        );
+        assert_eq!(
+            continuity_ledger_version(&db),
+            Some(2),
+            "the rollback keeps the stamp on disk"
+        );
+
+        let rendered = render_downgrade_report(&report);
+        assert!(
+            rendered.contains("ledger mobkit-continuity: Some(2) -> Some(1)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "previous releases can open this file (after --apply; this run rolled back)"
+            ),
+            "the stamped dry-run path must render the readability line with the dry-run \
+             suffix: {rendered}"
+        );
+
+        // And apply states it plainly, without the suffix.
+        let report = downgrade_state_dir(state, MigrateMode::Apply);
+        assert!(!report.has_errors(), "{:?}", report.errors);
+        assert!(report.lockout_lifted());
+        let rendered = render_downgrade_report(&report);
+        assert!(
+            rendered.contains("previous releases can open this file —"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("this run rolled back"), "{rendered}");
+        assert_eq!(continuity_ledger_version(&db), Some(1));
     }
 }

@@ -793,7 +793,10 @@ impl LocalContinuityStore {
     /// blobs that make lifting it safe. `apply == false` performs the whole
     /// reconstruction, including the per-document reader simulation, and
     /// then rolls back — a dry run that proves the real run will work rather
-    /// than guessing.
+    /// than guessing. The returned report describes that proven outcome in
+    /// BOTH modes (`ledger_after`, `lockout_lifted`, `sessions`,
+    /// `channel_dropped` all say what the run did or would do); `applied`
+    /// says whether it is on disk.
     ///
     /// Fidelity is reported per session, never assumed: see
     /// [`DowngradeFidelity`]. A session whose retained rewrite history
@@ -887,9 +890,14 @@ impl LocalContinuityStore {
         if apply {
             tx.commit().map_err(|e| sqlite_err("commit downgrade", e))?;
         } else {
+            // Only the TRANSACTION rolls back. The report keeps the proven
+            // outcome — `ledger_after` stays at the rewound version so
+            // `lockout_lifted` honors its "would leave" contract, exactly
+            // like `sessions` and `channel_dropped` already report what the
+            // rolled-back run did; `applied: false` marks that none of it
+            // is on disk.
             tx.rollback()
                 .map_err(|e| sqlite_err("roll back downgrade dry run", e))?;
-            report.ledger_after = ledger_before;
         }
         Ok(report)
     }
@@ -1455,7 +1463,10 @@ pub struct HeadCanonicalDowngrade {
     pub applied: bool,
     /// `mobkit-continuity` ledger version observed on entry.
     pub ledger_before: Option<i64>,
-    /// Ledger version after the run (unchanged for a dry run).
+    /// Ledger version the run left — or, for a dry run, proved it WOULD
+    /// leave. The dry-run transaction performs the real rewind and then
+    /// rolls back, so this reports the outcome, not the on-disk state
+    /// (which a dry run never changes); `applied` distinguishes.
     pub ledger_after: Option<i64>,
     /// Whether the head-canonical trio was dropped.
     pub channel_dropped: bool,
@@ -5203,6 +5214,22 @@ mod tests {
         assert_eq!(dry.sessions.len(), 1);
         assert_eq!(dry.sessions[0].messages, 3);
         assert_eq!(dry.sessions[0].fidelity, DowngradeFidelity::NoHistory);
+        // The report tells the truth about the outcome it PROVED: the
+        // rolled-back rewind would leave the ledger at v1 and lift the
+        // lockout. `applied: false` is what says "not on disk yet" — a
+        // clean dry run on a stamped file that reported
+        // `lockout_lifted() == false` would be lying about the exact thing
+        // the verb exists to establish.
+        assert_eq!(dry.ledger_before, Some(HEAD_CANONICAL_SCHEMA_VERSION));
+        assert_eq!(
+            dry.ledger_after,
+            Some(MOBKIT_CONTINUITY_BASELINE_DOMAIN.supported_version()),
+            "the dry run reports the ledger version it proved it would leave"
+        );
+        assert!(
+            dry.lockout_lifted(),
+            "a clean dry run reports that the lockout WOULD be lifted"
+        );
         assert_eq!(
             ledger_version(&path),
             Some(HEAD_CANONICAL_SCHEMA_VERSION),

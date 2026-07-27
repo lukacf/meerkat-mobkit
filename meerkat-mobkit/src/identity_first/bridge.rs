@@ -142,6 +142,25 @@ fn classify_member_repair_respawn_failure(
     MemberRepairRespawnFailure::Fatal(error.to_string())
 }
 
+/// Rebuild spec for a delivery-repair fresh spawn: the SAME member identity
+/// with its pre-delivery role and labels, `Fresh` launch mode (a fresh
+/// session is the point — this is only reached once there is no durable
+/// transcript left to rebind). Shared by the two sanctioned fresh-spawn arms
+/// of `repair_member_for_delivery`; each stays gated on its own evidence
+/// (typed-absent durable loss / verified roster absence after recoverable
+/// respawn cleanup).
+fn fresh_member_spec_from_pre_delivery_entry(
+    member_id: &MobAgentIdentity,
+    role: meerkat_mob::ProfileName,
+    labels: BTreeMap<String, String>,
+) -> SpawnMemberSpec {
+    let mut spec = SpawnMemberSpec::new(role, member_id.clone());
+    if !labels.is_empty() {
+        spec = spec.with_labels(labels);
+    }
+    spec
+}
+
 // ---------------------------------------------------------------------------
 // BridgeError
 // ---------------------------------------------------------------------------
@@ -909,9 +928,10 @@ impl MobSessionBridge {
         // rotates the bridge session and abandons the transcript (the OB3
         // `identity_alias_respawn_rotation` data-loss class). When we know
         // the durable session and the member's role, rebuild the member ONTO
-        // that session instead; fall back to the legacy fresh respawn only
+        // that session instead; spawn fresh under the same identity only
         // when meerkat confirms the durable snapshot itself is gone (nothing
-        // left to preserve) or when we lack the material for a resume spec.
+        // left to preserve). The legacy respawn below remains only for the
+        // case where we lack the material for a resume spec.
         // Fidelity note: like the legacy path, the rebuilt spec carries
         // role + labels only — deliver-time repair cannot re-run the host
         // customizer (that rebuild belongs to the runtime's materialize
@@ -921,7 +941,13 @@ impl MobSessionBridge {
             member_entry_before_delivery.clone(),
         ) {
             match self
-                .resume_repair_member(runtime_id, member_id, role, labels, &session_id)
+                .resume_repair_member(
+                    runtime_id,
+                    member_id,
+                    role.clone(),
+                    labels.clone(),
+                    &session_id,
+                )
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -931,10 +957,24 @@ impl MobSessionBridge {
                         member_id = %member_id,
                         session_id = %session_id,
                         detail = %detail,
-                        "durable session snapshot is gone; repairing with a fresh respawn \
-                         (no transcript left to preserve)"
+                        "durable session snapshot is gone; repairing with a fresh spawn \
+                         under the same identity (no transcript left to preserve)"
                     );
-                    // Fall through to the legacy respawn path below.
+                    // `resume_repair_member` already retired the member to
+                    // VERIFIED roster absence, so `MobHandle::respawn` —
+                    // which reads the roster entry — would deterministically
+                    // fail `MemberNotFound` (classified Fatal) and wedge the
+                    // identity. Spawn fresh directly instead, still gated on
+                    // the typed `SessionUnavailableForResume { reason:
+                    // Absent }` evidence that selected this arm.
+                    self.handle
+                        .ensure_member(fresh_member_spec_from_pre_delivery_entry(
+                            member_id, role, labels,
+                        ))
+                        .await
+                        .map_err(|e| BridgeError::Mob(e.to_string()))?;
+                    self.remember_runtime_member(runtime_id, member_id).await;
+                    return Ok(());
                 }
                 Err(RepairResumeFailure::Rejected(err)) => return Err(err),
             }
@@ -965,12 +1005,10 @@ impl MobSessionBridge {
                         .is_none()
                         && let Some((role, labels)) = member_entry_before_delivery
                     {
-                        let mut spec = SpawnMemberSpec::new(role, member_id.clone());
-                        if !labels.is_empty() {
-                            spec = spec.with_labels(labels);
-                        }
                         self.handle
-                            .ensure_member(spec)
+                            .ensure_member(fresh_member_spec_from_pre_delivery_entry(
+                                member_id, role, labels,
+                            ))
                             .await
                             .map_err(|e| BridgeError::Mob(e.to_string()))?;
                     }
@@ -2327,6 +2365,72 @@ mod tests {
                 .contains("missing durable session snapshot")
         );
         assert!(!durable_snapshot_is_typed_absent(&impersonator));
+        // And should the impersonator surface through the legacy respawn
+        // ladder instead, it must classify Fatal — no wording reaches a
+        // recovery arm there either.
+        assert!(
+            matches!(
+                classify_member_repair_respawn_failure(&MobRespawnError::Mob(impersonator)),
+                MemberRepairRespawnFailure::Fatal(_)
+            ),
+            "an Internal impersonator must stay Fatal in the respawn ladder"
+        );
+    }
+
+    /// Regression for the wedged typed-absent recovery: `resume_repair_member`
+    /// retires the member to VERIFIED roster absence before its resume-spawn
+    /// attempt, and `MobHandle::respawn` reads the roster entry — so after a
+    /// typed-absent durable loss, routing the fallback through `respawn`
+    /// deterministically fails `MemberNotFound`, which classifies Fatal (no
+    /// recovery arm handles it) and wedges the identity permanently. The
+    /// `DurableSnapshotMissing` arm must therefore spawn fresh DIRECTLY from
+    /// the pre-delivery entry: same identity, pre-delivery role + labels,
+    /// `Fresh` launch mode.
+    #[test]
+    fn typed_absent_recovery_spawns_fresh_directly_because_respawn_is_fatal_after_absence() {
+        let member_id = MobAgentIdentity::from("rt-agent-alpha-0");
+
+        // The ladder respawn cannot complete for a verified-absent member.
+        let respawn_after_verified_absence =
+            MobRespawnError::Mob(meerkat_mob::MobError::MemberNotFound(member_id.clone()));
+        assert!(
+            matches!(
+                classify_member_repair_respawn_failure(&respawn_after_verified_absence),
+                MemberRepairRespawnFailure::Fatal(_)
+            ),
+            "MemberNotFound stays Fatal in the respawn ladder — the typed-absent arm \
+             must never fall through to handle.respawn"
+        );
+
+        // The direct fresh spawn the arm routes to instead.
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "agent:alpha".to_string());
+        let spec = fresh_member_spec_from_pre_delivery_entry(
+            &member_id,
+            meerkat_mob::ProfileName::from("worker"),
+            labels.clone(),
+        );
+        assert_eq!(
+            spec.identity.as_str(),
+            member_id.as_str(),
+            "typed-absent recovery must rebuild under the SAME identity"
+        );
+        assert_eq!(spec.role_name.as_str(), "worker");
+        assert_eq!(spec.labels, Some(labels));
+        assert!(
+            matches!(spec.launch_mode, MemberLaunchMode::Fresh),
+            "the durable snapshot is typed-absent: the rebuild takes a fresh session, \
+             never a Resume rebind onto the gone session"
+        );
+
+        // No pre-delivery labels → the spec carries none (matches both
+        // sanctioned fresh-spawn arms' conditional).
+        let bare = fresh_member_spec_from_pre_delivery_entry(
+            &member_id,
+            meerkat_mob::ProfileName::from("worker"),
+            std::collections::BTreeMap::new(),
+        );
+        assert_eq!(bare.labels, None);
     }
 
     #[tokio::test]

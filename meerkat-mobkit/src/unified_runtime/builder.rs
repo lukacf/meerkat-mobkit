@@ -56,11 +56,14 @@ pub struct UnifiedRuntimeBuilder {
     // --- New convenience path ---
     definition_source: Option<DefinitionSource>,
     persistent_state_path: Option<PathBuf>,
-    /// Root `continuity_from_state_dir` opened, retained so `build()` can
-    /// refuse a silent authority fork: session authority in one directory's
-    /// continuity.sqlite3 with runtime/blob/workgraph stores in another is
-    /// exactly the split-storage class the layout's twin detection refuses
-    /// elsewhere.
+    /// Root `continuity_from_state_dir` opened — pinned in CANONICAL form at
+    /// open time — retained so `build()` can refuse a silent authority fork:
+    /// session authority in one directory's continuity.sqlite3 with
+    /// runtime/blob/workgraph stores in another is exactly the split-storage
+    /// class the layout's twin detection refuses elsewhere. Canonical because
+    /// the gate compares physical identity, not spelling: a relative path
+    /// re-resolved under a later working directory, or a symlink retargeted
+    /// between open and build, must not slip past as a lexical match.
     continuity_state_dir: Option<PathBuf>,
     session_hook: Option<Arc<dyn SessionHook>>,
     custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
@@ -263,7 +266,19 @@ impl UnifiedRuntimeBuilder {
                 state_dir.display()
             ))
         })?;
-        let continuity_db = MobKitStorageLayout::with_injected_roots(state_dir.to_path_buf(), None)
+        // Pin the CANONICAL root at open time: the substrate is opened
+        // against this physical directory NOW, and the same-root gate in
+        // `build()` compares against what was actually opened. A relative
+        // spelling re-resolved under a later working directory, or a
+        // retargeted symlink, would otherwise fork session authority while
+        // comparing equal lexically.
+        let state_dir = std::fs::canonicalize(state_dir).map_err(|e| {
+            UnifiedRuntimeBuilderError::Io(format!(
+                "failed to canonicalize state directory at {}: {e}",
+                state_dir.display()
+            ))
+        })?;
+        let continuity_db = MobKitStorageLayout::with_injected_roots(state_dir.clone(), None)
             .continuity_db()?
             .path;
         let substrate = crate::gateway_wiring::open_identity_substrate(&continuity_db)
@@ -271,7 +286,7 @@ impl UnifiedRuntimeBuilder {
             .map_err(UnifiedRuntimeBuilderError::Io)?;
         self.continuity_store = Some(substrate.continuity_store);
         self.lease_provider = Some(substrate.lease_provider);
-        self.continuity_state_dir = Some(state_dir.to_path_buf());
+        self.continuity_state_dir = Some(state_dir);
         Ok(self)
     }
 
@@ -663,17 +678,8 @@ impl UnifiedRuntimeBuilder {
         if let (Some(continuity_dir), Some(state_path)) = (
             self.continuity_state_dir.as_ref(),
             self.persistent_state_path.as_ref(),
-        ) && continuity_dir != state_path
-        {
-            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                format!(
-                    "continuity_from_state_dir opened {} but persistent_state points at {}; \
-                 the identity substrate and the runtime stores must share ONE state \
-                 directory, or session authority forks from the stores it must pair with",
-                    continuity_dir.display(),
-                    state_path.display()
-                ),
-            ));
+        ) {
+            verify_shared_state_root(continuity_dir, state_path)?;
         }
         // One path root per realm: the state directory and a scratch root
         // are competing path authorities.
@@ -1711,6 +1717,90 @@ impl UnifiedRuntimeBuilder {
     }
 }
 
+/// Enforce the documented same-root pairing of `continuity_from_state_dir`
+/// and `persistent_state`: both must name ONE physical state directory, or
+/// session authority forks from the runtime/blob/workgraph stores it must
+/// pair with. The comparison is by canonical (physical) identity, not raw
+/// spelling — a lexical compare both refuses a genuinely shared root spelled
+/// two ways (symlink vs target, `..`-detour vs plain) and, worse, lets two
+/// lexically equal spellings that resolve to different physical directories
+/// fork silently. A path that cannot be canonicalized refuses outright with
+/// both roots named; this gate never degrades to the lexical compare.
+fn verify_shared_state_root(
+    continuity_dir: &std::path::Path,
+    state_path: &std::path::Path,
+) -> Result<(), UnifiedRuntimeBuilderError> {
+    let canonical_continuity =
+        canonicalize_for_root_comparison(continuity_dir).map_err(|error| {
+            UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+                "cannot canonicalize continuity_from_state_dir root {} to verify it is the \
+                 same state directory as persistent_state {}: {error}",
+                continuity_dir.display(),
+                state_path.display()
+            ))
+        })?;
+    let canonical_state = canonicalize_for_root_comparison(state_path).map_err(|error| {
+        UnifiedRuntimeBuilderError::ConflictingConfiguration(format!(
+            "cannot canonicalize persistent_state root {} to verify it is the same state \
+             directory as continuity_from_state_dir root {}: {error}",
+            state_path.display(),
+            continuity_dir.display()
+        ))
+    })?;
+    if canonical_continuity != canonical_state {
+        return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+            format!(
+                "continuity_from_state_dir opened {} but persistent_state resolves to {} \
+                 (configured as {}); the identity substrate and the runtime stores must \
+                 share ONE state directory, or session authority forks from the stores it \
+                 must pair with",
+                canonical_continuity.display(),
+                canonical_state.display(),
+                state_path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Canonicalize a state-root path for physical-identity comparison.
+///
+/// `std::fs::canonicalize` when the path exists. A not-yet-created root
+/// canonicalizes its deepest existing ancestor and rejoins the missing
+/// remainder, so the comparison still resolves symlinks and relative
+/// spellings; a fully relative path with no existing prefix anchors at the
+/// working directory, exactly where the stores would create it. Any other
+/// failure (permissions, a `..` or root ending above a missing component)
+/// propagates — callers fail closed.
+fn canonicalize_for_root_comparison(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if existing.as_os_str().is_empty() {
+            existing = std::env::current_dir()?;
+            continue;
+        }
+        match std::fs::canonicalize(&existing) {
+            Ok(mut canonical) => {
+                for component in missing_tail.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name().map(std::ffi::OsStr::to_os_string) else {
+                    // A `..` or root ending above a missing component cannot
+                    // be resolved textually without lying about identity.
+                    return Err(error);
+                };
+                missing_tail.push(name);
+                existing = existing.parent().map(PathBuf::from).unwrap_or_default();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1964,5 +2054,96 @@ model = "gpt-5.5"
             ),
             "builder should retain the exact console log store supplied by the app"
         );
+    }
+
+    /// The same-root gate compares PHYSICAL identity, not raw spelling: one
+    /// root spelled two equivalent ways must pass, a not-yet-created root
+    /// still compares through its deepest existing ancestor, and genuinely
+    /// distinct directories must refuse. The lexical compare it replaces got
+    /// all of this wrong — and let two lexically equal relative spellings
+    /// that resolve under different working directories fork silently.
+    #[test]
+    fn same_root_gate_compares_physical_identity() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path().join("state");
+        std::fs::create_dir_all(&root).expect("create state root");
+
+        // Equivalent spelling through an existing `..` detour: ONE root.
+        let detour = tmp.path().join("detour");
+        std::fs::create_dir_all(&detour).expect("create detour dir");
+        let spelled_via_detour = detour.join("..").join("state");
+        verify_shared_state_root(&root, &spelled_via_detour)
+            .expect("equivalent spellings of one root must pass the gate");
+
+        // A not-yet-created state root still compares by physical identity
+        // (deepest existing ancestor canonicalized, remainder rejoined).
+        let future_root = tmp.path().join("future");
+        verify_shared_state_root(&future_root, &detour.join("..").join("future"))
+            .expect("not-yet-created roots must still compare physically");
+
+        // Genuinely distinct directories fork session authority: refuse.
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).expect("create other root");
+        let err = verify_shared_state_root(&root, &other).expect_err("distinct roots must refuse");
+        match err {
+            UnifiedRuntimeBuilderError::ConflictingConfiguration(message) => {
+                assert!(
+                    message.contains("share ONE state directory"),
+                    "refusal must explain the pairing requirement: {message}"
+                );
+            }
+            other => panic!("expected ConflictingConfiguration, got: {other}"),
+        }
+    }
+
+    /// Symlinks resolve to their targets before the same-root comparison: a
+    /// symlink and its target are the ONE directory they physically are, and
+    /// a symlink to a DIFFERENT directory is exactly the silent
+    /// session-authority fork the gate exists to refuse, whatever the
+    /// spelling suggests.
+    #[cfg(unix)]
+    #[test]
+    fn same_root_gate_resolves_symlinks() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let target = tmp.path().join("state");
+        std::fs::create_dir_all(&target).expect("create state root");
+        let link = tmp.path().join("state-link");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        verify_shared_state_root(&link, &target)
+            .expect("a symlink and its target are ONE state directory");
+
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("create other root");
+        let fork = tmp.path().join("fork-link");
+        std::os::unix::fs::symlink(&elsewhere, &fork).expect("create fork symlink");
+        assert!(
+            verify_shared_state_root(&target, &fork).is_err(),
+            "a symlink to another directory must refuse"
+        );
+    }
+
+    /// End-to-end wiring: `build()` refuses a persistent_state root that is
+    /// not the physical directory `continuity_from_state_dir` opened.
+    #[tokio::test]
+    async fn build_refuses_forked_continuity_and_state_roots() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let result = UnifiedRuntimeBuilder::default()
+            .persistent_state(tmp.path().join("stores"))
+            .continuity_from_state_dir(tmp.path().join("substrate"))
+            .await
+            .expect("open the substrate root")
+            .build()
+            .await;
+        match result {
+            Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(message)) => {
+                assert!(
+                    message.contains("share ONE state directory"),
+                    "refusal must explain the pairing requirement: {message}"
+                );
+            }
+            Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
+            Ok(_) => panic!("forked continuity/state roots must refuse at build"),
+        }
     }
 }
