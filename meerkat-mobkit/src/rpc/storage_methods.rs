@@ -28,6 +28,9 @@ pub(crate) struct StorageDoctorParams {
     /// Optional identity filter for the continuity checkpoint census
     /// (mapped onto [`DiagnoseScope::realm`]).
     pub identity: Option<String>,
+    /// Verbose report shaping: per-session storage-compatibility findings
+    /// ([`crate::storage_doctor::DoctorOptions::verbose`]).
+    pub verbose: bool,
 }
 
 impl StorageDoctorParams {
@@ -38,11 +41,18 @@ impl StorageDoctorParams {
             None => scope,
         }
     }
+
+    pub(crate) fn doctor_options(&self) -> storage_doctor::DoctorOptions {
+        storage_doctor::DoctorOptions {
+            verbose: self.verbose,
+        }
+    }
 }
 
 /// Parse doctor params. `Ok(None)` = no `state_dir` given — the caller maps
 /// that to its surface's typed error; `Err` = a param is present but
-/// mistyped (`-32602` on every surface).
+/// mistyped (`-32602` on every surface). The optional `verbose` boolean
+/// turns on per-session storage-compatibility findings.
 pub(crate) fn parse_storage_doctor_params(
     params: &Value,
 ) -> Result<Option<StorageDoctorParams>, String> {
@@ -59,9 +69,15 @@ pub(crate) fn parse_storage_doctor_params(
         Some(Value::String(identity)) => Some(identity.clone()),
         Some(_) => return Err("identity must be a string".to_string()),
     };
+    let verbose = match params.get("verbose") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(verbose)) => *verbose,
+        Some(_) => return Err("verbose must be a boolean".to_string()),
+    };
     Ok(Some(StorageDoctorParams {
         state_dir,
         identity,
+        verbose,
     }))
 }
 
@@ -122,8 +138,12 @@ pub(crate) async fn run_storage_doctor(
         ),
         None => (None, None),
     };
-    let diagnosis =
-        storage_doctor::diagnose_state_dir_with_runtime(&params.scope(), census.clone()).await;
+    let diagnosis = storage_doctor::diagnose_state_dir_with_options(
+        &params.scope(),
+        census.clone(),
+        params.doctor_options(),
+    )
+    .await;
     let mut result = storage_doctor_result_json(params, &diagnosis, census);
     if let (Some(note), Some(map)) = (note, result.as_object_mut()) {
         map.insert("storage_note".to_string(), Value::String(note.to_string()));
@@ -157,6 +177,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_accepts_the_optional_verbose_flag() {
+        let params = parse_storage_doctor_params(&serde_json::json!({
+            "state_dir": "/tmp/state", "verbose": true
+        }))
+        .expect("parse")
+        .expect("params");
+        assert!(params.verbose);
+        assert!(params.doctor_options().verbose);
+
+        let params = parse_storage_doctor_params(&serde_json::json!({
+            "state_dir": "/tmp/state"
+        }))
+        .expect("parse")
+        .expect("params");
+        assert!(!params.verbose);
+
+        assert!(
+            parse_storage_doctor_params(&serde_json::json!({
+                "state_dir": "/tmp/state", "verbose": "yes"
+            }))
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn census_attaches_only_for_the_runtimes_own_state_dir() {
         let own = tempfile::tempdir().expect("own state dir");
@@ -164,6 +209,7 @@ mod tests {
         let params = StorageDoctorParams {
             state_dir: own.path().to_path_buf(),
             identity: None,
+            verbose: false,
         };
 
         // Matching directory: census attached, no omission note.
@@ -177,6 +223,7 @@ mod tests {
         let params_other = StorageDoctorParams {
             state_dir: other.path().to_path_buf(),
             identity: None,
+            verbose: false,
         };
         let result = run_storage_doctor(
             &params_other,

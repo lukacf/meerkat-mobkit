@@ -603,8 +603,11 @@ pub fn handle_mobkit_rpc_json(
         storage_methods::STORAGE_DOCTOR_METHOD => {
             match storage_methods::parse_storage_doctor_params(&request.params) {
                 Ok(Some(params)) => {
-                    let diagnosis =
-                        crate::storage_doctor::diagnose_state_dir_blocking(&params.scope(), None);
+                    let diagnosis = crate::storage_doctor::diagnose_state_dir_blocking_with_options(
+                        &params.scope(),
+                        None,
+                        params.doctor_options(),
+                    );
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
