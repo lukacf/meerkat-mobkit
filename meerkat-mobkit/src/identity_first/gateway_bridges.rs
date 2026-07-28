@@ -758,6 +758,7 @@ mod tests {
             app_context: None,
             external_tools: vec![],
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         let result = customizer
             .customize_build(&context, &spec, &mut draft)
@@ -1190,6 +1191,7 @@ mod tests {
                 input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
             }],
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         mock.set_response(
             "callback/agent_customizer/customize_build",
@@ -1232,6 +1234,7 @@ mod tests {
             app_context: None,
             external_tools: vec![],
             local_external_tools: Default::default(),
+            provider_params: None,
         };
 
         customizer
@@ -1315,6 +1318,7 @@ mod tests {
                 input_schema: json!({"type": "object"}),
             }],
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         mock.set_response(
             "callback/agent_customizer/customize_build",
@@ -1354,6 +1358,7 @@ mod tests {
                 app_context: None,
                 external_tools: vec![],
                 local_external_tools: Default::default(),
+                provider_params: None,
             };
             customizer
                 .customize_build(&context, &spec, &mut draft)

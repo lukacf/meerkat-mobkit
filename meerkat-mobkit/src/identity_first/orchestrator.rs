@@ -622,6 +622,7 @@ async fn restore_flow_with_snapshot_policy(
                 app_context: spec.context.clone(),
                 external_tools: Vec::new(),
                 local_external_tools: Default::default(),
+                provider_params: None,
             };
             outcomes.insert(
                 identity.clone(),
@@ -658,6 +659,7 @@ async fn restore_flow_with_snapshot_policy(
             app_context: spec.context.clone(),
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
 
         if let Some(cust) = customizer
@@ -1628,6 +1630,7 @@ pub async fn lazy_register_flow(
             app_context: spec.context.clone(),
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         match resolve_state {
             ContinuityResolveState::Uninitialized => {

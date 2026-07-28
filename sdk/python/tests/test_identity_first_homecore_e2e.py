@@ -624,21 +624,33 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            # Fresh reset may expose the initial save for the new generation,
-            # and now also the save from the retire cleanup that follows it.
+            # Under M4b a healthy head-canonical reset reports EXACTLY 2, and
+            # the writer is the CREATION-WINDOW FLUSH of the replacement
+            # session, not reset's retire cleanup (this comment previously
+            # guessed cleanup; the trace disproved that — cleanup only no-ops
+            # against the superseded OLD session and the new record has
+            # already committed when the debt runs). The initial session
+            # document rides the delta channel as TWO mutations —
+            # append_messages plus the adopting save_head — each minting one
+            # checkpoint version from the session's single allocator:
+            # append = 1, head adoption = 2. First boot reports the same 2
+            # with no reset anywhere near it, and reset() commits the flush
+            # BEFORE it returns, so this status read cannot race it. Pinned
+            # deterministically in Rust (reset record, post-reset status, and
+            # the durable continuity record all assert exactly 2):
+            #   meerkat-mobkit/tests/identity_first_builder.rs
+            #     reset_checkpoint_version_is_the_initial_document_flush_not_cleanup
+            #   meerkat-mobkit/src/identity_first/adapters.rs
+            #     incremental_mutations_park_before_registration_and_flush_on_register
             #
-            # This bound was 0/1/None while reset's retire cleanup always
-            # FAILED: M4b's incremental store refused the post-abandon
-            # terminal write, so identity-authority release was skipped and
-            # the flow stopped early (the same defect that made the gateway
-            # report runtime_cleanup_completed=false and leak provider
-            # grants). With that write acknowledged as a no-op, the reset
-            # completes and records one additional continuity checkpoint —
-            # deterministically 2, observed across repeated runs.
-            #
-            # NOTE: that the extra checkpoint is DESIRABLE rather than merely
-            # harmless is not proven here; it is tracked for confirmation.
-            assert after.checkpoint_version in (0, 1, 2, None)
+            # This bound was previously `in (0, 1, 2, None)`, which admitted
+            # the exact failure shapes this end-to-end lane exists to catch
+            # on the shipped rpc_gateway: None/0 means the creation-window
+            # flush never landed durably by status time, and 1 means the
+            # whole-blob (pre-M4b) fallback wrote the document as a single
+            # mutation. If this assertion fires with one of those values,
+            # that is the finding — not test flake.
+            assert after.checkpoint_version == 2
         finally:
             await rt.shutdown()
 

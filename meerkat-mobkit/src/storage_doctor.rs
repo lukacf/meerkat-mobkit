@@ -30,7 +30,28 @@
 //! Each `state_roots` entry is one MobKit state directory (a gateway
 //! `persistent_state` / `store_path` dir). MobKit state dirs are not
 //! realm-keyed; `DiagnoseScope::realm` is honored as an *identity* filter on
-//! the continuity checkpoint-evidence census and ignored elsewhere.
+//! the continuity checkpoint-evidence census and the continuity half of the
+//! session-format census, and ignored elsewhere (the sessions and runtime
+//! halves census stores that carry no identity column).
+//!
+//! # Session-format census
+//!
+//! What each session-bearing store actually CONTAINS, per session:
+//! representation authority (whole-blob vs head-canonical), checkpoint-stamp
+//! schema, and transcript-history witness format. Purely descriptive — the
+//! doctor reports the format a document is written in, never a verdict about
+//! which binary can open it (there is no supported downgrade path; a store
+//! written by this release is read by this release).
+//!
+//! The censused stores are the meerkat session store, the continuity store,
+//! and the meerkat runtime store's retained `runtime_session_snapshots` (a
+//! full-envelope session copy kept across restarts and decoded on the
+//! authoritative resume path; the same three stores
+//! [`crate::storage_marker_stamp`] enumerates). Classification is by minimal
+//! raw-JSON field parses, never by decoding whole `Session`s (decoding runs
+//! validation and can refuse; a refusing document is itself a reportable
+//! fact, carried with its error string). [`DoctorOptions::verbose`] adds one
+//! finding per censused session.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -41,15 +62,17 @@ use meerkat_core::storage_diagnostics::{
     StorageFinding, StorageInventoryEntry, StorageMigrator,
 };
 use meerkat_core::{
-    Session, SessionCheckpointMetadataState, SessionCheckpointState,
-    session_metadata_document_from_slice,
+    SESSION_CHECKPOINT_STAMP_KEY, SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY, Session,
+    SessionCheckpointMetadataState, SessionCheckpointState, session_metadata_document_from_slice,
 };
+use meerkat_sqlite::JsonColumnBytes;
 use rusqlite::Connection;
 
 use crate::auth::GATEWAY_PEER_KEY_FILE;
 use crate::blob_store::is_valid_blob_id_value;
 use crate::schedule_wiring::SCHEDULE_STORE_FILE;
 use crate::storage_health::ResolvedStorageSummary;
+use crate::storage_marker_stamp::SessionDocumentStore;
 use crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE;
 use crate::workgraph_wiring::WORKGRAPH_STORE_FILE;
 
@@ -87,6 +110,24 @@ pub const FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE: &str = "continuity-snapshot-u
 /// read or written again. Inventory-grade — they are dead weight until
 /// pruned, not a fault.
 pub const FINDING_CONTINUITY_ARCHIVED_SNAPSHOT: &str = "continuity-archived-snapshot";
+/// The session-format census over one session-bearing database: totals per
+/// representation authority, checkpoint-stamp schema, and
+/// transcript-history witness format. Info when every censused session
+/// classified; warning once any document's format evidence is malformed or
+/// unparseable (a fault in the stored evidence, not a version judgment).
+pub const FINDING_STORAGE_COMPAT_CENSUS: &str = "storage-compat-census";
+/// One censused session's format row ([`DoctorOptions::verbose`] only):
+/// owning store, representation authority, stamp schema, witness format.
+pub const FINDING_STORAGE_COMPAT_SESSION: &str = "storage-compat-session";
+/// A session document that refused the minimal session-format parse; the
+/// error string is the reportable fact and the session censuses as
+/// format-unknown.
+pub const FINDING_STORAGE_COMPAT_SESSION_UNREADABLE: &str = "storage-compat-session-unreadable";
+/// Coverage statement for retained recovery state: mobkit stores persist no
+/// held-for-recovery or quarantine markers, so meerkat-side holds surface in
+/// this report only as session load/decode findings, never as a stored-state
+/// census.
+pub const FINDING_RECOVERY_HOLD_CENSUS: &str = "recovery-hold-census";
 /// A console frame references a blob object missing from the blob root.
 pub const FINDING_DANGLING_CONSOLE_BLOB_REFERENCE: &str = "dangling-console-blob-reference";
 /// Blob objects still stored in the legacy sharded FS layout
@@ -125,6 +166,18 @@ pub const FINDING_DOCTOR_INTERNAL: &str = "doctor-internal";
 /// Cap on individually reported dangling console-frame blob references per
 /// database; the remainder is summarized in one finding.
 const DANGLING_BLOB_REPORT_CAP: usize = 50;
+
+/// Cap on individually reported compat-unreadable session documents per
+/// database; the remainder is summarized in one finding.
+const COMPAT_UNREADABLE_REPORT_CAP: usize = 50;
+
+/// Lowest checkpoint-stamp schema minted over the FORMAT-3 transcript-history
+/// witness (meerkat 0.8.9 introduced both together). Used only to infer a
+/// document's witness format when it carries no explicit witness carrier.
+const WITNESS_V3_MIN_STAMP_SCHEMA: u64 = 3;
+
+/// Census bucket for evidence that is present but does not minimally parse.
+const MALFORMED_CENSUS_KEY: &str = "malformed";
 
 /// The gateway runtime-registry file name (`mobkit_gateway` XDG home).
 /// Duplicated here because the deriving code lives in the gateway binary,
@@ -201,6 +254,16 @@ pub(crate) const MEMORY_ROOT_SPELLINGS: &[&str] = &["agent-memory", "agent-memor
 /// Ledger domain the per-realm memory databases stamp.
 pub(crate) const MEMORY_LEDGER_DOMAIN: &str = "mobkit-memory";
 
+/// Report-shaping options for the read-only diagnosis. Options change what
+/// is *reported*, never what is read — every mode honors the module safety
+/// contract.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DoctorOptions {
+    /// Emit one [`FINDING_STORAGE_COMPAT_SESSION`] finding per censused
+    /// session in addition to the per-store session-format census.
+    pub verbose: bool,
+}
+
 /// Read-only diagnosis of MobKit state directories, cold (no live runtime;
 /// the durability-resolution census reports
 /// [`FINDING_DURABILITY_CENSUS_UNAVAILABLE`]). See the module docs for the
@@ -216,8 +279,22 @@ pub async fn diagnose_state_dir_with_runtime(
     scope: &DiagnoseScope,
     resolved: Option<ResolvedStorageSummary>,
 ) -> StorageDiagnosis {
+    diagnose_state_dir_with_options(scope, resolved, DoctorOptions::default()).await
+}
+
+/// [`diagnose_state_dir_with_runtime`] with explicit report-shaping options
+/// (the verbose form of the session-format census).
+pub async fn diagnose_state_dir_with_options(
+    scope: &DiagnoseScope,
+    resolved: Option<ResolvedStorageSummary>,
+    options: DoctorOptions,
+) -> StorageDiagnosis {
     let scope = scope.clone();
-    match tokio::task::spawn_blocking(move || diagnose_state_dir_blocking(&scope, resolved)).await {
+    match tokio::task::spawn_blocking(move || {
+        diagnose_state_dir_blocking_with_options(&scope, resolved, options)
+    })
+    .await
+    {
         Ok(diagnosis) => diagnosis,
         Err(join_error) => {
             let mut diagnosis = StorageDiagnosis::default();
@@ -237,6 +314,15 @@ pub fn diagnose_state_dir_blocking(
     scope: &DiagnoseScope,
     resolved: Option<ResolvedStorageSummary>,
 ) -> StorageDiagnosis {
+    diagnose_state_dir_blocking_with_options(scope, resolved, DoctorOptions::default())
+}
+
+/// [`diagnose_state_dir_blocking`] with explicit report-shaping options.
+pub fn diagnose_state_dir_blocking_with_options(
+    scope: &DiagnoseScope,
+    resolved: Option<ResolvedStorageSummary>,
+    options: DoctorOptions,
+) -> StorageDiagnosis {
     let mut diagnosis = StorageDiagnosis::default();
 
     // Dedup candidate roots by canonical identity while preserving order, so
@@ -253,8 +339,26 @@ pub fn diagnose_state_dir_blocking(
     }
 
     for root in &roots {
-        sweep_state_dir(root, scope.realm.as_deref(), &mut diagnosis);
+        sweep_state_dir(root, scope.realm.as_deref(), options, &mut diagnosis);
     }
+
+    // Retained-recovery-state coverage statement: nothing mobkit persists
+    // marks a session as held-for-recovery or quarantined — those verdicts
+    // (SESSION_DURABLE_TAIL_HELD_FOR_RECOVERY /
+    // SESSION_DURABLE_EVIDENCE_QUARANTINED) are derived at load time by the
+    // meerkat runtime from runtime-store vs session-store evidence. Probing
+    // them would mean loading through the validating restore path this
+    // doctor deliberately avoids, so the limit is stated instead of papered
+    // over with a fabricated census.
+    diagnosis.findings.push(StorageFinding::new(
+        FindingSeverity::Info,
+        FINDING_RECOVERY_HOLD_CENSUS,
+        "retained-recovery-state census: mobkit stores persist no held-for-recovery or \
+         quarantine markers; durable-tail holds and evidence quarantine are load-time verdicts \
+         of the meerkat runtime (SESSION_DURABLE_TAIL_HELD_FOR_RECOVERY / \
+         SESSION_DURABLE_EVIDENCE_QUARANTINED) and surface in this report only through session \
+         load/decode findings",
+    ));
 
     match resolved {
         Some(summary) => attach_live_durability(&mut diagnosis, summary),
@@ -346,7 +450,12 @@ fn attach_live_durability(diagnosis: &mut StorageDiagnosis, summary: ResolvedSto
     ));
 }
 
-fn sweep_state_dir(state_dir: &Path, identity_filter: Option<&str>, out: &mut StorageDiagnosis) {
+fn sweep_state_dir(
+    state_dir: &Path,
+    identity_filter: Option<&str>,
+    options: DoctorOptions,
+    out: &mut StorageDiagnosis,
+) {
     if !state_dir.is_dir() {
         out.findings.push(
             StorageFinding::new(
@@ -380,9 +489,26 @@ fn sweep_state_dir(state_dir: &Path, identity_filter: Option<&str>, out: &mut St
                 .databases
                 .push(inspect_database(db_path, family.ledger_domains, out));
         }
+        if family.name == "sessions" {
+            for db_path in &present {
+                census_session_format(db_path, CompatStore::Sessions, None, options, out);
+            }
+        }
+        if family.name == "runtime" {
+            for db_path in &present {
+                census_session_format(db_path, CompatStore::Runtime, None, options, out);
+            }
+        }
         if family.name == "continuity" {
             for db_path in &present {
                 census_continuity_snapshots(db_path, identity_filter, out);
+                census_session_format(
+                    db_path,
+                    CompatStore::Continuity,
+                    identity_filter,
+                    options,
+                    out,
+                );
             }
         }
         if family.name == "console" {
@@ -923,6 +1049,659 @@ fn materialize_head_canonical_session(
     head.clone()
         .into_session(messages)
         .map_err(|error| error.to_string())
+}
+
+/// Which session-bearing store a compatibility census sweeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompatStore {
+    /// The meerkat session store (`sessions` + `session_heads` tables).
+    Sessions,
+    /// The continuity store (`session_snapshots` + `continuity_session_heads`).
+    Continuity,
+    /// The meerkat runtime store (`runtime_session_snapshots` table).
+    Runtime,
+}
+
+impl CompatStore {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sessions => "sessions",
+            Self::Continuity => "continuity",
+            Self::Runtime => "runtime",
+        }
+    }
+}
+
+/// Which persisted representation is authoritative for a censused session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepresentationAuthority {
+    /// A whole-document blob row with no head row shadowing it.
+    WholeBlob,
+    /// A head row (+ out-of-line rows); any blob row is a frozen archive.
+    HeadCanonical,
+}
+
+impl RepresentationAuthority {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WholeBlob => "whole-blob",
+            Self::HeadCanonical => "head-canonical",
+        }
+    }
+}
+
+/// Checkpoint-stamp schema evidence, from the minimal
+/// `metadata[SESSION_CHECKPOINT_STAMP_KEY].schema_version` parse — no
+/// verification pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StampSchemaEvidence {
+    /// No checkpoint stamp in the metadata (legacy unstamped document).
+    Absent,
+    Version(u64),
+    /// Present but not minimally parseable (never laundered into a version).
+    Malformed(String),
+}
+
+impl StampSchemaEvidence {
+    fn census_key(&self) -> String {
+        match self {
+            Self::Absent => "unstamped".to_string(),
+            Self::Version(version) => version.to_string(),
+            Self::Malformed(_) => MALFORMED_CENSUS_KEY.to_string(),
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Absent => "unstamped".to_string(),
+            Self::Version(version) => version.to_string(),
+            Self::Malformed(error) => format!("malformed ({error})"),
+        }
+    }
+}
+
+/// Transcript-history witness format evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WitnessFormatEvidence {
+    Format(u64),
+    Malformed(String),
+}
+
+impl WitnessFormatEvidence {
+    fn census_key(&self) -> String {
+        match self {
+            Self::Format(format) => format.to_string(),
+            Self::Malformed(_) => MALFORMED_CENSUS_KEY.to_string(),
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Format(format) => format.to_string(),
+            Self::Malformed(error) => format!("malformed ({error})"),
+        }
+    }
+}
+
+/// `metadata[SESSION_CHECKPOINT_STAMP_KEY].schema_version`, minimally.
+fn classify_stamp_schema(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+) -> StampSchemaEvidence {
+    let Some(stamp) = metadata.get(SESSION_CHECKPOINT_STAMP_KEY) else {
+        return StampSchemaEvidence::Absent;
+    };
+    let Some(fields) = stamp.as_object() else {
+        return StampSchemaEvidence::Malformed("checkpoint stamp is not a JSON object".to_string());
+    };
+    match fields
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(version) => StampSchemaEvidence::Version(version),
+        None => StampSchemaEvidence::Malformed(
+            "checkpoint stamp carries no numeric schema_version".to_string(),
+        ),
+    }
+}
+
+/// The witness format the document's evidence names: a bare-string carrier
+/// is format 2, an object carrier declares its own `witness_format`, and a
+/// document with no carrier is implied by its stamp schema (schema >=
+/// [`WITNESS_V3_MIN_STAMP_SCHEMA`] was minted over the v3 witness,
+/// everything else over v2).
+fn classify_witness_format(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    stamp: &StampSchemaEvidence,
+) -> WitnessFormatEvidence {
+    match metadata.get(SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY) {
+        Some(serde_json::Value::String(_)) => WitnessFormatEvidence::Format(2),
+        Some(serde_json::Value::Object(fields)) => match fields
+            .get("witness_format")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(format) => WitnessFormatEvidence::Format(format),
+            None => WitnessFormatEvidence::Malformed(
+                "witness carrier object carries no numeric witness_format".to_string(),
+            ),
+        },
+        Some(_) => WitnessFormatEvidence::Malformed(
+            "witness carrier is neither a digest string nor an object".to_string(),
+        ),
+        None => match stamp {
+            StampSchemaEvidence::Version(version) if *version >= WITNESS_V3_MIN_STAMP_SCHEMA => {
+                WitnessFormatEvidence::Format(3)
+            }
+            _ => WitnessFormatEvidence::Format(2),
+        },
+    }
+}
+
+/// One censused session's verbose row.
+struct CompatSessionRow {
+    session_id: String,
+    identity: Option<String>,
+    representation: RepresentationAuthority,
+    stamp: StampSchemaEvidence,
+    witness: WitnessFormatEvidence,
+}
+
+/// Accumulator for one database's session-format census.
+#[derive(Default)]
+struct CompatCensus {
+    verbose: bool,
+    total: usize,
+    head_canonical: usize,
+    whole_blob: usize,
+    /// census key (`"unstamped"`, `"<n>"`, `"malformed"`) → count.
+    stamp_schemas: BTreeMap<String, usize>,
+    witness_formats: BTreeMap<String, usize>,
+    /// Individually reported unreadable rows (session id, identity, error),
+    /// capped at [`COMPAT_UNREADABLE_REPORT_CAP`].
+    unreadable: Vec<(String, Option<String>, String)>,
+    unreadable_overflow: usize,
+    /// Per-session verbose rows (collected only when `verbose`).
+    rows: Vec<CompatSessionRow>,
+}
+
+impl CompatCensus {
+    fn new(verbose: bool) -> Self {
+        Self {
+            verbose,
+            ..Self::default()
+        }
+    }
+
+    fn record(
+        &mut self,
+        session_id: String,
+        identity: Option<String>,
+        representation: RepresentationAuthority,
+        metadata: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        let stamp = classify_stamp_schema(metadata);
+        let witness = classify_witness_format(metadata, &stamp);
+        self.count_representation(representation);
+        *self.stamp_schemas.entry(stamp.census_key()).or_default() += 1;
+        *self
+            .witness_formats
+            .entry(witness.census_key())
+            .or_default() += 1;
+        if self.verbose {
+            self.rows.push(CompatSessionRow {
+                session_id,
+                identity,
+                representation,
+                stamp,
+                witness,
+            });
+        }
+    }
+
+    fn record_unreadable(
+        &mut self,
+        session_id: String,
+        identity: Option<String>,
+        representation: RepresentationAuthority,
+        error: String,
+    ) {
+        self.count_representation(representation);
+        if self.unreadable.len() < COMPAT_UNREADABLE_REPORT_CAP {
+            self.unreadable.push((session_id, identity, error));
+        } else {
+            self.unreadable_overflow += 1;
+        }
+    }
+
+    fn count_representation(&mut self, representation: RepresentationAuthority) {
+        self.total += 1;
+        match representation {
+            RepresentationAuthority::HeadCanonical => self.head_canonical += 1,
+            RepresentationAuthority::WholeBlob => self.whole_blob += 1,
+        }
+    }
+
+    fn unreadable_total(&self) -> usize {
+        self.unreadable.len() + self.unreadable_overflow
+    }
+
+    /// Any document whose stamp or witness evidence is present but does not
+    /// minimally parse. Stored evidence that cannot be read is a fault worth
+    /// a warning; the format a document is written in never is.
+    fn has_malformed_evidence(&self) -> bool {
+        self.stamp_schemas.contains_key(MALFORMED_CENSUS_KEY)
+            || self.witness_formats.contains_key(MALFORMED_CENSUS_KEY)
+    }
+}
+
+/// Outcome of one session-format row sweep.
+enum CompatSweep {
+    /// Session-bearing tables were censused (possibly zero rows).
+    Censused,
+    /// No session-bearing tables in this file — nothing to say.
+    NoSessionTables,
+    /// A session-bearing table exists but carries no metadata column —
+    /// census impossible; stated explicitly instead of censusing garbage.
+    PreEvidenceSchema(&'static str),
+}
+
+/// The session-format census over one session-bearing database (see the
+/// module docs). Minimal raw-JSON field parses only; a refusing document is
+/// reported with its error string and censuses as format-unknown.
+fn census_session_format(
+    db_path: &Path,
+    store: CompatStore,
+    identity_filter: Option<&str>,
+    options: DoctorOptions,
+    out: &mut StorageDiagnosis,
+) {
+    let Ok(conn) = meerkat_sqlite::open(db_path, meerkat_sqlite::ConnectionProfile::ReadOnly)
+    else {
+        return; // already reported by inspect_database
+    };
+    // One deferred read snapshot so the head and blob queries observe a
+    // single view (a live blob-to-head migration cannot hide a session
+    // between them). The first SELECT establishes the snapshot.
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            out.findings.push(
+                StorageFinding::new(
+                    FindingSeverity::Error,
+                    FINDING_DATABASE_UNREADABLE,
+                    format!("cannot begin read-snapshot transaction: {err}"),
+                )
+                .with_path(db_path.to_path_buf()),
+            );
+            return;
+        }
+    };
+    let mut census = CompatCensus::new(options.verbose);
+    let result = match store {
+        CompatStore::Sessions => census_sessions_store_rows(&tx, &mut census),
+        CompatStore::Continuity => census_continuity_rows(&tx, identity_filter, &mut census),
+        CompatStore::Runtime => census_runtime_rows(&tx, &mut census),
+    };
+    match result {
+        Ok(CompatSweep::Censused) => emit_compat_census(store, db_path, &census, out),
+        Ok(CompatSweep::NoSessionTables) => {}
+        Ok(CompatSweep::PreEvidenceSchema(table)) => out.findings.push(
+            StorageFinding::new(
+                FindingSeverity::Info,
+                FINDING_STORAGE_COMPAT_CENSUS,
+                format!(
+                    "session-format census skipped ({} store): the '{table}' table \
+                     carries no metadata column (schema predates checkpoint evidence)",
+                    store.label()
+                ),
+            )
+            .with_path(db_path.to_path_buf()),
+        ),
+        Err(err) => out.findings.push(
+            StorageFinding::new(
+                FindingSeverity::Error,
+                FINDING_DATABASE_UNREADABLE,
+                format!("session-format census query failed: {err}"),
+            )
+            .with_path(db_path.to_path_buf()),
+        ),
+    }
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2",
+            [table, column],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Compatibility rows of the meerkat session store: `session_heads` rows are
+/// head-canonical, `sessions` rows without a head row are whole-blob (a head
+/// row freezes the blob row into an archive nothing serves). Metadata comes
+/// from the stores' own `metadata_json` columns — no `Session` decode.
+fn census_sessions_store_rows(
+    conn: &Connection,
+    census: &mut CompatCensus,
+) -> Result<CompatSweep, rusqlite::Error> {
+    let heads_table = table_exists(conn, "session_heads")?;
+    let sessions_table = table_exists(conn, "sessions")?;
+    if !heads_table && !sessions_table {
+        return Ok(CompatSweep::NoSessionTables);
+    }
+    if heads_table && !table_has_column(conn, "session_heads", "metadata_json")? {
+        return Ok(CompatSweep::PreEvidenceSchema("session_heads"));
+    }
+    if sessions_table && !table_has_column(conn, "sessions", "metadata_json")? {
+        return Ok(CompatSweep::PreEvidenceSchema("sessions"));
+    }
+    if heads_table {
+        let mut statement = conn
+            .prepare("SELECT session_id, metadata_json FROM session_heads ORDER BY session_id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let session_id: String = row.get(0)?;
+            let metadata_json: JsonColumnBytes = row.get(1)?;
+            match parse_metadata_map(&metadata_json.into_bytes()) {
+                Ok(metadata) => census.record(
+                    session_id,
+                    None,
+                    RepresentationAuthority::HeadCanonical,
+                    &metadata,
+                ),
+                Err(error) => census.record_unreadable(
+                    session_id,
+                    None,
+                    RepresentationAuthority::HeadCanonical,
+                    error,
+                ),
+            }
+        }
+    }
+    if sessions_table {
+        let sql = if heads_table {
+            "SELECT session_id, metadata_json FROM sessions \
+             WHERE session_id NOT IN (SELECT session_id FROM session_heads) \
+             ORDER BY session_id"
+        } else {
+            "SELECT session_id, metadata_json FROM sessions ORDER BY session_id"
+        };
+        let mut statement = conn.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let session_id: String = row.get(0)?;
+            let metadata_json: JsonColumnBytes = row.get(1)?;
+            match parse_metadata_map(&metadata_json.into_bytes()) {
+                Ok(metadata) => census.record(
+                    session_id,
+                    None,
+                    RepresentationAuthority::WholeBlob,
+                    &metadata,
+                ),
+                Err(error) => census.record_unreadable(
+                    session_id,
+                    None,
+                    RepresentationAuthority::WholeBlob,
+                    error,
+                ),
+            }
+        }
+    }
+    Ok(CompatSweep::Censused)
+}
+
+/// Compatibility rows of the continuity store: `continuity_session_heads`
+/// rows are head-canonical (metadata inside the persisted head document),
+/// `session_snapshots` rows without a head row are whole-blob (metadata
+/// inside the persisted session document).
+fn census_continuity_rows(
+    conn: &Connection,
+    identity_filter: Option<&str>,
+    census: &mut CompatCensus,
+) -> Result<CompatSweep, rusqlite::Error> {
+    let heads_table = table_exists(conn, "continuity_session_heads")?;
+    let snapshots_table = table_exists(conn, "session_snapshots")?;
+    if !heads_table && !snapshots_table {
+        return Ok(CompatSweep::NoSessionTables);
+    }
+    if heads_table {
+        let mut statement = conn.prepare(
+            "SELECT session_id, identity, head_json FROM continuity_session_heads \
+             ORDER BY session_id",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let session_id: String = row.get(0)?;
+            let identity: String = row.get(1)?;
+            if identity_filter.is_some_and(|filter| filter != identity) {
+                continue;
+            }
+            let head_json: Vec<u8> = row.get(2)?;
+            match metadata_from_document_bytes(&head_json) {
+                Ok(metadata) => census.record(
+                    session_id,
+                    Some(identity),
+                    RepresentationAuthority::HeadCanonical,
+                    &metadata,
+                ),
+                Err(error) => census.record_unreadable(
+                    session_id,
+                    Some(identity),
+                    RepresentationAuthority::HeadCanonical,
+                    error,
+                ),
+            }
+        }
+    }
+    if snapshots_table {
+        // A head row freezes the blob row into an archive nothing serves —
+        // same canonical-representation rule the checkpoint census applies.
+        let sql = if heads_table {
+            "SELECT session_id, identity, data FROM session_snapshots \
+             WHERE session_id NOT IN (SELECT session_id FROM continuity_session_heads) \
+             ORDER BY session_id"
+        } else {
+            "SELECT session_id, identity, data FROM session_snapshots ORDER BY session_id"
+        };
+        let mut statement = conn.prepare(sql)?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let session_id: String = row.get(0)?;
+            let identity: String = row.get(1)?;
+            if identity_filter.is_some_and(|filter| filter != identity) {
+                continue;
+            }
+            let data: Vec<u8> = row.get(2)?;
+            match metadata_from_document_bytes(&data) {
+                Ok(metadata) => census.record(
+                    session_id,
+                    Some(identity),
+                    RepresentationAuthority::WholeBlob,
+                    &metadata,
+                ),
+                Err(error) => census.record_unreadable(
+                    session_id,
+                    Some(identity),
+                    RepresentationAuthority::WholeBlob,
+                    error,
+                ),
+            }
+        }
+    }
+    Ok(CompatSweep::Censused)
+}
+
+/// Compatibility rows of the runtime store: `runtime_session_snapshots`
+/// rows are retained full-envelope session documents, kept across restarts
+/// and decoded on the authoritative resume path — the same table/column
+/// shape the marker-stamp walker rewrites
+/// ([`SessionDocumentStore::RuntimeSnapshots`]), censused through the same
+/// envelope extraction the continuity census uses rather than a decoder of
+/// its own. Every row is whole-blob (the runtime store has no
+/// head-canonical channel) and carries no identity; rows are keyed by
+/// runtime id.
+fn census_runtime_rows(
+    conn: &Connection,
+    census: &mut CompatCensus,
+) -> Result<CompatSweep, rusqlite::Error> {
+    if !table_exists(
+        conn,
+        SessionDocumentStore::RuntimeSnapshots.required_table(),
+    )? {
+        return Ok(CompatSweep::NoSessionTables);
+    }
+    let mut statement = conn.prepare(
+        "SELECT runtime_id, session_snapshot FROM runtime_session_snapshots \
+         ORDER BY runtime_id",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let runtime_id: String = row.get(0)?;
+        let data: Vec<u8> = row.get(1)?;
+        match metadata_from_document_bytes(&data) {
+            Ok(metadata) => census.record(
+                runtime_id,
+                None,
+                RepresentationAuthority::WholeBlob,
+                &metadata,
+            ),
+            Err(error) => census.record_unreadable(
+                runtime_id,
+                None,
+                RepresentationAuthority::WholeBlob,
+                error,
+            ),
+        }
+    }
+    Ok(CompatSweep::Censused)
+}
+
+/// Parse a raw `metadata_json` column value.
+fn parse_metadata_map(bytes: &[u8]) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    serde_json::from_slice(bytes).map_err(|err| format!("metadata does not parse as JSON: {err}"))
+}
+
+/// Minimal metadata extraction from a persisted session-document or
+/// session-head JSON payload: parse the raw JSON and take the top-level
+/// `metadata` object. Deliberately NOT a `Session` decode — decoding runs
+/// validation and can refuse; the census must classify documents restore
+/// would refuse. A missing `metadata` field decodes as empty (the envelope's
+/// own `#[serde(default)]` semantics), never as a fault.
+fn metadata_from_document_bytes(
+    bytes: &[u8],
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let document: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|err| format!("document does not parse as JSON: {err}"))?;
+    if !document.is_object() {
+        return Err("document is not a JSON object".to_string());
+    }
+    match document.get("metadata") {
+        None => Ok(serde_json::Map::new()),
+        Some(serde_json::Value::Object(metadata)) => Ok(metadata.clone()),
+        Some(_) => Err("document 'metadata' field is not a JSON object".to_string()),
+    }
+}
+
+fn census_map_display(map: &BTreeMap<String, usize>) -> String {
+    if map.is_empty() {
+        return "none".to_string();
+    }
+    map.iter()
+        .map(|(key, count)| format!("{key}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn emit_compat_census(
+    store: CompatStore,
+    db_path: &Path,
+    census: &CompatCensus,
+    out: &mut StorageDiagnosis,
+) {
+    // The census is descriptive: which format a document is written in is
+    // never a fault. Warning only when stored format evidence cannot be
+    // read — malformed stamp/witness fields, or a document that refuses the
+    // minimal parse outright.
+    let severity = if census.unreadable_total() == 0 && !census.has_malformed_evidence() {
+        FindingSeverity::Info
+    } else {
+        FindingSeverity::Warning
+    };
+    let mut message = format!(
+        "session-format census ({} store): {} session(s) — {} head-canonical, {} whole-blob; \
+         checkpoint-stamp schema {{{}}}; transcript-history witness format {{{}}}",
+        store.label(),
+        census.total,
+        census.head_canonical,
+        census.whole_blob,
+        census_map_display(&census.stamp_schemas),
+        census_map_display(&census.witness_formats),
+    );
+    if census.unreadable_total() > 0 {
+        message.push_str(&format!(
+            "; {} document(s) censused as format-unknown",
+            census.unreadable_total()
+        ));
+    }
+    out.findings.push(
+        StorageFinding::new(severity, FINDING_STORAGE_COMPAT_CENSUS, message)
+            .with_path(db_path.to_path_buf()),
+    );
+
+    for row in &census.rows {
+        let mut finding = StorageFinding::new(
+            FindingSeverity::Info,
+            FINDING_STORAGE_COMPAT_SESSION,
+            format!(
+                "session '{}': {} store, {} representation, checkpoint-stamp schema {}, \
+                 transcript-history witness format {}",
+                row.session_id,
+                store.label(),
+                row.representation.as_str(),
+                row.stamp.display(),
+                row.witness.display(),
+            ),
+        )
+        .with_path(db_path.to_path_buf());
+        if let Some(identity) = &row.identity {
+            finding = finding.with_realm(identity.clone());
+        }
+        out.findings.push(finding);
+    }
+
+    for (session_id, identity, error) in &census.unreadable {
+        let mut finding = StorageFinding::new(
+            FindingSeverity::Warning,
+            FINDING_STORAGE_COMPAT_SESSION_UNREADABLE,
+            format!(
+                "session '{session_id}' refused the minimal session-format parse \
+                 ({error}); it censuses as format-unknown"
+            ),
+        )
+        .with_path(db_path.to_path_buf());
+        if let Some(identity) = identity {
+            finding = finding.with_realm(identity.clone());
+        }
+        out.findings.push(finding);
+    }
+    if census.unreadable_overflow > 0 {
+        out.findings.push(
+            StorageFinding::new(
+                FindingSeverity::Warning,
+                FINDING_STORAGE_COMPAT_SESSION_UNREADABLE,
+                format!(
+                    "{} additional unreadable session document(s) not listed individually \
+                     ({} total)",
+                    census.unreadable_overflow,
+                    census.unreadable_total()
+                ),
+            )
+            .with_path(db_path.to_path_buf()),
+        );
+    }
 }
 
 /// The on-disk object paths `ObjectStoreBlobStore` uses for a canonical blob
@@ -1703,6 +2482,549 @@ mod tests {
             .await
             .expect("diagnose never fails on disk");
         assert_eq!(diagnosis.inventory.len(), 1);
+    }
+
+    fn metadata_object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().expect("metadata object").clone()
+    }
+
+    #[test]
+    fn compat_classification_follows_the_review_rules() {
+        use serde_json::json;
+
+        let classify = |metadata: serde_json::Value| {
+            let metadata = metadata_object(metadata);
+            let stamp = classify_stamp_schema(&metadata);
+            let witness = classify_witness_format(&metadata, &stamp);
+            (stamp, witness)
+        };
+
+        // Unstamped, no carrier: witness defaults to 2.
+        let (stamp, witness) = classify(json!({}));
+        assert_eq!(stamp, StampSchemaEvidence::Absent);
+        assert_eq!(witness, WitnessFormatEvidence::Format(2));
+
+        // Stamp schema 2, no carrier: implied witness 2.
+        let (stamp, witness) = classify(json!({
+            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2}
+        }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(2));
+        assert_eq!(witness, WitnessFormatEvidence::Format(2));
+
+        // Stamp schema 3, no carrier: implied witness 3.
+        let (stamp, witness) = classify(json!({
+            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+        }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(3));
+        assert_eq!(witness, WitnessFormatEvidence::Format(3));
+
+        // A bare-string carrier is witness 2 even beside a schema-3 stamp:
+        // the carrier IS the witness evidence, and the implied-format
+        // fallback never overrides it.
+        let (stamp, witness) = classify(json!({
+            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
+            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: "sha256:abc"
+        }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(3));
+        assert_eq!(witness, WitnessFormatEvidence::Format(2));
+
+        // An object carrier declares its own witness_format.
+        let (stamp, witness) = classify(json!({
+            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
+            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {
+                "witness_format": 3,
+                "revision_digest_format": 2,
+                "digest": "sha256:abc"
+            }
+        }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(2));
+        assert_eq!(witness, WitnessFormatEvidence::Format(3));
+
+        // Malformed evidence is never laundered into a format number.
+        let (_, witness) = classify(json!({
+            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {"digest": "sha256:abc"}
+        }));
+        assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
+        assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
+        let (stamp, _) = classify(json!({
+            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
+        }));
+        assert!(matches!(stamp, StampSchemaEvidence::Malformed(_)));
+        assert_eq!(stamp.census_key(), MALFORMED_CENSUS_KEY);
+        let (_, witness) = classify(json!({
+            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: 7
+        }));
+        assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
+        assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
+    }
+
+    const SESSIONS_STORE_DDL: &str = "CREATE TABLE sessions (
+        session_id    TEXT PRIMARY KEY,
+        metadata_json TEXT NOT NULL,
+        session_json  BLOB NOT NULL
+    );
+    CREATE TABLE session_heads (
+        session_id    TEXT PRIMARY KEY,
+        metadata_json TEXT NOT NULL
+    )";
+
+    fn insert_session_blob(conn: &Connection, session_id: &str, metadata_json: &str) {
+        conn.execute(
+            "INSERT INTO sessions (session_id, metadata_json, session_json) VALUES (?1, ?2, X'7B7D')",
+            rusqlite::params![session_id, metadata_json],
+        )
+        .unwrap();
+    }
+
+    fn insert_session_head(conn: &Connection, session_id: &str, metadata_json: &str) {
+        conn.execute(
+            "INSERT INTO session_heads (session_id, metadata_json) VALUES (?1, ?2)",
+            rusqlite::params![session_id, metadata_json],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn compat_census_covers_the_sessions_store_and_verbose_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let db_path = state.join("sessions.db");
+        create_db_with_table(&db_path, SESSIONS_STORE_DDL);
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            // Whole-blob, unstamped legacy.
+            insert_session_blob(&conn, "s-legacy", "{}");
+            // Whole-blob, schema-3 stamp (implied witness 3).
+            insert_session_blob(
+                &conn,
+                "s-v3",
+                &serde_json::json!({
+                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                })
+                .to_string(),
+            );
+            // Whole-blob, unparseable metadata: censuses as format-unknown.
+            insert_session_blob(&conn, "s-bad", "not json");
+            // Head-canonical, schema-2 stamp + bare-string carrier.
+            insert_session_head(
+                &conn,
+                "s-head",
+                &serde_json::json!({
+                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
+                    SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: "sha256:abc"
+                })
+                .to_string(),
+            );
+            // The shadowed blob twin of the head row is a frozen archive and
+            // must not census.
+            insert_session_blob(&conn, "s-head", "{}");
+            // Head-canonical, object carrier declaring witness 3.
+            insert_session_head(
+                &conn,
+                "s-head-v3",
+                &serde_json::json!({
+                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
+                    SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {
+                        "witness_format": 3,
+                        "revision_digest_format": 2,
+                        "digest": "sha256:def"
+                    }
+                })
+                .to_string(),
+            );
+        }
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("compat census finding");
+        // Warning here is earned by the one document whose metadata does not
+        // parse — never by a document being written in the current format.
+        assert_eq!(census.severity, FindingSeverity::Warning, "{census:?}");
+        for fragment in [
+            "sessions store",
+            "5 session(s)",
+            "2 head-canonical",
+            "3 whole-blob",
+            "unstamped: 1",
+            "2: 1",
+            "3: 2",
+            "1 document(s) censused as format-unknown",
+        ] {
+            assert!(
+                census.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                census.message
+            );
+        }
+        assert!(
+            !census.message.contains("0.8.9") && !census.message.contains("readable"),
+            "the census states what the store contains, never which binary can open it: {}",
+            census.message
+        );
+        let unreadable = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_SESSION_UNREADABLE)
+            .expect("unreadable finding");
+        assert_eq!(unreadable.severity, FindingSeverity::Warning);
+        assert!(
+            unreadable.message.contains("s-bad"),
+            "{}",
+            unreadable.message
+        );
+        assert!(
+            unreadable.message.contains("does not parse"),
+            "the error string is the reportable fact: {}",
+            unreadable.message
+        );
+        // Verbose rows are opt-in.
+        assert!(
+            !codes(&diagnosis).contains(&FINDING_STORAGE_COMPAT_SESSION),
+            "{diagnosis:?}"
+        );
+
+        let verbose = diagnose_state_dir_blocking_with_options(
+            &scope(&[state]),
+            None,
+            DoctorOptions { verbose: true },
+        );
+        let rows: Vec<_> = verbose
+            .findings
+            .iter()
+            .filter(|f| f.code == FINDING_STORAGE_COMPAT_SESSION)
+            .collect();
+        assert_eq!(rows.len(), 4, "{rows:#?}");
+        let head_v3 = rows
+            .iter()
+            .find(|f| f.message.contains("'s-head-v3'"))
+            .expect("s-head-v3 row");
+        for fragment in [
+            "head-canonical representation",
+            "checkpoint-stamp schema 3",
+            "witness format 3",
+        ] {
+            assert!(
+                head_v3.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                head_v3.message
+            );
+        }
+        assert!(
+            !head_v3.message.contains("0.8.9"),
+            "a verbose row states the document's format, not a readability verdict: {}",
+            head_v3.message
+        );
+        assert!(
+            rows.iter().all(|f| !f.message.contains("'s-bad'")),
+            "unreadable documents are reported through their own finding: {rows:#?}"
+        );
+    }
+
+    const CONTINUITY_HEADS_DDL: &str = "CREATE TABLE continuity_session_heads (
+        session_id TEXT PRIMARY KEY,
+        identity   TEXT NOT NULL,
+        head_json  BLOB NOT NULL
+    )";
+
+    #[tokio::test]
+    async fn compat_census_covers_continuity_and_honors_the_identity_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let db_path = state.join("continuity.db");
+        create_db_with_table(&db_path, CONTINUITY_DDL);
+        create_db_with_table(&db_path, CONTINUITY_HEADS_DDL);
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            // Whole-blob unstamped snapshot for identity a.
+            let (sid_a, data_a) = unstamped_session_payload();
+            insert_snapshot(&conn, &sid_a, "domain:a", &data_a);
+            // Unreadable snapshot for identity a.
+            insert_snapshot(&conn, "sid-garbage", "domain:a", b"not json");
+            // Head-canonical schema-3 head for identity b, plus its frozen
+            // blob archive (excluded from the census).
+            let head_json = serde_json::json!({
+                "metadata": {
+                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                }
+            });
+            conn.execute(
+                "INSERT INTO continuity_session_heads (session_id, identity, head_json) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "sid-head",
+                    "domain:b",
+                    serde_json::to_vec(&head_json).unwrap()
+                ],
+            )
+            .unwrap();
+            insert_snapshot(&conn, "sid-head", "domain:b", b"{}");
+        }
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("compat census finding");
+        assert_eq!(census.severity, FindingSeverity::Warning);
+        for fragment in [
+            "continuity store",
+            "3 session(s)",
+            "1 head-canonical",
+            "2 whole-blob",
+            "unstamped: 1",
+            "3: 1",
+            "1 document(s) censused as format-unknown",
+        ] {
+            assert!(
+                census.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                census.message
+            );
+        }
+        let unreadable = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_SESSION_UNREADABLE)
+            .expect("unreadable finding");
+        assert_eq!(unreadable.realm.as_deref(), Some("domain:a"));
+
+        // The identity filter narrows the census to one identity.
+        let filtered = diagnose_state_dir(&scope(&[state]).with_realm("domain:b")).await;
+        let census = filtered
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("filtered compat census");
+        assert!(
+            census.message.contains("1 session(s)"),
+            "{}",
+            census.message
+        );
+        assert!(
+            !codes(&filtered).contains(&FINDING_STORAGE_COMPAT_SESSION_UNREADABLE),
+            "{filtered:?}"
+        );
+
+        // Verbose continuity rows carry the identity as the finding realm.
+        let verbose = diagnose_state_dir_blocking_with_options(
+            &scope(&[state]),
+            None,
+            DoctorOptions { verbose: true },
+        );
+        let head_row = verbose
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_SESSION && f.message.contains("'sid-head'"))
+            .expect("sid-head verbose row");
+        assert_eq!(head_row.realm.as_deref(), Some("domain:b"));
+        assert!(
+            head_row.message.contains("head-canonical representation"),
+            "{}",
+            head_row.message
+        );
+    }
+
+    /// Pinned meerkat runtime-store snapshot schema (the marker-stamp
+    /// walker's fixture spelling).
+    const RUNTIME_SNAPSHOTS_DDL: &str = "CREATE TABLE runtime_session_snapshots (
+        runtime_id TEXT PRIMARY KEY,
+        session_snapshot BLOB NOT NULL
+    )";
+
+    fn insert_runtime_snapshot(conn: &Connection, runtime_id: &str, data: &[u8]) {
+        conn.execute(
+            "INSERT INTO runtime_session_snapshots (runtime_id, session_snapshot) \
+             VALUES (?1, ?2)",
+            rusqlite::params![runtime_id, data],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn compat_census_covers_the_runtime_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let db_path = state.join("runtime.sqlite");
+        create_db_with_table(&db_path, RUNTIME_SNAPSHOTS_DDL);
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            // Unstamped legacy session document.
+            let (sid_legacy, data_legacy) = unstamped_session_payload();
+            insert_runtime_snapshot(
+                &conn,
+                &format!("session-runtime:{sid_legacy}"),
+                &data_legacy,
+            );
+            // Schema-3 stamp (implied witness 3): a retained witness-v3
+            // snapshot on the authoritative resume path.
+            insert_runtime_snapshot(
+                &conn,
+                "session-runtime:v3",
+                &serde_json::to_vec(&serde_json::json!({
+                    "metadata": {
+                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                    }
+                }))
+                .unwrap(),
+            );
+            // Malformed stamp evidence: never laundered into a version.
+            insert_runtime_snapshot(
+                &conn,
+                "session-runtime:malformed",
+                &serde_json::to_vec(&serde_json::json!({
+                    "metadata": {
+                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
+                    }
+                }))
+                .unwrap(),
+            );
+            // A payload that refuses even the minimal parse.
+            insert_runtime_snapshot(&conn, "session-runtime:garbage", b"not json");
+        }
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("runtime compat census finding");
+        assert_eq!(census.severity, FindingSeverity::Warning, "{census:?}");
+        for fragment in [
+            "runtime store",
+            "4 session(s)",
+            "0 head-canonical",
+            "4 whole-blob",
+            "unstamped: 1",
+            "3: 1",
+            "malformed: 1",
+            "1 document(s) censused as format-unknown",
+        ] {
+            assert!(
+                census.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                census.message
+            );
+        }
+        let unreadable = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_SESSION_UNREADABLE)
+            .expect("unreadable finding");
+        assert!(
+            unreadable.message.contains("session-runtime:garbage"),
+            "{}",
+            unreadable.message
+        );
+
+        // Verbose rows carry the runtime-id key and the store label.
+        let verbose = diagnose_state_dir_blocking_with_options(
+            &scope(&[state]),
+            None,
+            DoctorOptions { verbose: true },
+        );
+        let v3_row = verbose
+            .findings
+            .iter()
+            .find(|f| {
+                f.code == FINDING_STORAGE_COMPAT_SESSION
+                    && f.message.contains("'session-runtime:v3'")
+            })
+            .expect("v3 runtime verbose row");
+        for fragment in [
+            "runtime store",
+            "whole-blob representation",
+            "checkpoint-stamp schema 3",
+            "witness format 3",
+        ] {
+            assert!(
+                v3_row.message.contains(fragment),
+                "missing '{fragment}' in: {}",
+                v3_row.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_compat_census_tolerates_empty_and_absent_snapshot_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty = temp.path().join("empty");
+        let tableless = temp.path().join("tableless");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&tableless).unwrap();
+        create_db_with_table(&empty.join("runtime.sqlite"), RUNTIME_SNAPSHOTS_DDL);
+        create_db_with_table(
+            &tableless.join("runtime.sqlite"),
+            "CREATE TABLE runtime_rows (id TEXT PRIMARY KEY)",
+        );
+
+        // An empty snapshot table censuses zero sessions at info severity.
+        let diagnosis = diagnose_state_dir(&scope(&[&empty])).await;
+        assert!(!diagnosis.has_errors(), "{diagnosis:?}");
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("empty runtime census");
+        assert_eq!(census.severity, FindingSeverity::Info);
+        assert!(
+            census.message.contains("runtime store") && census.message.contains("0 session(s)"),
+            "{}",
+            census.message
+        );
+
+        // A runtime database without the snapshot table has nothing to say.
+        let diagnosis = diagnose_state_dir(&scope(&[&tableless])).await;
+        assert!(!diagnosis.has_errors(), "{diagnosis:?}");
+        assert!(
+            !codes(&diagnosis).contains(&FINDING_STORAGE_COMPAT_CENSUS),
+            "{diagnosis:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compat_census_skips_pre_evidence_sessions_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        create_db_with_table(
+            &state.join("sessions.db"),
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY)",
+        );
+
+        let diagnosis = diagnose_state_dir(&scope(&[state])).await;
+        assert!(!diagnosis.has_errors(), "{diagnosis:?}");
+        let census = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
+            .expect("skip note");
+        assert_eq!(census.severity, FindingSeverity::Info);
+        assert!(census.message.contains("skipped"), "{}", census.message);
+    }
+
+    #[tokio::test]
+    async fn recovery_hold_census_states_the_read_only_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        let diagnosis = diagnose_state_dir(&scope(&[temp.path()])).await;
+        let hold = diagnosis
+            .findings
+            .iter()
+            .find(|f| f.code == FINDING_RECOVERY_HOLD_CENSUS)
+            .expect("recovery-hold coverage finding");
+        assert_eq!(hold.severity, FindingSeverity::Info);
+        assert!(
+            hold.message.contains("persist no held-for-recovery"),
+            "{}",
+            hold.message
+        );
+        assert!(
+            hold.message.contains("load-time verdicts"),
+            "the census limit is stated, never probed: {}",
+            hold.message
+        );
     }
 
     #[tokio::test]

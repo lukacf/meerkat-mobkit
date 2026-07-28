@@ -1695,6 +1695,85 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         result
     }
 
+    // The three legacy-history-evidence variants MUST be forwarded, not left
+    // to their trait defaults. A default drops the evidence and delegates to
+    // the plain method, which fails closed on the one shape the evidence
+    // exists for: the first slim boundary save over a pre-0.8.9 runtime row
+    // that still carries its transcript-history graph inline. Every write
+    // through this facade is session-scoped, so each keeps the same
+    // pre/post write-epoch bumps as its plain counterpart.
+
+    async fn commit_session_snapshot_with_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+        evidence: meerkat_core::TranscriptHistoryState,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_session_snapshot_with_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn atomic_apply_with_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: Option<meerkat_runtime::store::SessionDelta>,
+        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+        input_updates: Vec<InputStatePersistenceRecord>,
+        session_store_key: Option<meerkat_core::types::SessionId>,
+        evidence: Option<meerkat_core::TranscriptHistoryState>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .atomic_apply_with_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                receipt,
+                input_updates,
+                session_store_key,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+        machine_lifecycle: MachineLifecycleCommit,
+        input_updates: Vec<InputStatePersistenceRecord>,
+        session_store_key: meerkat_core::types::SessionId,
+        evidence: Option<meerkat_core::TranscriptHistoryState>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                receipt,
+                machine_lifecycle,
+                input_updates,
+                session_store_key,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
     async fn load_input_states(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -2431,6 +2510,13 @@ macro_rules! delegate_mob_session_service {
 
         #[async_trait]
         impl MobSessionService for $wrapper {
+            async fn load_session_for_resume(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+                self.inner.load_session_for_resume(session_id).await
+            }
+
             async fn create_session_under_runtime_turn_boundary(
                 &self,
                 req: meerkat_core::service::CreateSessionRequest,
@@ -3157,6 +3243,13 @@ impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionSe
 
 #[async_trait]
 impl MobSessionService for AfterCreateMobSessionService {
+    async fn load_session_for_resume(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+        self.inner.load_session_for_resume(session_id).await
+    }
+
     async fn create_session_under_runtime_turn_boundary(
         &self,
         req: meerkat_core::service::CreateSessionRequest,
@@ -7127,6 +7220,21 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for AbsorberInnerProbe {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: CreateSessionRequest,
@@ -7419,6 +7527,21 @@ realm_profile = "worker-v2"
 
     #[async_trait]
     impl MobSessionService for ForwardingProbe {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+            // Truthful derived answer: this double's resume visibility IS its
+            // typed reads' visibility (the meerkat-mob test-double idiom).
+            if let Some(session) = self.load_persisted_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Active(Box::new(session)));
+            }
+            if let Some(session) = self.load_revivable_retired_session(session_id).await? {
+                return Ok(meerkat_mob::ResumeSessionLoad::Revivable(Box::new(session)));
+            }
+            Ok(meerkat_mob::ResumeSessionLoad::Absent)
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: CreateSessionRequest,

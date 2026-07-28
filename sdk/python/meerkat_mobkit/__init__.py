@@ -25,6 +25,8 @@ from .jobs import (
     DetachedJobResult,
 )
 from .identity_first_models import (
+    CompletionCursor,
+    CompletionProgress,
     IdentityBootstrapCounts,
     IdentityBootstrapEntry,
     IdentityBootstrapMode,
@@ -211,6 +213,9 @@ __all__ = [
     "IdentityBootstrapEntry",
     "IdentityBootstrapStatus",
     "MAX_IDENTITY_BACKGROUND_WARM_CONCURRENCY",
+    # Turn-completion identity
+    "CompletionCursor",
+    "CompletionProgress",
     # Tool-result content blocks
     "text_block",
     "image_block",

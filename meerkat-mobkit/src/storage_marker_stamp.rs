@@ -35,6 +35,22 @@
 //! here are counted and left for adoption, which runs earlier in the same
 //! pass.
 //!
+//! # Checkpoint stamps are preserved, never minted
+//!
+//! The respell is decode → verify → re-serialize of a document that must
+//! already carry a verifying typed stamp. No walk path mints or upgrades a
+//! stamp (`SessionCheckpointStamp::root`/`successor`,
+//! `install_checkpoint_stamp`, and meerkat's stamping save seams are never
+//! called), so the stored stamp — its `schema_version` included — survives
+//! the rewrite unchanged: a schema-1 document stays schema-1. That is the
+//! whole safety argument for a maintenance verb that rewrites bytes under
+//! an operator's feet: a marker respell is a spelling change, so it must
+//! leave the document's integrity evidence — the thing every later verify
+//! is judged against — bit-for-bit what the writer put there. A walk that
+//! silently re-minted a stamp would be manufacturing evidence, not
+//! maintaining a marker. Pinned by
+//! `stamping_preserves_the_stored_stamp_schema_version`.
+//!
 //! # Stores
 //!
 //! Identity fleets hold full-envelope session documents in three places:
@@ -108,8 +124,10 @@ pub enum SessionDocumentStore {
 
 impl SessionDocumentStore {
     /// The table whose absence classifies the file as "not this store"
-    /// (skipped by the verb, never an error).
-    fn required_table(self) -> &'static str {
+    /// (skipped by the verb, never an error). Crate-visible so the doctor's
+    /// session-format census walks the same table spellings this walker
+    /// owns.
+    pub(crate) fn required_table(self) -> &'static str {
         match self {
             Self::Continuity => "session_snapshots",
             Self::RuntimeSnapshots => "runtime_session_snapshots",
@@ -390,6 +408,12 @@ fn sql_err(context: &'static str) -> impl Fn(rusqlite::Error) -> MarkerStampErro
 /// re-serialized (marker-stamped) bytes when the row is a verified
 /// marker-less document that must be rewritten; every other disposition is
 /// recorded on the report directly.
+///
+/// The re-serialization carries the stored checkpoint stamp through
+/// verbatim — decode keeps the stamp as opaque metadata and nothing here
+/// mints or upgrades one — so the row's stamp `schema_version` is identical
+/// before and after the respell (see the module docs on stamps being
+/// preserved, never minted).
 ///
 /// `expected_session_id` is asserted against the embedded document identity
 /// when the row key IS a session id (continuity, session store).
@@ -716,8 +740,9 @@ fn walk_session_store_rows(
 mod tests {
     use super::*;
     use meerkat_core::{
-        Message, SessionCheckpointProvenance, SessionCheckpointStamp, SessionCheckpointState,
-        TranscriptRewriteReason, TranscriptRewriteSelection, types::UserMessage,
+        Message, SessionCheckpointProvenance, SessionCheckpointRevision, SessionCheckpointStamp,
+        SessionCheckpointState, SessionGeneration, TranscriptRewriteReason,
+        TranscriptRewriteSelection, types::UserMessage,
     };
     use rusqlite::Connection;
     use sha2::{Digest, Sha256};
@@ -989,6 +1014,81 @@ mod tests {
         assert_eq!(second.stamped, 0);
         assert_eq!(second.already_current, 2);
         assert!(second.is_clean(), "{:?}", second.refused);
+    }
+
+    /// Marker maintenance must not migrate a document's checkpoint
+    /// evidence: respelling a document whose stored stamp advertises the
+    /// evidence-format schema must leave that `schema_version` in the
+    /// stored bytes, not silently re-mint it at whatever schema the current
+    /// writer would choose.
+    ///
+    /// The fixture mints through `recovery_migration`, which stamps under
+    /// the EVIDENCE witness format — the stamp shape this walk's population
+    /// (documents written before the marker existed) actually carries.
+    #[test]
+    fn stamping_preserves_the_stored_stamp_schema_version() {
+        let mut session = meerkat_core::Session::new();
+        session.push(Message::User(UserMessage::text("schema-one old one")));
+        session.push(Message::User(UserMessage::text("schema-one old two")));
+        session
+            .commit_transcript_rewrite(
+                TranscriptRewriteSelection::MessageRange { start: 0, end: 2 },
+                vec![Message::User(UserMessage::text("schema-one replacement"))],
+                TranscriptRewriteReason::new("edit"),
+                None,
+                None,
+            )
+            .expect("commit fixture rewrite");
+        let legacy_bytes = serde_json::to_vec(&session).expect("serialize legacy source");
+        let stamp = SessionCheckpointStamp::recovery_migration(
+            &session,
+            &legacy_bytes,
+            SessionGeneration::INITIAL,
+            SessionCheckpointRevision::INITIAL,
+        )
+        .expect("mint migration stamp");
+        assert_eq!(
+            stamp.schema_version(),
+            meerkat_core::SESSION_CHECKPOINT_STAMP_SCHEMA_VERSION,
+            "fixture premise: evidence-format minting yields the evidence-format stamp schema"
+        );
+        session
+            .install_checkpoint_stamp(stamp)
+            .expect("install migration stamp");
+        let session_id = session.id().to_string();
+        let marker_less = strip_marker(&session);
+        assert!(matches!(
+            document_marker_state(&marker_less),
+            Ok(DocumentMarkerState::MarkerLess)
+        ));
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = temp.path().join("continuity.sqlite3");
+        continuity_fixture(&db, &[(session_id.as_str(), marker_less.as_slice())]);
+
+        let apply = stamp_session_document_markers_blocking(
+            &db,
+            SessionDocumentStore::Continuity,
+            MarkerStampMode::Apply,
+        )
+        .expect("apply walk");
+        assert_eq!(apply.stamped, 1);
+        assert!(apply.is_clean(), "{:?}", apply.refused);
+
+        let rewritten = continuity_row(&db, &session_id);
+        assert!(matches!(
+            document_marker_state(&rewritten),
+            Ok(DocumentMarkerState::Current)
+        ));
+        // The raw stored field, not a re-verification: marker maintenance
+        // must never migrate the stamp schema as a side effect.
+        let document: serde_json::Value =
+            serde_json::from_slice(&rewritten).expect("decode rewritten row");
+        assert_eq!(
+            document["metadata"][meerkat_core::SESSION_CHECKPOINT_STAMP_KEY]["schema_version"],
+            serde_json::json!(meerkat_core::SESSION_CHECKPOINT_STAMP_SCHEMA_VERSION),
+            "respelling must preserve the stored stamp schema verbatim"
+        );
     }
 
     #[test]

@@ -611,10 +611,111 @@ fn identity_first_types_agent_build_draft_roundtrip() {
             input_schema: serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}}),
         }],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
     let json = serde_json::to_string(&draft).expect("serialize");
     let back: AgentBuildDraft = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(draft, back);
+}
+
+/// The gateway customizer round-trips the draft as JSON
+/// (`serde_json::to_value(&*draft)` out, `serde_json::from_value` back), so a
+/// provider-params field that does not survive that hop is silently dropped
+/// on every SDK-backed build.
+#[test]
+fn identity_first_types_agent_build_draft_provider_params_roundtrip() {
+    use meerkat_core::lifecycle::run_primitive::{
+        OpenAiPromptCacheOptions, OpenAiProviderTag, ProviderParamsOverride, ProviderTag,
+    };
+    use meerkat_core::model_profile::capabilities::{OpenAiPromptCacheMode, OpenAiPromptCacheTtl};
+
+    let draft = AgentBuildDraft {
+        model: None,
+        system_prompt: None,
+        additional_instructions: vec![],
+        labels: BTreeMap::new(),
+        app_context: None,
+        external_tools: vec![],
+        local_external_tools: Default::default(),
+        provider_params: Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_key: Some("tenant-a:stable-prefix".to_string()),
+                prompt_cache_options: Some(OpenAiPromptCacheOptions {
+                    mode: Some(OpenAiPromptCacheMode::Implicit),
+                    ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }),
+    };
+
+    let json = serde_json::to_string(&draft).expect("serialize");
+    let back: AgentBuildDraft = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(draft, back);
+}
+
+/// Backward compatibility: every profile, persisted draft and wire payload
+/// written before `provider_params` existed must still deserialize.
+#[test]
+fn identity_first_types_agent_build_draft_without_provider_params_deserializes() {
+    let legacy = serde_json::json!({
+        "model": "claude-sonnet-4-6",
+        "system_prompt": null,
+        "additional_instructions": [],
+        "labels": {},
+        "app_context": null,
+        "external_tools": []
+    });
+
+    let draft: AgentBuildDraft = serde_json::from_value(legacy).expect("legacy draft");
+    assert_eq!(draft.provider_params, None);
+
+    // And the field stays off the wire when unset, so an SDK that echoes the
+    // draft back sees exactly the payload shape it saw before.
+    let json = serde_json::to_value(&draft).expect("serialize");
+    assert!(json.get("provider_params").is_none());
+}
+
+/// Meerkat's `ProviderParamsOverride` is `deny_unknown_fields`: reusing the
+/// typed shape means a mistyped or unknown knob rejects the draft at ingress
+/// instead of being ferried as untyped JSON and dropped at the LLM edge.
+#[test]
+fn identity_first_types_agent_build_draft_rejects_unknown_provider_params_key() {
+    let unknown_knob = serde_json::json!({
+        "model": null,
+        "system_prompt": null,
+        "app_context": null,
+        "provider_params": { "prompt_cache_ttl": "30m" }
+    });
+    assert!(
+        serde_json::from_value::<AgentBuildDraft>(unknown_knob).is_err(),
+        "an unknown provider-params knob must fail closed"
+    );
+
+    let unknown_tag_knob = serde_json::json!({
+        "model": null,
+        "system_prompt": null,
+        "app_context": null,
+        "provider_params": {
+            "provider_tag": { "provider": "open_ai", "prompt_cache_keys": "x" }
+        }
+    });
+    assert!(
+        serde_json::from_value::<AgentBuildDraft>(unknown_tag_knob).is_err(),
+        "an unknown provider-tag knob must fail closed"
+    );
+
+    let mistyped = serde_json::json!({
+        "model": null,
+        "system_prompt": null,
+        "app_context": null,
+        "provider_params": { "temperature": "warm" }
+    });
+    assert!(
+        serde_json::from_value::<AgentBuildDraft>(mistyped).is_err(),
+        "a mistyped provider-params knob must fail closed"
+    );
 }
 
 #[test]

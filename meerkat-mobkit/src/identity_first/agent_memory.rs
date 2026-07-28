@@ -2226,6 +2226,7 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         }
     }
 

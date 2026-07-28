@@ -27,17 +27,21 @@ use super::contracts::{
 };
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
-    CheckpointVersion, ContinuityGeneration, ContinuityHealth, ContinuityRecord,
-    ContinuityStoreError, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
-    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
-    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
-    RosterContext, SessionSnapshot, TopologyContext,
+    CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
+    ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchAdmission, DispatchInput,
+    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapEntry,
+    IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
+    IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable, RosterContext,
+    SendAdmission, SessionSnapshot, TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
+/// Poll cadence for [`IdentityRuntime::wait_for_completion`]. The cursor is
+/// advanced by an event, so this only bounds observation latency.
+const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MATERIALIZATION_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const RAW_MEMBER_ALIAS_LOCK_SWEEP_MIN: usize = 256;
 const BACKGROUND_WARM_CANCELLED: &str =
@@ -123,6 +127,15 @@ pub enum IdentityRuntimeError {
         requested: String,
         current: Option<AgentRuntimeId>,
     },
+    /// A completion wait presented a baseline from a superseded runtime
+    /// incarnation. Turn counts do not carry across incarnations, so this is
+    /// reported rather than resolved either way — the caller must capture a
+    /// fresh baseline instead of inferring that its turn did or did not run.
+    CompletionIncarnationChanged {
+        identity: AgentIdentity,
+        baseline: CompletionCursor,
+        observed: CompletionCursor,
+    },
     /// Generic I/O or internal error.
     Internal(String),
 }
@@ -185,6 +198,15 @@ impl std::fmt::Display for IdentityRuntimeError {
                     .as_ref()
                     .map(AgentRuntimeId::as_str)
                     .unwrap_or("<none>")
+            ),
+            Self::CompletionIncarnationChanged {
+                identity,
+                baseline,
+                observed,
+            } => write!(
+                f,
+                "completion baseline {baseline} for {identity} belongs to a superseded runtime \
+                 incarnation (now {observed}); capture a fresh baseline"
             ),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
@@ -897,6 +919,14 @@ pub struct IdentityRuntime {
     /// identity fencing authority.
     pending_reset_bridge_cleanups: Arc<RwLock<BTreeMap<String, PendingResetBridgeCleanup>>>,
     reset_bridge_cleanup_tasks: Mutex<JoinSet<()>>,
+    /// Per-identity completed-turn counters ([`CompletionCursor`]).
+    ///
+    /// RETAINED for the process lifetime — never pruned on retire, reset, or
+    /// delete. Dropping an entry would let a re-registered identity republish
+    /// a cursor it already published, which is the one thing a completion
+    /// cursor must never do. The map is bounded by the identities this process
+    /// has seen, i.e. by roster size.
+    completion_cursors: StdMutex<BTreeMap<AgentIdentity, CompletionCursor>>,
 }
 
 /// One generated member alias plus the lifecycle lock owned by its durable
@@ -916,6 +946,14 @@ impl Drop for MultiRuntimeForegroundCompletion {
     fn drop(&mut self) {
         self.0.send_replace(true);
     }
+}
+
+/// Internal result of one dispatch attempt: the caller-facing admission plus
+/// the concrete bridge session that accepted the work (scheduler delivery
+/// needs the latter; RPC callers do not).
+struct DispatchOutcome {
+    admission: DispatchAdmission,
+    session_id: Option<SessionId>,
 }
 
 #[derive(Clone)]
@@ -1033,6 +1071,7 @@ impl IdentityRuntime {
             foreground_shutdown: AtomicBool::new(false),
             pending_reset_bridge_cleanups: Arc::new(RwLock::new(BTreeMap::new())),
             reset_bridge_cleanup_tasks: Mutex::new(JoinSet::new()),
+            completion_cursors: StdMutex::new(BTreeMap::new()),
         }
     }
 
@@ -3813,6 +3852,7 @@ impl IdentityRuntime {
             app_context: spec.context.clone(),
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         if let Some(customizer) = self.customizer.read().await.clone() {
             let customize = customizer.customize_build(&build_context, &spec, &mut draft);
@@ -5898,6 +5938,46 @@ impl IdentityRuntime {
             .await
     }
 
+    /// Cancellation-safe send that also returns the completion baseline to
+    /// wait past.
+    ///
+    /// This is the delivery entry point every surface should use when the
+    /// caller intends to wait for the answer: it is the only one that hands
+    /// back a [`CompletionCursor`] captured before delivery, which is what
+    /// makes "wait for MY turn" expressible without comparing output text.
+    /// `expected_alias` pins the delivery to a generated runtime alias the
+    /// caller already resolved; pass `None` for the durable identity.
+    pub async fn send_admission_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+        interaction_id: Option<&str>,
+    ) -> Result<SendAdmission, IdentityRuntimeError> {
+        let runtime = Arc::clone(self);
+        let identity = identity.clone();
+        let expected_alias = expected_alias.map(ToString::to_string);
+        let content = content.clone();
+        let interaction_id = interaction_id.map(ToString::to_string);
+        self.run_tracked_foreground(async move {
+            runtime
+                .send_with_mode_and_interaction_with_expected_member_alias(
+                    &identity,
+                    expected_alias.as_deref(),
+                    &content,
+                    handling_mode,
+                    interaction_id.as_deref(),
+                )
+                .await
+                .map(|(fencing_token, completion_baseline)| SendAdmission {
+                    fencing_token,
+                    completion_baseline,
+                })
+        })
+        .await
+    }
+
     /// Cancellation-safe explicit-mode send for RPC/host request boundaries.
     pub async fn send_with_mode_tracked(
         self: &Arc<Self>,
@@ -5917,21 +5997,9 @@ impl IdentityRuntime {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let runtime = Arc::clone(self);
-        let identity = identity.clone();
-        let content = content.clone();
-        let interaction_id = interaction_id.map(ToString::to_string);
-        self.run_tracked_foreground(async move {
-            runtime
-                .send_with_mode_and_interaction(
-                    &identity,
-                    &content,
-                    handling_mode,
-                    interaction_id.as_deref(),
-                )
-                .await
-        })
-        .await
+        self.send_admission_tracked(identity, None, content, handling_mode, interaction_id)
+            .await
+            .map(|admission| admission.fencing_token)
     }
 
     /// Cancellation-safe interaction send pinned to the generated runtime
@@ -5946,23 +6014,15 @@ impl IdentityRuntime {
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let runtime = Arc::clone(self);
-        let identity = identity.clone();
-        let expected_alias = expected_alias.to_string();
-        let content = content.clone();
-        let interaction_id = interaction_id.map(ToString::to_string);
-        self.run_tracked_foreground(async move {
-            runtime
-                .send_with_mode_and_interaction_with_expected_member_alias(
-                    &identity,
-                    Some(&expected_alias),
-                    &content,
-                    handling_mode,
-                    interaction_id.as_deref(),
-                )
-                .await
-        })
+        self.send_admission_tracked(
+            identity,
+            Some(expected_alias),
+            content,
+            handling_mode,
+            interaction_id,
+        )
         .await
+        .map(|admission| admission.fencing_token)
     }
 
     /// [`Self::send_with_mode`] with a host-minted interaction id (meerkat
@@ -5986,6 +6046,7 @@ impl IdentityRuntime {
             interaction_id,
         )
         .await
+        .map(|(token, _)| token)
     }
 
     async fn send_with_mode_and_interaction_with_expected_member_alias(
@@ -5995,7 +6056,7 @@ impl IdentityRuntime {
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
         interaction_id: Option<&str>,
-    ) -> Result<FencingToken, IdentityRuntimeError> {
+    ) -> Result<(FencingToken, CompletionCursor), IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6051,6 +6112,13 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
+        // Read the completion baseline BEFORE delivery is attempted. The turn
+        // this send starts can only complete after this point, so a caller
+        // waiting past the baseline cannot miss it. The converse ambiguity is
+        // deliberate and documented: on an identity receiving concurrent
+        // traffic, another delivery's completion can also satisfy the wait.
+        // Waiting too little beats the failure this replaces (waiting forever).
+        let completion_baseline = self.rebase_completion_cursor(identity, token);
         let (runtime_id, memory_session_key, memory_generation, bridge_interaction_id) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6124,7 +6192,7 @@ impl IdentityRuntime {
             }
         }
 
-        Ok(token)
+        Ok((token, completion_baseline))
     }
 
     // -----------------------------------------------------------------------
@@ -6147,7 +6215,7 @@ impl IdentityRuntime {
     ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
         self.dispatch_with_expected_member_alias(identity, None, input)
             .await
-            .map(|(token, durable, _)| (token, durable))
+            .map(|outcome| (outcome.admission.fencing_token, outcome.admission.durable))
     }
 
     async fn dispatch_with_expected_member_alias(
@@ -6155,7 +6223,7 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         expected_alias: Option<&str>,
         input: &DispatchInput,
-    ) -> Result<(FencingToken, bool, Option<SessionId>), IdentityRuntimeError> {
+    ) -> Result<DispatchOutcome, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6197,6 +6265,9 @@ impl IdentityRuntime {
         }
 
         let mut token = self.ensure_active_lease(identity).await?;
+        // Same pre-delivery baseline contract as the send path — see
+        // `send_with_mode_and_interaction_with_expected_member_alias`.
+        let completion_baseline = self.rebase_completion_cursor(identity, token);
         let (is_durable, runtime_id) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -6229,7 +6300,14 @@ impl IdentityRuntime {
             }
         }
 
-        Ok((token, is_durable, dispatched_session_id))
+        Ok(DispatchOutcome {
+            admission: DispatchAdmission {
+                fencing_token: token,
+                durable: is_durable,
+                completion_baseline,
+            },
+            session_id: dispatched_session_id,
+        })
     }
 
     /// Cancellation-safe dispatch for RPC/host request boundaries.
@@ -6253,15 +6331,29 @@ impl IdentityRuntime {
         expected_alias: &str,
         input: &DispatchInput,
     ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
+        self.dispatch_admission_tracked(identity, Some(expected_alias), input)
+            .await
+            .map(|admission| (admission.fencing_token, admission.durable))
+    }
+
+    /// Cancellation-safe dispatch that also returns the completion baseline to
+    /// wait past. Dispatch counterpart of [`Self::send_admission_tracked`];
+    /// pass `expected_alias = None` for the durable identity.
+    pub async fn dispatch_admission_tracked(
+        self: &Arc<Self>,
+        identity: &AgentIdentity,
+        expected_alias: Option<&str>,
+        input: &DispatchInput,
+    ) -> Result<DispatchAdmission, IdentityRuntimeError> {
         let runtime = Arc::clone(self);
         let identity = identity.clone();
-        let expected_alias = expected_alias.to_string();
+        let expected_alias = expected_alias.map(ToString::to_string);
         let input = input.clone();
         self.run_tracked_foreground(async move {
             runtime
-                .dispatch_with_expected_member_alias(&identity, Some(&expected_alias), &input)
+                .dispatch_with_expected_member_alias(&identity, expected_alias.as_deref(), &input)
                 .await
-                .map(|(token, durable, _)| (token, durable))
+                .map(|outcome| outcome.admission)
         })
         .await
     }
@@ -6282,7 +6374,7 @@ impl IdentityRuntime {
             runtime
                 .dispatch_with_expected_member_alias(&identity, Some(&expected_alias), &input)
                 .await
-                .map(|(_, _, session_id)| session_id)
+                .map(|outcome| outcome.session_id)
         })
         .await
     }
@@ -7076,6 +7168,7 @@ impl IdentityRuntime {
             app_context: spec.context.clone(),
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         if self.bridge.is_some() {
             let active_peers = self.entries.read().await.keys().cloned().collect();
@@ -8134,6 +8227,143 @@ impl IdentityRuntime {
             .map_err(|e| IdentityRuntimeError::Internal(format!("inspect: {e}")))
     }
 
+    // -----------------------------------------------------------------------
+    // Turn-completion cursor
+    // -----------------------------------------------------------------------
+
+    /// Completion epoch of a REGISTERED identity: its live lease token, or
+    /// token 0 when it holds no grant (dormant, or lease lost). `None` when
+    /// the identity is not registered at all.
+    async fn registered_completion_epoch(&self, identity: &AgentIdentity) -> Option<FencingToken> {
+        let entries = self.entries.read().await;
+        entries.get(identity).map(|entry| {
+            entry
+                .lease
+                .as_ref()
+                .map_or_else(|| FencingToken::new(0), |lease| lease.fencing_token)
+        })
+    }
+
+    /// Move the stored cursor onto `epoch` if the lease incarnation advanced,
+    /// and return it. Never rewinds: a stale epoch leaves the cursor alone.
+    fn rebase_completion_cursor(
+        &self,
+        identity: &AgentIdentity,
+        epoch: FencingToken,
+    ) -> CompletionCursor {
+        let mut cursors = self
+            .completion_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cursor = cursors
+            .entry(identity.clone())
+            .or_insert_with(|| CompletionCursor::start(epoch));
+        *cursor = cursor.rebased(epoch);
+        *cursor
+    }
+
+    /// Whatever was last published for `identity`, without minting a ledger
+    /// entry. Reads for unregistered names go through here so probing
+    /// arbitrary strings cannot grow the map.
+    fn retained_completion_cursor(&self, identity: &AgentIdentity) -> CompletionCursor {
+        self.completion_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Current [`CompletionCursor`] for `identity`.
+    ///
+    /// A registered identity's cursor is rebased onto its live lease
+    /// incarnation first, so a poller observes an incarnation change
+    /// immediately rather than comparing against a turn count that no longer
+    /// means anything. An identity that is gone (retired, deleted, or never
+    /// registered) reports its last published cursor — retained precisely so
+    /// this read cannot rewind.
+    pub async fn completion_cursor(&self, identity: &AgentIdentity) -> CompletionCursor {
+        match self.registered_completion_epoch(identity).await {
+            Some(epoch) => self.rebase_completion_cursor(identity, epoch),
+            None => self.retained_completion_cursor(identity),
+        }
+    }
+
+    /// Record that a turn completed for `identity`, advancing its cursor by
+    /// one within the current lease incarnation.
+    ///
+    /// Production drives this from `AgentEvent::RunCompleted` on the always-on
+    /// identity agent-event monitor. It is deliberately event-driven rather
+    /// than derived from a polled projection: a poll cannot distinguish "new
+    /// turn, identical text" from "no new turn", which is the entire defect
+    /// this cursor exists to close.
+    ///
+    /// Not idempotent by design — one observed completion advances the cursor
+    /// once, which is exactly what a poller comparing against a pre-delivery
+    /// baseline needs.
+    pub async fn record_turn_completed(&self, identity: &AgentIdentity) -> CompletionCursor {
+        // A completion racing deregistration still counts under the last
+        // known epoch rather than being dropped.
+        let epoch = self
+            .registered_completion_epoch(identity)
+            .await
+            .unwrap_or_else(|| self.retained_completion_cursor(identity).epoch);
+        let mut cursors = self
+            .completion_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cursor = cursors
+            .entry(identity.clone())
+            .or_insert_with(|| CompletionCursor::start(epoch));
+        *cursor = cursor.rebased(epoch).advanced();
+        *cursor
+    }
+
+    /// Wait until a turn completes past `baseline`, or the timeout expires.
+    ///
+    /// This is the correct completion barrier: it compares cursors, never
+    /// output text, so two consecutive turns emitting byte-identical text are
+    /// still two distinct completions. `baseline` is the
+    /// `completion_baseline` returned by [`Self::dispatch_admission_tracked`]
+    /// or [`Self::send_admission_tracked`].
+    ///
+    /// A genuinely stalled turn still times out rather than hanging forever,
+    /// and an incarnation change is reported as its own error rather than
+    /// being read as either completion or continued waiting.
+    pub async fn wait_for_completion(
+        &self,
+        identity: &AgentIdentity,
+        baseline: CompletionCursor,
+        timeout: Duration,
+    ) -> Result<CompletionCursor, IdentityRuntimeError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let cursor = self.completion_cursor(identity).await;
+            match cursor.progress_since(baseline) {
+                CompletionProgress::Completed => return Ok(cursor),
+                CompletionProgress::IncarnationChanged => {
+                    return Err(IdentityRuntimeError::CompletionIncarnationChanged {
+                        identity: identity.clone(),
+                        baseline,
+                        observed: cursor,
+                    });
+                }
+                CompletionProgress::Pending => {}
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "timed out after {}s waiting for a turn past {baseline} on {identity}",
+                    timeout.as_secs_f64()
+                )));
+            }
+            tokio::time::sleep(
+                COMPLETION_POLL_INTERVAL.min(deadline.saturating_duration_since(now)),
+            )
+            .await;
+        }
+    }
+
     /// The configured default timeout for wait operations.
     pub fn default_timeout(&self) -> Duration {
         self.default_timeout
@@ -8309,6 +8539,15 @@ impl IdentityRuntime {
     }
 
     /// Poll until the identity produces an output_preview, or timeout.
+    ///
+    /// **Unsound as a completion barrier.** `output_preview` is the last
+    /// committed assistant text, so this returns immediately when a PREVIOUS
+    /// turn already left a preview, and it cannot tell "new turn, identical
+    /// text" from "no new turn" at all. Use
+    /// [`Self::wait_for_completion`] with the `completion_baseline` from
+    /// [`Self::send_admission_tracked`] / [`Self::dispatch_admission_tracked`]
+    /// when you need to wait for a specific turn. Retained for callers that
+    /// only need "has this identity ever spoken".
     pub async fn wait_for_output(
         &self,
         identity: &AgentIdentity,

@@ -1157,11 +1157,16 @@ impl UnifiedRuntime {
     }
 }
 
+// The trailing `Option<Arc<str>>` is the member's durable identity label,
+// present only for identity-first owned members of the primary mob. The
+// identity health monitor needs it to attribute a run completion to the
+// durable identity; the console forwarder ignores it.
 type TaggedAgentEvent = (
     AgentRuntimeId,
     FenceToken,
     ProfileName,
     meerkat_core::event::EventEnvelope<AgentEvent>,
+    Option<Arc<str>>,
 );
 
 enum ForwardedAgentEvent {
@@ -1389,6 +1394,51 @@ async fn current_identity_fencing_token(
         .map(|lease| lease.fencing_token.get())
 }
 
+/// Advance an identity's completion cursor when meerkat reports that one of
+/// its turns finished.
+///
+/// This is the only place the cursor moves in production, and it is driven by
+/// the run-completion EVENT rather than by polling a projection on purpose: a
+/// poll cannot distinguish "new turn, byte-identical output" from "no new
+/// turn", which is exactly the defect the cursor closes. The identity health
+/// monitor is the right host because it drains its own subscription set — a
+/// full console channel cannot starve it.
+///
+/// Losing the subscription mid-turn means a missed completion, so the cursor
+/// under-counts rather than over-counts: a waiter times out instead of being
+/// told a turn finished that did not.
+async fn record_identity_turn_completion(
+    identity_runtime: &Arc<std::sync::RwLock<Option<Arc<crate::identity_first::IdentityRuntime>>>>,
+    durable_identity: Option<&str>,
+    envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
+) {
+    if !matches!(envelope.payload, AgentEvent::RunCompleted { .. }) {
+        return;
+    }
+    let Some(durable_identity) = durable_identity else {
+        return;
+    };
+    let authority = identity_runtime
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(authority) = authority else {
+        return;
+    };
+    let identity = match crate::identity_first::AgentIdentity::parse(durable_identity) {
+        Ok(identity) => identity,
+        Err(error) => {
+            tracing::debug!(
+                identity = %durable_identity,
+                error = %error,
+                "mobkit identity health monitor: run completion carried an unparseable durable identity"
+            );
+            return;
+        }
+    };
+    authority.record_turn_completed(&identity).await;
+}
+
 async fn trigger_identity_stream_repair(
     primary_mob_id: &str,
     tracked_key: &TrackedAgentEventStream,
@@ -1465,7 +1515,7 @@ async fn run_resilient_mob_agent_event_forwarder(
             Some(forwarded) = streams.next() => {
                 match forwarded {
                     ForwardedAgentEvent::Event(event) => {
-                        let (source, source_fence_token, role, envelope) = *event;
+                        let (source, source_fence_token, role, envelope, _durable_identity) = *event;
                         let attributed_event = AttributedEvent {
                             source,
                             source_fence_token,
@@ -1533,7 +1583,14 @@ async fn run_identity_stream_health_monitor(
         tokio::select! {
             Some(forwarded) = streams.next() => {
                 match forwarded {
-                    ForwardedAgentEvent::Event(_) => {}
+                    ForwardedAgentEvent::Event(event) => {
+                        let (_, _, _, envelope, durable_identity) = *event;
+                        record_identity_turn_completion(
+                            &identity_runtime,
+                            durable_identity.as_deref(),
+                            &envelope,
+                        ).await;
+                    }
                     ForwardedAgentEvent::Closed(tracked_key) => {
                         tracked.remove(&tracked_key);
                         subscribe_failures.remove(&tracked_key);
@@ -1700,6 +1757,10 @@ async fn reconcile_agent_event_streams(
             {
                 Ok(stream) => {
                     let close_key = tracked_key.clone();
+                    let durable_identity: Option<Arc<str>> = tracked_key
+                        .durable_identity
+                        .as_deref()
+                        .map(Arc::<str>::from);
                     subscribe_failures.remove(&tracked_key);
                     tracked.insert(tracked_key);
                     let mapped = stream
@@ -1709,6 +1770,7 @@ async fn reconcile_agent_event_streams(
                                 fence_token,
                                 role.clone(),
                                 envelope,
+                                durable_identity.clone(),
                             )))
                         })
                         .chain(futures::stream::once(async move {

@@ -69,59 +69,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   **Upgrade note — the ledger bump is one-way, and deliberately NOT applied
   at open.** Launching this release over an existing state directory leaves
-  `mobkit-continuity` at v1, so rolling back to an earlier release stays
-  possible. The v2 stamp is committed either by an incremental session write
-  that actually CREATES HEAD STATE — the head-canonical DDL and the stamp
-  ride inside that write's own transaction, so a write refused by a guard or
-  by its own CAS rolls both back and leaves the file at v1 with no head
-  rows — or by `mobkit_gateway storage-migrate --apply` under the exclusive
-  maintenance fence; `--dry-run` announces the pending bump. An ACCEPTED
+  `mobkit-continuity` at v1; until a write creates head state, older
+  binaries can still read the file. The v2 stamp is committed either by an
+  incremental session write that actually CREATES HEAD STATE — the
+  head-canonical DDL and the stamp ride inside that write's own transaction,
+  so a write refused by a guard or by its own CAS rolls both back and leaves
+  the file at v1 with no head rows — or by
+  `mobkit_gateway storage-migrate --apply` under the exclusive maintenance
+  fence; `--dry-run` announces the pending bump. An ACCEPTED
   write that creates no head state does not arm it either: an
   `append_messages` whose adopting head write has not landed yet commits its
   rows and its additive DDL and leaves the ledger at v1, because rows no
   head adopts are not part of any document and an older binary still
   correctly serves that session from its blob. Once a head row exists,
   binaries older than this release refuse the file at open with
-  `SchemaFromTheFuture`. The doctor reports frozen archives under the new
+  `SchemaFromTheFuture`, and there is no in-place path back: recovery from
+  a bad upgrade is restoring the state directory — `continuity.*` and the
+  rest — from a consistent backup taken before the upgrade, accepting the
+  loss of the turns taken since. That backup must be SQLite-consistent and
+  capture committed WAL state (a stopped-gateway copy of each database with
+  its `-wal` sibling, or SQLite's own backup API) — never a bare copy of
+  the main database file alone, and never a read through `immutable=1`.
+  Take it before upgrading. The doctor reports frozen archives under the new
   `continuity-archived-snapshot` finding and censuses head-canonical
   sessions with the same stamp verification the blob path pays. Frozen
   archives are reclaimable dead weight until an archive-prune verb ships;
   none does yet, so a migrated realm's `continuity.sqlite3` transiently
   carries both representations for each migrated session.
-
-- **`mobkit_gateway storage-downgrade` — a real rollback for the
-  head-canonical ledger bump.** The v2 stamp is one-way, and because every
-  boundary save routes through the incremental branch once the capability is
-  advertised, the practical rollback window used to be a single turn: the
-  only documented recovery was restoring `continuity.*` from a backup taken
-  before that turn, which discards every turn since. This verb replaces that
-  guidance.
-
-  `storage-downgrade --state-dir <dir> [--apply] [--json]` re-materializes
-  every head+rows session back into a whole-document `session_snapshots`
-  blob, drops the head-canonical trio, and rewinds the `mobkit-continuity`
-  ledger row to v1 — which is what lifts the `SchemaFromTheFuture` lockout.
-  Post-upgrade turns are kept. One transaction per database under the same
-  `MobKitMaintenanceFence`, with the ledger rewind as its LAST statement
-  (the mirror of the stamp ordering): the lockout is lifted only together
-  with the blobs that make lifting it safe, so an interrupted downgrade
-  leaves the file exactly as head-canonical as it was.
-
-  Dry-run is the default and is not an estimate — it performs the entire
-  reconstruction, including the per-document reader simulation, and then
-  rolls back, so a clean dry run is evidence the apply run will work.
-
-  Retained transcript rewrite history is re-inlined from the rewrite rows
-  using meerkat's own published inverses, and every reconstructed document
-  is decoded back through the ordinary `Session` deserializer and re-checked
-  (same id, same live transcript, a history graph that validates, the same
-  adopted commits, and a document `strand_layout_for_history` can project
-  again) before it is written. A document that fails any of that is not
-  written: that session falls back to the slim form — live transcript, no
-  history graph — and is named individually in the report under
-  `DowngradeFidelity::HistoryDropped`. Head rows without the v2 stamp are
-  refused as corruption rather than silently repaired, because that state
-  means the file's rollback safety was never real.
 
 - **Durability declaration completeness is enforced at the storage seam.**
   `enforce_fail_closed_store_set` now requires exactly one

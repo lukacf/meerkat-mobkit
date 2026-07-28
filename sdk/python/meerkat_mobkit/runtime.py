@@ -11,6 +11,7 @@ import logging
 import math
 import mimetypes
 import uuid
+import warnings
 from pathlib import Path
 import time
 from typing import Any, AsyncIterator
@@ -42,7 +43,11 @@ from .errors import (
     WorkGraphUnavailableError,
 )
 from .events import AgentEvent, MobEvent
-from .identity_first_models import IdentityBootstrapStatus
+from .identity_first_models import (
+    CompletionCursor,
+    CompletionProgress,
+    IdentityBootstrapStatus,
+)
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
@@ -829,12 +834,10 @@ class MobKitRuntime:
     ) -> None:
         """Wait until all identities have completed their autonomous kickoff turn.
 
-        Polls inspect_identity() until each identity has a non-None output_preview,
-        meaning the kickoff turn has completed and the agent is ready for work.
-
-        Note: readiness is inferred from output_preview presence — a proxy for
-        kickoff completion. A future meerkat release may expose an explicit
-        readiness signal, at which point this method will use that instead.
+        Readiness is "at least one turn has completed", read from the
+        identity's completion cursor. Gateways predating the cursor fall back
+        to the old proxy (a non-None ``output_preview``), which under-reports
+        an agent whose kickoff turn committed no assistant text.
         """
         import time
         deadline = time.monotonic() + timeout
@@ -843,7 +846,13 @@ class MobKitRuntime:
             for identity in list(remaining):
                 try:
                     inspection = await self.inspect_identity(identity)
-                    if inspection.output_preview is not None:
+                    cursor = inspection.completion_cursor
+                    ready = (
+                        cursor.turns > 0
+                        if cursor is not None
+                        else inspection.output_preview is not None
+                    )
+                    if ready:
                         remaining.discard(identity)
                 except Exception:
                     pass
@@ -921,24 +930,174 @@ class IdentityAgentHandle:
             [self._identity], timeout=timeout,
         )
 
+    async def wait_for_completion(
+        self,
+        baseline: CompletionCursor,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Wait until a turn completes past ``baseline``.
+
+        ``baseline`` is the ``completion_baseline`` returned by :meth:`send`,
+        :meth:`dispatch`, or :meth:`dispatch_text`. This compares cursors, so
+        two consecutive turns emitting byte-identical text are still two
+        distinct completions.
+
+        Returns the ``output_preview`` observed at completion (``None`` if the
+        turn committed no assistant text).
+
+        Raises ``TimeoutError`` if no turn completes in time, and
+        ``RuntimeError`` if the identity's runtime incarnation changed — turn
+        counts do not carry across incarnations, so that is reported rather
+        than guessed at in either direction.
+        """
+        import time
+        deadline = time.monotonic() + timeout
+        while True:
+            inspection = await self.inspect()
+            cursor = inspection.completion_cursor
+            if cursor is None:
+                raise RuntimeError(
+                    f"identity {self._identity!r} reports no completion cursor; "
+                    "the gateway predates the completion contract or this is a "
+                    "live alias with no identity authority"
+                )
+            progress = cursor.progress_since(baseline)
+            if progress is CompletionProgress.COMPLETED:
+                return inspection.output_preview
+            if progress is CompletionProgress.INCARNATION_CHANGED:
+                raise RuntimeError(
+                    f"completion baseline {baseline} for identity "
+                    f"{self._identity!r} belongs to a superseded runtime "
+                    f"incarnation (now {cursor}); capture a fresh baseline"
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"identity {self._identity!r} did not complete a turn past "
+                    f"{baseline} within {timeout}s"
+                )
+            await asyncio.sleep(min(poll_interval, remaining))
+
+    async def send_and_wait(
+        self,
+        content: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Send, then wait for the completion of the turn that send started.
+
+        The correct one-call shape: the baseline is captured by the gateway
+        before delivery and threaded here, so nothing in the caller's code can
+        reintroduce a text comparison.
+        """
+        result = await self.send(content)
+        return await self._wait_for_admission(
+            result, "send", timeout=timeout, poll_interval=poll_interval,
+        )
+
+    async def dispatch_and_wait(
+        self,
+        dispatch_input: Any,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Dispatch, then wait for the completion of the turn it started."""
+        result = await self.dispatch(dispatch_input)
+        return await self._wait_for_admission(
+            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+        )
+
+    async def dispatch_text_and_wait(
+        self,
+        text: str,
+        *,
+        origin: str = "system",
+        correlation_id: str | None = None,
+        timeout: float = 90,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """:meth:`dispatch_text` plus the completion wait, in one call."""
+        result = await self.dispatch_text(
+            text, origin=origin, correlation_id=correlation_id,
+        )
+        return await self._wait_for_admission(
+            result, "dispatch", timeout=timeout, poll_interval=poll_interval,
+        )
+
+    async def _wait_for_admission(
+        self,
+        result: Any,
+        operation: str,
+        *,
+        timeout: float,
+        poll_interval: float,
+    ) -> str | None:
+        baseline = getattr(result, "completion_baseline", None)
+        if baseline is None:
+            raise RuntimeError(
+                f"{operation} returned no completion_baseline for identity "
+                f"{self._identity!r}; the gateway predates the completion "
+                "contract, so the turn cannot be awaited without an unsound "
+                "text comparison"
+            )
+        return await self.wait_for_completion(
+            baseline, timeout=timeout, poll_interval=poll_interval,
+        )
+
     async def wait_for_output(
         self,
         *,
         timeout: float = 90,
         poll_interval: float = 1.5,
+        after: CompletionCursor | None = None,
         baseline: str | None = None,
     ) -> str:
         """Poll until this identity produces an output_preview.
 
-        If baseline is given, waits until output_preview differs from it.
+        Pass ``after`` (a :class:`CompletionCursor` from a send/dispatch
+        result) to wait for a specific turn — that is the correct path, and
+        equivalent to :meth:`wait_for_completion` except that it also requires
+        non-empty output.
+
+        ``baseline`` (a str) is DEPRECATED and UNSOUND: it waits until
+        ``output_preview`` differs from the text you passed, so two
+        consecutive turns that legitimately produce identical output are
+        indistinguishable from no turn at all, and the call sleeps out its
+        entire timeout. Use ``after``, :meth:`wait_for_completion`, or
+        :meth:`send_and_wait` instead.
+
+        With neither argument this returns as soon as the identity has ANY
+        committed output — including output from an earlier turn.
+
         Raises TimeoutError if timeout expires.
         """
         import time
+        if baseline is not None:
+            if after is not None:
+                raise ValueError("pass either 'after' or the deprecated 'baseline', not both")
+            warnings.warn(
+                "wait_for_output(baseline=<text>) is unsound: consecutive turns "
+                "may produce identical output, in which case it never fires and "
+                "sleeps out the full timeout. Use wait_for_output(after=<cursor>) "
+                "or send_and_wait()/dispatch_and_wait().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             inspection = await self.inspect()
             if inspection.output_preview:
-                if baseline is None or inspection.output_preview != baseline:
+                if after is not None:
+                    cursor = inspection.completion_cursor
+                    if cursor is not None and (
+                        cursor.progress_since(after) is CompletionProgress.COMPLETED
+                    ):
+                        return inspection.output_preview
+                elif baseline is None or inspection.output_preview != baseline:
                     return inspection.output_preview
             await asyncio.sleep(poll_interval)
         raise TimeoutError(

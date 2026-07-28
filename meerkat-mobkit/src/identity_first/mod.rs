@@ -40,9 +40,7 @@ pub use gateway_bridges::{
 };
 pub use local_lease::LocalLeaseProvider;
 pub use local_store::{
-    DowngradeFidelity, DowngradedSession,
-    HEAD_CANONICAL_SCHEMA_VERSION as HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION,
-    HeadCanonicalDowngrade, LocalContinuityStore,
+    HEAD_CANONICAL_SCHEMA_VERSION as HEAD_CANONICAL_CONTINUITY_SCHEMA_VERSION, LocalContinuityStore,
 };
 pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,

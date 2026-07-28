@@ -344,14 +344,14 @@ class TestHouseholdIncident:
             )
             print(f"[Phase 2] domain:school received comms: {school_output}")
 
-            # Deliver closure notice to luka (simulates end of triage→domain→gate→identity chain)
-            luka_snap_before = await luka.inspect()
-            await luka.send(
+            # Deliver closure notice to luka (simulates end of triage→domain→gate→identity chain).
+            # send_and_wait waits on the turn's completion cursor, not on the
+            # output text changing — luka may legitimately answer the same way
+            # twice.
+            await luka.send_and_wait(
                 "School closed tomorrow (pipe burst). Kids must stay home. "
                 "This affects your morning schedule.",
-            )
-            await luka.wait_for_output(
-                timeout=60, baseline=luka_snap_before.output_preview,
+                timeout=60,
             )
             print("[Phase 2] identity:luka notified about school closure")
 
@@ -432,16 +432,13 @@ class TestHouseholdIncident:
             # ASSERT conversational continuity via LLM content.
             # Luka received the school closure notice before shutdown.
             # After restore, asking about school should reference the closure.
-            # Capture baseline output (from kickoff) so we wait for the NEW response
-            luka_baseline_snap = await luka2.inspect()
-            luka_baseline = luka_baseline_snap.output_preview
-
-            await luka2.send(
-                "Is school open or closed tomorrow? Answer in one sentence only.",
-            )
+            # Wait for the NEW response by completion cursor. The old text
+            # baseline could not distinguish "answered again, identically"
+            # from "never answered".
             try:
-                luka_output = await luka2.wait_for_output(
-                    timeout=90, baseline=luka_baseline,
+                luka_output = await luka2.send_and_wait(
+                    "Is school open or closed tomorrow? Answer in one sentence only.",
+                    timeout=90,
                 )
             except TimeoutError:
                 luka_output = None

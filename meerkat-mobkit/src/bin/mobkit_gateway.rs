@@ -76,6 +76,13 @@ struct InitParams {
     /// and reconciled thereafter. `mobkit/ensure_member` adds to it at
     /// runtime.
     identity_roster: Option<Vec<meerkat_mobkit::identity_first::DurableAgentSpec>>,
+    /// Host-level session-compaction policy for every agent this gateway
+    /// builds (`{"auto_compact_threshold": 120000, ...}`). Absent, the
+    /// gateway inherits meerkat's model-aware default —
+    /// `context_window * 4 / 5`, i.e. `840_000` tokens on a million-token
+    /// model, which in practice never fires. Validated at init through
+    /// [`meerkat_mobkit::parse_compaction_policy`].
+    compaction: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -170,6 +177,7 @@ fn config_fingerprint(
     store_path: &Path,
     project_root: &Path,
     context_root: Option<&Path>,
+    compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -196,6 +204,21 @@ fn config_fingerprint(
     hasher.update(b"\n");
     if let Some(ctx) = context_root {
         hasher.update(ctx.to_string_lossy().as_bytes());
+    }
+    hasher.update(b"\n");
+    // The compaction policy is baked into every agent this runtime builds, so
+    // a launch that changes it must NOT resume a runtime built with the old
+    // one — that would be the dead-knob failure with extra steps.
+    if let Some(policy) = compaction {
+        hasher.update(policy.auto_compact_threshold.to_le_bytes());
+        hasher.update(if policy.auto_compact_threshold_explicit {
+            b"1"
+        } else {
+            b"0"
+        });
+        hasher.update(policy.recent_turn_budget.to_le_bytes());
+        hasher.update(policy.max_summary_tokens.to_le_bytes());
+        hasher.update(policy.min_turns_between_compactions.to_le_bytes());
     }
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
@@ -373,6 +396,7 @@ fn build_persistent_session_service(
     context_root: Option<PathBuf>,
     image_generation: bool,
     realm_id: &str,
+    compaction: Option<&meerkat_core::config::CompactionRuntimeConfig>,
 ) -> anyhow::Result<PersistentSessionServiceParts> {
     let store_dir = layout.state_dir().to_path_buf();
     fs::create_dir_all(&store_dir)
@@ -442,7 +466,14 @@ fn build_persistent_session_service(
         factory = factory.context_root(context_root);
     }
 
-    let config = Config::default();
+    // The compaction slot of this config is what meerkat's
+    // `AgentFactory::build_agent` turns into the session compactor; an
+    // absent declaration inherits the model-aware `context_window * 4 / 5`
+    // trigger.
+    let mut config = Config::default();
+    if let Some(policy) = compaction {
+        meerkat_mobkit::apply_compaction_policy(&mut config, policy).map_err(|e| anyhow!("{e}"))?;
+    }
     let mut builder = FactoryAgentBuilder::new(factory, config);
     builder.default_blob_store = Some(blob_store.clone());
     // Attach meerkat's per-session schedule tools so members whose profile sets
@@ -825,73 +856,6 @@ fn run_storage_migrate(args: &[String]) -> i32 {
     i32::from(report.has_errors())
 }
 
-const STORAGE_DOWNGRADE_USAGE: &str = "usage: mobkit_gateway storage-downgrade --state-dir <dir> \
-     [--apply] [--json]\n\
-     Fenced offline ROLLBACK of the head-canonical continuity upgrade \
-     (ledger mobkit-continuity v2 -> v1). Re-materializes every head+rows \
-     session back into a whole-document session_snapshots blob, drops the \
-     head-canonical trio, and rewinds the ledger row — which is what lets a \
-     previous release open the file again, keeping every post-upgrade turn.\n\
-     Dry-run by default; a dry run performs the ENTIRE reconstruction, \
-     including the per-document reader simulation, and then rolls back, so a \
-     clean dry run is evidence the apply run will work. --apply mutates \
-     under the exclusive maintenance fence, in ONE transaction whose last \
-     statement is the ledger rewind.\n\
-     Sessions whose retained transcript rewrite history cannot be re-inlined \
-     into a document a reader accepts are written WITHOUT that history and \
-     named individually in the report; their turn content is intact.\n\
-     Exit codes: 0 clean, 1 refusals or fence/store failure, 2 usage error.";
-
-/// Maintenance verb: `mobkit_gateway storage-downgrade`. The inverse of the
-/// head-canonical half of `storage-migrate --apply`. Like the other
-/// maintenance verbs it is a standalone argv verb bypassing the stdin init
-/// handshake — a rollback is never a side effect of gateway startup.
-fn run_storage_downgrade(args: &[String]) -> i32 {
-    let mut state_dir: Option<PathBuf> = None;
-    let mut apply = false;
-    let mut json = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--state-dir" => match iter.next() {
-                Some(value) => state_dir = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!("--state-dir requires a directory\n{STORAGE_DOWNGRADE_USAGE}");
-                    return 2;
-                }
-            },
-            "--apply" => apply = true,
-            "--json" => json = true,
-            other => {
-                eprintln!("unknown argument {other:?}\n{STORAGE_DOWNGRADE_USAGE}");
-                return 2;
-            }
-        }
-    }
-    let Some(state_dir) = state_dir else {
-        eprintln!("--state-dir is required\n{STORAGE_DOWNGRADE_USAGE}");
-        return 2;
-    };
-    let mode = if apply {
-        meerkat_mobkit::MigrateMode::Apply
-    } else {
-        meerkat_mobkit::MigrateMode::DryRun
-    };
-    let report = meerkat_mobkit::downgrade_state_dir(&state_dir, mode);
-    if json {
-        match serde_json::to_string_pretty(&report) {
-            Ok(text) => println!("{text}"),
-            Err(error) => {
-                eprintln!("failed to serialize downgrade report: {error}");
-                return 1;
-            }
-        }
-    } else {
-        print!("{}", meerkat_mobkit::render_downgrade_report(&report));
-    }
-    i32::from(report.has_errors())
-}
-
 fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
     let mode = match report.mode {
         meerkat_mobkit::MigrateMode::Apply => "apply",
@@ -1133,9 +1097,6 @@ fn main() {
     if args.first().map(String::as_str) == Some("storage-prune") {
         std::process::exit(run_storage_prune(&args[1..]));
     }
-    if args.first().map(String::as_str) == Some("storage-downgrade") {
-        std::process::exit(run_storage_downgrade(&args[1..]));
-    }
     // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
     // every tracing event in the process is silently dropped: runtime
     // failures, console internal-error logs, and the schedule claim
@@ -1219,6 +1180,16 @@ async fn run() -> anyhow::Result<()> {
         .context("resolve gateway state directory")?;
     let layout = MobKitStorageLayout::standalone_from_store_path(&store_path, gateway_home.clone());
     let persistent_sessions = params.persistent_sessions.unwrap_or(false);
+    // Host-level compaction policy: validated once here so a typo or a zero
+    // threshold is an init error, not a dead knob or a compaction storm.
+    let compaction_policy = params
+        .compaction
+        .as_ref()
+        .map(|value| {
+            meerkat_mobkit::parse_compaction_policy(value)
+                .map_err(|error| anyhow!("init params: compaction {error}"))
+        })
+        .transpose()?;
     // Doctrine default: the identity substrate is ON. `identity_first: false`
     // remains as a one-release opt-out for deployments that need the pure
     // mob-plane console back (changelog-flagged).
@@ -1247,6 +1218,7 @@ async fn run() -> anyhow::Result<()> {
         &store_path,
         &project_root,
         context_root.as_deref(),
+        compaction_policy.as_ref(),
         &paths,
     )?;
     let registry_file = layout
@@ -1303,6 +1275,7 @@ async fn run() -> anyhow::Result<()> {
             context_root.clone(),
             image_generation,
             &runtime_id,
+            compaction_policy.as_ref(),
         )?;
         // Pair the schedule wiring with a clone of the runtime adapter so the
         // firing host can be spawned once the runtime has booted (below).
@@ -1361,7 +1334,13 @@ async fn run() -> anyhow::Result<()> {
         if let Some(ref ctx) = context_root {
             factory = factory.context_root(ctx.clone());
         }
-        let config = Config::default();
+        // Same seam as the persistent arm: this config's compaction slot is
+        // the session compactor meerkat installs for every ephemeral member.
+        let mut config = Config::default();
+        if let Some(policy) = compaction_policy.as_ref() {
+            meerkat_mobkit::apply_compaction_policy(&mut config, policy)
+                .map_err(|e| anyhow!("{e}"))?;
+        }
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         // The default TUX launch is ephemeral: a memory-backed workgraph
@@ -1761,6 +1740,7 @@ mod tests {
             temp.path(),
             temp.path(),
             None,
+            None,
             &paths,
         )?;
         let read_only = config_fingerprint(
@@ -1774,10 +1754,81 @@ mod tests {
             temp.path(),
             temp.path(),
             None,
+            None,
             &paths,
         )?;
 
         assert_ne!(writable, read_only);
+        Ok(())
+    }
+
+    /// A launch that changes the compaction policy must not resume a runtime
+    /// built with the previous one: the policy is baked into every agent the
+    /// runtime constructs, so reuse would silently keep the old trigger.
+    #[test]
+    fn config_fingerprint_changes_with_compaction_policy() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = conventional_paths(temp.path());
+        let pinned = meerkat_mobkit::parse_compaction_policy(&json!({
+            "auto_compact_threshold": 120_000
+        }))
+        .map_err(|e| anyhow!("{e}"))?;
+        let lower = meerkat_mobkit::parse_compaction_policy(&json!({
+            "auto_compact_threshold": 60_000
+        }))
+        .map_err(|e| anyhow!("{e}"))?;
+
+        let inherited = config_fingerprint(
+            temp.path(),
+            None,
+            false,
+            "tux-auto",
+            false,
+            false,
+            temp.path(),
+            temp.path(),
+            temp.path(),
+            None,
+            None,
+            &paths,
+        )?;
+        let pinned_key = config_fingerprint(
+            temp.path(),
+            None,
+            false,
+            "tux-auto",
+            false,
+            false,
+            temp.path(),
+            temp.path(),
+            temp.path(),
+            None,
+            Some(&pinned),
+            &paths,
+        )?;
+        let lower_key = config_fingerprint(
+            temp.path(),
+            None,
+            false,
+            "tux-auto",
+            false,
+            false,
+            temp.path(),
+            temp.path(),
+            temp.path(),
+            None,
+            Some(&lower),
+            &paths,
+        )?;
+
+        assert_ne!(
+            inherited, pinned_key,
+            "pinning a threshold must not resume an inheriting runtime"
+        );
+        assert_ne!(
+            pinned_key, lower_key,
+            "two different thresholds must not share a runtime"
+        );
         Ok(())
     }
 }

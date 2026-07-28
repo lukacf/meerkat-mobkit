@@ -3587,6 +3587,117 @@ async fn identity_first_builder_runtime_checkpoint_follows_initial_session_save_
     assert!(next_version.get() >= 2);
 }
 
+/// WHY the Python e2e's reset checkpoint bound includes 2
+/// (`test_reset_advances_generation` widened `0/1/None` -> `0/1/2/None` when
+/// M4b shipped), traced to its writer and pinned deterministically.
+///
+/// The writer is NOT reset's retire cleanup, which the widening commit
+/// guessed at: post-abandon writes are superseded no-ops against the OLD
+/// session key, and the identity's new record has already committed by the
+/// time cleanup debt runs. The writer is the CREATION-WINDOW FLUSH. Under
+/// M4b the initial session document rides the delta channel as TWO
+/// mutations — `append_messages` plus the adopting `save_head` — parked
+/// while the member is created, then replayed at registration under the
+/// real cursor. Each mutation mints one checkpoint version from the
+/// session's single allocator (append = 1, head adoption = 2), so a freshly
+/// materialized member reports checkpoint version exactly 2: at first boot
+/// AND after every reset, whose replacement session repeats the identical
+/// sequence with a fresh allocator. (The unit-level half of this pin lives
+/// in `adapters.rs`:
+/// `incremental_mutations_park_before_registration_and_flush_on_register`.)
+///
+/// The e2e bound's other members stay legal for wirings where the creation
+/// save lands after registration (None/0) or for pre-M4b whole-blob flushes
+/// (1). If this test starts failing, the initial-document write shape
+/// changed and that bound must be re-derived, not widened again.
+#[tokio::test]
+async fn reset_checkpoint_version_is_the_initial_document_flush_not_cleanup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
+    let continuity_store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+
+    let runtime = Box::pin(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store.clone())
+            .lease_provider(Arc::new(LocalLeaseProvider::new()))
+            .roster_provider(roster)
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-reset-checkpoint-bound-test")
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build(),
+    )
+    .await
+    .expect("builder should bootstrap identity-first runtime");
+
+    let identity = AgentIdentity::parse("agent:alpha").unwrap();
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed");
+
+    // First boot: the same writer with no reset anywhere near it.
+    let boot = identity_runtime
+        .status(&identity)
+        .await
+        .expect("identity should be active");
+    assert_eq!(
+        boot.checkpoint_version.map(CheckpointVersion::get),
+        Some(2),
+        "first boot must report the creation-window document at exactly 2 \
+         (append = 1, head adoption = 2)"
+    );
+    let old_session = boot.session_id.clone().expect("active session id");
+
+    let reset_record = identity_runtime
+        .reset(&identity)
+        .await
+        .expect("reset should succeed");
+    assert_eq!(reset_record.generation.get(), 1);
+    assert_ne!(
+        reset_record.session_id, old_session,
+        "reset must mint a new session"
+    );
+    // The value the Python e2e observes right after reset: the replacement
+    // session's own creation flush, committed by reset() before it returns
+    // — cleanup debt has not even been recorded when this version is minted.
+    assert_eq!(
+        reset_record.checkpoint_version.get(),
+        2,
+        "reset must report the replacement document at exactly 2, \
+         written by the creation-window flush"
+    );
+    let after = identity_runtime
+        .status(&identity)
+        .await
+        .expect("identity should remain active after reset");
+    assert_eq!(
+        after.checkpoint_version.map(CheckpointVersion::get),
+        Some(2),
+        "status after reset must report the same creation-flush version"
+    );
+
+    // The durable record agrees with the in-memory entry, and the old
+    // generation's cleanup added nothing on top.
+    match ContinuityStore::resolve_many(continuity_store.as_ref(), std::slice::from_ref(&identity))
+        .await
+        .expect("resolve continuity record")
+        .remove(&identity)
+    {
+        Some(ContinuityResolveState::Ready { record }) => {
+            assert_eq!(record.generation.get(), 1);
+            assert_eq!(
+                record.checkpoint_version.get(),
+                2,
+                "the durable record must hold the creation-flush version, \
+                 with no extra checkpoint from retire cleanup"
+            );
+        }
+        other => panic!("expected ready continuity record after reset, got {other:?}"),
+    }
+
+    let _ = runtime.mob_handle().stop().await;
+}
+
 #[tokio::test]
 async fn identity_first_builder_resume_checkpoint_follows_registered_session_save_version() {
     let continuity_store = Arc::new(LocalContinuityStore::in_memory().unwrap());

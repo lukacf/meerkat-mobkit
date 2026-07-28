@@ -110,6 +110,10 @@ import {
   parseMobpackDeployResult,
   eventQueryToDict,
   parseIdentityStatus,
+  parseIdentityInspection,
+  parseSendResult,
+  parseDispatchResult,
+  completionProgressSince,
   parseBlobGetResult,
   parseBlobUploadResult,
   dispatchInputToDict,
@@ -191,6 +195,10 @@ import {
   type MobpackDeployResult,
   type EventQuery,
   type IdentityStatus,
+  type IdentityInspection,
+  type SendResult,
+  type DispatchResult,
+  type CompletionCursor,
   type BlobGetResult,
   type BlobUploadResult,
   type DispatchInput,
@@ -923,26 +931,136 @@ export class MobKitRuntime {
     };
   }
 
-  /** Send content to an identity. Content can be a string or content blocks. */
+  /**
+   * Send content to an identity. Content can be a string or content blocks.
+   *
+   * The returned `completionBaseline` is what {@link waitForCompletion} needs
+   * to wait for THIS turn. Never wait by comparing `outputPreview` text —
+   * consecutive turns may emit identical output.
+   */
   async send(
     identity: string,
     content: string | DispatchContentBlock[],
-  ): Promise<unknown> {
+  ): Promise<SendResult> {
     const params: Record<string, unknown> = { identity };
     if (typeof content === "string") {
       params.content = content;
     } else {
       params.content = content.map(contentBlockToDict);
     }
-    return this._rpc("mobkit/send", params);
+    return parseSendResult(await this._rpc("mobkit/send", params));
   }
 
   /** Dispatch structured input to an identity. */
-  async dispatch(identity: string, input: DispatchInput): Promise<unknown> {
-    return this._rpc("mobkit/dispatch", {
+  async dispatch(
+    identity: string,
+    input: DispatchInput,
+  ): Promise<DispatchResult> {
+    return parseDispatchResult(
+      await this._rpc("mobkit/dispatch", {
+        identity,
+        dispatch_input: dispatchInputToDict(input),
+      }),
+    );
+  }
+
+  /**
+   * Wait until a turn completes past `baseline`, returning the
+   * `outputPreview` observed at completion.
+   *
+   * `baseline` is the `completionBaseline` from {@link send} or
+   * {@link dispatch}. This compares cursors, so two consecutive turns emitting
+   * byte-identical text are still two distinct completions.
+   *
+   * Throws if the wait times out, if the identity exposes no cursor, or if the
+   * runtime incarnation changed — turn counts do not carry across
+   * incarnations, so that is reported rather than guessed at either way.
+   */
+  async waitForCompletion(
+    identity: string,
+    baseline: CompletionCursor,
+    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<string | null> {
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    const pollIntervalMs = options.pollIntervalMs ?? 500;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const inspection = await this.inspectIdentity(identity);
+      const cursor = inspection.completionCursor;
+      if (cursor === null) {
+        throw new Error(
+          `identity ${identity} reports no completion cursor; the gateway ` +
+            `predates the completion contract or this is a live alias with ` +
+            `no identity authority`,
+        );
+      }
+      const progress = completionProgressSince(cursor, baseline);
+      if (progress === "completed") return inspection.outputPreview;
+      if (progress === "incarnation_changed") {
+        throw new Error(
+          `completion baseline ${baseline.epoch}:${baseline.turns} for ` +
+            `identity ${identity} belongs to a superseded runtime ` +
+            `incarnation (now ${cursor.epoch}:${cursor.turns}); capture a ` +
+            `fresh baseline`,
+        );
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(
+          `identity ${identity} did not complete a turn past ` +
+            `${baseline.epoch}:${baseline.turns} within ${timeoutMs}ms`,
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(pollIntervalMs, remaining)),
+      );
+    }
+  }
+
+  /** Send, then wait for the completion of the turn that send started. */
+  async sendAndWait(
+    identity: string,
+    content: string | DispatchContentBlock[],
+    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<string | null> {
+    const result = await this.send(identity, content);
+    return this._waitForAdmission(
       identity,
-      dispatch_input: dispatchInputToDict(input),
-    });
+      result.completionBaseline,
+      "send",
+      options,
+    );
+  }
+
+  /** Dispatch, then wait for the completion of the turn it started. */
+  async dispatchAndWait(
+    identity: string,
+    input: DispatchInput,
+    options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<string | null> {
+    const result = await this.dispatch(identity, input);
+    return this._waitForAdmission(
+      identity,
+      result.completionBaseline,
+      "dispatch",
+      options,
+    );
+  }
+
+  private async _waitForAdmission(
+    identity: string,
+    baseline: CompletionCursor | null,
+    operation: string,
+    options: { timeoutMs?: number; pollIntervalMs?: number },
+  ): Promise<string | null> {
+    if (baseline === null) {
+      throw new Error(
+        `${operation} returned no completion_baseline for identity ` +
+          `${identity}; the gateway predates the completion contract, so the ` +
+          `turn cannot be awaited without an unsound text comparison`,
+      );
+    }
+    return this.waitForCompletion(identity, baseline, options);
   }
 
   /** Subscribe to events for an identity. */
@@ -978,8 +1096,10 @@ export class MobKitRuntime {
   }
 
   /** Inspect identity continuity/runtime state. */
-  async inspectIdentity(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/inspect_identity", { identity });
+  async inspectIdentity(identity: string): Promise<IdentityInspection> {
+    return parseIdentityInspection(
+      await this._rpc("mobkit/inspect_identity", { identity }),
+    );
   }
 
   /** Re-run identity-first reconciliation. */

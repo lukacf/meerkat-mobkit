@@ -49,11 +49,10 @@ bump is committed inside the transaction of a delta write that actually
 creates head state (a refused write rolls the DDL and the stamp back with
 it; an ACCEPTED write that adopts nothing commits its rows and leaves the
 file at v1) or by `storage-migrate --apply`, never as a side effect of a
-gateway launch, and the bump is reversible — `storage-downgrade --apply`
-re-materializes head+rows back into whole-document blobs, drops the
-channel, and rewinds the ledger, so rollback keeps every post-upgrade turn
-instead of restoring a pre-upgrade backup; a `ContinuityStore`
-default-method rollback defect found
+gateway launch, and the bump is one-way — there is no in-place path back;
+recovery from a bad upgrade is restoring the state directory from a
+consistent backup taken before the upgrade, accepting the loss of the
+turns taken since; a `ContinuityStore` default-method rollback defect found
 during M4b is fixed rather than worked around; the SDK durability
 vocabulary ships exactly what the wire supports (blob ephemerality is
 Rust-builder-only and census-visible, not wire-configurable), storage

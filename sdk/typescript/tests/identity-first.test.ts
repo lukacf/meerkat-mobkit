@@ -257,6 +257,32 @@ describe("AgentBuildContext + AgentBuildDraft (REQ-49a)", () => {
     assert.deepEqual(wireTools[0].input_schema, { type: "object" });
   });
 
+  it("AgentBuildDraft round-trips provider params it does not understand", async () => {
+    // The gateway replaces the draft wholesale with whatever the SDK returns,
+    // so a customizer that never touches provider params must still hand them
+    // back untouched — otherwise every SDK-backed build silently clears the
+    // identity's cache policy.
+    const { parseAgentBuildDraft, agentBuildDraftToDict } = await import("../src/types.js");
+    const providerParams = {
+      provider_tag: {
+        provider: "open_ai",
+        prompt_cache_key: "tenant-a:stable-prefix",
+        prompt_cache_options: { mode: "implicit", ttl: "30m" },
+      },
+    };
+    const draft = parseAgentBuildDraft({ model: "gpt-5.5", provider_params: providerParams });
+
+    assert.deepEqual(draft.providerParams, providerParams);
+    assert.deepEqual(agentBuildDraftToDict(draft).provider_params, providerParams);
+  });
+
+  it("AgentBuildDraft omits provider params from the wire when unset", async () => {
+    const { parseAgentBuildDraft, agentBuildDraftToDict } = await import("../src/types.js");
+    const draft = parseAgentBuildDraft({ model: "gpt-5.5" });
+    assert.equal(draft.providerParams, null);
+    assert.equal("provider_params" in agentBuildDraftToDict(draft), false);
+  });
+
   it("AgentBuildDraft null fields default gracefully", async () => {
     const { parseAgentBuildDraft } = await import("../src/types.js");
     const draft = parseAgentBuildDraft({});
@@ -266,6 +292,100 @@ describe("AgentBuildContext + AgentBuildDraft (REQ-49a)", () => {
     assert.deepEqual(draft.labels, {});
     assert.equal(draft.appContext, null);
     assert.deepEqual(draft.externalTools, []);
+  });
+
+  // These mirrors are hand-written, and a hand-written mirror drops what it
+  // does not name — silently. For the completion cursor that failure is
+  // invisible in the worst way: `parse` yields no cursor, the waiter never
+  // sees a completion, and the consumer waits out its whole timeout on a turn
+  // that finished. That is the defect the cursor exists to fix, reintroduced
+  // one layer down, so the round trip is asserted on VALUES in both
+  // directions rather than on the key being present.
+
+  it("IdentityInspection round-trips completion_cursor in both directions", async () => {
+    const { parseIdentityInspection, identityInspectionToDict } = await import(
+      "../src/types.js"
+    );
+    const wire = {
+      identity: "triage:main",
+      output_preview: "ACK",
+      is_final: false,
+      peer_reachable_count: 2,
+      completion_cursor: { epoch: 7, turns: 3 },
+    };
+
+    const parsed = parseIdentityInspection(wire);
+    assert.equal(parsed.completionCursor?.epoch, 7);
+    assert.equal(parsed.completionCursor?.turns, 3);
+
+    const back = identityInspectionToDict(parsed);
+    assert.deepEqual(back.completion_cursor, { epoch: 7, turns: 3 });
+    assert.deepEqual(back, wire);
+
+    // And the full cycle is a fixed point — nothing is lost on re-parse.
+    assert.deepEqual(parseIdentityInspection(back), parsed);
+  });
+
+  it("DispatchResult and SendResult round-trip completion_baseline in both directions", async () => {
+    const {
+      parseDispatchResult,
+      dispatchResultToDict,
+      parseSendResult,
+      sendResultToDict,
+    } = await import("../src/types.js");
+
+    const dispatchWire = {
+      fencing_token: 9,
+      durable: true,
+      completion_baseline: { epoch: 9, turns: 4 },
+    };
+    const dispatch = parseDispatchResult(dispatchWire);
+    assert.equal(dispatch.completionBaseline?.epoch, 9);
+    assert.equal(dispatch.completionBaseline?.turns, 4);
+    assert.deepEqual(dispatchResultToDict(dispatch), dispatchWire);
+    assert.deepEqual(parseDispatchResult(dispatchResultToDict(dispatch)), dispatch);
+
+    const sendWire = {
+      fencing_token: 9,
+      completion_baseline: { epoch: 9, turns: 4 },
+    };
+    const send = parseSendResult(sendWire);
+    assert.equal(send.completionBaseline?.epoch, 9);
+    assert.equal(send.completionBaseline?.turns, 4);
+    assert.deepEqual(sendResultToDict(send), sendWire);
+    assert.deepEqual(parseSendResult(sendResultToDict(send)), send);
+  });
+
+  it("payloads from a gateway with no cursor parse, and absence stays null", async () => {
+    // Backward compatibility. `null` is the documented default and is NOT the
+    // same as `{epoch: 0, turns: 0}` — absence means "this gateway does not
+    // track completions", which a caller must not read as "no turns yet".
+    const { parseIdentityInspection, parseDispatchResult, parseSendResult } =
+      await import("../src/types.js");
+
+    const inspection = parseIdentityInspection({
+      identity: "triage:main",
+      output_preview: "ACK",
+      is_final: true,
+      peer_reachable_count: 1,
+    });
+    assert.equal(inspection.completionCursor, null);
+    assert.equal(inspection.outputPreview, "ACK");
+    assert.equal(inspection.isFinal, true);
+    assert.equal(inspection.peerReachableCount, 1);
+
+    assert.equal(
+      parseDispatchResult({ fencing_token: 2, durable: false }).completionBaseline,
+      null,
+    );
+    assert.equal(parseSendResult({ fencing_token: 2 }).completionBaseline, null);
+
+    // An explicit JSON null (what a live alias reports) is also absence.
+    assert.equal(
+      parseIdentityInspection({ identity: "live:alias", completion_cursor: null })
+        .completionCursor,
+      null,
+    );
   });
 
   it("ExternalToolDef round-trips", async () => {

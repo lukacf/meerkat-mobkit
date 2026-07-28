@@ -222,6 +222,142 @@ monotonic_u64_newtype!(
 );
 
 // ---------------------------------------------------------------------------
+// CompletionCursor — correlated turn-completion identity
+// ---------------------------------------------------------------------------
+
+/// Comparable completion identity for one identity's stream of turns.
+///
+/// Waiting for an agent's next answer must never compare output TEXT. Two
+/// consecutive turns can legitimately produce byte-identical output (`ACK`
+/// twice is the production case that produced a phantom 962-second turn), and
+/// a text comparison then reports "no new turn" for the whole configured wait.
+/// This cursor is the comparable atom instead. It is never derived from output
+/// content, a content hash, a wall-clock timestamp, or a uuid regenerated per
+/// poll.
+///
+/// `epoch` is the identity's lease [`FencingToken`] — the runtime-incarnation
+/// atom the `LeaseProvider` already issues, and which the bundled provider
+/// resumes strictly above the continuity store's persisted high-water mark so
+/// it keeps advancing across process restarts. `turns` counts turns observed
+/// as completed within that incarnation.
+///
+/// Ordering is lexicographic (`epoch`, then `turns`), so the pair never
+/// regresses: a fresh incarnation always sorts above every cursor the previous
+/// one published. Turn counts are NOT comparable across incarnations, which is
+/// why callers classify with [`Self::progress_since`] rather than a bare `>`
+/// — an incarnation change is reported, not silently read as progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CompletionCursor {
+    /// Lease incarnation this count belongs to.
+    pub epoch: FencingToken,
+    /// Turns observed as completed within `epoch`.
+    pub turns: u64,
+}
+
+impl Default for CompletionCursor {
+    /// The pre-lease cursor: epoch 0, no completed turns. Every real lease
+    /// incarnation starts at token 1 or above, so this sorts below all of them.
+    fn default() -> Self {
+        Self::start(FencingToken::new(0))
+    }
+}
+
+impl CompletionCursor {
+    /// The zero cursor for `epoch`: no completed turn observed yet.
+    #[must_use]
+    pub const fn start(epoch: FencingToken) -> Self {
+        Self { epoch, turns: 0 }
+    }
+
+    #[must_use]
+    pub const fn new(epoch: FencingToken, turns: u64) -> Self {
+        Self { epoch, turns }
+    }
+
+    /// Advance by one completed turn within the same incarnation.
+    #[must_use]
+    pub const fn advanced(self) -> Self {
+        Self {
+            epoch: self.epoch,
+            turns: self.turns.saturating_add(1),
+        }
+    }
+
+    /// Re-anchor onto `epoch` when the identity's lease incarnation moved on.
+    ///
+    /// A stale or equal epoch leaves the cursor untouched, so a caller
+    /// presenting an older token can never rewind what has been published.
+    #[must_use]
+    pub const fn rebased(self, epoch: FencingToken) -> Self {
+        if epoch.get() > self.epoch.get() {
+            Self::start(epoch)
+        } else {
+            self
+        }
+    }
+
+    /// Classify this cursor against a `baseline` captured before a delivery.
+    #[must_use]
+    pub const fn progress_since(self, baseline: Self) -> CompletionProgress {
+        if self.epoch.get() != baseline.epoch.get() {
+            CompletionProgress::IncarnationChanged
+        } else if self.turns > baseline.turns {
+            CompletionProgress::Completed
+        } else {
+            CompletionProgress::Pending
+        }
+    }
+}
+
+impl fmt::Display for CompletionCursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.epoch, self.turns)
+    }
+}
+
+/// How an observed [`CompletionCursor`] relates to a baseline captured when a
+/// delivery was admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionProgress {
+    /// Same incarnation, nothing completed since the baseline.
+    Pending,
+    /// Same incarnation, at least one turn completed since the baseline.
+    Completed,
+    /// The identity's runtime incarnation changed (lease rotation, destructive
+    /// reset, or a process restart). Turn counts do not carry across
+    /// incarnations, so the caller must re-establish a baseline rather than
+    /// infer either completion or continued waiting.
+    IncarnationChanged,
+}
+
+/// Delivery receipt for [`dispatch_admission_tracked`], carrying what a caller
+/// needs to wait for the specific turn it just submitted.
+///
+/// [`dispatch_admission_tracked`]: super::runtime::IdentityRuntime::dispatch_admission_tracked
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchAdmission {
+    pub fencing_token: FencingToken,
+    /// Whether the dispatch is backed by a runtime store (REQ-04).
+    pub durable: bool,
+    /// Cursor read before delivery was attempted. The turn this dispatch
+    /// starts can only complete after this point, so waiting for a cursor
+    /// whose [`CompletionCursor::progress_since`] against this baseline
+    /// reports [`CompletionProgress::Completed`] cannot miss it.
+    pub completion_baseline: CompletionCursor,
+}
+
+/// Delivery receipt for [`send_admission_tracked`]. Same baseline contract as
+/// [`DispatchAdmission`].
+///
+/// [`send_admission_tracked`]: super::runtime::IdentityRuntime::send_admission_tracked
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendAdmission {
+    pub fencing_token: FencingToken,
+    pub completion_baseline: CompletionCursor,
+}
+
+// ---------------------------------------------------------------------------
 // Lightweight string newtypes (no validation beyond serde)
 // ---------------------------------------------------------------------------
 
@@ -907,7 +1043,9 @@ impl Eq for LocalExternalToolOverlay {}
 /// `external_tools` remains the serializable SDK/gateway declaration surface.
 /// `local_external_tools` is intentionally skipped by serde and is the
 /// in-process Rust overlay for apps that can supply a real dispatcher.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` is not derived: `provider_params` carries float sampling knobs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentBuildDraft {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
@@ -920,6 +1058,21 @@ pub struct AgentBuildDraft {
     pub external_tools: Vec<ExternalToolDef>,
     #[serde(default, skip)]
     pub local_external_tools: LocalExternalToolOverlay,
+    /// Per-identity provider parameter overrides.
+    ///
+    /// This is meerkat's own `ProviderParamsOverride` — the exact type behind
+    /// `AgentBuildConfig.provider_params` — so provider knobs that have no
+    /// MobKit-local vocabulary (OpenAI `prompt_cache_key` /
+    /// `prompt_cache_options` / `prompt_cache_retention`, Anthropic
+    /// `cache_control`) are reachable from a profile, gateway or SDK caller.
+    /// Reusing the meerkat type inherits its `deny_unknown_fields` ingress:
+    /// an unknown or mistyped knob rejects the draft at deserialize instead
+    /// of being ferried as untyped JSON and dropped later.
+    ///
+    /// Optional and `#[serde(default)]`: every profile, persisted draft and
+    /// wire payload written before this field existed still deserializes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_params: Option<meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
 }
 
 // ---------------------------------------------------------------------------

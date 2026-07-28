@@ -603,8 +603,11 @@ pub fn handle_mobkit_rpc_json(
         storage_methods::STORAGE_DOCTOR_METHOD => {
             match storage_methods::parse_storage_doctor_params(&request.params) {
                 Ok(Some(params)) => {
-                    let diagnosis =
-                        crate::storage_doctor::diagnose_state_dir_blocking(&params.scope(), None);
+                    let diagnosis = crate::storage_doctor::diagnose_state_dir_blocking_with_options(
+                        &params.scope(),
+                        None,
+                        params.doctor_options(),
+                    );
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
@@ -3260,24 +3263,29 @@ async fn handle_unified_rpc_json_inner(
                     );
                 }
             };
-            let send_result = if crate::member_comms_id::is_reserved_generated_alias(identity_str) {
-                identity_rt
-                    .send_with_mode_and_interaction_member_alias_tracked(
-                        &identity,
-                        identity_str,
-                        &content,
-                        meerkat_core::types::HandlingMode::Queue,
-                        None,
-                    )
-                    .await
-            } else {
-                identity_rt.send_tracked(&identity, &content).await
-            };
+            let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
+                .then_some(identity_str);
+            let send_result = identity_rt
+                .send_admission_tracked(
+                    &identity,
+                    expected_alias,
+                    &content,
+                    meerkat_core::types::HandlingMode::Queue,
+                    None,
+                )
+                .await;
             match send_result {
-                Ok(token) => JsonRpcResponse {
+                Ok(admission) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
-                    result: Some(serde_json::json!({ "fencing_token": token.get() })),
+                    result: Some(serde_json::json!({
+                        "fencing_token": admission.fencing_token.get(),
+                        // Cursor read before delivery. Wait for an
+                        // inspect_identity completion_cursor that is ahead of
+                        // this within the same epoch; never compare output
+                        // text, which repeats.
+                        "completion_baseline": completion_cursor_json(admission.completion_baseline),
+                    })),
                     error: None,
                 },
                 Err(e) => identity_error_response(response_id, &e),
@@ -3368,26 +3376,25 @@ async fn handle_unified_rpc_json_inner(
                 );
             }
 
-            let send_result = if crate::member_comms_id::is_reserved_generated_alias(identity_str) {
-                identity_rt
-                    .send_with_mode_and_interaction_member_alias_tracked(
-                        &identity,
-                        identity_str,
-                        &content,
-                        meerkat_core::types::HandlingMode::Queue,
-                        None,
-                    )
-                    .await
-            } else {
-                identity_rt.send_tracked(&identity, &content).await
-            };
+            let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
+                .then_some(identity_str);
+            let send_result = identity_rt
+                .send_admission_tracked(
+                    &identity,
+                    expected_alias,
+                    &content,
+                    meerkat_core::types::HandlingMode::Queue,
+                    None,
+                )
+                .await;
             match send_result {
-                Ok(token) => JsonRpcResponse {
+                Ok(admission) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: Some(serde_json::json!({
                         "interaction_id": interaction_id,
-                        "fencing_token": token.get(),
+                        "fencing_token": admission.fencing_token.get(),
+                        "completion_baseline": completion_cursor_json(admission.completion_baseline),
                         "stream": {
                             "route": format!("/console/identity/{}/stream", identity.as_str()),
                             "identity": identity.as_str(),
@@ -3489,23 +3496,22 @@ async fn handle_unified_rpc_json_inner(
                 correlation_id,
                 idempotency_key,
             };
-            let dispatch_result =
-                if crate::member_comms_id::is_reserved_generated_alias(identity_str) {
-                    identity_rt
-                        .dispatch_member_alias_tracked(&identity, identity_str, &dispatch_input)
-                        .await
-                } else {
-                    identity_rt
-                        .dispatch_tracked(&identity, &dispatch_input)
-                        .await
-                };
+            let expected_alias = crate::member_comms_id::is_reserved_generated_alias(identity_str)
+                .then_some(identity_str);
+            let dispatch_result = identity_rt
+                .dispatch_admission_tracked(&identity, expected_alias, &dispatch_input)
+                .await;
             match dispatch_result {
-                Ok((token, durable)) => JsonRpcResponse {
+                Ok(admission) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
-                    result: Some(
-                        serde_json::json!({ "fencing_token": token.get(), "durable": durable }),
-                    ),
+                    result: Some(serde_json::json!({
+                        "fencing_token": admission.fencing_token.get(),
+                        "durable": admission.durable,
+                        // See mobkit/send: the correlation atom for "wait for
+                        // the turn I just submitted".
+                        "completion_baseline": completion_cursor_json(admission.completion_baseline),
+                    })),
                     error: None,
                 },
                 Err(e) => identity_error_response(response_id, &e),
@@ -4345,6 +4351,7 @@ async fn handle_unified_rpc_json_inner(
                 };
             let identity = target.identity.clone();
             let status = identity_rt.status(&identity).await;
+            let completion_cursor = identity_rt.completion_cursor(&identity).await;
             if let Some(response) =
                 rpc_stale_live_alias_error_response(identity_rt, &target, response_id.clone()).await
             {
@@ -4385,6 +4392,12 @@ async fn handle_unified_rpc_json_inner(
                             "output_preview": inspection.output_preview,
                             "is_final": inspection.is_final,
                             "peer_reachable_count": inspection.peer_reachable_count,
+                            // Completion identity. `output_preview` cannot
+                            // answer "did a new turn finish?" — two turns may
+                            // emit identical text — so pollers compare this
+                            // against the baseline their send/dispatch
+                            // returned.
+                            "completion_cursor": completion_cursor_json(completion_cursor),
                         })),
                         error: None,
                     }
@@ -5262,6 +5275,10 @@ async fn rpc_live_identity_inspect_json(
         "output_preview": snapshot.as_ref().and_then(|snapshot| snapshot.output_preview.clone()),
         "is_final": snapshot.as_ref().map(|snapshot| snapshot.is_final).unwrap_or(false),
         "peer_reachable_count": alias.member.wired_to.len(),
+        // Raw live aliases are not identity-first owned, so no identity
+        // authority tracks their completions. Null rather than a fabricated
+        // zero: a client must not mistake "not tracked" for "no turns yet".
+        "completion_cursor": Value::Null,
         // Machine-owned liveness projection (meerkat 0.7.29, ask 14):
         // run_state / in_flight_work / health for operator triage.
         "progress": snapshot.as_ref().and_then(|snapshot| snapshot.progress.clone()),
@@ -5451,6 +5468,17 @@ fn maybe_identity_not_configured(is_notification: bool, response_id: Value) -> S
     } else {
         identity_not_configured(response_id)
     }
+}
+
+/// Wire form of a [`CompletionCursor`]: the comparable atom a client polls to
+/// learn that a NEW turn finished, without ever comparing output text.
+///
+/// [`CompletionCursor`]: crate::identity_first::CompletionCursor
+fn completion_cursor_json(cursor: crate::identity_first::CompletionCursor) -> Value {
+    serde_json::json!({
+        "epoch": cursor.epoch.get(),
+        "turns": cursor.turns,
+    })
 }
 
 fn addressability_json(addressability: crate::identity_first::AgentAddressability) -> &'static str {

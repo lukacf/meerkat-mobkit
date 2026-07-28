@@ -5522,6 +5522,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MobSessionService for DelayedHistorySessionService {
+        async fn load_session_for_resume(
+            &self,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_mob::ResumeSessionLoad, SessionError> {
+            self.inner.load_session_for_resume(session_id).await
+        }
+
         async fn create_session_under_runtime_turn_boundary(
             &self,
             req: meerkat_core::service::CreateSessionRequest,
