@@ -2764,6 +2764,69 @@ rust_test(
 )
 
 rust_test(
+    name = "identity_first_completion_cursor_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "identity_first_completion_cursor",
+    crate_root = "tests/identity_first_completion_cursor.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/identity_first_completion_cursor.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.6",
+        "CARGO_BIN_NAME": "identity_first_completion_cursor",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "identity_first_contracts_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -3196,6 +3259,71 @@ rust_test(
     data = [
         ":package_runfiles",
         "//:repo_governance_files",
+    ],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "identity_first_subprocess_reboot_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "identity_first_subprocess_reboot",
+    crate_root = "tests/identity_first_subprocess_reboot.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/identity_first_subprocess_reboot.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.6",
+        "CARGO_BIN_NAME": "identity_first_subprocess_reboot",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [
+        ":package_runfiles",
     ],
     env = {
         "RUST_MIN_STACK": "16777216",
@@ -5128,6 +5256,69 @@ rust_test(
 )
 
 rust_test(
+    name = "session_compaction_wiring_test",
+    aliases = aliases(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    crate_name = "session_compaction_wiring",
+    crate_root = "tests/session_compaction_wiring.rs",
+    crate_features = [],
+    edition = "2024",
+    compile_data = [
+        "Cargo.toml",
+        "assets/release-targets.json",
+        "console-dist/console-app.css",
+        "console-dist/console-app.js",
+        "console-dist/index.html",
+        "examples/library_mode_reference.rs",
+        "flow-editor-dist/flow-editor.css",
+        "flow-editor-dist/flow-editor.js",
+        "flow-editor-dist/index.html",
+        "flow-editor-dist/react-globals.js",
+        "src/adaptive_layer_decision.schema.json",
+        "src/memory/distiller_prompt_v0.md",
+        "src/memory/hygienist_prompt_v0.md",
+        "src/memory/selector_prompt_v0.md",
+        "src/memory/steward_prompt_v0.md",
+        "src/unified_runtime/http.rs",
+        "src/unified_runtime/lifecycle.rs",
+    ],
+    srcs = [
+        "tests/session_compaction_wiring.rs",
+    ],
+    visibility = ["//visibility:public"],
+    rustc_env = {
+        "CARGO_PKG_VERSION": "0.8.6",
+        "CARGO_BIN_NAME": "session_compaction_wiring",
+        "CARGO_MANIFEST_DIR": "./meerkat-mobkit",
+    },
+    tags = [
+        "fast",
+    ],
+    size = "small",
+    data = [],
+    env = {
+        "RUST_MIN_STACK": "16777216",
+    },
+    proc_macro_deps = all_crate_deps(
+        package_name = "meerkat-mobkit",
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [
+        "//meerkat-mobkit:meerkat_mobkit",
+    ] + all_crate_deps(
+        package_name = "meerkat-mobkit",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "session_store_jsonl_test",
     aliases = aliases(
         package_name = "meerkat-mobkit",
@@ -6382,12 +6573,14 @@ test_suite(
         ":identity_first_builder_test",
         ":identity_first_choke_test",
         ":identity_first_cold_restart_continuity_test",
+        ":identity_first_completion_cursor_test",
         ":identity_first_contracts_test",
         ":identity_first_head_canonical_resume_test",
         ":identity_first_kitchen_sink_test",
         ":identity_first_ob3_smoke_test",
         ":identity_first_respawn_continuity_test",
         ":identity_first_runtime_test",
+        ":identity_first_subprocess_reboot_test",
         ":identity_first_types_test",
         ":idle_cpu_gate_test",
         ":incident_command_center_pack_test",
@@ -6418,6 +6611,7 @@ test_suite(
         ":sdk_parity_test",
         ":sdk_productization_test",
         ":selector_eval_harness_test",
+        ":session_compaction_wiring_test",
         ":session_store_jsonl_test",
         ":shutdown_drain_test",
         ":sse_auth_gate_test",
