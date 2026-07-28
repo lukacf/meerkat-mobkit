@@ -47,21 +47,27 @@ retries = 2
 # heavy-runtime family does (passes 1/1 isolated). Same scoped remedy.
 #
 # `refresh_session_history_parallelizes_slow_member_backfills_at_scale` joined
-# 2026-07-28: it proves concurrency by WALL CLOCK — 32 members each delayed
-# 40ms, asserting the parallel path finishes under 600ms against a 1280ms
-# serial baseline. That inference only holds while the runner actually has
-# cores to spare; on a loaded 4-core CI runner 32 "parallel" backfills
-# serialize on CPU and the elapsed time measures contention, not a regression
-# in the code under test. Passes 1/1 isolated, failed once in a full-suite CI
-# run at HEAD of this PR. Retries re-run it near-alone, which is when its
-# premise is true.
+# 2026-07-28. What it actually measures is worth stating, because the obvious
+# reading is wrong: the 40ms per-member delay is a `tokio::time::sleep`, so the
+# sleeps themselves overlap on any number of cores and cost nothing in CPU.
+# `refresh_session_history` fans out with `join_all` (console_aggregator/mod.rs
+# :1357), which polls all 32 futures on ONE task rather than spawning — so the
+# CPU work inside each backfill is serialized onto that single task. The test
+# therefore measures aggregate CPU throughput of a single-task fan-out, not
+# parallelism.
 #
-# Noted honestly rather than silently: widening the 600ms bound was the other
-# option and would have weakened a real assertion to buy a green run. A
-# wall-clock parallelism proof is load-sensitive by construction, so the right
+# Unloaded, per-member CPU is a few ms: 32 x ~5ms + 40ms ~= 200ms, well under
+# the 600ms bound. On a loaded CI runner whose process gets a fraction of a
+# core it stretches to ~64ms each: 32 x 64 = 2048ms, which is what the failing
+# run reported (2.056s — note that is ABOVE the 1280ms "serial" baseline the
+# assertion message names, which is the tell that CPU, not concurrency, is the
+# variable). Nothing in the code under test changed; passes 1/1 isolated.
+#
+# Noted rather than silently widened: raising the 600ms bound was the other
+# option and would have weakened a real assertion to buy a green run. The right
 # long-term shape is to assert interleaving evidence (observed concurrent
-# read_calls) instead of elapsed time. Not done here — that is test-design
-# work, not release work.
+# read_calls) instead of elapsed time, or to spawn rather than join_all if the
+# concurrency is meant to be real. Both are test/design work, not release work.
 [[profile.default.overrides]]
 filter = 'package(meerkat-mobkit) & (test(live_event_burst_reaches_store_while_slow_backfill_is_running) + test(refresh_session_history_parallelizes_slow_member_backfills_at_scale))'
 retries = 2
