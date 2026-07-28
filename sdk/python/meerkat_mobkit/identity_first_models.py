@@ -559,6 +559,15 @@ class AgentBuildDraft:
     labels: dict[str, str] = field(default_factory=dict)
     app_context: Any | None = None
     external_tools: list[ExternalToolDef] = field(default_factory=list)
+    #: Per-identity provider parameter overrides, carried verbatim to the
+    #: gateway. Mirrors meerkat's ``ProviderParamsOverride`` (the type behind
+    #: ``AgentBuildConfig.provider_params``): provider knobs with no MobKit
+    #: vocabulary of their own, such as OpenAI ``prompt_cache_key`` /
+    #: ``prompt_cache_options`` / ``prompt_cache_retention`` and Anthropic
+    #: ``cache_control``. Kept as a plain mapping here because the Rust
+    #: boundary parses it fail-closed — an unknown or mistyped knob is
+    #: rejected there rather than dropped.
+    provider_params: dict[str, Any] | None = None
     _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def register_tool(
@@ -614,6 +623,10 @@ class AgentBuildDraft:
         if self.app_context is not None:
             result["app_context"] = self.app_context
         result["external_tools"] = [t.to_dict() for t in self.external_tools]
+        # The gateway replaces the draft wholesale with what it gets back, so
+        # a field omitted here is a field cleared on every customized build.
+        if self.provider_params is not None:
+            result["provider_params"] = self.provider_params
         return result
 
     @classmethod
@@ -628,6 +641,7 @@ class AgentBuildDraft:
                 ExternalToolDef.from_dict(t)
                 for t in (data.get("external_tools") or [])
             ],
+            provider_params=data.get("provider_params"),
         )
 
 
@@ -779,15 +793,79 @@ class IdentityStatus:
 # ---------------------------------------------------------------------------
 
 
+class CompletionProgress(str, Enum):
+    """How an observed cursor relates to a baseline captured at dispatch."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    INCARNATION_CHANGED = "incarnation_changed"
+
+
+@dataclass(frozen=True)
+class CompletionCursor:
+    """Comparable completion identity for one identity's stream of turns.
+
+    Waiting for an agent's next answer must never compare output TEXT: two
+    consecutive turns can legitimately produce byte-identical output, and a
+    text comparison then reports "no new turn" for the whole configured wait.
+    This cursor is the comparable atom instead — never derived from output
+    content, a content hash, a timestamp, or a per-poll uuid.
+
+    ``epoch`` is the identity's lease fencing token (the runtime incarnation
+    this count belongs to); ``turns`` counts turns observed as completed
+    within it. Turn counts are not comparable across incarnations, so classify
+    with :meth:`progress_since` rather than comparing ``turns`` directly.
+    """
+
+    epoch: int = 0
+    turns: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {"epoch": self.epoch, "turns": self.turns}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CompletionCursor:
+        return cls(
+            epoch=int(data.get("epoch", 0)),
+            turns=int(data.get("turns", 0)),
+        )
+
+    def progress_since(self, baseline: CompletionCursor) -> CompletionProgress:
+        """Classify this cursor against a baseline captured before delivery."""
+        if self.epoch != baseline.epoch:
+            return CompletionProgress.INCARNATION_CHANGED
+        if self.turns > baseline.turns:
+            return CompletionProgress.COMPLETED
+        return CompletionProgress.PENDING
+
+
+def _completion_cursor_from(data: dict[str, Any], key: str) -> CompletionCursor | None:
+    """Read an optional cursor field. Absent (older gateway) stays ``None``."""
+    raw = data.get(key)
+    return CompletionCursor.from_dict(raw) if isinstance(raw, dict) else None
+
+
 @dataclass(frozen=True)
 class SendResult:
     """Typed result from identity-first send()."""
 
     fencing_token: int
+    #: Cursor read before delivery. Wait for an inspection cursor that reports
+    #: COMPLETED against this. ``None`` when the gateway predates the field.
+    completion_baseline: CompletionCursor | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"fencing_token": self.fencing_token}
+        if self.completion_baseline is not None:
+            result["completion_baseline"] = self.completion_baseline.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SendResult:
-        return cls(fencing_token=int(data.get("fencing_token", 0)))
+        return cls(
+            fencing_token=int(data.get("fencing_token", 0)),
+            completion_baseline=_completion_cursor_from(data, "completion_baseline"),
+        )
 
 
 @dataclass(frozen=True)
@@ -796,12 +874,24 @@ class DispatchResult:
 
     fencing_token: int
     durable: bool
+    #: See :attr:`SendResult.completion_baseline`.
+    completion_baseline: CompletionCursor | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "fencing_token": self.fencing_token,
+            "durable": self.durable,
+        }
+        if self.completion_baseline is not None:
+            result["completion_baseline"] = self.completion_baseline.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DispatchResult:
         return cls(
             fencing_token=int(data.get("fencing_token", 0)),
             durable=bool(data.get("durable", False)),
+            completion_baseline=_completion_cursor_from(data, "completion_baseline"),
         )
 
 
@@ -813,6 +903,23 @@ class IdentityInspection:
     output_preview: str | None = None
     is_final: bool = False
     peer_reachable_count: int = 0
+    #: Live completion cursor. ``None`` for non-identity-first live aliases
+    #: (no identity authority tracks their turns) and for gateways predating
+    #: the field — in both cases the caller must not read absence as "no turns
+    #: yet".
+    completion_cursor: CompletionCursor | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "identity": self.identity,
+            "is_final": self.is_final,
+            "peer_reachable_count": self.peer_reachable_count,
+        }
+        if self.output_preview is not None:
+            result["output_preview"] = self.output_preview
+        if self.completion_cursor is not None:
+            result["completion_cursor"] = self.completion_cursor.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IdentityInspection:
@@ -821,4 +928,5 @@ class IdentityInspection:
             output_preview=data.get("output_preview"),
             is_final=bool(data.get("is_final", False)),
             peer_reachable_count=int(data.get("peer_reachable_count", 0)),
+            completion_cursor=_completion_cursor_from(data, "completion_cursor"),
         )

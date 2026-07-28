@@ -162,11 +162,14 @@ rt = await (
 triage = rt.agent("triage:main")
 luka = rt.agent("identity:luka")
 
-await triage.dispatch_text("New event from connector", origin="connector")
-output = await triage.wait_for_output(timeout=60)
+# send_and_wait / dispatch_and_wait wait on the turn's completion cursor.
+# Never wait by comparing output text: an agent may answer the same thing
+# twice, and a text comparison then reports "nothing happened" until timeout.
+output = await triage.dispatch_text_and_wait(
+    "New event from connector", origin="connector", timeout=60,
+)
 
-await luka.send("What's happening today?")
-await luka.wait_for_output(timeout=60)
+await luka.send_and_wait("What's happening today?", timeout=60)
 ```
 
 Use `respawn()` for non-destructive recovery that keeps continuity, and `reset()` only when the app intentionally wants a destructive new generation and session.

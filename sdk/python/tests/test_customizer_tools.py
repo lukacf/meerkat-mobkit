@@ -162,3 +162,30 @@ class TestAgentBuildDraftRegisterTool:
         draft = AgentBuildDraft()
         with pytest.raises(TypeError, match="handler must be callable"):
             draft.register_tool("bad", "not_a_function")
+
+
+class TestAgentBuildDraftProviderParams:
+    """The gateway replaces the draft wholesale with what the SDK returns, so a
+    customizer that never touches provider params must still hand them back
+    untouched — otherwise every SDK-backed build silently clears the identity's
+    cache policy."""
+
+    PROVIDER_PARAMS = {
+        "provider_tag": {
+            "provider": "open_ai",
+            "prompt_cache_key": "tenant-a:stable-prefix",
+            "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+        }
+    }
+
+    def test_round_trips_provider_params(self):
+        draft = AgentBuildDraft.from_dict(
+            {"model": "gpt-5.5", "provider_params": self.PROVIDER_PARAMS}
+        )
+        assert draft.provider_params == self.PROVIDER_PARAMS
+        assert draft.to_dict()["provider_params"] == self.PROVIDER_PARAMS
+
+    def test_omits_provider_params_when_unset(self):
+        draft = AgentBuildDraft.from_dict({"model": "gpt-5.5"})
+        assert draft.provider_params is None
+        assert "provider_params" not in draft.to_dict()

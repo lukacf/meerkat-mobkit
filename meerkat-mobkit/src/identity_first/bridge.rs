@@ -4,14 +4,18 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use meerkat_core::lifecycle::run_primitive::{
+    OpenAiProviderTag, ProviderParamsOverride, ProviderTag,
+};
 use meerkat_core::types::HandlingMode;
 use meerkat_mob::ids::AgentIdentity as MobAgentIdentity;
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::{
-    MobHandle, MobSessionService, SpawnMemberSpec, SpawnSystemPromptOverride, WorkOrigin, WorkRef,
-    WorkSpec,
+    MobHandle, MobSessionService, ResumeOverrideField, SpawnMemberSpec, SpawnSystemPromptOverride,
+    WorkOrigin, WorkRef, WorkSpec,
 };
 
 use crate::mob_handle_runtime::{
@@ -182,6 +186,23 @@ pub enum BridgeError {
         kind: ResumeRejectionKind,
         detail: String,
     },
+    /// A mob-actor round trip in the delivery path did not answer within the
+    /// attempt's admission budget. meerkat's mob actor is ONE serialized
+    /// command loop and `MobHandle::send_actor_command` has no timeout of its
+    /// own, so a handler that blocks freezes every member's dispatch behind it
+    /// with no upstream bound. This is containment, not a repair: the delivery
+    /// did NOT happen and the actor is still blocked — but the failure is
+    /// finite and names the round trip and member that hit it instead of
+    /// hanging the caller indefinitely. Never treat this as a repairable
+    /// stale-runtime-state error: repairing a member cannot unblock an actor.
+    ActorAdmissionTimeout {
+        /// Which actor round trip expired, e.g. `deliver.submit_work`.
+        operation: &'static str,
+        /// The mob member the round trip was addressed to.
+        identity: MobAgentIdentity,
+        /// Total time this delivery attempt spent waiting on the actor.
+        waited: Duration,
+    },
 }
 
 impl std::fmt::Display for BridgeError {
@@ -193,6 +214,15 @@ impl std::fmt::Display for BridgeError {
                 f,
                 "session bridge resume rejected ({kind:?}): {detail}; durable session preserved, \
                  identity degraded pending retry"
+            ),
+            Self::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => write!(
+                f,
+                "session bridge actor call `{operation}` for member {identity} exceeded the \
+                 admission budget after {waited:?}; the mob actor command loop is not draining"
             ),
         }
     }
@@ -300,6 +330,113 @@ impl ResumeSessionOutcome {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bounded actor admission
+// ---------------------------------------------------------------------------
+
+/// Default budget one delivery attempt may spend waiting on the mob actor's
+/// command loop, across ALL of that attempt's round trips.
+///
+/// The bounded calls are ADMISSION round trips (`get_member`,
+/// `submit_work_with_mode` at `IngressAccepted`): they hand a command to the
+/// actor and return once it is admitted at runtime ingress — they never await
+/// turn completion. Each is an in-process channel send plus a machine-state
+/// read on a responsive actor, so healthy latency is orders of magnitude
+/// inside this budget and it cannot fire on the healthy path.
+///
+/// The value is therefore not sized against the healthy path but against the
+/// one legitimate reason admission is slow: the mob actor is a single
+/// serialized command loop, so an admission call can queue behind another
+/// member's entire in-flight turn. Ten minutes is ~6.7x the 90s this crate
+/// already treats as the outer bound for waiting on a turn's *output*
+/// (`IdentityRuntimeConfig::default_timeout`) and ~3.3x the worst measured
+/// single-turn latency in the deployment that motivated this bound (180s for
+/// a one-word turn on a 94 MB document). It sits deliberately BELOW the
+/// 962-second dispatch hang observed in production, so the pathology this
+/// exists to name still produces a signal.
+///
+/// Trade-off, stated plainly: ten minutes is a terrible wait and a much
+/// shorter bound would diagnose far faster. Shorter was rejected — at 30-90s
+/// the timeout would fire while another member is merely running a long tool
+/// chain, converting a latency problem into dropped deliveries, which is
+/// worse than no bound at all. Deployments whose turns are known to be short
+/// should tighten this through the env knob below.
+const BRIDGE_ACTOR_ADMISSION_BUDGET: Duration = Duration::from_mins(10);
+
+/// Effective admission budget: `MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS` overrides
+/// the default, clamped to [1, 3600] seconds. The floor keeps `0` from
+/// meaning "reject everything"; the ceiling keeps a mistyped value from
+/// silently restoring the unbounded hang this replaces.
+fn bridge_actor_admission_budget() -> Duration {
+    parse_bridge_actor_admission_budget(
+        std::env::var("MOBKIT_BRIDGE_ACTOR_ADMISSION_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_bridge_actor_admission_budget(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.clamp(1, 3600)))
+        .unwrap_or(BRIDGE_ACTOR_ADMISSION_BUDGET)
+}
+
+/// One delivery attempt's shared deadline for mob-actor round trips.
+///
+/// `MobHandle::send_actor_command` awaits both the command send and the reply
+/// with no timeout, so a blocked actor hangs the dispatch silently. Every
+/// round trip in a delivery attempt runs under this ONE deadline rather than
+/// a per-call timeout: the delivery path makes three or four serialized round
+/// trips, and three serialized bounds would cost three budgets — a worse
+/// worst case than the hang being contained.
+struct ActorAdmissionDeadline {
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+}
+
+impl ActorAdmissionDeadline {
+    fn new(budget: Duration) -> Self {
+        let started = tokio::time::Instant::now();
+        Self {
+            started,
+            deadline: started + budget,
+        }
+    }
+
+    /// Await one actor round trip under the attempt's remaining budget. A
+    /// responsive actor takes the `timeout_at` pass-through: no added
+    /// latency, no allocation, no behavioural change. Expiry is the only path
+    /// that logs or allocates.
+    async fn bound<T, F>(
+        &self,
+        operation: &'static str,
+        identity: &MobAgentIdentity,
+        call: F,
+    ) -> Result<T, BridgeError>
+    where
+        F: Future<Output = T>,
+    {
+        match tokio::time::timeout_at(self.deadline, call).await {
+            Ok(value) => Ok(value),
+            Err(_) => {
+                let waited = self.started.elapsed();
+                tracing::warn!(
+                    operation,
+                    identity = %identity,
+                    waited_ms = waited.as_millis(),
+                    "mob actor did not answer within the delivery admission budget; the actor \
+                     command loop is not draining (head-of-line block) — delivery abandoned"
+                );
+                Err(BridgeError::ActorAdmissionTimeout {
+                    operation,
+                    identity: identity.clone(),
+                    waited,
+                })
+            }
+        }
+    }
+}
+
 async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MobAgentIdentity,
@@ -307,10 +444,15 @@ async fn submit_internal_bridge_work(
     injected_context: &[meerkat_core::ContentInput],
     handling_mode: HandlingMode,
     interaction_id: Option<&str>,
+    deadline: &ActorAdmissionDeadline,
 ) -> Result<(), BridgeError> {
-    let entry = handle
-        .get_member(member_id)
-        .await
+    let entry = deadline
+        .bound(
+            "deliver.get_member",
+            member_id,
+            handle.get_member(member_id),
+        )
+        .await?
         .map_err(|err| BridgeError::Mob(err.to_string()))?
         .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
     // Ask 1: attach ambient memory recall as a separate typed injected-context
@@ -340,15 +482,19 @@ async fn submit_internal_bridge_work(
             }
         }
     }
-    handle
-        .submit_work_with_mode(
-            entry.agent_runtime_id.clone(),
-            entry.fence_token,
-            WorkRef::new(),
-            spec,
-            handling_mode,
+    deadline
+        .bound(
+            "deliver.submit_work",
+            member_id,
+            handle.submit_work_with_mode(
+                entry.agent_runtime_id.clone(),
+                entry.fence_token,
+                WorkRef::new(),
+                spec,
+                handling_mode,
+            ),
         )
-        .await
+        .await?
         .map(|_| ())
         .map_err(|err| BridgeError::Mob(err.to_string()))
 }
@@ -598,6 +744,10 @@ pub struct MobSessionBridge {
     /// bridge-session authority. Stable for the bridge lifetime so every
     /// external member shares one generated operation owner.
     generated_external_owner_session: std::sync::OnceLock<meerkat_core::types::SessionId>,
+    /// Budget one delivery attempt may spend waiting on the mob actor.
+    /// Resolved once at construction so the success path pays nothing per
+    /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
+    actor_admission_budget: Duration,
 }
 
 impl MobSessionBridge {
@@ -611,6 +761,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
 
@@ -627,6 +778,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
 
@@ -643,6 +795,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
 
@@ -660,6 +813,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
 
@@ -677,7 +831,24 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            actor_admission_budget: bridge_actor_admission_budget(),
         }
+    }
+
+    /// Override the per-delivery-attempt mob-actor admission budget.
+    ///
+    /// Hosts whose turns are known to be short can tighten the default; tests
+    /// use this to exercise the bound without waiting out the real budget.
+    #[must_use]
+    pub fn with_actor_admission_budget(mut self, budget: Duration) -> Self {
+        self.actor_admission_budget = budget;
+        self
+    }
+
+    /// The effective per-delivery-attempt mob-actor admission budget.
+    #[must_use]
+    pub fn actor_admission_budget(&self) -> Duration {
+        self.actor_admission_budget
     }
 
     async fn remember_runtime_member(
@@ -894,7 +1065,11 @@ impl MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         member_id: &MobAgentIdentity,
         missing_message: &'static str,
+        deadline: &ActorAdmissionDeadline,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        // `resolve_bridge_session_id` reads the machine-state watch
+        // projection; it never enters the actor queue, so there is nothing to
+        // bound here.
         if let Some(session_id) = self.handle.resolve_bridge_session_id(member_id).await {
             self.remember_runtime_session(runtime_id, &session_id).await;
             return Ok(session_id);
@@ -903,10 +1078,13 @@ impl MobSessionBridge {
         // `get_member` faults (machine command/transport errors) must not be
         // laundered into "member absent"; surface them to the caller.
         if member_id.as_str() != runtime_id.as_str()
-            && self
-                .handle
-                .get_member(member_id)
-                .await
+            && deadline
+                .bound(
+                    "resolve_session.get_member",
+                    member_id,
+                    self.handle.get_member(member_id),
+                )
+                .await?
                 .map_err(|err| BridgeError::Mob(err.to_string()))?
                 .is_some()
             && let Some(session_id) = self.runtime_session_id(runtime_id).await
@@ -1194,19 +1372,206 @@ fn member_id_for_spawn_spec(
     }
 }
 
+/// Default OpenAI prompt-cache routing key for `identity`.
+///
+/// `prompt_cache_key` is a routing hint only: it steers a request onto a
+/// cache-warm backend and has no effect on the completion. Meerkat sends none
+/// by default, so without this every identity competes in one anonymous
+/// routing pool.
+///
+/// The key is a total function of the durable identity id and nothing else —
+/// no uuid, timestamp, generation, runtime id, session id or other
+/// process-local value — so it reproduces byte-for-byte across restarts,
+/// respawns and revivals. Per-identity (not per-profile) is the correct
+/// bucket: two identities sharing a profile still carry different
+/// transcripts, and therefore different cacheable prefixes.
+fn identity_prompt_cache_key(identity: &AgentIdentity) -> String {
+    format!("mobkit:{}", identity.as_str())
+}
+
+/// Fill every unset knob on `target` from `defaults`.
+///
+/// Explicit knobs always win. The tag half delegates to meerkat's own
+/// `ProviderTag::merge_missing_from`, so a provider-family conflict is a typed
+/// fault rather than a silent union of unrelated provider bags. Without the
+/// merge, a draft that sets one cache knob would replace the profile's
+/// declaration wholesale and silently drop knobs declared in the mob
+/// definition.
+fn merge_provider_params_missing_from(
+    target: &mut ProviderParamsOverride,
+    defaults: &ProviderParamsOverride,
+) -> Result<(), BridgeError> {
+    fn fill<T: Clone>(target: &mut Option<T>, default: &Option<T>) {
+        if target.is_none()
+            && let Some(value) = default
+        {
+            *target = Some(value.clone());
+        }
+    }
+
+    fill(&mut target.temperature, &defaults.temperature);
+    fill(&mut target.top_p, &defaults.top_p);
+    fill(&mut target.max_output_tokens, &defaults.max_output_tokens);
+    fill(&mut target.reasoning, &defaults.reasoning);
+    fill(
+        &mut target.thinking_budget_tokens,
+        &defaults.thinking_budget_tokens,
+    );
+    match (target.provider_tag.as_mut(), defaults.provider_tag.as_ref()) {
+        (Some(tag), Some(default)) => tag
+            .merge_missing_from(default)
+            .map_err(|error| BridgeError::InvalidInput(format!("provider params: {error}")))?,
+        (None, Some(default)) => target.provider_tag = Some(default.clone()),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Whether this spawn's effective model is served by OpenAI.
+///
+/// `prompt_cache_key` lives on the OpenAI provider tag, and meerkat rejects a
+/// tag from the wrong provider family at its merge seam
+/// (`ProviderParamsMergeError::ProviderTagMismatch`), which would fail the
+/// turn for an Anthropic- or Gemini-backed identity. The default is injected
+/// only when the provider is provably OpenAI.
+fn spawn_is_openai_backed(
+    draft: &AgentBuildDraft,
+    base_profile: Option<&meerkat_mob::Profile>,
+) -> bool {
+    // A draft model override replaces the profile's model and meerkat
+    // re-infers the owner from the new id (the pinned branch below clears
+    // `provider` for exactly that reason), so the new id decides.
+    if let Some(model) = draft.model.as_deref() {
+        return matches!(
+            meerkat_models::infer_provider(model),
+            Some(meerkat_core::Provider::OpenAI)
+        );
+    }
+    match base_profile {
+        Some(profile) => match profile.provider {
+            Some(provider) => matches!(provider, meerkat_core::Provider::OpenAI),
+            None => matches!(
+                meerkat_models::infer_provider(&profile.model),
+                Some(meerkat_core::Provider::OpenAI)
+            ),
+        },
+        None => false,
+    }
+}
+
+/// Give `params` the identity's default prompt-cache routing key when the
+/// caller supplied none.
+///
+/// A caller-supplied key is never replaced, and a tag belonging to another
+/// provider family is left untouched — that tag is the caller's explicit
+/// provider identity, not a slot to overwrite.
+fn ensure_default_prompt_cache_key(params: &mut ProviderParamsOverride, identity: &AgentIdentity) {
+    match params.provider_tag.as_mut() {
+        Some(ProviderTag::OpenAi(tag)) => {
+            if tag.prompt_cache_key.is_none() {
+                tag.prompt_cache_key = Some(identity_prompt_cache_key(identity));
+            }
+        }
+        Some(_) => {}
+        None => {
+            params.provider_tag = Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_key: Some(identity_prompt_cache_key(identity)),
+                ..Default::default()
+            }));
+        }
+    }
+}
+
+/// Land the draft's provider params, plus the per-identity prompt-cache
+/// default, on `spawn_spec`.
+///
+/// `SpawnMemberSpec` has no field-scoped provider-params seam: the only
+/// carrier meerkat reads is `override_profile.provider_params` (mob
+/// `build.rs`, `config.provider_params = profile.provider_params.clone()`).
+/// A declared override therefore requires a profile snapshot.
+///
+/// A spawn that declares nothing is deliberately left on the field-scoped
+/// path: meerkat persists the snapshot as `effective_profile_override` and
+/// reuses it on internal revival, so minting one for every OpenAI identity
+/// just to carry a routing hint would freeze definition drift fleet-wide.
+fn apply_provider_params(
+    spawn_spec: &mut SpawnMemberSpec,
+    spec: &DurableAgentSpec,
+    draft: &AgentBuildDraft,
+    base_profile: Option<&meerkat_mob::Profile>,
+) -> Result<(), BridgeError> {
+    let declared = draft.provider_params.clone();
+    if declared.is_none() && spawn_spec.override_profile.is_none() {
+        return Ok(());
+    }
+
+    let Some(mut profile) = spawn_spec
+        .override_profile
+        .take()
+        .or_else(|| base_profile.cloned())
+    else {
+        // Declared params with no inline profile to carry them (realm-ref
+        // binding). Fail closed: dropping them silently is the failure mode
+        // that reads downstream as "caching just doesn't work".
+        return Err(BridgeError::InvalidInput(format!(
+            "identity {} declares provider_params but profile '{}' resolves to no inline \
+             definition profile to carry them; declare provider_params on the realm profile \
+             instead",
+            spec.identity.as_str(),
+            spec.profile.as_str(),
+        )));
+    };
+
+    let mut params = match declared {
+        Some(mut declared) => {
+            if let Some(profile_params) = profile.provider_params.as_ref() {
+                merge_provider_params_missing_from(&mut declared, profile_params)?;
+            }
+            // The declaration must reach RESUMED sessions too: unmasked,
+            // meerkat restores provider_params from durable session metadata
+            // and the draft's value is inert on every identity that already
+            // has a session.
+            if !profile
+                .resume_overrides
+                .contains(&ResumeOverrideField::ProviderParams)
+            {
+                profile
+                    .resume_overrides
+                    .push(ResumeOverrideField::ProviderParams);
+            }
+            declared
+        }
+        // No declaration, but a snapshot is already in flight for another
+        // reason (pinned-provider model override): the routing-hint default
+        // rides it at no extra cost. The key is deterministic, so the value
+        // persisted into session metadata on create restores identically on
+        // resume without a mask entry.
+        None => profile.provider_params.clone().unwrap_or_default(),
+    };
+
+    if spawn_is_openai_backed(draft, base_profile) {
+        ensure_default_prompt_cache_key(&mut params, &spec.identity);
+    }
+
+    profile.provider_params = (!params.is_empty()).then_some(params);
+    spawn_spec.override_profile = Some(profile);
+    Ok(())
+}
+
 /// Build a `SpawnMemberSpec` from identity-first types, wiring draft fields.
 ///
 /// `base_profile` is the resolved definition profile for `spec.profile`; it is
-/// only needed when the draft carries a model override (meerkat 0.7 removed
+/// needed when the draft carries a model override (meerkat 0.7 removed
 /// `SpawnMemberSpec::model_override` in favor of the typed `override_profile`
 /// owner, so a model override is expressed as the role profile with the model
-/// swapped).
+/// swapped) and when the draft carries provider params, which meerkat reads
+/// only off a profile.
 pub(crate) fn build_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
     draft: &AgentBuildDraft,
     base_profile: Option<&meerkat_mob::Profile>,
-) -> SpawnMemberSpec {
+) -> Result<SpawnMemberSpec, BridgeError> {
     let mid = member_id_for_spawn_spec(runtime_id, spec);
     let mut spawn_spec = SpawnMemberSpec::new(spec.profile.clone(), mid);
 
@@ -1272,7 +1637,11 @@ pub(crate) fn build_spawn_spec(
         spawn_spec.external_tools = Some(dispatcher);
     }
 
-    spawn_spec
+    // Runs after the model block: it composes with whatever snapshot that
+    // block installed instead of clobbering it.
+    apply_provider_params(&mut spawn_spec, spec, draft, base_profile)?;
+
+    Ok(spawn_spec)
 }
 
 /// Build the spawn spec for a RESUME of `session_id`.
@@ -1293,13 +1662,13 @@ pub(crate) fn build_resume_spawn_spec(
     draft: &AgentBuildDraft,
     base_profile: Option<&meerkat_mob::Profile>,
     session_id: &meerkat_core::types::SessionId,
-) -> SpawnMemberSpec {
-    let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft, base_profile);
+) -> Result<SpawnMemberSpec, BridgeError> {
+    let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft, base_profile)?;
     spawn_spec.launch_mode = MemberLaunchMode::Resume {
         bridge_session_id: session_id.clone(),
     };
     spawn_spec.system_prompt_override = None;
-    spawn_spec
+    Ok(spawn_spec)
 }
 
 fn runtime_binding_from_wire(
@@ -1360,7 +1729,7 @@ impl SessionBridge for MobSessionBridge {
             spec,
             draft,
             self.base_profile_for_spec(spec).as_ref(),
-        );
+        )?;
 
         self.spawn_member_spec(spawn_spec)
             .await
@@ -1368,8 +1737,13 @@ impl SessionBridge for MobSessionBridge {
         self.remember_runtime_member(runtime_id, &mid).await;
         self.remember_runtime_session(runtime_id, session_id).await;
 
-        self.resolve_runtime_session_id(runtime_id, &mid, "member spawned but has no session ID")
-            .await
+        self.resolve_runtime_session_id(
+            runtime_id,
+            &mid,
+            "member spawned but has no session ID",
+            &ActorAdmissionDeadline::new(self.actor_admission_budget),
+        )
+        .await
     }
 
     async fn resume_session(
@@ -1388,7 +1762,7 @@ impl SessionBridge for MobSessionBridge {
                 draft,
                 self.base_profile_for_spec(spec).as_ref(),
                 session_id,
-            );
+            )?;
             let mid = member_id_for_spawn_spec(runtime_id, spec);
             self.spawn_member_spec(spawn_spec).await.map_err(|error| {
                 resume_rejected(identity, session_id, &error, "external-binding resume")
@@ -1408,7 +1782,7 @@ impl SessionBridge for MobSessionBridge {
             draft,
             self.base_profile_for_spec(spec).as_ref(),
             session_id,
-        );
+        )?;
 
         let mid = member_id_for_spawn_spec(runtime_id, spec);
 
@@ -1486,30 +1860,46 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        // Best-effort repair material: a faulted lookup degrades to "no
-        // pre-delivery entry" (the delivery itself will surface the fault).
-        let member_entry_before_delivery = self
-            .handle
-            .get_member(&mid)
+        // One admission budget for the whole attempt, shared by every actor
+        // round trip below: the serialized hops must not each cost a budget.
+        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+        // Best-effort repair material: a faulted or timed-out lookup degrades
+        // to "no pre-delivery entry" (the delivery itself will surface the
+        // fault; a blocked actor hits the same deadline again below).
+        let member_entry_before_delivery = deadline
+            .bound(
+                "deliver.get_member.pre_delivery",
+                &mid,
+                self.handle.get_member(&mid),
+            )
             .await
             .ok()
+            .and_then(Result::ok)
             .flatten()
             .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
-            let member_entry = self
-                .handle
-                .get_member(&mid)
-                .await
+            let member_entry = deadline
+                .bound(
+                    "deliver.get_member.image_capability",
+                    &mid,
+                    self.handle.get_member(&mid),
+                )
+                .await?
                 .map_err(|err| BridgeError::Mob(err.to_string()))?
                 .ok_or_else(|| {
                     BridgeError::Mob("member not found while checking image capability".to_string())
                 })?;
-            let caps = model_capabilities_for_member(
-                &self.handle,
-                self.session_service.as_ref(),
-                &member_entry.agent_identity,
-            )
-            .await;
+            let caps = deadline
+                .bound(
+                    "deliver.model_capabilities",
+                    &mid,
+                    model_capabilities_for_member(
+                        &self.handle,
+                        self.session_service.as_ref(),
+                        &member_entry.agent_identity,
+                    ),
+                )
+                .await?;
             if !caps.image_input {
                 return Err(BridgeError::InvalidInput(
                     "target member model cannot accept image input".to_string(),
@@ -1529,10 +1919,15 @@ impl SessionBridge for MobSessionBridge {
             &[],
             HandlingMode::Queue,
             None,
+            &deadline,
         )
         .await
         {
             Ok(()) => {}
+            // A blocked actor is not stale runtime state: keep the typed
+            // timeout instead of routing it into member repair (which cannot
+            // unblock an actor) or laundering it into `Mob(String)` below.
+            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -1545,6 +1940,10 @@ impl SessionBridge for MobSessionBridge {
                     member_entry_before_delivery,
                 ))
                 .await?;
+                // Repair is a distinct multi-step recovery with its own
+                // (pre-existing, unbounded) cost; the retry is a new admission
+                // attempt and gets a fresh budget.
+                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
@@ -1552,6 +1951,7 @@ impl SessionBridge for MobSessionBridge {
                     &[],
                     HandlingMode::Queue,
                     None,
+                    &deadline,
                 )
                 .await?;
             }
@@ -1564,6 +1964,7 @@ impl SessionBridge for MobSessionBridge {
             runtime_id,
             &mid,
             "member has no bridge session after deliver",
+            &deadline,
         )
         .await
     }
@@ -1587,30 +1988,46 @@ impl SessionBridge for MobSessionBridge {
         interaction_id: Option<&str>,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = self.member_id_for_runtime_id(runtime_id).await;
-        // Best-effort repair material: a faulted lookup degrades to "no
-        // pre-delivery entry" (the delivery itself will surface the fault).
-        let member_entry_before_delivery = self
-            .handle
-            .get_member(&mid)
+        // One admission budget for the whole attempt, shared by every actor
+        // round trip below: the serialized hops must not each cost a budget.
+        let mut deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
+        // Best-effort repair material: a faulted or timed-out lookup degrades
+        // to "no pre-delivery entry" (the delivery itself will surface the
+        // fault; a blocked actor hits the same deadline again below).
+        let member_entry_before_delivery = deadline
+            .bound(
+                "deliver.get_member.pre_delivery",
+                &mid,
+                self.handle.get_member(&mid),
+            )
             .await
             .ok()
+            .and_then(Result::ok)
             .flatten()
             .map(|entry| (entry.role, entry.labels));
         if content_input_has_images(content) {
-            let member_entry = self
-                .handle
-                .get_member(&mid)
-                .await
+            let member_entry = deadline
+                .bound(
+                    "deliver.get_member.image_capability",
+                    &mid,
+                    self.handle.get_member(&mid),
+                )
+                .await?
                 .map_err(|err| BridgeError::Mob(err.to_string()))?
                 .ok_or_else(|| {
                     BridgeError::Mob("member not found while checking image capability".to_string())
                 })?;
-            let caps = model_capabilities_for_member(
-                &self.handle,
-                self.session_service.as_ref(),
-                &member_entry.agent_identity,
-            )
-            .await;
+            let caps = deadline
+                .bound(
+                    "deliver.model_capabilities",
+                    &mid,
+                    model_capabilities_for_member(
+                        &self.handle,
+                        self.session_service.as_ref(),
+                        &member_entry.agent_identity,
+                    ),
+                )
+                .await?;
             if !caps.image_input {
                 return Err(BridgeError::InvalidInput(
                     "target member model cannot accept image input".to_string(),
@@ -1625,10 +2042,15 @@ impl SessionBridge for MobSessionBridge {
             injected_context,
             handling_mode,
             interaction_id,
+            &deadline,
         )
         .await
         {
             Ok(()) => {}
+            // A blocked actor is not stale runtime state: keep the typed
+            // timeout instead of routing it into member repair (which cannot
+            // unblock an actor) or laundering it into `Mob(String)` below.
+            Err(err @ BridgeError::ActorAdmissionTimeout { .. }) => return Err(err),
             Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -1641,6 +2063,10 @@ impl SessionBridge for MobSessionBridge {
                     member_entry_before_delivery,
                 ))
                 .await?;
+                // Repair is a distinct multi-step recovery with its own
+                // (pre-existing, unbounded) cost; the retry is a new admission
+                // attempt and gets a fresh budget.
+                deadline = ActorAdmissionDeadline::new(self.actor_admission_budget);
                 submit_internal_bridge_work(
                     &self.handle,
                     &mid,
@@ -1648,6 +2074,7 @@ impl SessionBridge for MobSessionBridge {
                     injected_context,
                     handling_mode,
                     interaction_id,
+                    &deadline,
                 )
                 .await?;
             }
@@ -1658,6 +2085,7 @@ impl SessionBridge for MobSessionBridge {
             runtime_id,
             &mid,
             "member has no bridge session after deliver",
+            &deadline,
         )
         .await
     }
@@ -1905,6 +2333,8 @@ mod tests {
 
     use async_trait::async_trait;
     use meerkat_core::agent::AgentToolDispatcher;
+    use meerkat_core::lifecycle::run_primitive::{OpenAiPromptCacheOptions, ReasoningEffort};
+    use meerkat_core::model_profile::capabilities::{OpenAiPromptCacheMode, OpenAiPromptCacheTtl};
     use meerkat_core::types::ToolCallView;
     use meerkat_core::{ToolDef, error::ToolError, ops::ToolDispatchOutcome};
     use meerkat_mob::{MobRespawnError, MobRuntimeMode};
@@ -2006,12 +2436,14 @@ mod tests {
             app_context: Some(serde_json::json!({"ticket": 7})),
             external_tools: Vec::new(),
             local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+            provider_params: None,
         };
 
         let base_profile: meerkat_mob::Profile =
             serde_json::from_value(serde_json::json!({"model": "base-model"}))
                 .expect("minimal profile");
-        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile));
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect("spawn spec");
 
         // meerkat 0.7.29 (ask 29): an unpinned base profile takes the
         // field-scoped seam — the model pin follows definition drift instead
@@ -2080,13 +2512,15 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+            provider_params: None,
         };
         let base_profile: meerkat_mob::Profile = serde_json::from_value(
             serde_json::json!({"model": "base-model", "provider": "openai"}),
         )
         .expect("pinned profile");
 
-        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile));
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect("spawn spec");
 
         assert!(spawn.model_override.is_none());
         let profile = spawn
@@ -2098,6 +2532,324 @@ mod tests {
             profile.provider.is_none(),
             "stale provider pin must be cleared for catalog re-inference"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Provider params / prompt-cache plumbing
+    // -----------------------------------------------------------------
+
+    fn profile_with_provider(provider: &str) -> meerkat_mob::Profile {
+        serde_json::from_value(serde_json::json!({
+            "model": "base-model",
+            "provider": provider,
+        }))
+        .expect("profile")
+    }
+
+    fn draft_with_provider_params(params: Option<ProviderParamsOverride>) -> AgentBuildDraft {
+        AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+            provider_params: params,
+        }
+    }
+
+    fn spawn_params(spawn: &SpawnMemberSpec) -> ProviderParamsOverride {
+        spawn
+            .override_profile
+            .as_ref()
+            .expect("provider params require a profile snapshot")
+            .provider_params
+            .clone()
+            .expect("profile carries provider params")
+    }
+
+    fn spawn_openai_tag(spawn: &SpawnMemberSpec) -> OpenAiProviderTag {
+        match spawn_params(spawn).provider_tag {
+            Some(ProviderTag::OpenAi(tag)) => tag,
+            other => panic!("expected an OpenAI provider tag, got {other:?}"),
+        }
+    }
+
+    fn implicit_30m() -> OpenAiPromptCacheOptions {
+        OpenAiPromptCacheOptions {
+            mode: Some(OpenAiPromptCacheMode::Implicit),
+            ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+        }
+    }
+
+    /// A declared prompt-cache policy reaches the profile meerkat reads
+    /// (`config.provider_params = profile.provider_params`), and masks
+    /// `provider_params` for resume — unmasked, durable session metadata wins
+    /// and the declaration is inert on every identity that already has a
+    /// session.
+    #[test]
+    fn build_spawn_spec_lands_declared_prompt_cache_options() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_options: Some(implicit_30m()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+
+        let spawn = build_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            Some(&profile_with_provider("openai")),
+        )
+        .expect("spawn spec");
+
+        assert_eq!(
+            spawn_openai_tag(&spawn).prompt_cache_options,
+            Some(implicit_30m())
+        );
+        assert!(
+            spawn
+                .override_profile
+                .as_ref()
+                .expect("profile snapshot")
+                .resume_overrides
+                .contains(&ResumeOverrideField::ProviderParams),
+            "an explicit declaration must win over durable metadata on resume"
+        );
+    }
+
+    /// A draft that sets one knob must not wipe the knobs the mob definition
+    /// declared on the same profile.
+    #[test]
+    fn build_spawn_spec_merges_draft_params_over_profile_declaration() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut base_profile = profile_with_provider("openai");
+        base_profile.provider_params = Some(ProviderParamsOverride {
+            thinking_budget_tokens: Some(8192),
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..Default::default()
+            })),
+            ..Default::default()
+        });
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_options: Some(implicit_30m()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect("spawn spec");
+
+        assert_eq!(
+            spawn_params(&spawn).thinking_budget_tokens,
+            Some(8192),
+            "profile-declared knobs survive a draft that sets an unrelated knob"
+        );
+        let tag = spawn_openai_tag(&spawn);
+        assert_eq!(tag.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(tag.prompt_cache_options, Some(implicit_30m()));
+    }
+
+    /// Meerkat sends no `prompt_cache_key`; the identity supplies the default
+    /// routing bucket.
+    #[test]
+    fn build_spawn_spec_defaults_prompt_cache_key_from_identity() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_options: Some(implicit_30m()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+
+        let spawn = build_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            Some(&profile_with_provider("openai")),
+        )
+        .expect("spawn spec");
+
+        assert_eq!(
+            spawn_openai_tag(&spawn).prompt_cache_key.as_deref(),
+            Some("mobkit:agent:alpha")
+        );
+    }
+
+    /// The key is a routing hint the caller owns: an explicit one is never
+    /// replaced.
+    #[test]
+    fn build_spawn_spec_keeps_caller_supplied_prompt_cache_key() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_key: Some("tenant-a:shared-prefix".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+
+        let spawn = build_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            Some(&profile_with_provider("openai")),
+        )
+        .expect("spawn spec");
+
+        assert_eq!(
+            spawn_openai_tag(&spawn).prompt_cache_key.as_deref(),
+            Some("tenant-a:shared-prefix")
+        );
+    }
+
+    /// An unstable key is worse than none: it would move the identity to a
+    /// cold backend on every restart. Two independent builds for the same
+    /// identity — different runtime ids, as a restart mints — must agree.
+    #[test]
+    fn build_spawn_spec_prompt_cache_key_is_stable_across_builds() {
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_options: Some(implicit_30m()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+        let profile = profile_with_provider("openai");
+
+        let first = build_spawn_spec(
+            &AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id"),
+            &durable_spec(),
+            &draft,
+            Some(&profile),
+        )
+        .expect("first spawn spec");
+        let second = build_spawn_spec(
+            &AgentRuntimeId::parse("rt:agent:alpha:7").expect("runtime id"),
+            &durable_spec(),
+            &draft,
+            Some(&profile),
+        )
+        .expect("second spawn spec");
+
+        assert_eq!(
+            spawn_openai_tag(&first).prompt_cache_key,
+            spawn_openai_tag(&second).prompt_cache_key
+        );
+        assert_eq!(
+            spawn_openai_tag(&first).prompt_cache_key.as_deref(),
+            Some("mobkit:agent:alpha")
+        );
+    }
+
+    /// `prompt_cache_key` lives on the OpenAI tag. Fabricating one for an
+    /// Anthropic identity is a typed provider-family fault at meerkat's merge
+    /// seam (`ProviderTagMismatch`), which would fail the turn.
+    #[test]
+    fn build_spawn_spec_skips_prompt_cache_key_for_non_openai_identity() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            temperature: Some(0.2),
+            ..Default::default()
+        }));
+
+        let spawn = build_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            Some(&profile_with_provider("anthropic")),
+        )
+        .expect("spawn spec");
+
+        let params = spawn_params(&spawn);
+        assert_eq!(params.temperature, Some(0.2));
+        assert!(
+            params.provider_tag.is_none(),
+            "no OpenAI tag may be fabricated for an Anthropic-backed identity"
+        );
+    }
+
+    /// Backward compatibility: a draft that declares nothing keeps the
+    /// field-scoped path byte-for-byte as before. No profile snapshot is
+    /// minted, so no identity is moved onto the definition-drift freeze just
+    /// because this field now exists.
+    #[test]
+    fn build_spawn_spec_without_provider_params_keeps_field_scoped_path() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(None);
+
+        let spawn = build_spawn_spec(
+            &runtime_id,
+            &durable_spec(),
+            &draft,
+            Some(&profile_with_provider("openai")),
+        )
+        .expect("spawn spec");
+
+        assert!(
+            spawn.override_profile.is_none(),
+            "an undeclared draft must not mint a profile snapshot"
+        );
+        assert!(spawn.model_override.is_none());
+    }
+
+    /// Declared params with no inline definition profile to carry them (a
+    /// realm-ref binding) fail closed. Dropping them silently is the failure
+    /// mode that reads downstream as "caching just doesn't work".
+    #[test]
+    fn build_spawn_spec_rejects_declared_provider_params_without_inline_profile() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            temperature: Some(0.2),
+            ..Default::default()
+        }));
+
+        let error = build_spawn_spec(&runtime_id, &durable_spec(), &draft, None)
+            .expect_err("no inline profile can carry provider params");
+
+        match error {
+            BridgeError::InvalidInput(detail) => {
+                assert!(detail.contains("provider_params"), "{detail}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    /// A provider-family conflict between the draft and the profile is a
+    /// typed fault, never a silent union of unrelated provider bags.
+    #[test]
+    fn build_spawn_spec_rejects_provider_tag_family_conflict() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut base_profile = profile_with_provider("openai");
+        base_profile.provider_params = Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::Anthropic(Default::default())),
+            ..Default::default()
+        });
+        let draft = draft_with_provider_params(Some(ProviderParamsOverride {
+            provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+                prompt_cache_options: Some(implicit_30m()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }));
+
+        let error = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect_err("provider families must not be unioned");
+
+        match error {
+            BridgeError::InvalidInput(detail) => {
+                assert!(detail.contains("provider params"), "{detail}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
     }
 
     /// Realm-ref bindings (no inline base profile) now take the field-scoped
@@ -2113,9 +2865,11 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+            provider_params: None,
         };
 
-        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, None);
+        let spawn =
+            build_spawn_spec(&runtime_id, &durable_spec(), &draft, None).expect("spawn spec");
 
         assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
         assert!(spawn.override_profile.is_none());
@@ -2157,9 +2911,10 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
 
-        let spawn = build_spawn_spec(&runtime_id, &spec, &draft, None);
+        let spawn = build_spawn_spec(&runtime_id, &spec, &draft, None).expect("spawn spec");
 
         // meerkat 0.7: MemberCommsName is fail-closed (no `:` in member-id
         // components), so the roster id is the comms-safe encoding of the
@@ -2197,10 +2952,12 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
 
         // Session-backed members keep the plain spawn path.
-        let session_spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, None);
+        let session_spawn =
+            build_spawn_spec(&runtime_id, &durable_spec(), &draft, None).expect("spawn spec");
         assert!(
             !spawn_spec_requires_generated_owner_context(&session_spawn),
             "session-backed spawns must not require a generated owner context"
@@ -2223,7 +2980,8 @@ mod tests {
             }))
             .expect("wire binding"),
         );
-        let external_spawn = build_spawn_spec(&runtime_id, &spec, &draft, None);
+        let external_spawn =
+            build_spawn_spec(&runtime_id, &spec, &draft, None).expect("spawn spec");
         assert!(
             spawn_spec_requires_generated_owner_context(&external_spawn),
             "external peer-only spawns must carry a generated owner binding on meerkat 0.7.1"
@@ -2309,11 +3067,13 @@ mod tests {
             app_context: None,
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
+            provider_params: None,
         };
         let session_id = meerkat_core::types::SessionId::new();
 
         let spawn =
-            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id);
+            build_resume_spawn_spec(&runtime_id, &durable_spec(), &draft, None, &session_id)
+                .expect("resume spawn spec");
 
         assert_eq!(
             spawn.system_prompt_override, None,
@@ -2530,5 +3290,164 @@ mod tests {
 
         let other = meerkat_mob::MobError::WiringError("unrelated".to_string());
         assert_eq!(classify_resume_error(&other), ResumeRejectionKind::Other);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bounded actor admission
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn admission_budget_defaults_when_unset_or_unparseable() {
+        for raw in [None, Some(""), Some("   "), Some("soon"), Some("-5")] {
+            assert_eq!(
+                parse_bridge_actor_admission_budget(raw),
+                BRIDGE_ACTOR_ADMISSION_BUDGET,
+                "unset or unparseable {raw:?} must fall back to the default budget"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_budget_honours_configured_value_within_the_clamp() {
+        assert_eq!(
+            parse_bridge_actor_admission_budget(Some("30")),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_bridge_actor_admission_budget(Some(" 30 ")),
+            Duration::from_secs(30)
+        );
+        // The floor stops `0` from rejecting every delivery; the ceiling stops
+        // a mistyped value from restoring the unbounded hang.
+        assert_eq!(
+            parse_bridge_actor_admission_budget(Some("0")),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            parse_bridge_actor_admission_budget(Some("999999")),
+            Duration::from_hours(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn responsive_round_trip_passes_through_the_bound_unchanged() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_mins(10));
+        let member = MobAgentIdentity::from("rt-agent-alpha-0");
+
+        let value = deadline
+            .bound("test.responsive", &member, async { 7_u32 })
+            .await
+            .expect("a ready round trip must pass through the bound untouched");
+
+        assert_eq!(value, 7);
+        // No added latency on the success path: the budget is still intact.
+        assert!(
+            deadline
+                .deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                > Duration::from_secs(599)
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_actor_fails_typed_instead_of_hanging() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_millis(20));
+        let member = MobAgentIdentity::from("rt-agent-alpha-0");
+
+        let error = deadline
+            .bound(
+                "deliver.submit_work",
+                &member,
+                std::future::pending::<Result<(), meerkat_mob::MobError>>(),
+            )
+            .await
+            .expect_err("a mob actor that never replies must not hang the delivery");
+
+        match error {
+            BridgeError::ActorAdmissionTimeout {
+                operation,
+                identity,
+                waited,
+            } => {
+                assert_eq!(operation, "deliver.submit_work");
+                assert_eq!(identity.as_str(), "rt-agent-alpha-0");
+                assert!(waited >= Duration::from_millis(20), "waited {waited:?}");
+            }
+            other => panic!("expected a typed admission timeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_timeout_names_the_operation_and_member_and_is_never_repairable() {
+        let deadline = ActorAdmissionDeadline::new(Duration::from_millis(5));
+        let member = MobAgentIdentity::from("rt-agent-alpha-0");
+
+        let error = deadline
+            .bound(
+                "deliver.get_member",
+                &member,
+                std::future::pending::<Result<(), meerkat_mob::MobError>>(),
+            )
+            .await
+            .expect_err("stalled actor");
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("deliver.get_member"), "{rendered}");
+        assert!(rendered.contains("rt-agent-alpha-0"), "{rendered}");
+        // The delivery path classifies repairable errors by substring; a
+        // blocked actor must never be routed into member repair.
+        assert!(
+            !is_repairable_bridge_delivery_error(&rendered),
+            "a blocked actor is not stale runtime state: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn serialized_round_trips_share_one_budget() {
+        // The delivery path makes three or four serialized round trips; a
+        // per-call timeout would cost a full budget each and make the
+        // contained worst case worse than the hang. Once the shared deadline
+        // is spent, every later hop must fail immediately.
+        let budget = Duration::from_millis(50);
+        let deadline = ActorAdmissionDeadline::new(budget);
+        let member = MobAgentIdentity::from("rt-agent-alpha-0");
+
+        let mut outcomes = Vec::new();
+        // First hop consumes the whole budget.
+        outcomes.push(
+            deadline
+                .bound(
+                    "test.hop",
+                    &member,
+                    std::future::pending::<Result<(), meerkat_mob::MobError>>(),
+                )
+                .await,
+        );
+
+        let after_first = tokio::time::Instant::now();
+        for _ in 0..2 {
+            outcomes.push(
+                deadline
+                    .bound(
+                        "test.hop",
+                        &member,
+                        std::future::pending::<Result<(), meerkat_mob::MobError>>(),
+                    )
+                    .await,
+            );
+        }
+        let spent_after_first = after_first.elapsed();
+
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, Err(BridgeError::ActorAdmissionTimeout { .. }))),
+            "every hop against a dead actor must fail typed"
+        );
+        assert!(
+            spent_after_first < budget,
+            "the deadline must not be re-armed per hop: two further hops spent \
+             {spent_after_first:?} against a {budget:?} budget"
+        );
     }
 }

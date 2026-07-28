@@ -132,14 +132,9 @@ async fn compaction_fired(runtime: &UnifiedRuntime) -> bool {
     // channel is closed" nor "the channel is empty right now" is a sound
     // stopping condition on its own.
     let mut fired = false;
-    loop {
-        match tokio::time::timeout(DRAIN_QUIET_PERIOD, rx.recv()).await {
-            Ok(Some(envelope)) => {
-                if matches!(envelope.payload, AgentEvent::CompactionStarted { .. }) {
-                    fired = true;
-                }
-            }
-            Ok(None) | Err(_) => break,
+    while let Ok(Some(envelope)) = tokio::time::timeout(DRAIN_QUIET_PERIOD, rx.recv()).await {
+        if matches!(envelope.payload, AgentEvent::CompactionStarted { .. }) {
+            fired = true;
         }
     }
     fired

@@ -22,8 +22,9 @@ triage = rt.agent("triage:main")
 luka = rt.agent("identity:luka")
 
 await triage.dispatch_text("New event", origin="connector")
-await luka.send("What's happening?")
-output = await luka.wait_for_output(timeout=60)
+# send_and_wait waits on the turn's completion cursor, so it is correct even
+# when the agent answers the same thing twice.
+output = await luka.send_and_wait("What's happening?", timeout=60)
 ```
 
 <img src="/images/architecture-overview.png" alt="MobKit architecture: Your App → MobKit (orchestration, routing, lifecycle, admin console) → Meerkat (agent loop, sessions, tools, comms). Agent topology: Domain, Personal, and Task agents." style={{ borderRadius: '8px', marginTop: '1rem', marginBottom: '1rem' }} />

@@ -113,11 +113,11 @@ const DECODE_MEMO_KILL_SWITCH: &str = "MEERKAT_DISABLE_GRAPH_DECODE_MEMO";
 /// assistant reply.
 const MESSAGES_PER_TURN: i64 = 2;
 
-const INIT_TIMEOUT: Duration = Duration::from_secs(180);
-const RPC_TIMEOUT: Duration = Duration::from_secs(60);
-const TURN_TIMEOUT: Duration = Duration::from_secs(180);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(180);
-const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+const INIT_TIMEOUT: Duration = Duration::from_mins(3);
+const RPC_TIMEOUT: Duration = Duration::from_mins(1);
+const TURN_TIMEOUT: Duration = Duration::from_mins(3);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_mins(3);
+const EXIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 fn roster_spec() -> Value {
     json!({

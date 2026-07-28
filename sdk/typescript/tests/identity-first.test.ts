@@ -257,6 +257,32 @@ describe("AgentBuildContext + AgentBuildDraft (REQ-49a)", () => {
     assert.deepEqual(wireTools[0].input_schema, { type: "object" });
   });
 
+  it("AgentBuildDraft round-trips provider params it does not understand", async () => {
+    // The gateway replaces the draft wholesale with whatever the SDK returns,
+    // so a customizer that never touches provider params must still hand them
+    // back untouched — otherwise every SDK-backed build silently clears the
+    // identity's cache policy.
+    const { parseAgentBuildDraft, agentBuildDraftToDict } = await import("../src/types.js");
+    const providerParams = {
+      provider_tag: {
+        provider: "open_ai",
+        prompt_cache_key: "tenant-a:stable-prefix",
+        prompt_cache_options: { mode: "implicit", ttl: "30m" },
+      },
+    };
+    const draft = parseAgentBuildDraft({ model: "gpt-5.5", provider_params: providerParams });
+
+    assert.deepEqual(draft.providerParams, providerParams);
+    assert.deepEqual(agentBuildDraftToDict(draft).provider_params, providerParams);
+  });
+
+  it("AgentBuildDraft omits provider params from the wire when unset", async () => {
+    const { parseAgentBuildDraft, agentBuildDraftToDict } = await import("../src/types.js");
+    const draft = parseAgentBuildDraft({ model: "gpt-5.5" });
+    assert.equal(draft.providerParams, null);
+    assert.equal("provider_params" in agentBuildDraftToDict(draft), false);
+  });
+
   it("AgentBuildDraft null fields default gracefully", async () => {
     const { parseAgentBuildDraft } = await import("../src/types.js");
     const draft = parseAgentBuildDraft({});

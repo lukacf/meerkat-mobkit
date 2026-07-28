@@ -116,9 +116,14 @@ luka = rt.agent("identity:luka")
 await luka.send("Hello")                                          # Addressable only
 await triage.dispatch_text("School closed", origin="connector")   # Any identity
 
+# Delivery + wait for THAT turn's answer. These wait on the completion
+# cursor the gateway captured before delivery, so they stay correct when an
+# agent answers two turns identically.
+answer = await luka.send_and_wait("Hello", timeout=90)
+
 # Observation (no mob_handle, no member IDs needed)
-inspection = await triage.inspect()   # output_preview, peer_reachable_count
-output = await triage.wait_for_output(timeout=90)
+inspection = await triage.inspect()   # output_preview, completion_cursor, peers
+output = await triage.wait_for_output(timeout=90)   # any output, including an earlier turn's
 await rt.wait_until_ready(["triage:main", "identity:luka"])
 
 # Status

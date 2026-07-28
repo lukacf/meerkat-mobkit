@@ -2402,6 +2402,16 @@ export interface AgentBuildDraft {
   appContext: unknown | null;
   externalTools: ExternalToolDef[];
   /**
+   * Per-identity provider parameter overrides, carried verbatim to the
+   * gateway. Mirrors meerkat's `ProviderParamsOverride` (the type behind
+   * `AgentBuildConfig.provider_params`): provider knobs with no MobKit
+   * vocabulary of their own, such as OpenAI `prompt_cache_key` /
+   * `prompt_cache_options` / `prompt_cache_retention` and Anthropic
+   * `cache_control`. Kept opaque here because the Rust boundary parses it
+   * fail-closed — an unknown or mistyped knob is rejected there, not dropped.
+   */
+  providerParams: Record<string, unknown> | null;
+  /**
    * Register a callable external tool on this build. Parity with
    * {@link SessionBuildOptions.registerTool}, but available inside
    * {@link AgentCustomizer.customizeBuild} — which runs on BOTH fresh create
@@ -2438,6 +2448,10 @@ export function parseAgentBuildDraft(raw: unknown): AgentBuildDraft {
     labels: asStringRecord(d.labels),
     appContext: d.app_context !== undefined && d.app_context !== null ? d.app_context : null,
     externalTools,
+    providerParams:
+      d.provider_params !== undefined && d.provider_params !== null
+        ? asRecord(d.provider_params)
+        : null,
     registerTool(
       name: string,
       handler: ToolHandler,
@@ -2478,6 +2492,9 @@ export function agentBuildDraftToDict(
   if (draft.externalTools.length > 0) {
     result.external_tools = draft.externalTools.map(externalToolDefToDict);
   }
+  // The gateway replaces the draft wholesale with what it gets back, so a
+  // field omitted here is a field cleared on every customized build.
+  if (draft.providerParams !== null) result.provider_params = draft.providerParams;
   return result;
 }
 
@@ -2547,6 +2564,164 @@ function parseContinuityHealth(raw: unknown): ContinuityHealth | null {
         ? d.last_checkpoint_version
         : null,
   };
+}
+
+// -- CompletionCursor -----------------------------------------------------
+
+/**
+ * Comparable completion identity for one identity's stream of turns.
+ *
+ * Waiting for an agent's next answer must never compare output TEXT: two
+ * consecutive turns can legitimately produce byte-identical output, and a text
+ * comparison then reports "no new turn" for the whole configured wait. This
+ * cursor is the comparable atom instead — never derived from output content, a
+ * content hash, a timestamp, or a per-poll uuid.
+ *
+ * `epoch` is the identity's lease fencing token (the runtime incarnation this
+ * count belongs to); `turns` counts turns observed as completed within it.
+ * Turn counts are not comparable across incarnations, so classify with
+ * {@link completionProgressSince} rather than comparing `turns` directly.
+ */
+export interface CompletionCursor {
+  readonly epoch: number;
+  readonly turns: number;
+}
+
+/** How an observed cursor relates to a baseline captured at dispatch time. */
+export type CompletionProgress =
+  | "pending"
+  | "completed"
+  | "incarnation_changed";
+
+export function parseCompletionCursor(raw: unknown): CompletionCursor {
+  const d = asRecord(raw);
+  return {
+    epoch: Number(d.epoch ?? 0),
+    turns: Number(d.turns ?? 0),
+  };
+}
+
+/** Optional cursor field: absent (older gateway) stays `null`. */
+function parseOptionalCompletionCursor(raw: unknown): CompletionCursor | null {
+  return typeof raw === "object" && raw !== null
+    ? parseCompletionCursor(raw)
+    : null;
+}
+
+export function completionCursorToDict(
+  cursor: CompletionCursor,
+): Record<string, number> {
+  return { epoch: cursor.epoch, turns: cursor.turns };
+}
+
+export function completionProgressSince(
+  cursor: CompletionCursor,
+  baseline: CompletionCursor,
+): CompletionProgress {
+  if (cursor.epoch !== baseline.epoch) return "incarnation_changed";
+  if (cursor.turns > baseline.turns) return "completed";
+  return "pending";
+}
+
+// -- Identity delivery + inspection results -------------------------------
+
+/** Typed result from identity-first `send()`. */
+export interface SendResult {
+  readonly fencingToken: number;
+  /**
+   * Cursor read before delivery. Wait for an inspection cursor that reports
+   * `completed` against this. `null` when the gateway predates the field.
+   */
+  readonly completionBaseline: CompletionCursor | null;
+}
+
+export function parseSendResult(raw: unknown): SendResult {
+  const d = asRecord(raw);
+  return {
+    fencingToken: Number(d.fencing_token ?? 0),
+    completionBaseline: parseOptionalCompletionCursor(d.completion_baseline),
+  };
+}
+
+export function sendResultToDict(result: SendResult): Record<string, unknown> {
+  const out: Record<string, unknown> = { fencing_token: result.fencingToken };
+  if (result.completionBaseline !== null) {
+    out.completion_baseline = completionCursorToDict(result.completionBaseline);
+  }
+  return out;
+}
+
+/** Typed result from identity-first `dispatch()`. */
+export interface DispatchResult {
+  readonly fencingToken: number;
+  readonly durable: boolean;
+  /** See {@link SendResult.completionBaseline}. */
+  readonly completionBaseline: CompletionCursor | null;
+}
+
+export function parseDispatchResult(raw: unknown): DispatchResult {
+  const d = asRecord(raw);
+  return {
+    fencingToken: Number(d.fencing_token ?? 0),
+    durable: Boolean(d.durable ?? false),
+    completionBaseline: parseOptionalCompletionCursor(d.completion_baseline),
+  };
+}
+
+export function dispatchResultToDict(
+  result: DispatchResult,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    fencing_token: result.fencingToken,
+    durable: result.durable,
+  };
+  if (result.completionBaseline !== null) {
+    out.completion_baseline = completionCursorToDict(result.completionBaseline);
+  }
+  return out;
+}
+
+/** Execution-level inspection of an identity (`mobkit/inspect_identity`). */
+export interface IdentityInspection {
+  readonly identity: string;
+  readonly outputPreview: string | null;
+  readonly isFinal: boolean;
+  readonly peerReachableCount: number;
+  /**
+   * Live completion cursor. `null` for non-identity-first live aliases (no
+   * identity authority tracks their turns) and for gateways predating the
+   * field — in both cases absence must not be read as "no turns yet".
+   */
+  readonly completionCursor: CompletionCursor | null;
+}
+
+export function parseIdentityInspection(raw: unknown): IdentityInspection {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    outputPreview:
+      typeof d.output_preview === "string" ? d.output_preview : null,
+    isFinal: Boolean(d.is_final ?? false),
+    peerReachableCount: Number(d.peer_reachable_count ?? 0),
+    completionCursor: parseOptionalCompletionCursor(d.completion_cursor),
+  };
+}
+
+export function identityInspectionToDict(
+  inspection: IdentityInspection,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    identity: inspection.identity,
+    is_final: inspection.isFinal,
+    peer_reachable_count: inspection.peerReachableCount,
+  };
+  if (inspection.outputPreview !== null) {
+    out.output_preview = inspection.outputPreview;
+  }
+  if (inspection.completionCursor !== null) {
+    out.completion_cursor = completionCursorToDict(inspection.completionCursor);
+  }
+  return out;
 }
 
 // -- IdentityStatus (REQ-49b) ---------------------------------------------

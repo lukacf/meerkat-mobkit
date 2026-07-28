@@ -1712,7 +1712,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook.clone(),
-                agent_config.clone(),
+                agent_config,
                 self.provider_meerkat_stores.clone(),
             )
             .map_err(|error| match error {
@@ -1747,7 +1747,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook,
-                agent_config.clone(),
+                agent_config,
                 self.provider_meerkat_stores.clone(),
             )
         } else {

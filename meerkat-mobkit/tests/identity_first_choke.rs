@@ -1273,6 +1273,7 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
         app_context: None,
         external_tools: vec![],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
 
     // Should succeed (unsupported mutations are warned, not errored)

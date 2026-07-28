@@ -342,6 +342,7 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         app_context: None,
         external_tools: vec![],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
     customizer
         .customize_build(&ctx, &spec, &mut draft)
@@ -949,6 +950,7 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         app_context: None,
         external_tools: vec![],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
 
     adapter
@@ -957,6 +959,79 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         .unwrap();
     assert_eq!(draft.model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(draft.system_prompt.as_deref(), Some("overridden prompt"));
+}
+
+/// The legacy-hook adapter synthesizes a `CreateSessionRequest`, which has no
+/// provider-params field, and writes back only the fields it supports. A
+/// draft's provider params must survive that hop untouched — a wholesale
+/// draft rebuild here would silently drop the cache policy for every
+/// deployment still on `SessionHook`.
+#[tokio::test]
+async fn identity_first_contracts_session_hook_customizer_preserves_provider_params() {
+    use meerkat_core::lifecycle::run_primitive::{
+        OpenAiProviderTag, ProviderParamsOverride, ProviderTag,
+    };
+
+    struct ModelOnlyHook;
+
+    #[async_trait]
+    impl SessionHook for ModelOnlyHook {
+        async fn before_create(
+            &self,
+            req: &mut meerkat_core::service::CreateSessionRequest,
+        ) -> Result<(), meerkat_core::service::SessionError> {
+            req.model = "gpt-5.5".to_string();
+            Ok(())
+        }
+    }
+
+    let hook: Arc<dyn SessionHook> = Arc::new(ModelOnlyHook);
+    let adapter = SessionHookCustomizerAdapter::new(hook);
+
+    let ctx = AgentBuildContext {
+        identity: AgentIdentity::parse("triage:main").unwrap(),
+        active_peers: vec![],
+        managed_edges: vec![],
+        runtime_services: Default::default(),
+    };
+    let spec = DurableAgentSpec {
+        identity: AgentIdentity::parse("triage:main").unwrap(),
+        profile: meerkat_mob::ProfileName::from("default"),
+        addressability: Default::default(),
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
+        backend: None,
+        binding: None,
+    };
+    let declared = ProviderParamsOverride {
+        provider_tag: Some(ProviderTag::OpenAi(OpenAiProviderTag {
+            prompt_cache_key: Some("tenant-a:stable-prefix".to_string()),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let mut draft = AgentBuildDraft {
+        model: None,
+        system_prompt: None,
+        additional_instructions: vec![],
+        labels: BTreeMap::new(),
+        app_context: None,
+        external_tools: vec![],
+        local_external_tools: Default::default(),
+        provider_params: Some(declared.clone()),
+    };
+
+    adapter
+        .customize_build(&ctx, &spec, &mut draft)
+        .await
+        .unwrap();
+
+    assert_eq!(draft.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(draft.provider_params, Some(declared));
 }
 
 #[tokio::test]
@@ -1009,6 +1084,7 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         app_context: None,
         external_tools: vec![],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
 
     // Should succeed but log a warning — we verify it doesn't error
@@ -1067,6 +1143,7 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         app_context: None,
         external_tools: vec![],
         local_external_tools: Default::default(),
+        provider_params: None,
     };
 
     // Should succeed — unsupported mutations are warned, not errored
