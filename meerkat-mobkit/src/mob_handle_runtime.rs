@@ -1695,6 +1695,85 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         result
     }
 
+    // The three legacy-history-evidence variants MUST be forwarded, not left
+    // to their trait defaults. A default drops the evidence and delegates to
+    // the plain method, which fails closed on the one shape the evidence
+    // exists for: the first slim boundary save over a pre-0.8.9 runtime row
+    // that still carries its transcript-history graph inline. Every write
+    // through this facade is session-scoped, so each keeps the same
+    // pre/post write-epoch bumps as its plain counterpart.
+
+    async fn commit_session_snapshot_with_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+        evidence: meerkat_core::TranscriptHistoryState,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_session_snapshot_with_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn atomic_apply_with_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: Option<meerkat_runtime::store::SessionDelta>,
+        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+        input_updates: Vec<InputStatePersistenceRecord>,
+        session_store_key: Option<meerkat_core::types::SessionId>,
+        evidence: Option<meerkat_core::TranscriptHistoryState>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .atomic_apply_with_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                receipt,
+                input_updates,
+                session_store_key,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+        machine_lifecycle: MachineLifecycleCommit,
+        input_updates: Vec<InputStatePersistenceRecord>,
+        session_store_key: meerkat_core::types::SessionId,
+        evidence: Option<meerkat_core::TranscriptHistoryState>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
+                runtime_id,
+                session_delta,
+                receipt,
+                machine_lifecycle,
+                input_updates,
+                session_store_key,
+                evidence,
+            )
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
     async fn load_input_states(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,

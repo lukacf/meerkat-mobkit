@@ -6,6 +6,7 @@ pub mod access;
 pub mod auth;
 pub mod baseline;
 pub mod blob_store;
+pub mod compaction_policy;
 pub mod config_convention;
 pub mod console_aggregator;
 pub mod console_config;
@@ -32,7 +33,6 @@ pub mod rpc;
 pub mod runtime;
 pub mod schedule_wiring;
 pub mod storage_doctor;
-pub mod storage_downgrade;
 pub mod storage_health;
 pub mod storage_layout;
 pub mod storage_marker_stamp;
@@ -64,6 +64,10 @@ pub use baseline::{
 pub use blob_store::{
     Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, BinaryBlobStoreAdapter,
     ObjectStoreBlobStore,
+};
+pub use compaction_policy::{
+    COMPACTION_POLICY_KEYS, apply_compaction_policy, parse_compaction_policy,
+    validate_compaction_policy,
 };
 pub use config_convention::ConventionalPaths;
 pub use console_aggregator::{
@@ -198,7 +202,6 @@ pub use storage_doctor::{
     diagnose_state_dir_blocking_with_options, diagnose_state_dir_with_options,
     diagnose_state_dir_with_runtime,
 };
-pub use storage_downgrade::{MobKitDowngradeReport, downgrade_state_dir, render_downgrade_report};
 pub use storage_health::{
     BlobDurability, BlobStoreResolutionError, ResolvedStorageSummary, RuntimeStoreResolutionError,
     StorageResolutionError, StorageSlotSummary, probe_session_store_incremental,

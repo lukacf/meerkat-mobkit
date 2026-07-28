@@ -68,6 +68,12 @@ pub struct UnifiedRuntimeBuilder {
     session_hook: Option<Arc<dyn SessionHook>>,
     custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
     meerkat_config: Option<meerkat::Config>,
+    /// Host-level compaction policy composed over `meerkat_config`'s
+    /// compaction slot at spec-resolve time. Separate from `meerkat_config`
+    /// so tuning compaction does not require an embedder to author a whole
+    /// `meerkat::Config`, and so the one knob that actually bounds transcript
+    /// growth is reachable by name.
+    compaction_policy: Option<meerkat_core::config::CompactionRuntimeConfig>,
     default_llm_client: Option<Arc<dyn LlmClient>>,
     max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
@@ -169,6 +175,27 @@ impl UnifiedRuntimeBuilder {
     /// constructing a full `MobBootstrapSpec` by hand.
     pub fn meerkat_config(mut self, config: meerkat::Config) -> Self {
         self.meerkat_config = Some(config);
+        self
+    }
+
+    /// Declare the host-level session-compaction policy for every session
+    /// this runtime builds.
+    ///
+    /// Meerkat always installs a compactor on the built session path; what
+    /// this declares is *when it fires*. Without a declaration the threshold
+    /// is meerkat's model-aware default — `context_window * 4 / 5`, i.e.
+    /// `840_000` tokens on a million-token model, which in practice means
+    /// "never". Declaring `auto_compact_threshold` pins the number instead
+    /// (see [`crate::compaction_policy`] for the full precedence rules; a mob
+    /// profile's own `auto_compact_threshold` still wins per member).
+    ///
+    /// Composes over [`meerkat_config`](Self::meerkat_config): this
+    /// declaration replaces that config's compaction slot and leaves every
+    /// other field alone. Invalid declarations (a zero threshold) surface as
+    /// a build-time `ConflictingConfiguration` error, never as a silently
+    /// ignored knob.
+    pub fn compaction(mut self, policy: meerkat_core::config::CompactionRuntimeConfig) -> Self {
+        self.compaction_policy = Some(policy);
         self
     }
 
@@ -814,6 +841,19 @@ impl UnifiedRuntimeBuilder {
                         UnifiedRuntimeBuilderField::Timeout,
                     ));
                 }
+                // A legacy spec arrives with its session service (and thus
+                // its compactor) already built from the composer's own
+                // `meerkat::Config`. Accepting a compaction declaration here
+                // would produce exactly the dead knob this seam exists to
+                // remove, so it refuses instead of silently doing nothing.
+                if self.compaction_policy.is_some() {
+                    return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                        "compaction() and mob_spec() are mutually exclusive — a pre-built \
+                         MobBootstrapSpec already carries its session service's compaction \
+                         policy; declare it on the spec's own meerkat::Config"
+                            .to_string(),
+                    ));
+                }
                 spec
             }
             None => self.resolve_mob_spec().await?,
@@ -1378,6 +1418,30 @@ impl UnifiedRuntimeBuilder {
         }
     }
 
+    /// The `meerkat::Config` builder-created session services are built with:
+    /// the caller's [`meerkat_config`](Self::meerkat_config) with the
+    /// host-level [`compaction`](Self::compaction) declaration composed over
+    /// its compaction slot.
+    ///
+    /// Returns `None` when neither is configured, so the downstream
+    /// `MobBootstrapSpec` constructors keep their existing
+    /// `agent_config.unwrap_or_default()` behavior for un-configured hosts.
+    fn effective_meerkat_config(
+        &self,
+    ) -> Result<Option<meerkat::Config>, UnifiedRuntimeBuilderError> {
+        let Some(policy) = self.compaction_policy.as_ref() else {
+            return Ok(self.meerkat_config.clone());
+        };
+        let mut config = self.meerkat_config.clone().unwrap_or_default();
+        let applied = crate::compaction_policy::apply_compaction_policy(&mut config, policy);
+        if let Err(error) = applied {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                format!("compaction(): {error}"),
+            ));
+        }
+        Ok(Some(config))
+    }
+
     /// Resolve the caller's blob injection into its typed form. `build()`
     /// rejects supplying both forms up front; this keeps direct
     /// `resolve_mob_spec` users honest too.
@@ -1541,6 +1605,10 @@ impl UnifiedRuntimeBuilder {
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
         let mut caps = self.capability_flags;
+        // Resolved once for all three storage arms: the agent config every
+        // builder-created session service (and therefore every compactor)
+        // is built from.
+        let agent_config = self.effective_meerkat_config()?;
         let definition = match self.definition_source {
             Some(DefinitionSource::Inline(ref def)) => *def.clone(),
             Some(DefinitionSource::TomlPath(ref path)) => {
@@ -1644,7 +1712,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook.clone(),
-                self.meerkat_config.clone(),
+                agent_config.clone(),
                 self.provider_meerkat_stores.clone(),
             )
             .map_err(|error| match error {
@@ -1679,7 +1747,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook,
-                self.meerkat_config.clone(),
+                agent_config.clone(),
                 self.provider_meerkat_stores.clone(),
             )
         } else {
@@ -1701,7 +1769,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook,
-                self.meerkat_config.clone(),
+                agent_config,
             );
             spec._ephemeral_dir = Some(Arc::new(temp_dir));
             spec
@@ -2144,6 +2212,100 @@ model = "gpt-5.5"
             }
             Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
             Ok(_) => panic!("forked continuity/state roots must refuse at build"),
+        }
+    }
+
+    // ── Session-compaction wiring ───────────────────────────────────────
+    //
+    // Composition-level pins for the host compaction policy. The behavioral
+    // proof that the built session path actually carries a compactor (and
+    // that this policy is the trigger it uses) lives in
+    // `tests/session_compaction_wiring.rs`, which drives real member turns.
+
+    fn compaction_test_definition(id: &str) -> MobDefinition {
+        MobDefinition::from_toml(&format!("[mob]\nid = \"{id}\"\n"))
+            .expect("compaction fixture definition parses")
+    }
+
+    /// An invalid declaration is a composition error, never a silently
+    /// ignored knob.
+    #[tokio::test]
+    async fn zero_compaction_threshold_refuses_composition() {
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(compaction_test_definition("compaction-policy-zero"))
+            .compaction(meerkat_core::config::CompactionRuntimeConfig {
+                auto_compact_threshold: 0,
+                auto_compact_threshold_explicit: true,
+                ..Default::default()
+            });
+        match builder.resolve_mob_spec().await {
+            Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(message)) => {
+                assert!(message.contains("greater than 0"), "{message}");
+            }
+            Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
+            Ok(_) => panic!("a zero compaction threshold must refuse composition"),
+        }
+    }
+
+    /// `compaction()` composes over `meerkat_config()` instead of replacing
+    /// it: the rest of the caller's config survives.
+    #[tokio::test]
+    async fn compaction_policy_composes_over_meerkat_config() {
+        let mut config = meerkat::Config::default();
+        config.budget.max_tokens = Some(4_242);
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(compaction_test_definition("compaction-policy-compose"))
+            .meerkat_config(config)
+            .compaction(meerkat_core::config::CompactionRuntimeConfig {
+                auto_compact_threshold: 77_000,
+                auto_compact_threshold_explicit: true,
+                ..Default::default()
+            });
+        let effective = builder
+            .effective_meerkat_config()
+            .expect("composition succeeds")
+            .expect("a configured builder yields a config");
+        assert_eq!(effective.compaction.auto_compact_threshold, 77_000);
+        assert!(effective.compaction.auto_compact_threshold_explicit);
+        assert_eq!(
+            effective.budget.max_tokens,
+            Some(4_242),
+            "the rest of the caller's meerkat_config must survive",
+        );
+    }
+
+    /// A pre-built spec already carries its own compactor, so accepting a
+    /// declaration here would be exactly the dead knob this seam removes.
+    #[tokio::test]
+    async fn compaction_policy_refuses_the_legacy_mob_spec_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let spec = MobBootstrapSpec::ephemeral(
+            compaction_test_definition("compaction-policy-legacy"),
+            MobStorage::in_memory(),
+            temp.path().to_path_buf(),
+            4,
+            None,
+        );
+        let result = UnifiedRuntimeBuilder::default()
+            .mob_spec(spec)
+            .module_config(MobKitConfig {
+                modules: Vec::new(),
+                discovery: crate::types::DiscoverySpec {
+                    namespace: "compaction-policy-legacy".to_string(),
+                    modules: Vec::new(),
+                },
+                pre_spawn: Vec::new(),
+            })
+            .timeout(Duration::from_secs(5))
+            .compaction(meerkat_core::config::CompactionRuntimeConfig::default())
+            .build()
+            .await;
+        match result {
+            Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(message)) => {
+                assert!(message.contains("mutually exclusive"), "{message}");
+            }
+            Err(other) => panic!("expected ConflictingConfiguration, got: {other}"),
+            Ok(_) => panic!("compaction() with a pre-built mob_spec must refuse"),
         }
     }
 }

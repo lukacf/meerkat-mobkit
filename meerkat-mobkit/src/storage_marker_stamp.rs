@@ -42,12 +42,14 @@
 //! stamp (`SessionCheckpointStamp::root`/`successor`,
 //! `install_checkpoint_stamp`, and meerkat's stamping save seams are never
 //! called), so the stored stamp — its `schema_version` included — survives
-//! the rewrite unchanged: a schema-1 document stays schema-1. That is
-//! load-bearing under meerkat 0.8.9's one-way stamp-schema door:
-//! graph-bearing documents freshly stamped by 0.8.9 advertise schema 3
-//! (witness-v3), which 0.8.8-and-older binaries refuse typed, and marker
-//! maintenance must never push a document through that door as a side
-//! effect. Pinned by `stamping_preserves_the_stored_stamp_schema_version`.
+//! the rewrite unchanged: a schema-1 document stays schema-1. That is the
+//! whole safety argument for a maintenance verb that rewrites bytes under
+//! an operator's feet: a marker respell is a spelling change, so it must
+//! leave the document's integrity evidence — the thing every later verify
+//! is judged against — bit-for-bit what the writer put there. A walk that
+//! silently re-minted a stamp would be manufacturing evidence, not
+//! maintaining a marker. Pinned by
+//! `stamping_preserves_the_stored_stamp_schema_version`.
 //!
 //! # Stores
 //!
@@ -123,8 +125,8 @@ pub enum SessionDocumentStore {
 impl SessionDocumentStore {
     /// The table whose absence classifies the file as "not this store"
     /// (skipped by the verb, never an error). Crate-visible so the doctor's
-    /// storage-compatibility census walks the same table spellings this
-    /// walker owns.
+    /// session-format census walks the same table spellings this walker
+    /// owns.
     pub(crate) fn required_table(self) -> &'static str {
         match self {
             Self::Continuity => "session_snapshots",
@@ -410,8 +412,8 @@ fn sql_err(context: &'static str) -> impl Fn(rusqlite::Error) -> MarkerStampErro
 /// The re-serialization carries the stored checkpoint stamp through
 /// verbatim — decode keeps the stamp as opaque metadata and nothing here
 /// mints or upgrades one — so the row's stamp `schema_version` is identical
-/// before and after the respell (see the module docs on the 0.8.9 one-way
-/// stamp-schema door).
+/// before and after the respell (see the module docs on stamps being
+/// preserved, never minted).
 ///
 /// `expected_session_id` is asserted against the embedded document identity
 /// when the row key IS a session id (continuity, session store).
@@ -1014,14 +1016,15 @@ mod tests {
         assert!(second.is_clean(), "{:?}", second.refused);
     }
 
-    /// The 0.8.9 stamp-schema one-way door must not be crossed by marker
-    /// maintenance: respelling a schema-1 document (the 0.8.8-and-older
-    /// stamp shape) must leave `schema_version` 1 in the stored bytes.
+    /// Marker maintenance must not migrate a document's checkpoint
+    /// evidence: respelling a document whose stored stamp advertises the
+    /// evidence-format schema must leave that `schema_version` in the
+    /// stored bytes, not silently re-mint it at whatever schema the current
+    /// writer would choose.
     ///
-    /// There is deliberately no public mint for old-schema stamps over a
-    /// graph-bearing document; `recovery_migration` mints under the
-    /// EVIDENCE witness format, which for an unstamped legacy document is
-    /// v2 — exactly what a 0.8.8 writer persisted.
+    /// The fixture mints through `recovery_migration`, which stamps under
+    /// the EVIDENCE witness format — the stamp shape this walk's population
+    /// (documents written before the marker existed) actually carries.
     #[test]
     fn stamping_preserves_the_stored_stamp_schema_version() {
         let mut session = meerkat_core::Session::new();
@@ -1047,7 +1050,7 @@ mod tests {
         assert_eq!(
             stamp.schema_version(),
             meerkat_core::SESSION_CHECKPOINT_STAMP_SCHEMA_VERSION,
-            "fixture premise: evidence-format minting yields the 0.8.8 stamp shape"
+            "fixture premise: evidence-format minting yields the evidence-format stamp schema"
         );
         session
             .install_checkpoint_stamp(stamp)

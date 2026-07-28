@@ -28,7 +28,7 @@ pub(crate) struct StorageDoctorParams {
     /// Optional identity filter for the continuity checkpoint census
     /// (mapped onto [`DiagnoseScope::realm`]).
     pub identity: Option<String>,
-    /// Verbose report shaping: per-session storage-compatibility findings
+    /// Verbose report shaping: per-session session-format findings
     /// ([`crate::storage_doctor::DoctorOptions::verbose`]).
     pub verbose: bool,
 }
@@ -52,7 +52,7 @@ impl StorageDoctorParams {
 /// Parse doctor params. `Ok(None)` = no `state_dir` given — the caller maps
 /// that to its surface's typed error; `Err` = a param is present but
 /// mistyped (`-32602` on every surface). The optional `verbose` boolean
-/// turns on per-session storage-compatibility findings.
+/// turns on per-session session-format findings.
 pub(crate) fn parse_storage_doctor_params(
     params: &Value,
 ) -> Result<Option<StorageDoctorParams>, String> {

@@ -104,6 +104,13 @@ struct GatewayRuntimeOptions {
     /// launch (M4). Without it, a failed `runtime.sqlite` open is a startup
     /// error — the former silent `InMemoryRuntimeStore` fallback is gone.
     runtime_store_ephemeral: bool,
+    /// `runtime_options.compaction = {"auto_compact_threshold": 120000, ...}`:
+    /// the host-level session-compaction policy for every agent this gateway
+    /// builds. Absent, the gateway inherits meerkat's model-aware default
+    /// (`context_window * 4 / 5` — `840_000` tokens on a million-token model,
+    /// i.e. effectively "never compact"). See
+    /// [`meerkat_mobkit::compaction_policy`].
+    compaction: Option<meerkat_core::config::CompactionRuntimeConfig>,
 }
 
 /// `runtime_options.live` wire forms: `true` mounts the live WebSocket
@@ -209,15 +216,37 @@ impl Default for GatewayRuntimeOptions {
             live: GatewayLiveOption::Disabled,
             host_runnables: Vec::new(),
             runtime_store_ephemeral: false,
+            compaction: None,
         }
     }
 }
 
+/// The `meerkat::Config` every gateway-built agent is constructed from.
+///
+/// This is where the gateway's session-compaction policy becomes real:
+/// meerkat's `AgentFactory::build_agent` builds its `DefaultCompactor` from
+/// `config.compaction`, so an un-declared policy here is what leaves the
+/// gateway on meerkat's model-aware `context_window * 4 / 5` trigger.
 fn gateway_agent_config(options: &GatewayRuntimeOptions) -> Config {
     let mut config = Config::default();
     if let Some(address) = options.member_comms_address.as_ref() {
         config.comms.mode = meerkat_core::CommsRuntimeMode::Tcp;
         config.comms.address = Some(address.clone());
+    }
+    if let Some(compaction) = options.compaction.as_ref() {
+        // `parse_gateway_runtime_options` is the only producer of this slot
+        // and validates before storing, so the error arm is unreachable from
+        // a launched gateway. It is still handled rather than unwrapped: the
+        // one rejected shape is a zero threshold, and refusing to install it
+        // (falling back to the inherited policy) is strictly safer than the
+        // compaction storm installing it would cause.
+        if let Err(error) = meerkat_mobkit::apply_compaction_policy(&mut config, compaction) {
+            tracing::error!(
+                %error,
+                "refusing an invalid runtime_options.compaction declaration; \
+                 inheriting meerkat's default compaction policy instead"
+            );
+        }
     }
     config
 }
@@ -517,6 +546,68 @@ mod tests {
             err.contains("unsupported runtime_options fields: blob_storage"),
             "{err}"
         );
+    }
+
+    /// `runtime_options.compaction` is the gateway's host-level compaction
+    /// policy. Declaring a threshold must reach the `meerkat::Config` every
+    /// agent is built from AND pin it — an un-pinned threshold is silently
+    /// rescaled by meerkat to `context_window * 4 / 5` (840_000 tokens on a
+    /// million-token model), which is the "compaction never fires" production
+    /// failure this knob exists to prevent.
+    #[test]
+    fn gateway_runtime_options_parse_compaction_policy() {
+        let defaulted = parse_gateway_runtime_options(&json!({ "runtime_options": {} }), None)
+            .expect("runtime options");
+        assert!(
+            defaulted.compaction.is_none(),
+            "an undeclared policy must inherit, not invent a threshold"
+        );
+        assert!(
+            !gateway_agent_config(&defaulted)
+                .compaction
+                .auto_compact_threshold_explicit,
+            "the inheriting form must stay un-pinned"
+        );
+
+        let params = json!({
+            "runtime_options": {
+                "compaction": {
+                    "auto_compact_threshold": 120_000,
+                    "recent_turn_budget": 6,
+                }
+            }
+        });
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+        let config = gateway_agent_config(&options);
+        assert_eq!(config.compaction.auto_compact_threshold, 120_000);
+        assert!(
+            config.compaction.auto_compact_threshold_explicit,
+            "a declared gateway threshold must be pinned against model-aware scaling"
+        );
+        assert_eq!(config.compaction.recent_turn_budget, 6);
+    }
+
+    /// The compaction declaration is key-closed and validated at ingress: a
+    /// typo or a zero threshold is a startup error, never a dead knob.
+    #[test]
+    fn gateway_runtime_options_reject_invalid_compaction_policy() {
+        for (compaction, needle) in [
+            (json!({"auto_compact_treshold": 100}), "unsupported fields"),
+            (json!({"auto_compact_threshold": 0}), "greater than 0"),
+            (json!({"auto_compact_threshold": "lots"}), "is invalid"),
+            (json!(120_000), "must be a JSON object"),
+        ] {
+            let params = json!({ "runtime_options": { "compaction": compaction } });
+            let err = match parse_gateway_runtime_options(&params, None) {
+                Err(err) => err,
+                Ok(_) => panic!("expected rejection for {params}"),
+            };
+            assert!(
+                err.contains("runtime_options.compaction"),
+                "{err} should name the offending path"
+            );
+            assert!(err.contains(needle), "{err} should mention '{needle}'");
+        }
     }
 
     /// M4: `runtime_store` accepts only the explicit in-memory declaration;
@@ -2607,6 +2698,7 @@ fn parse_gateway_runtime_options(
         "live",
         "host_runnables",
         "runtime_store",
+        "compaction",
     ];
     let unsupported = runtime_options
         .keys()
@@ -2812,6 +2904,12 @@ fn parse_gateway_runtime_options(
     }
     if let Some(runtime_store) = runtime_options.get("runtime_store") {
         parsed.runtime_store_ephemeral = parse_gateway_runtime_store_config(runtime_store)?;
+    }
+    if let Some(compaction) = runtime_options.get("compaction") {
+        parsed.compaction = Some(
+            meerkat_mobkit::parse_compaction_policy(compaction)
+                .map_err(|error| format!("runtime_options.compaction {error}"))?,
+        );
     }
     if let Some(value) = runtime_options.get("implicit_delegate_idle_retire_secs") {
         parsed.runtime_options.implicit_delegate_idle_retire_secs = if value.is_null() {

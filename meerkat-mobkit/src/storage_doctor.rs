@@ -31,24 +31,27 @@
 //! `persistent_state` / `store_path` dir). MobKit state dirs are not
 //! realm-keyed; `DiagnoseScope::realm` is honored as an *identity* filter on
 //! the continuity checkpoint-evidence census and the continuity half of the
-//! storage-compatibility census, and ignored elsewhere (the sessions and
-//! runtime halves census stores that carry no identity column).
+//! session-format census, and ignored elsewhere (the sessions and runtime
+//! halves census stores that carry no identity column).
 //!
-//! # Target-version storage-compatibility report
+//! # Session-format census
 //!
-//! Meerkat 0.8.9 introduced checkpoint-stamp schema 3 and transcript-history
-//! witness format 3; a session document at or past either axis refuses to
-//! load on older binaries. The doctor censuses every session-bearing store —
-//! the meerkat session store, the continuity store, and the meerkat runtime
-//! store's retained `runtime_session_snapshots` (a full-envelope session
-//! copy kept across restarts and decoded on the authoritative resume path;
-//! the same three stores [`crate::storage_marker_stamp`] enumerates) — per
-//! session: representation authority (whole-blob vs head-canonical),
-//! checkpoint-stamp schema, witness format, and pre-0.8.9 readability — by
-//! minimal raw-JSON field parses, never by decoding whole `Session`s
-//! (decoding runs validation and can refuse; a refusing document is itself
-//! a reportable fact, carried with its error string).
-//! [`DoctorOptions::verbose`] adds one finding per censused session.
+//! What each session-bearing store actually CONTAINS, per session:
+//! representation authority (whole-blob vs head-canonical), checkpoint-stamp
+//! schema, and transcript-history witness format. Purely descriptive — the
+//! doctor reports the format a document is written in, never a verdict about
+//! which binary can open it (there is no supported downgrade path; a store
+//! written by this release is read by this release).
+//!
+//! The censused stores are the meerkat session store, the continuity store,
+//! and the meerkat runtime store's retained `runtime_session_snapshots` (a
+//! full-envelope session copy kept across restarts and decoded on the
+//! authoritative resume path; the same three stores
+//! [`crate::storage_marker_stamp`] enumerates). Classification is by minimal
+//! raw-JSON field parses, never by decoding whole `Session`s (decoding runs
+//! validation and can refuse; a refusing document is itself a reportable
+//! fact, carried with its error string). [`DoctorOptions::verbose`] adds one
+//! finding per censused session.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -107,19 +110,18 @@ pub const FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE: &str = "continuity-snapshot-u
 /// read or written again. Inventory-grade — they are dead weight until
 /// pruned, not a fault.
 pub const FINDING_CONTINUITY_ARCHIVED_SNAPSHOT: &str = "continuity-archived-snapshot";
-/// The target-version storage-compatibility census over one session-bearing
-/// database: totals per representation authority, checkpoint-stamp schema,
-/// transcript-history witness format, and pre-0.8.9 readability class. Info
-/// when every censused session stays readable by pre-0.8.9 binaries; warning
-/// once any session requires the 0.8.9 format or cannot be classified.
+/// The session-format census over one session-bearing database: totals per
+/// representation authority, checkpoint-stamp schema, and
+/// transcript-history witness format. Info when every censused session
+/// classified; warning once any document's format evidence is malformed or
+/// unparseable (a fault in the stored evidence, not a version judgment).
 pub const FINDING_STORAGE_COMPAT_CENSUS: &str = "storage-compat-census";
-/// One censused session's compatibility row ([`DoctorOptions::verbose`]
-/// only): owning store, representation authority, stamp schema, witness
-/// format, readability class.
+/// One censused session's format row ([`DoctorOptions::verbose`] only):
+/// owning store, representation authority, stamp schema, witness format.
 pub const FINDING_STORAGE_COMPAT_SESSION: &str = "storage-compat-session";
-/// A session document that refused the minimal storage-compatibility parse;
-/// the error string is the reportable fact and the session censuses as
-/// readability-unknown.
+/// A session document that refused the minimal session-format parse; the
+/// error string is the reportable fact and the session censuses as
+/// format-unknown.
 pub const FINDING_STORAGE_COMPAT_SESSION_UNREADABLE: &str = "storage-compat-session-unreadable";
 /// Coverage statement for retained recovery state: mobkit stores persist no
 /// held-for-recovery or quarantine markers, so meerkat-side holds surface in
@@ -169,14 +171,13 @@ const DANGLING_BLOB_REPORT_CAP: usize = 50;
 /// database; the remainder is summarized in one finding.
 const COMPAT_UNREADABLE_REPORT_CAP: usize = 50;
 
-/// The storage-format boundary the compatibility census judges against:
-/// meerkat 0.8.9 introduced checkpoint-stamp schema 3 and transcript-history
-/// witness format 3.
-const COMPAT_BOUNDARY_VERSION: &str = "0.8.9";
-/// Highest checkpoint-stamp schema a pre-0.8.9 binary reads.
-const MAX_PRE_BOUNDARY_STAMP_SCHEMA: u64 = 2;
-/// Highest transcript-history witness format a pre-0.8.9 binary reads.
-const MAX_PRE_BOUNDARY_WITNESS_FORMAT: u64 = 2;
+/// Lowest checkpoint-stamp schema minted over the FORMAT-3 transcript-history
+/// witness (meerkat 0.8.9 introduced both together). Used only to infer a
+/// document's witness format when it carries no explicit witness carrier.
+const WITNESS_V3_MIN_STAMP_SCHEMA: u64 = 3;
+
+/// Census bucket for evidence that is present but does not minimally parse.
+const MALFORMED_CENSUS_KEY: &str = "malformed";
 
 /// The gateway runtime-registry file name (`mobkit_gateway` XDG home).
 /// Duplicated here because the deriving code lives in the gateway binary,
@@ -259,7 +260,7 @@ pub(crate) const MEMORY_LEDGER_DOMAIN: &str = "mobkit-memory";
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DoctorOptions {
     /// Emit one [`FINDING_STORAGE_COMPAT_SESSION`] finding per censused
-    /// session in addition to the per-store compatibility census.
+    /// session in addition to the per-store session-format census.
     pub verbose: bool,
 }
 
@@ -282,7 +283,7 @@ pub async fn diagnose_state_dir_with_runtime(
 }
 
 /// [`diagnose_state_dir_with_runtime`] with explicit report-shaping options
-/// (the verbose form of the storage-compatibility report).
+/// (the verbose form of the session-format census).
 pub async fn diagnose_state_dir_with_options(
     scope: &DiagnoseScope,
     resolved: Option<ResolvedStorageSummary>,
@@ -490,18 +491,18 @@ fn sweep_state_dir(
         }
         if family.name == "sessions" {
             for db_path in &present {
-                census_target_version_compat(db_path, CompatStore::Sessions, None, options, out);
+                census_session_format(db_path, CompatStore::Sessions, None, options, out);
             }
         }
         if family.name == "runtime" {
             for db_path in &present {
-                census_target_version_compat(db_path, CompatStore::Runtime, None, options, out);
+                census_session_format(db_path, CompatStore::Runtime, None, options, out);
             }
         }
         if family.name == "continuity" {
             for db_path in &present {
                 census_continuity_snapshots(db_path, identity_filter, out);
-                census_target_version_compat(
+                census_session_format(
                     db_path,
                     CompatStore::Continuity,
                     identity_filter,
@@ -1106,7 +1107,7 @@ impl StampSchemaEvidence {
         match self {
             Self::Absent => "unstamped".to_string(),
             Self::Version(version) => version.to_string(),
-            Self::Malformed(_) => "malformed".to_string(),
+            Self::Malformed(_) => MALFORMED_CENSUS_KEY.to_string(),
         }
     }
 
@@ -1130,7 +1131,7 @@ impl WitnessFormatEvidence {
     fn census_key(&self) -> String {
         match self {
             Self::Format(format) => format.to_string(),
-            Self::Malformed(_) => "malformed".to_string(),
+            Self::Malformed(_) => MALFORMED_CENSUS_KEY.to_string(),
         }
     }
 
@@ -1138,28 +1139,6 @@ impl WitnessFormatEvidence {
         match self {
             Self::Format(format) => format.to_string(),
             Self::Malformed(error) => format!("malformed ({error})"),
-        }
-    }
-}
-
-/// Whether a pre-0.8.9 binary can read the censused document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetReadability {
-    ReadablePreBoundary,
-    RequiresBoundary,
-    /// Malformed or unreadable evidence — readability cannot be certified
-    /// either way.
-    Unknown,
-}
-
-impl TargetReadability {
-    fn verdict(self) -> String {
-        match self {
-            Self::ReadablePreBoundary => {
-                format!("readable by pre-{COMPAT_BOUNDARY_VERSION} binaries")
-            }
-            Self::RequiresBoundary => format!("requires >= {COMPAT_BOUNDARY_VERSION}"),
-            Self::Unknown => "readability unknown".to_string(),
         }
     }
 }
@@ -1187,8 +1166,9 @@ fn classify_stamp_schema(
 
 /// The witness format the document's evidence names: a bare-string carrier
 /// is format 2, an object carrier declares its own `witness_format`, and a
-/// document with no carrier is implied by its stamp schema (schema >= 3 was
-/// minted over the v3 witness, everything else over v2).
+/// document with no carrier is implied by its stamp schema (schema >=
+/// [`WITNESS_V3_MIN_STAMP_SCHEMA`] was minted over the v3 witness,
+/// everything else over v2).
 fn classify_witness_format(
     metadata: &serde_json::Map<String, serde_json::Value>,
     stamp: &StampSchemaEvidence,
@@ -1208,34 +1188,11 @@ fn classify_witness_format(
             "witness carrier is neither a digest string nor an object".to_string(),
         ),
         None => match stamp {
-            StampSchemaEvidence::Version(version) if *version > MAX_PRE_BOUNDARY_STAMP_SCHEMA => {
+            StampSchemaEvidence::Version(version) if *version >= WITNESS_V3_MIN_STAMP_SCHEMA => {
                 WitnessFormatEvidence::Format(3)
             }
             _ => WitnessFormatEvidence::Format(2),
         },
-    }
-}
-
-/// A document is readable by pre-0.8.9 binaries iff its stamp schema and its
-/// witness format both sit at or below the boundary (an unstamped legacy
-/// document trivially qualifies). Malformed evidence certifies nothing.
-fn classify_target_readability(
-    stamp: &StampSchemaEvidence,
-    witness: &WitnessFormatEvidence,
-) -> TargetReadability {
-    let stamp_within = match stamp {
-        StampSchemaEvidence::Absent => true,
-        StampSchemaEvidence::Version(version) => *version <= MAX_PRE_BOUNDARY_STAMP_SCHEMA,
-        StampSchemaEvidence::Malformed(_) => return TargetReadability::Unknown,
-    };
-    let witness_within = match witness {
-        WitnessFormatEvidence::Format(format) => *format <= MAX_PRE_BOUNDARY_WITNESS_FORMAT,
-        WitnessFormatEvidence::Malformed(_) => return TargetReadability::Unknown,
-    };
-    if stamp_within && witness_within {
-        TargetReadability::ReadablePreBoundary
-    } else {
-        TargetReadability::RequiresBoundary
     }
 }
 
@@ -1246,10 +1203,9 @@ struct CompatSessionRow {
     representation: RepresentationAuthority,
     stamp: StampSchemaEvidence,
     witness: WitnessFormatEvidence,
-    readability: TargetReadability,
 }
 
-/// Accumulator for one database's target-version compatibility census.
+/// Accumulator for one database's session-format census.
 #[derive(Default)]
 struct CompatCensus {
     verbose: bool,
@@ -1259,9 +1215,6 @@ struct CompatCensus {
     /// census key (`"unstamped"`, `"<n>"`, `"malformed"`) → count.
     stamp_schemas: BTreeMap<String, usize>,
     witness_formats: BTreeMap<String, usize>,
-    readable: usize,
-    requires: usize,
-    unknown: usize,
     /// Individually reported unreadable rows (session id, identity, error),
     /// capped at [`COMPAT_UNREADABLE_REPORT_CAP`].
     unreadable: Vec<(String, Option<String>, String)>,
@@ -1287,18 +1240,12 @@ impl CompatCensus {
     ) {
         let stamp = classify_stamp_schema(metadata);
         let witness = classify_witness_format(metadata, &stamp);
-        let readability = classify_target_readability(&stamp, &witness);
         self.count_representation(representation);
         *self.stamp_schemas.entry(stamp.census_key()).or_default() += 1;
         *self
             .witness_formats
             .entry(witness.census_key())
             .or_default() += 1;
-        match readability {
-            TargetReadability::ReadablePreBoundary => self.readable += 1,
-            TargetReadability::RequiresBoundary => self.requires += 1,
-            TargetReadability::Unknown => self.unknown += 1,
-        }
         if self.verbose {
             self.rows.push(CompatSessionRow {
                 session_id,
@@ -1306,7 +1253,6 @@ impl CompatCensus {
                 representation,
                 stamp,
                 witness,
-                readability,
             });
         }
     }
@@ -1319,7 +1265,6 @@ impl CompatCensus {
         error: String,
     ) {
         self.count_representation(representation);
-        self.unknown += 1;
         if self.unreadable.len() < COMPAT_UNREADABLE_REPORT_CAP {
             self.unreadable.push((session_id, identity, error));
         } else {
@@ -1338,9 +1283,17 @@ impl CompatCensus {
     fn unreadable_total(&self) -> usize {
         self.unreadable.len() + self.unreadable_overflow
     }
+
+    /// Any document whose stamp or witness evidence is present but does not
+    /// minimally parse. Stored evidence that cannot be read is a fault worth
+    /// a warning; the format a document is written in never is.
+    fn has_malformed_evidence(&self) -> bool {
+        self.stamp_schemas.contains_key(MALFORMED_CENSUS_KEY)
+            || self.witness_formats.contains_key(MALFORMED_CENSUS_KEY)
+    }
 }
 
-/// Outcome of one compatibility row sweep.
+/// Outcome of one session-format row sweep.
 enum CompatSweep {
     /// Session-bearing tables were censused (possibly zero rows).
     Censused,
@@ -1351,11 +1304,10 @@ enum CompatSweep {
     PreEvidenceSchema(&'static str),
 }
 
-/// The 0.8.9 storage-compatibility census over one session-bearing database
-/// (see the module docs). Minimal raw-JSON field parses only; a refusing
-/// document is reported with its error string and censuses as
-/// readability-unknown.
-fn census_target_version_compat(
+/// The session-format census over one session-bearing database (see the
+/// module docs). Minimal raw-JSON field parses only; a refusing document is
+/// reported with its error string and censuses as format-unknown.
+fn census_session_format(
     db_path: &Path,
     store: CompatStore,
     identity_filter: Option<&str>,
@@ -1397,7 +1349,7 @@ fn census_target_version_compat(
                 FindingSeverity::Info,
                 FINDING_STORAGE_COMPAT_CENSUS,
                 format!(
-                    "storage-compatibility census skipped ({} store): the '{table}' table \
+                    "session-format census skipped ({} store): the '{table}' table \
                      carries no metadata column (schema predates checkpoint evidence)",
                     store.label()
                 ),
@@ -1408,7 +1360,7 @@ fn census_target_version_compat(
             StorageFinding::new(
                 FindingSeverity::Error,
                 FINDING_DATABASE_UNREADABLE,
-                format!("storage-compatibility census query failed: {err}"),
+                format!("session-format census query failed: {err}"),
             )
             .with_path(db_path.to_path_buf()),
         ),
@@ -1669,32 +1621,28 @@ fn emit_compat_census(
     census: &CompatCensus,
     out: &mut StorageDiagnosis,
 ) {
-    // Info while a pre-boundary binary can read everything censused;
-    // warning once any session requires the boundary format or cannot be
-    // classified (the downgrade-planning signal this report exists for).
-    let severity = if census.requires == 0 && census.unknown == 0 {
+    // The census is descriptive: which format a document is written in is
+    // never a fault. Warning only when stored format evidence cannot be
+    // read — malformed stamp/witness fields, or a document that refuses the
+    // minimal parse outright.
+    let severity = if census.unreadable_total() == 0 && !census.has_malformed_evidence() {
         FindingSeverity::Info
     } else {
         FindingSeverity::Warning
     };
     let mut message = format!(
-        "storage-compatibility census ({} store): {} session(s) — {} head-canonical, {} \
-         whole-blob; checkpoint-stamp schema {{{}}}; transcript-history witness format {{{}}}; \
-         {} readable by pre-{COMPAT_BOUNDARY_VERSION} binaries, {} require >= \
-         {COMPAT_BOUNDARY_VERSION}, {} readability-unknown",
+        "session-format census ({} store): {} session(s) — {} head-canonical, {} whole-blob; \
+         checkpoint-stamp schema {{{}}}; transcript-history witness format {{{}}}",
         store.label(),
         census.total,
         census.head_canonical,
         census.whole_blob,
         census_map_display(&census.stamp_schemas),
         census_map_display(&census.witness_formats),
-        census.readable,
-        census.requires,
-        census.unknown,
     );
     if census.unreadable_total() > 0 {
         message.push_str(&format!(
-            " ({} unreadable document(s))",
+            "; {} document(s) censused as format-unknown",
             census.unreadable_total()
         ));
     }
@@ -1709,13 +1657,12 @@ fn emit_compat_census(
             FINDING_STORAGE_COMPAT_SESSION,
             format!(
                 "session '{}': {} store, {} representation, checkpoint-stamp schema {}, \
-                 transcript-history witness format {} — {}",
+                 transcript-history witness format {}",
                 row.session_id,
                 store.label(),
                 row.representation.as_str(),
                 row.stamp.display(),
                 row.witness.display(),
-                row.readability.verdict(),
             ),
         )
         .with_path(db_path.to_path_buf());
@@ -1730,8 +1677,8 @@ fn emit_compat_census(
             FindingSeverity::Warning,
             FINDING_STORAGE_COMPAT_SESSION_UNREADABLE,
             format!(
-                "session '{session_id}' refused the minimal storage-compatibility parse \
-                 ({error}); it censuses as readability-unknown"
+                "session '{session_id}' refused the minimal session-format parse \
+                 ({error}); it censuses as format-unknown"
             ),
         )
         .with_path(db_path.to_path_buf());
@@ -2549,44 +2496,40 @@ mod tests {
             let metadata = metadata_object(metadata);
             let stamp = classify_stamp_schema(&metadata);
             let witness = classify_witness_format(&metadata, &stamp);
-            let readability = classify_target_readability(&stamp, &witness);
-            (stamp, witness, readability)
+            (stamp, witness)
         };
 
-        // Unstamped, no carrier: witness defaults to 2, readable.
-        let (stamp, witness, readability) = classify(json!({}));
+        // Unstamped, no carrier: witness defaults to 2.
+        let (stamp, witness) = classify(json!({}));
         assert_eq!(stamp, StampSchemaEvidence::Absent);
         assert_eq!(witness, WitnessFormatEvidence::Format(2));
-        assert_eq!(readability, TargetReadability::ReadablePreBoundary);
 
-        // Stamp schema 2, no carrier: implied witness 2, readable.
-        let (stamp, witness, readability) = classify(json!({
+        // Stamp schema 2, no carrier: implied witness 2.
+        let (stamp, witness) = classify(json!({
             SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2}
         }));
         assert_eq!(stamp, StampSchemaEvidence::Version(2));
         assert_eq!(witness, WitnessFormatEvidence::Format(2));
-        assert_eq!(readability, TargetReadability::ReadablePreBoundary);
 
-        // Stamp schema 3, no carrier: implied witness 3, requires 0.8.9.
-        let (stamp, witness, readability) = classify(json!({
+        // Stamp schema 3, no carrier: implied witness 3.
+        let (stamp, witness) = classify(json!({
             SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
         }));
         assert_eq!(stamp, StampSchemaEvidence::Version(3));
         assert_eq!(witness, WitnessFormatEvidence::Format(3));
-        assert_eq!(readability, TargetReadability::RequiresBoundary);
 
-        // A bare-string carrier is witness 2 even beside a schema-3 stamp
-        // (the carrier is the witness evidence); the stamp alone still
-        // requires 0.8.9.
-        let (_, witness, readability) = classify(json!({
+        // A bare-string carrier is witness 2 even beside a schema-3 stamp:
+        // the carrier IS the witness evidence, and the implied-format
+        // fallback never overrides it.
+        let (stamp, witness) = classify(json!({
             SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
             SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: "sha256:abc"
         }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(3));
         assert_eq!(witness, WitnessFormatEvidence::Format(2));
-        assert_eq!(readability, TargetReadability::RequiresBoundary);
 
         // An object carrier declares its own witness_format.
-        let (_, witness, readability) = classify(json!({
+        let (stamp, witness) = classify(json!({
             SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
             SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {
                 "witness_format": 3,
@@ -2594,25 +2537,25 @@ mod tests {
                 "digest": "sha256:abc"
             }
         }));
+        assert_eq!(stamp, StampSchemaEvidence::Version(2));
         assert_eq!(witness, WitnessFormatEvidence::Format(3));
-        assert_eq!(readability, TargetReadability::RequiresBoundary);
 
-        // Malformed evidence certifies nothing.
-        let (_, witness, readability) = classify(json!({
+        // Malformed evidence is never laundered into a format number.
+        let (_, witness) = classify(json!({
             SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {"digest": "sha256:abc"}
         }));
         assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
-        assert_eq!(readability, TargetReadability::Unknown);
-        let (stamp, _, readability) = classify(json!({
+        assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
+        let (stamp, _) = classify(json!({
             SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
         }));
         assert!(matches!(stamp, StampSchemaEvidence::Malformed(_)));
-        assert_eq!(readability, TargetReadability::Unknown);
-        let (_, witness, readability) = classify(json!({
+        assert_eq!(stamp.census_key(), MALFORMED_CENSUS_KEY);
+        let (_, witness) = classify(json!({
             SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: 7
         }));
         assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
-        assert_eq!(readability, TargetReadability::Unknown);
+        assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
     }
 
     const SESSIONS_STORE_DDL: &str = "CREATE TABLE sessions (
@@ -2649,9 +2592,9 @@ mod tests {
         create_db_with_table(&db_path, SESSIONS_STORE_DDL);
         {
             let conn = Connection::open(&db_path).unwrap();
-            // Whole-blob, unstamped legacy: readable.
+            // Whole-blob, unstamped legacy.
             insert_session_blob(&conn, "s-legacy", "{}");
-            // Whole-blob, schema-3 stamp (implied witness 3): requires.
+            // Whole-blob, schema-3 stamp (implied witness 3).
             insert_session_blob(
                 &conn,
                 "s-v3",
@@ -2660,9 +2603,9 @@ mod tests {
                 })
                 .to_string(),
             );
-            // Whole-blob, unparseable metadata: unreadable / unknown.
+            // Whole-blob, unparseable metadata: censuses as format-unknown.
             insert_session_blob(&conn, "s-bad", "not json");
-            // Head-canonical, schema-2 stamp + bare-string carrier: readable.
+            // Head-canonical, schema-2 stamp + bare-string carrier.
             insert_session_head(
                 &conn,
                 "s-head",
@@ -2675,7 +2618,7 @@ mod tests {
             // The shadowed blob twin of the head row is a frozen archive and
             // must not census.
             insert_session_blob(&conn, "s-head", "{}");
-            // Head-canonical, object carrier declaring witness 3: requires.
+            // Head-canonical, object carrier declaring witness 3.
             insert_session_head(
                 &conn,
                 "s-head-v3",
@@ -2697,6 +2640,8 @@ mod tests {
             .iter()
             .find(|f| f.code == FINDING_STORAGE_COMPAT_CENSUS)
             .expect("compat census finding");
+        // Warning here is earned by the one document whose metadata does not
+        // parse — never by a document being written in the current format.
         assert_eq!(census.severity, FindingSeverity::Warning, "{census:?}");
         for fragment in [
             "sessions store",
@@ -2706,10 +2651,7 @@ mod tests {
             "unstamped: 1",
             "2: 1",
             "3: 2",
-            "2 readable by pre-0.8.9",
-            "2 require >= 0.8.9",
-            "1 readability-unknown",
-            "1 unreadable document(s)",
+            "1 document(s) censused as format-unknown",
         ] {
             assert!(
                 census.message.contains(fragment),
@@ -2717,6 +2659,11 @@ mod tests {
                 census.message
             );
         }
+        assert!(
+            !census.message.contains("0.8.9") && !census.message.contains("readable"),
+            "the census states what the store contains, never which binary can open it: {}",
+            census.message
+        );
         let unreadable = diagnosis
             .findings
             .iter()
@@ -2758,7 +2705,6 @@ mod tests {
             "head-canonical representation",
             "checkpoint-stamp schema 3",
             "witness format 3",
-            "requires >= 0.8.9",
         ] {
             assert!(
                 head_v3.message.contains(fragment),
@@ -2766,6 +2712,11 @@ mod tests {
                 head_v3.message
             );
         }
+        assert!(
+            !head_v3.message.contains("0.8.9"),
+            "a verbose row states the document's format, not a readability verdict: {}",
+            head_v3.message
+        );
         assert!(
             rows.iter().all(|f| !f.message.contains("'s-bad'")),
             "unreadable documents are reported through their own finding: {rows:#?}"
@@ -2787,7 +2738,7 @@ mod tests {
         create_db_with_table(&db_path, CONTINUITY_HEADS_DDL);
         {
             let conn = Connection::open(&db_path).unwrap();
-            // Whole-blob unstamped snapshot for identity a: readable.
+            // Whole-blob unstamped snapshot for identity a.
             let (sid_a, data_a) = unstamped_session_payload();
             insert_snapshot(&conn, &sid_a, "domain:a", &data_a);
             // Unreadable snapshot for identity a.
@@ -2824,9 +2775,9 @@ mod tests {
             "3 session(s)",
             "1 head-canonical",
             "2 whole-blob",
-            "1 readable by pre-0.8.9",
-            "1 require >= 0.8.9",
-            "1 readability-unknown",
+            "unstamped: 1",
+            "3: 1",
+            "1 document(s) censused as format-unknown",
         ] {
             assert!(
                 census.message.contains(fragment),
@@ -2901,15 +2852,15 @@ mod tests {
         create_db_with_table(&db_path, RUNTIME_SNAPSHOTS_DDL);
         {
             let conn = Connection::open(&db_path).unwrap();
-            // Unstamped legacy session document: readable.
+            // Unstamped legacy session document.
             let (sid_legacy, data_legacy) = unstamped_session_payload();
             insert_runtime_snapshot(
                 &conn,
                 &format!("session-runtime:{sid_legacy}"),
                 &data_legacy,
             );
-            // Schema-3 stamp (implied witness 3): the retained witness-v3
-            // snapshot a rolled-back binary refuses on resume.
+            // Schema-3 stamp (implied witness 3): a retained witness-v3
+            // snapshot on the authoritative resume path.
             insert_runtime_snapshot(
                 &conn,
                 "session-runtime:v3",
@@ -2920,7 +2871,7 @@ mod tests {
                 }))
                 .unwrap(),
             );
-            // Malformed stamp evidence: never certified, censuses unknown.
+            // Malformed stamp evidence: never laundered into a version.
             insert_runtime_snapshot(
                 &conn,
                 "session-runtime:malformed",
@@ -2950,10 +2901,7 @@ mod tests {
             "unstamped: 1",
             "3: 1",
             "malformed: 1",
-            "1 readable by pre-0.8.9",
-            "1 require >= 0.8.9",
-            "2 readability-unknown",
-            "1 unreadable document(s)",
+            "1 document(s) censused as format-unknown",
         ] {
             assert!(
                 census.message.contains(fragment),
@@ -2990,7 +2938,7 @@ mod tests {
             "runtime store",
             "whole-blob representation",
             "checkpoint-stamp schema 3",
-            "requires >= 0.8.9",
+            "witness format 3",
         ] {
             assert!(
                 v3_row.message.contains(fragment),
