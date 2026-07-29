@@ -215,6 +215,66 @@ impl ReplaySanitizingLlmClient {
     }
 }
 
+/// Provider-agnostic claim for the mob-wide default LLM client.
+///
+/// The default client (test stubs, `demo_llm` gateways) is installed as the
+/// raw `llm_client_override` on EVERY member build, across whatever providers
+/// the definition's profiles resolve to — including a provider a member MOVES
+/// to when a definition edit changes its model and the resume-override pair
+/// applies (model, provider) atomically from the catalog. A concrete
+/// [`LlmClient::provider`] claim turns that composition into a typed factory
+/// rejection ("raw LLM client override claims provider 'openai' but canonical
+/// model ... belongs to 'anthropic'") the moment any member's canonical
+/// provider differs from the claim — the OB3 pair-coherence fix surfaced
+/// exactly this on the resume path. `Provider::Other` is meerkat's typed
+/// "serves any provider" claim; the member's canonical (model, provider)
+/// identity keeps coming from the build config and catalog, never from this
+/// client.
+///
+/// Deliberately NOT applied to per-session `llm_client_override`s entering
+/// through `CreateSessionRequest`
+/// ([`sanitize_create_session_request_llm_override`]): those are scoped to
+/// one session, and a concrete claim contradicting that session's canonical
+/// provider is a real composition error the factory guard exists to catch.
+struct ProviderAgnosticLlmClient {
+    inner: Arc<dyn LlmClient>,
+}
+
+impl ProviderAgnosticLlmClient {
+    fn wrap(inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
+        Arc::new(Self { inner })
+    }
+}
+
+#[async_trait]
+impl LlmClient for ProviderAgnosticLlmClient {
+    fn project_replay_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<Vec<Message>, meerkat_client::LlmError> {
+        self.inner.project_replay_messages(messages)
+    }
+
+    fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+        self.inner.stream(request)
+    }
+
+    fn provider(&self) -> meerkat_core::Provider {
+        meerkat_core::Provider::Other
+    }
+
+    async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+        self.inner.health_check().await
+    }
+
+    fn compile_schema(
+        &self,
+        output_schema: &meerkat_core::OutputSchema,
+    ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
+        self.inner.compile_schema(output_schema)
+    }
+}
+
 /// Agent-layer companion to [`ReplaySanitizingLlmClient`].
 ///
 /// Meerkat session services can also receive already-adapted
@@ -5063,7 +5123,10 @@ impl MobRuntime {
             .options
             .default_llm_client
             .clone()
-            .map(ReplaySanitizingLlmClient::wrap);
+            .map(ReplaySanitizingLlmClient::wrap)
+            // Mob-wide default: serves every member on every provider the
+            // definition resolves to (see `ProviderAgnosticLlmClient`).
+            .map(ProviderAgnosticLlmClient::wrap);
         if let Some(slot) = spec.agent_mob_default_llm_client_slot.as_ref() {
             *slot
                 .write()
