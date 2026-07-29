@@ -813,15 +813,10 @@ impl UnifiedRuntimeBuilder {
             ));
         }
 
-        // Lazy checkpoint adoption ON for the external-authoritative arm: the
-        // continuity store is the session authority here, and a 0.7.x-era
-        // snapshot would otherwise hard-fail every resume (H3).
-        let continuity_session_store = self.continuity_store.as_ref().map(|store| {
-            Arc::new(
-                ContinuitySessionStoreAdapter::new(store.clone())
-                    .with_lazy_checkpoint_adoption(true),
-            )
-        });
+        let continuity_session_store = self
+            .continuity_store
+            .as_ref()
+            .map(|store| Arc::new(ContinuitySessionStoreAdapter::new(store.clone())));
         if let Some(store) = continuity_session_store.as_ref() {
             self.custom_session_store = Some(store.clone());
         }

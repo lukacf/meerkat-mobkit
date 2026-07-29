@@ -13,7 +13,7 @@
 //! the snapshot row itself records, validated against the matching
 //! `continuity_records` row.
 //!
-//! # The two sanctioned invocation shapes
+//! # The sanctioned invocation shape
 //!
 //! - **Batch, in a maintenance window** ([`adopt_continuity_snapshots`],
 //!   surfaced as the `mobkit_gateway storage-adopt-checkpoints` subcommand).
@@ -29,23 +29,23 @@
 //!   and `fencing_token` columns are deliberately **not** changed. Adoption
 //!   changes document bytes, not continuity bookkeeping; the typed stamp
 //!   inside the bytes binds to the observed cursor the row already records.
-//! - **Lazy, at restore** (the version-bump variant sanctioned for always-on
-//!   single-replica deployments). Lives in
-//!   [`ContinuitySessionStoreAdapter`](super::adapters::ContinuitySessionStoreAdapter):
-//!   when a load under a registered continuity cursor decodes
-//!   legacy-unverified, the adapter adopts with that observed cursor and
-//!   persists the adopted bytes through the store's own CAS at the **next**
-//!   checkpoint version. Enabled per wiring site via
-//!   `with_lazy_checkpoint_adoption(true)`.
+//!
+//! A second shape — lazy-at-restore adoption inside
+//! [`ContinuitySessionStoreAdapter`](super::adapters::ContinuitySessionStoreAdapter),
+//! enabled per wiring site via `with_lazy_checkpoint_adoption(true)` — was
+//! removed under the 0.8.10-floor policy: `LegacyUnverified` rows cannot
+//! exist in any supported corpus, so an always-on unbrick path for 0.7.x-era
+//! bytes has no remaining audience. Pre-0.8.10 corpora go through the batch
+//! maintenance verb.
 //!
 //! # Ordering constraint (nonzero-generation fleets)
 //!
 //! Meerkat's lazy auto-migration seeds `INITIAL` cursors, and a verified
 //! document never re-migrates — a prematurely stamped lower generation is
 //! sticky. On any fleet whose continuity rows record a nonzero generation
-//! floor, this adoption (batch verb, or the adapter's lazy path, which both
-//! use the observed cursor) must run **before** meerkat's lazy path first
-//! touches those sessions. Generation-0 fleets are unaffected. The batch verb
+//! floor, this adoption (the batch verb, using the observed cursor) must run
+//! **before** meerkat's lazy path first touches those sessions.
+//! Generation-0 fleets are unaffected. The batch verb
 //! composes with state-generation deploy machinery: clone the generation, run
 //! the batch against the clone as a deploy data transition, boot the
 //! candidate, flip only on proof.
@@ -621,17 +621,9 @@ fn walk_snapshot_rows(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use std::sync::Arc;
-
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::identity_first::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
-    use crate::identity_first::contracts::ContinuityStore;
-    use crate::identity_first::{
-        AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration, ContinuityRecord,
-        ContinuityStoreError, FencingToken, LocalContinuityStore, SessionSnapshot,
-    };
 
     /// The exact 0.7.x-era continuity DDL: two tables, no `meerkat_schema`
     /// ledger. Raw fixtures model what pre-M3 binaries actually wrote.
@@ -1032,182 +1024,6 @@ mod tests {
         assert!(matches!(
             err,
             ContinuityAdoptionError::NotAContinuityDatabase { .. }
-        ));
-    }
-
-    // -----------------------------------------------------------------
-    // Lazy-at-restore (adapter) shape
-    // -----------------------------------------------------------------
-
-    async fn seed_legacy_store_at_gen3_v4() -> (
-        Arc<LocalContinuityStore>,
-        AgentIdentity,
-        meerkat_core::types::SessionId,
-        Vec<u8>,
-    ) {
-        let store = Arc::new(LocalContinuityStore::in_memory().expect("in-memory store"));
-        let session = meerkat_core::Session::new();
-        let sid = session.id().clone();
-        let legacy = serde_json::to_vec(&session).expect("serialize legacy session");
-        let identity = AgentIdentity::parse("test:alice").expect("identity");
-        let record = ContinuityRecord {
-            identity: identity.clone(),
-            agent_runtime_id: AgentRuntimeId::parse("rt-1").expect("runtime id"),
-            session_id: sid.clone(),
-            generation: ContinuityGeneration::new(3),
-            checkpoint_version: CheckpointVersion::new(0),
-        };
-        store
-            .upsert_continuity_record(&record, FencingToken::new(5))
-            .await
-            .expect("upsert record");
-        store
-            .save_session_snapshot(
-                &identity,
-                &sid,
-                ContinuityGeneration::new(3),
-                CheckpointVersion::new(4),
-                FencingToken::new(5),
-                &SessionSnapshot {
-                    data: legacy.clone(),
-                },
-            )
-            .await
-            .expect("seed legacy snapshot");
-        (store, identity, sid, legacy)
-    }
-
-    #[tokio::test]
-    async fn lazy_restore_adopts_at_observed_cursor_and_persists_next_version() {
-        let (store, identity, sid, _) = seed_legacy_store_at_gen3_v4().await;
-        let adapter = ContinuitySessionStoreAdapter::new(store.clone() as Arc<dyn ContinuityStore>)
-            .with_lazy_checkpoint_adoption(true);
-        adapter
-            .register_session(
-                &sid,
-                SessionRuntimeState {
-                    identity: identity.clone(),
-                    generation: ContinuityGeneration::new(3),
-                    fencing_token: FencingToken::new(5),
-                    checkpoint_version: CheckpointVersion::new(4),
-                },
-            )
-            .await
-            .expect("register session");
-
-        let loaded = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("load")
-            .expect("session present");
-        let stamp = match loaded.try_checkpoint_state().expect("checkpoint state") {
-            meerkat_core::SessionCheckpointState::Verified(stamp) => stamp,
-            other => panic!("lazy load must return an adopted document, got {other:?}"),
-        };
-        // The stamp binds the OBSERVED cursor (generation 3 / revision 4)...
-        assert_eq!(stamp.generation(), meerkat_core::SessionGeneration::new(3));
-        assert_eq!(
-            stamp.checkpoint_revision(),
-            meerkat_core::SessionCheckpointRevision::new(4)
-        );
-
-        // ...and the adopted bytes were persisted through the store's own CAS
-        // at the NEXT version (5): the durable copy is verified, and version 5
-        // is now taken.
-        let snap = store
-            .load_session_snapshot(&sid)
-            .await
-            .expect("load snapshot")
-            .expect("snapshot present");
-        let durable_stamp = verified_stamp(&snap.data);
-        assert_eq!(durable_stamp, stamp);
-        let stale = store
-            .save_session_snapshot(
-                &identity,
-                &sid,
-                ContinuityGeneration::new(3),
-                CheckpointVersion::new(5),
-                FencingToken::new(5),
-                &SessionSnapshot {
-                    data: snap.data.clone(),
-                },
-            )
-            .await;
-        assert!(
-            matches!(
-                stale,
-                Err(ContinuityStoreError::StaleCheckpointVersion { .. })
-            ),
-            "the adoption save must have advanced the head to version 5"
-        );
-
-        // A subsequent load sees an already-stamped document and does not
-        // adopt (or bump the version) again.
-        let again = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("second load")
-            .expect("session present");
-        match again.try_checkpoint_state().expect("checkpoint state") {
-            meerkat_core::SessionCheckpointState::Verified(second) => {
-                assert_eq!(second, stamp, "second load must not re-adopt");
-            }
-            other => panic!("expected verified on second load, got {other:?}"),
-        }
-        let still_stale = store
-            .save_session_snapshot(
-                &identity,
-                &sid,
-                ContinuityGeneration::new(3),
-                CheckpointVersion::new(6),
-                FencingToken::new(5),
-                &SessionSnapshot {
-                    data: snap.data.clone(),
-                },
-            )
-            .await;
-        assert!(
-            still_stale.is_ok(),
-            "version 6 must still be free: the second load must not have advanced the head"
-        );
-    }
-
-    #[tokio::test]
-    async fn lazy_adoption_off_or_unregistered_passes_legacy_through() {
-        // Opt-in off: the legacy document passes through unchanged.
-        let (store, identity, sid, _) = seed_legacy_store_at_gen3_v4().await;
-        let adapter = ContinuitySessionStoreAdapter::new(store.clone() as Arc<dyn ContinuityStore>);
-        adapter
-            .register_session(
-                &sid,
-                SessionRuntimeState {
-                    identity: identity.clone(),
-                    generation: ContinuityGeneration::new(3),
-                    fencing_token: FencingToken::new(5),
-                    checkpoint_version: CheckpointVersion::new(4),
-                },
-            )
-            .await
-            .expect("register session");
-        let loaded = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("load")
-            .expect("session present");
-        assert!(matches!(
-            loaded.try_checkpoint_state().expect("state"),
-            meerkat_core::SessionCheckpointState::LegacyUnverified { .. }
-        ));
-
-        // Opt-in on but NO registered cursor: no observed cursor to bind, so
-        // the legacy document passes through for upstream to classify.
-        let (store, _, sid, _) = seed_legacy_store_at_gen3_v4().await;
-        let adapter = ContinuitySessionStoreAdapter::new(store as Arc<dyn ContinuityStore>)
-            .with_lazy_checkpoint_adoption(true);
-        let loaded = meerkat::SessionStore::load(&adapter, &sid)
-            .await
-            .expect("load")
-            .expect("session present");
-        assert!(matches!(
-            loaded.try_checkpoint_state().expect("state"),
-            meerkat_core::SessionCheckpointState::LegacyUnverified { .. }
         ));
     }
 }
