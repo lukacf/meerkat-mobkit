@@ -4938,19 +4938,58 @@ pub type RealMobRuntime = MobRuntime;
 /// `provider`/`self_hosted_server_id` and `provider_params` are optional keys
 /// whose TOML presence is carried faithfully by their `Option` fields (TOML
 /// cannot express an explicit null). Undeclared fields keep durable-wins
-/// semantics exactly as before.
+/// semantics — with one deliberate exception below.
+///
+/// **Model and provider are a COHERENT PAIR, never independently masked**
+/// (OB3 cutover incident, 2026-07-29): masking the model alone lets the
+/// durable provider survive under a profile model it was never registered
+/// for, and the resume is REJECTED typed ("model 'claude-fable-5' is
+/// registered for provider 'anthropic', not 'openai'"). When the profile
+/// declares no provider, the pair is resolved FROM the declared model — the
+/// canonical catalog owner, else the definition's `[models.<id>]` entry —
+/// and written onto the profile so both fields apply together on resume.
+/// When no coherent provider is resolvable (unknown model, or a DERIVED
+/// self-hosted/other provider that needs a binding the profile does not
+/// declare), neither field is marked: the whole LLM identity stays on
+/// durable truth and the resume-divergence INFO line is the tripwire.
 ///
 /// Applies to inline profile bindings only: realm-ref profiles resolve inside
 /// meerkat-mob at spawn time and never pass through this seam — the
-/// resume-divergence INFO line in the identity session bridge is the tripwire
-/// for those.
+/// resume-divergence line covers those too.
 pub fn auto_mark_declared_resume_overrides(definition: &mut MobDefinition) {
-    for binding in definition.profiles.values_mut() {
+    let MobDefinition {
+        profiles, models, ..
+    } = definition;
+    for binding in profiles.values_mut() {
         let Some(profile) = binding.as_inline_mut() else {
             continue;
         };
-        let mut declared = vec![meerkat_mob::ResumeOverrideField::Model];
-        if profile.provider.is_some() || profile.self_hosted_server_id.is_some() {
+        let mut declared = Vec::new();
+        let coherent_provider = profile
+            .provider
+            // A self-hosted server binding is only meaningful under the
+            // self_hosted provider; adopt that reading rather than leaving
+            // an incoherent half-declaration.
+            .or_else(|| {
+                profile
+                    .self_hosted_server_id
+                    .as_ref()
+                    .map(|_| Provider::SelfHosted)
+            })
+            .or_else(|| {
+                meerkat_models::canonical()
+                    .infer_provider(&profile.model)
+                    .or_else(|| models.get(&profile.model).map(|entry| entry.provider))
+                    // A DERIVED self-hosted provider needs a server binding
+                    // the profile does not declare, and Other names no
+                    // concrete adapter: neither can be written back as a
+                    // coherent pair. (A DECLARED self_hosted/other above is
+                    // honored as written.)
+                    .filter(|provider| !matches!(provider, Provider::SelfHosted | Provider::Other))
+            });
+        if let Some(provider) = coherent_provider {
+            profile.provider = Some(provider);
+            declared.push(meerkat_mob::ResumeOverrideField::Model);
             declared.push(meerkat_mob::ResumeOverrideField::Provider);
         }
         if profile.provider_params.is_some() {
@@ -8734,10 +8773,14 @@ realm_profile = "worker-v2"
         }
     }
 
-    /// Undeclared fields keep durable-wins semantics exactly as before: only
-    /// `model` (a required profile key, hence always declared) is marked.
+    /// Model + provider are a coherent pair (OB3 cutover incident): a
+    /// declared model with no declared provider derives the provider from
+    /// the canonical catalog and applies BOTH — masking the model alone
+    /// would let the durable provider survive under a model it was never
+    /// registered for, and the resume would be rejected typed. Undeclared
+    /// provider_params keep durable-wins.
     #[test]
-    fn auto_mark_leaves_undeclared_fields_on_durable_wins() {
+    fn auto_mark_derives_provider_from_catalog_for_declared_model() {
         let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
             "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
         ) else {
@@ -8749,23 +8792,227 @@ realm_profile = "worker-v2"
             .get(&ProfileName::from("worker"))
             .and_then(|binding| binding.as_inline())
             .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert_eq!(
+            profile.provider,
+            Some(Provider::OpenAI),
+            "the pair's provider must be derived from the catalog and written onto the profile"
+        );
         assert!(
             profile
                 .resume_overrides
-                .contains(&meerkat_mob::ResumeOverrideField::Model),
-            "model is a required key: declared, so profile-wins on resume"
-        );
-        assert!(
-            !profile
-                .resume_overrides
-                .contains(&meerkat_mob::ResumeOverrideField::Provider),
-            "undeclared provider must keep durable-wins"
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "model and provider must be masked together, never independently"
         );
         assert!(
             !profile
                 .resume_overrides
                 .contains(&meerkat_mob::ResumeOverrideField::ProviderParams),
             "undeclared provider_params must keep durable-wins"
+        );
+    }
+
+    /// The OB3 incident shape must be impossible: an explicit
+    /// `resume_overrides = ["model", "provider"]` with NO provider key used
+    /// to apply the profile model while the durable provider survived
+    /// (profile provider was None → nothing to apply), minting invalid
+    /// pairs like (claude-fable-5, openai). The auto-mark now writes the
+    /// catalog-derived provider onto the profile so the pair applies
+    /// atomically.
+    #[test]
+    fn auto_mark_completes_the_pair_for_explicit_model_provider_mask() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"claude-opus-4-8\"\nresume_overrides = [\"model\", \"provider\"]\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert_eq!(
+            profile.provider,
+            Some(Provider::Anthropic),
+            "an explicit model+provider mask with no provider key must gain the catalog \
+             provider, or the mask applies the model against the durable provider"
+        );
+        assert_eq!(
+            profile
+                .resume_overrides
+                .iter()
+                .filter(|field| **field == meerkat_mob::ResumeOverrideField::Provider)
+                .count(),
+            1,
+            "the explicit mask entry must not be duplicated"
+        );
+    }
+
+    /// A catalog-unknown model falls back to the definition's
+    /// `[models.<id>]` entry for the pair's provider; with no entry at all,
+    /// NEITHER field is marked (no coherent pair exists — the divergence
+    /// line is the tripwire) and nothing panics.
+    #[test]
+    fn auto_mark_unknown_model_uses_config_entry_or_stays_durable_wins() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[models.house-llm]\nprovider = \"openai\"\n\n[profiles.custom]\nmodel = \"house-llm\"\n\n[profiles.orphan]\nmodel = \"nobody-knows-this-model\"\n[profiles.orphan.provider_params]\nthinking_budget_tokens = 64\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let custom = definition
+            .profiles
+            .get(&ProfileName::from("custom"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("custom profile must be inline"));
+        assert_eq!(
+            custom.provider,
+            Some(Provider::OpenAI),
+            "a [models.<id>] entry owns the pair's provider for uncatalogued models"
+        );
+        assert!(
+            custom
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && custom
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "config-entry models mask the pair together"
+        );
+        let orphan = definition
+            .profiles
+            .get(&ProfileName::from("orphan"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("orphan profile must be inline"));
+        assert_eq!(
+            orphan.provider, None,
+            "no coherent provider source: the profile must not gain one"
+        );
+        assert!(
+            !orphan
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && !orphan
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "without a coherent pair neither field is masked — durable truth wins whole"
+        );
+        assert!(
+            orphan
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::ProviderParams),
+            "provider_params declaration is independent of the LLM-identity pair"
+        );
+    }
+
+    /// Both declared: the pair is masked exactly as written — including a
+    /// pair the catalog would contradict. Auto-mark must not silently
+    /// "repair" an explicit declaration; the build-time registry rejection
+    /// then names the user's own (model, provider), not a minted one.
+    #[test]
+    fn auto_mark_honors_a_declared_pair_as_written() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"claude-opus-4-8\"\nprovider = \"openai\"\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert_eq!(
+            profile.provider,
+            Some(Provider::OpenAI),
+            "a declared provider is honored as written, never catalog-corrected"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "a declared pair masks together"
+        );
+    }
+
+    /// A `self_hosted_server_id` binding is only meaningful under the
+    /// self_hosted provider: the pair adopts that reading and masks
+    /// together, instead of leaving a masked-but-absent provider whose
+    /// resume application falls back to the durable one under the declared
+    /// model.
+    #[test]
+    fn auto_mark_adopts_self_hosted_for_server_binding() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"house-llm\"\nself_hosted_server_id = \"srv-1\"\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert_eq!(
+            profile.provider,
+            Some(Provider::SelfHosted),
+            "a server binding pins the pair to self_hosted"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "the self-hosted pair masks together"
+        );
+    }
+
+    /// An explicit `resume_overrides = ["provider"]` with no provider key is
+    /// the mirror of the OB3 shape: a provider-only mask over a None profile
+    /// provider applies NOTHING (resume falls back to durable), while the
+    /// declared model stays unmasked. Auto-mark completes it to the full
+    /// pair — provider derived from the catalog, model added to the mask —
+    /// so a provider-only application is structurally impossible.
+    #[test]
+    fn auto_mark_completes_explicit_provider_only_mask_to_the_pair() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\nresume_overrides = [\"provider\"]\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert_eq!(
+            profile.provider,
+            Some(Provider::OpenAI),
+            "the masked provider must exist on the profile, derived from the declared model"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model),
+            "the model joins the explicit provider mask: the pair is never split"
+        );
+        assert_eq!(
+            profile
+                .resume_overrides
+                .iter()
+                .filter(|field| **field == meerkat_mob::ResumeOverrideField::Provider)
+                .count(),
+            1,
+            "the explicit provider entry must not be duplicated"
         );
     }
 

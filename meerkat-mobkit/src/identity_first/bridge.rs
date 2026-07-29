@@ -1295,29 +1295,24 @@ impl MobSessionBridge {
             &metadata.model,
             metadata.provider,
         );
-        if divergence.model {
+        if divergence.model || divergence.provider {
+            // One line, BOTH pairs: the OB3 cutover incident's first symptom
+            // was a (model, provider) pair mismatch, and a model-only line
+            // hid the half that mattered.
             tracing::info!(
                 identity = %identity,
                 profile = %spec.profile.as_str(),
                 session_id = %session_id,
                 restored_model = %metadata.model,
-                profile_model = %declared_model,
-                "resume restored a model that differs from the profile declaration; \
-                 durable metadata wins (no resume_overrides mask for 'model')"
-            );
-        }
-        if divergence.provider {
-            tracing::info!(
-                identity = %identity,
-                profile = %spec.profile.as_str(),
-                session_id = %session_id,
                 restored_provider = %metadata.provider.as_str(),
+                profile_model = %declared_model,
                 profile_provider = ?profile.provider.map(|provider| provider.as_str()),
-                "resume restored a provider that differs from the profile declaration; \
-                 durable metadata wins (no resume_overrides mask for 'provider')"
+                model_unmasked_divergent = divergence.model,
+                provider_unmasked_divergent = divergence.provider,
+                "resume restored an LLM identity (model, provider) that differs from the \
+                 profile declaration; durable metadata wins for the unmasked fields (no \
+                 resume_overrides mask covers them)"
             );
-        }
-        if divergence.model || divergence.provider {
             self.resume_divergence_logged
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1873,13 +1868,20 @@ pub(crate) fn build_spawn_spec(
             // A pinned provider (or self-hosted server binding) belongs to the
             // base profile's ORIGINAL model id, and meerkat applies
             // `model_override` without re-inferring the provider. Keep the
-            // whole-profile snapshot (provider cleared for catalog
-            // re-inference) for pinned profiles only — accepting the
+            // whole-profile snapshot for pinned profiles only — accepting the
             // definition-drift freeze `model_override` was built to end.
+            //
+            // The snapshot's provider is the DRAFT model's catalog owner, not
+            // None: on resume the profile's resume-override mask applies
+            // model and provider as a pair, and a None provider falls back to
+            // the durable one — minting exactly the invalid (model, provider)
+            // pair the OB3 cutover rejected typed. Catalog-unknown ids keep
+            // None (definition `[models.<id>]` / config-entry resolution
+            // downstream, durable-wins on resume).
             Some(base) if base.provider.is_some() || base.self_hosted_server_id.is_some() => {
                 let mut profile = base.clone();
                 profile.model = model.clone();
-                profile.provider = None;
+                profile.provider = meerkat_models::canonical().infer_provider(model);
                 profile.self_hosted_server_id = None;
                 spawn_spec.override_profile = Some(profile);
             }
@@ -2864,7 +2866,58 @@ mod tests {
         assert_eq!(profile.model.as_str(), "gpt-test");
         assert!(
             profile.provider.is_none(),
-            "stale provider pin must be cleared for catalog re-inference"
+            "a catalog-unknown pin carries no provider (config-entry resolution downstream)"
+        );
+    }
+
+    /// A draft model pin on a pinned-provider base must carry the DRAFT
+    /// model's catalog owner in the snapshot, applied with the model as a
+    /// pair. Clearing it to None (the pre-OB3 shape) let resume fall back to
+    /// the durable provider under the pinned model — the exact invalid
+    /// (model, provider) pair the incident rejected typed.
+    #[test]
+    fn build_spawn_spec_derives_pair_provider_for_catalog_model_pin() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let draft = AgentBuildDraft {
+            model: Some("claude-opus-4-8".to_string()),
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+            provider_params: None,
+        };
+        // Post-auto-mark shape: the definition profile carries its model's
+        // owner and the pair mask.
+        let base_profile: meerkat_mob::Profile = serde_json::from_value(serde_json::json!({
+            "model": "gpt-5.5",
+            "provider": "openai",
+            "resume_overrides": ["model", "provider"],
+        }))
+        .expect("pinned profile");
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft, Some(&base_profile))
+            .expect("spawn spec");
+
+        let profile = spawn
+            .override_profile
+            .as_ref()
+            .expect("pinned profile keeps the snapshot path");
+        assert_eq!(profile.model.as_str(), "claude-opus-4-8");
+        assert_eq!(
+            profile.provider,
+            Some(meerkat_core::Provider::Anthropic),
+            "the pin's provider must be the DRAFT model's catalog owner, applied as a pair"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&ResumeOverrideField::Provider),
+            "the base profile's pair mask must ride the snapshot so both fields apply on resume"
         );
     }
 

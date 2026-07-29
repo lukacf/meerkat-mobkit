@@ -17,11 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that silently did nothing (one had identities running a three-week-old model
   until a provider byte cap broke the deployment). Now, at runtime bootstrap,
   every inline definition profile gets its explicitly declared fields marked
-  resume-overridden automatically: `model` (a required key, hence always
-  declared), `provider` (when the `provider` or `self_hosted_server_id` key is
-  present), and `provider_params` (when present). Undeclared fields keep
-  durable-wins semantics exactly as before, and an explicit `resume_overrides`
-  list is preserved (declared fields are added, never removed).
+  resume-overridden automatically. `model` and `provider` are treated as a
+  **coherent pair, never independently masked** (OB3 cutover incident: a
+  model-only mask let the durable provider survive under a profile model it
+  was never registered for, and the resume was rejected typed with an invalid
+  `(model, provider)` pair): a declared `provider`/`self_hosted_server_id`
+  masks the pair as written; a declared model with no provider key derives
+  the provider from the canonical model catalog (or the definition's
+  `[models.<id>]` entry) and writes it onto the profile so both apply
+  together; when no coherent provider is resolvable, neither field is masked
+  and durable truth wins whole (with a unified resume-divergence INFO line —
+  once per identity per boot — printing both halves of the pair).
+  `provider_params` masks independently when present. Undeclared fields keep
+  durable-wins semantics, and an explicit `resume_overrides` list is
+  preserved (declared fields are added, never removed). The same pair rule
+  covers customizer/draft model pins: the pinned-profile spawn snapshot now
+  carries the DRAFT model's catalog owner instead of a cleared provider,
+  which on resume fell back to the durable provider under the pinned model —
+  the same invalid-pair mint through a different door.
 
   **Migration note:** fleets that relied on durable-wins for a *declared*
   profile field — e.g. a profile that names `model = "x"` but expects resumed
