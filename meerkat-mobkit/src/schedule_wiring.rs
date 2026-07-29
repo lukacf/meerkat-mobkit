@@ -1887,6 +1887,7 @@ mod tests {
                 owner_id: "carry-test".to_string(),
                 limit: 8,
                 lease_duration: chrono::Duration::seconds(60),
+                live_waiter_occurrence_ids: Default::default(),
             })
             .await
             .expect("claim must tolerate the poisoned neighbor (meerkat >= 0.7.19)");
@@ -2548,6 +2549,7 @@ schedule = true
                     owner_id: "runaway-probe".to_string(),
                     limit: 8,
                     lease_duration: chrono::Duration::seconds(60),
+                    live_waiter_occurrence_ids: Default::default(),
                 })
                 .await;
             {
