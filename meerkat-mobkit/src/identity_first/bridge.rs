@@ -500,6 +500,58 @@ async fn submit_internal_bridge_work(
 }
 
 // ---------------------------------------------------------------------------
+// Committed-boundary heal seam (2026-07-29 heal/re-Break incident)
+// ---------------------------------------------------------------------------
+
+/// Typed outcome of a committed-boundary heal attempt against the durable
+/// session head — the mobkit-side mirror of meerkat's
+/// `CommittedBoundaryRecovery`.
+///
+/// The continuity repair supervisor consults this BEFORE re-registering a
+/// Broken identity as healable. Without a real recovery step, "heal" only
+/// reset the runtime entry while the durable head stayed an intra-turn
+/// projection, so the next materialization re-Broke the identity — measured
+/// in production (2026-07-29) as an infinite heal/re-Break loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommittedBoundaryRepair {
+    /// The durable head is already strict-resume-acceptable; nothing written.
+    AlreadyCommitted,
+    /// Machine-authorized recovery persisted a committed boundary head; a
+    /// subsequent resume of the durable session is expected to succeed.
+    Recovered,
+    /// Terminal typed verdict: the proof inputs for a committed boundary are
+    /// absent (or the machine held). Stable across calls — callers must NOT
+    /// retry-loop it; surface `reason` to operators instead.
+    Unprovable { reason: String },
+    /// This bridge exposes no heal seam. Callers keep the legacy behavior
+    /// (reconcile retries the resume directly).
+    Unsupported,
+}
+
+/// Host-injectable authority that can drive the durable session head to a
+/// strict-resume-acceptable committed boundary.
+///
+/// The production implementation wraps meerkat's
+/// `PersistentSessionService::recover_committed_boundary`; it is injected
+/// into [`MobSessionBridge`] at composition time because the bridge only
+/// holds the session service as `dyn MobSessionService`, which does not
+/// expose the concrete heal API.
+#[async_trait]
+pub trait CommittedBoundaryRecoverer: Send + Sync {
+    /// Attempt recovery for the given durable session.
+    ///
+    /// # Errors
+    ///
+    /// `Err` is reserved for genuinely retryable failures (a live session
+    /// owning the head mid-turn, store I/O, CAS races). A terminal verdict is
+    /// `Ok(CommittedBoundaryRepair::Unprovable { .. })`, never an error.
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError>;
+}
+
+// ---------------------------------------------------------------------------
 // SessionBridge trait
 // ---------------------------------------------------------------------------
 
@@ -709,6 +761,19 @@ pub trait SessionBridge: Send + Sync {
     ) -> Result<(), BridgeError> {
         Ok(())
     }
+
+    /// Attempt to make the durable session head strict-resume-acceptable
+    /// BEFORE the continuity repair supervisor re-registers its identity as
+    /// healable (2026-07-29 heal/re-Break incident).
+    ///
+    /// The compatibility default declares no heal seam: custom bridges keep
+    /// today's behavior, where reconcile retries the resume directly.
+    async fn recover_committed_boundary(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        Ok(CommittedBoundaryRepair::Unsupported)
+    }
 }
 
 /// Lightweight inspection of a mob member's current execution state.
@@ -744,6 +809,10 @@ pub struct MobSessionBridge {
     /// bridge-session authority. Stable for the bridge lifetime so every
     /// external member shares one generated operation owner.
     generated_external_owner_session: std::sync::OnceLock<meerkat_core::types::SessionId>,
+    /// Heal authority for the continuity repair supervisor. `None` means no
+    /// heal seam ([`CommittedBoundaryRepair::Unsupported`]); composition
+    /// injects the concrete meerkat-backed recoverer where available.
+    committed_boundary_recoverer: Option<Arc<dyn CommittedBoundaryRecoverer>>,
     /// Budget one delivery attempt may spend waiting on the mob actor.
     /// Resolved once at construction so the success path pays nothing per
     /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
@@ -761,6 +830,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -778,6 +848,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -795,6 +866,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -813,6 +885,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -831,6 +904,7 @@ impl MobSessionBridge {
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
+            committed_boundary_recoverer: None,
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -842,6 +916,20 @@ impl MobSessionBridge {
     #[must_use]
     pub fn with_actor_admission_budget(mut self, budget: Duration) -> Self {
         self.actor_admission_budget = budget;
+        self
+    }
+
+    /// Inject the committed-boundary heal authority (2026-07-29 incident).
+    ///
+    /// Without it, [`SessionBridge::recover_committed_boundary`] reports
+    /// [`CommittedBoundaryRepair::Unsupported`] and the continuity repair
+    /// supervisor falls back to plain reconcile retries.
+    #[must_use]
+    pub fn with_committed_boundary_recoverer(
+        mut self,
+        recoverer: Arc<dyn CommittedBoundaryRecoverer>,
+    ) -> Self {
+        self.committed_boundary_recoverer = Some(recoverer);
         self
     }
 
@@ -1713,6 +1801,18 @@ impl SessionBridge for MobSessionBridge {
         // configured Meerkat session store; this bridge never reads the
         // continuity-store payload passed to resume_session.
         false
+    }
+
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        match self.committed_boundary_recoverer.as_ref() {
+            Some(recoverer) => recoverer.recover_committed_boundary(session_id).await,
+            // No heal authority composed in: keep the pre-incident contract
+            // honest rather than pretending the head was checked.
+            None => Ok(CommittedBoundaryRepair::Unsupported),
+        }
     }
 
     async fn create_session(

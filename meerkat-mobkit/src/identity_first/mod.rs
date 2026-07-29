@@ -25,8 +25,9 @@ pub use agent_memory::{
     MEMORY_TOOL_NAME, MarkdownAgentMemoryStore, NewAgentMemory,
 };
 pub use bridge::{
-    BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind,
-    ResumeSessionOutcome, SessionBridge,
+    BridgeError, CommittedBoundaryRecoverer, CommittedBoundaryRepair, MemberInspection,
+    MobSessionBridge, ResumeFallbackReason, ResumeRejectionKind, ResumeSessionOutcome,
+    SessionBridge,
 };
 pub use checkpoint_adoption::{
     AdoptionMode, AdoptionRefusal, ContinuityAdoptionError, ContinuityAdoptionReport,

@@ -29,13 +29,13 @@ use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentMemoryConfig,
     AgentMemoryPerTurnInjection, AgentMemoryRuntimeInjector, AgentMemorySelection, AgentRuntimeId,
-    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
-    ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
-    DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
-    FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
-    IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
-    ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, RosterContext, RosterError,
-    RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
+    BridgeError, CheckpointVersion, CommittedBoundaryRepair, ContinuityFailure,
+    ContinuityFailureKind, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
+    ContinuityStoreError, CustomizerError, DispatchIdempotencyKey, DispatchInput, DispatchOrigin,
+    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityRuntime,
+    IdentityRuntimeConfig, IdentityRuntimeError, LeaseAcquireResult, LeaseError, LeaseGrant,
+    LeaseRenewResult, ManagedPeerEdge, MarkdownAgentMemoryStore, NewAgentMemory, RosterContext,
+    RosterError, RosterProvider, SessionBridge, SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
 use meerkat_mobkit::{ErrorEvent, ErrorHook, StewardStore, TaintableStore};
@@ -1298,6 +1298,9 @@ struct CountingBridge {
     fail_retire: AtomicBool,
     force_resume_fallback: AtomicBool,
     reject_resume_times: AtomicUsize,
+    recover_calls: AtomicUsize,
+    recover_unprovable_reason: tokio::sync::Mutex<Option<String>>,
+    recover_heals: AtomicBool,
     resume_delay: tokio::sync::Mutex<Option<Duration>>,
     resume_barrier: tokio::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     create_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
@@ -1330,6 +1333,18 @@ impl CountingBridge {
     /// succeed — models a resume that heals on a later reconcile retry.
     fn reject_resume_times(&self, times: usize) {
         self.reject_resume_times.store(times, Ordering::SeqCst);
+    }
+
+    /// Script the heal authority to a stable terminal verdict: the durable
+    /// head is unprovable (the 2026-07-29 production shape).
+    async fn set_recover_unprovable(&self, reason: &str) {
+        *self.recover_unprovable_reason.lock().await = Some(reason.to_string());
+    }
+
+    /// Script the heal authority to recover the durable head: recover reports
+    /// `Recovered` and later resumes succeed (the scripted rejections clear).
+    fn set_recover_heals(&self) {
+        self.recover_heals.store(true, Ordering::SeqCst);
     }
 
     async fn set_create_session_id(&self, session_id: meerkat_core::types::SessionId) {
@@ -1368,6 +1383,24 @@ impl CountingBridge {
 
 #[async_trait]
 impl SessionBridge for CountingBridge {
+    async fn recover_committed_boundary(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        self.recover_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(reason) = self.recover_unprovable_reason.lock().await.clone() {
+            return Ok(CommittedBoundaryRepair::Unprovable { reason });
+        }
+        if self.recover_heals.load(Ordering::SeqCst) {
+            // A healed durable head means later resumes succeed: drop any
+            // scripted rejections, mirroring meerkat committing a boundary
+            // head that strict resume then accepts.
+            self.reject_resume_times.store(0, Ordering::SeqCst);
+            return Ok(CommittedBoundaryRepair::Recovered);
+        }
+        Ok(CommittedBoundaryRepair::Unsupported)
+    }
+
     async fn create_session(
         &self,
         _identity: &AgentIdentity,
@@ -6138,6 +6171,250 @@ async fn identity_first_runtime_broken_identity_repair_task_is_quiet_when_health
         provider.calls.load(Ordering::SeqCst),
         0,
         "repair task must stay idle while no identity is Broken"
+    );
+}
+
+/// Regression for the 2026-07-29 heal/re-Break production loop, terminal arm:
+/// when the bridge's heal authority reports the durable head UNPROVABLE
+/// (stable typed verdict — proof inputs absent), the repair task must park the
+/// identity in ONE cycle as Broken with the typed reason attached, and must
+/// NOT re-attempt it every cycle: no repeated recovery calls, no reconcile
+/// churn, no cosmetic entry reset for materialization to re-Break.
+#[tokio::test]
+async fn identity_first_runtime_repair_task_parks_unprovable_head_terminally() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    // The durable head is an intra-turn projection: EVERY resume attempt is
+    // rejected, and the heal authority's verdict is terminal.
+    bridge.reject_resume_times(usize::MAX);
+    let unprovable_reason = "the only durable checkpoint is an intra-turn projection";
+    bridge.set_recover_unprovable(unprovable_reason).await;
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert!(matches!(
+        result.outcomes.get(&id).unwrap(),
+        RestoreOutcome::Broken(_)
+    ));
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+
+    let provider = Arc::new(StaticRosterProvider::new(roster.clone()));
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            provider.clone(),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+
+    // One repair cycle reaches the typed terminal state.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = runtime.status(&id).await.unwrap();
+        if let Some(verdict) = status.continuity_unrecoverable {
+            assert_eq!(verdict.reason, unprovable_reason);
+            assert_eq!(
+                status.state,
+                IdentityLifecycleState::Broken,
+                "the terminal verdict keeps the Broken projection"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "repair task did not record the terminal heal verdict in time"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // Bounded: many further cycles must not re-attempt recovery, must not
+    // reconcile (no cosmetic reset to Dormant), and must not retry the
+    // resume. This is exactly what looped in production.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    repair.abort();
+    assert_eq!(
+        bridge.recover_calls.load(Ordering::SeqCst),
+        1,
+        "a stable terminal verdict must not be retry-looped"
+    );
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "an unprovable identity must not trigger reconcile churn"
+    );
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        1,
+        "no cosmetic heal may re-attempt the rejected resume"
+    );
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert!(status.continuity_unrecoverable.is_some());
+}
+
+/// Regression for the 2026-07-29 heal/re-Break production loop, recovery arm:
+/// when the heal authority can drive the durable head to a committed boundary
+/// (`Recovered`), the repair task heals the identity for real — the resume
+/// succeeds onto the SAME durable session — and the heal survives a simulated
+/// process re-boot instead of re-Breaking on the next materialization.
+#[tokio::test]
+async fn identity_first_runtime_repair_task_recovers_committed_head_then_stays_healed() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    // The durable head starts broken (every resume rejected) until the heal
+    // authority commits a boundary head.
+    bridge.reject_resume_times(usize::MAX);
+    bridge.set_recover_heals();
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let original_session_id = record.session_id.clone();
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert!(matches!(
+        result.outcomes.get(&id).unwrap(),
+        RestoreOutcome::Broken(_)
+    ));
+
+    let context = Arc::new(
+        meerkat_mobkit::identity_first::IdentityFirstRuntimeContext::new(
+            runtime.clone(),
+            Arc::new(StaticRosterProvider::new(roster.clone())),
+            None,
+            None,
+            None,
+        ),
+    );
+    let repair = context.clone().spawn_broken_identity_repair_task(
+        meerkat_mobkit::identity_first::ContinuityRepairPolicy {
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        },
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if runtime.status(&id).await.unwrap().state == IdentityLifecycleState::Active {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "repair task did not heal the identity after recovery in time"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    repair.abort();
+
+    // The heal is real: recovery ran, the resume succeeded onto the SAME
+    // durable session, and no terminal verdict was recorded.
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.session_id, Some(original_session_id.clone()));
+    assert!(status.continuity_unrecoverable.is_none());
+    assert!(bridge.recover_calls.load(Ordering::SeqCst) >= 1);
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        0,
+        "healing must resume, never fresh-spawn"
+    );
+
+    // Simulated re-boot: a fresh runtime instance (leases lapse with the
+    // process) over the SAME durable store and the SAME (now committed)
+    // durable head. Restore must resume cleanly — no re-Break. Like real
+    // bootstrap, the replacement lease provider resumes above the persisted
+    // fencing high-water.
+    let fencing_floor = store.max_fencing_token().unwrap();
+    let runtime2 = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::with_floor(fencing_floor)),
+        bridge.clone(),
+    );
+    let result = restore_flow(&runtime2, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Resumed { record, .. } => {
+            assert_eq!(record.session_id, original_session_id);
+        }
+        other => panic!("expected Resumed after re-boot, got: {other:?}"),
+    }
+    assert_eq!(
+        runtime2.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Active
+    );
+}
+
+/// The production loop's lazy half: reconcile (lazy mode) must NOT soften a
+/// heal-unprovable identity back to Dormant — that cosmetic reset is what
+/// on-demand materialization re-Broke every cycle on 2026-07-29. The Broken
+/// projection and its typed reason survive the lazy register flow.
+#[tokio::test]
+async fn identity_first_runtime_lazy_reconcile_keeps_unprovable_identity_broken() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.reject_resume_times(usize::MAX);
+    let runtime = make_runtime_with_bridge(store.clone(), lease_prov, bridge.clone());
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    restore_flow(&runtime, &roster, None, None).await.unwrap();
+    assert_eq!(
+        runtime.status(&id).await.unwrap().state,
+        IdentityLifecycleState::Broken
+    );
+    let unprovable_reason = "the only durable checkpoint is an intra-turn projection";
+    assert!(
+        runtime
+            .mark_continuity_unrecoverable(&id, unprovable_reason.to_string())
+            .await
+    );
+
+    // The continuity STORE still resolves Ready (the record is intact), so an
+    // ungated lazy reconcile would re-register the identity as Dormant.
+    let result = lazy_register_flow(&runtime, &roster, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Broken(failure) => {
+            assert_eq!(failure.kind, ContinuityFailureKind::CheckpointUnrecoverable);
+            assert_eq!(failure.detail, unprovable_reason);
+        }
+        other => panic!("expected Broken to survive lazy reconcile, got: {other:?}"),
+    }
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Broken);
+    assert_eq!(
+        status
+            .continuity_unrecoverable
+            .as_ref()
+            .map(|verdict| verdict.reason.as_str()),
+        Some(unprovable_reason)
     );
 }
 

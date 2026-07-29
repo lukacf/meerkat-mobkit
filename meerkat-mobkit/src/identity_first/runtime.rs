@@ -21,18 +21,18 @@ use super::agent_memory::{
     AgentMemoryError, AgentMemoryForgetResult, AgentMemoryRecallRequest, AgentMemoryRecord,
     AgentMemoryRuntimeInjector, NewAgentMemory,
 };
-use super::bridge::{BridgeError, SessionBridge};
+use super::bridge::{BridgeError, CommittedBoundaryRepair, SessionBridge};
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use super::types::{
     AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
     CheckpointVersion, CompletionCursor, CompletionProgress, ContinuityGeneration,
-    ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchAdmission, DispatchInput,
-    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityBootstrapEntry,
-    IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus, IdentityLifecycleState,
-    IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable, RosterContext,
-    SendAdmission, SessionSnapshot, TopologyContext,
+    ContinuityHealth, ContinuityRecord, ContinuityStoreError, ContinuityUnrecoverable,
+    DispatchAdmission, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
+    IdentityBootstrapEntry, IdentityBootstrapMode, IdentityBootstrapState, IdentityBootstrapStatus,
+    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
+    RosterContext, SendAdmission, SessionSnapshot, TopologyContext,
 };
 use crate::memory::records::{
     ManifestTier, MemoryId, MemoryKind, MemoryScope, NewMemoryRecord, RecordMeta, UsageEvent,
@@ -276,6 +276,12 @@ pub(crate) struct IdentityEntry {
     pub checkpoint_version: CheckpointVersion,
     /// Whether a durable runtime_store is available (affects dispatch ack semantics).
     pub has_runtime_store: bool,
+    /// Terminal heal verdict from the bridge's heal authority. While set,
+    /// the continuity repair supervisor must not re-attempt this identity and
+    /// reconcile must not cosmetically reset it to Dormant — either would
+    /// restart the 2026-07-29 heal/re-Break loop. Cleared by any non-Broken
+    /// lifecycle projection (a real recovery or an operator reset).
+    pub continuity_unrecoverable: Option<ContinuityUnrecoverable>,
 }
 
 /// Tracks a held lease for an identity.
@@ -727,8 +733,53 @@ impl IdentityFirstRuntimeContext {
                 backoff = policy.initial_backoff;
                 continue;
             }
+            // Heal must be REAL before reconcile runs: reconcile alone only
+            // resets the runtime entry (lazy mode re-registers Dormant) while
+            // the durable head can stay an intra-turn projection that the
+            // next materialization re-Breaks — the measured 2026-07-29
+            // production heal/re-Break loop. Drive the bridge's heal
+            // authority FIRST; only identities whose durable head is (now)
+            // committed — or whose bridge has no heal seam — proceed.
+            let mut repairable = Vec::new();
+            let mut recovery_failures = 0usize;
+            for identity in &broken {
+                if self
+                    .runtime
+                    .continuity_unrecoverable(identity)
+                    .await
+                    .is_some()
+                {
+                    // Terminal typed verdict already recorded: stable across
+                    // calls, so re-healing every cycle is exactly the loop
+                    // this replaces. Operators act on the surfaced reason.
+                    continue;
+                }
+                match self.attempt_committed_boundary_recovery(identity).await {
+                    BrokenRepairDisposition::Repairable => repairable.push(identity.clone()),
+                    BrokenRepairDisposition::Unprovable => {}
+                    BrokenRepairDisposition::RetryLater => recovery_failures += 1,
+                }
+            }
+            if repairable.is_empty() {
+                // Nothing eligible this pass: either every Broken identity
+                // carries a terminal verdict (idle at base cadence — a cheap
+                // read, no reconcile churn) or recovery itself failed
+                // transiently (back off before retrying recovery).
+                backoff = if recovery_failures > 0 {
+                    (backoff * 2).min(policy.max_backoff)
+                } else {
+                    policy.initial_backoff
+                };
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| *cancellation.borrow())
+                {
+                    return;
+                }
+                continue;
+            }
             tracing::info!(
-                broken = broken.len(),
+                broken = repairable.len(),
                 "continuity repair: retrying restore for Broken identities"
             );
             if let Err(err) = self.refresh_desired_topology().await {
@@ -745,8 +796,8 @@ impl IdentityFirstRuntimeContext {
                 }
                 continue;
             }
-            let still_broken = self.runtime.broken_identities().await;
-            let healed = broken
+            let still_broken = self.runtime.repairable_broken_identities().await;
+            let healed = repairable
                 .iter()
                 .filter(|id| !still_broken.contains(id))
                 .count();
@@ -757,7 +808,7 @@ impl IdentityFirstRuntimeContext {
                     "continuity repair healed identities"
                 );
             }
-            backoff = if still_broken.is_empty() {
+            backoff = if still_broken.is_empty() && recovery_failures == 0 {
                 policy.initial_backoff
             } else {
                 (backoff * 2).min(policy.max_backoff)
@@ -770,6 +821,83 @@ impl IdentityFirstRuntimeContext {
             }
         }
     }
+
+    /// Ask the bridge's heal authority to drive this Broken identity's
+    /// durable session head to a strict-resume-acceptable committed boundary,
+    /// and translate the verdict into what the repair pass may do next.
+    async fn attempt_committed_boundary_recovery(
+        &self,
+        identity: &AgentIdentity,
+    ) -> BrokenRepairDisposition {
+        let Some(bridge) = self.runtime.bridge() else {
+            // Metadata-only runtime (tests): reconcile owns the retry.
+            return BrokenRepairDisposition::Repairable;
+        };
+        let Some(session_id) = self.runtime.continuity_session_id(identity).await else {
+            // No durable session bound (e.g. the store failed before a record
+            // existed): there is no head to heal; reconcile retries as before.
+            return BrokenRepairDisposition::Repairable;
+        };
+        match bridge.recover_committed_boundary(&session_id).await {
+            Ok(
+                CommittedBoundaryRepair::AlreadyCommitted | CommittedBoundaryRepair::Unsupported,
+            ) => BrokenRepairDisposition::Repairable,
+            Ok(CommittedBoundaryRepair::Recovered) => {
+                tracing::info!(
+                    %identity,
+                    %session_id,
+                    "continuity heal: recovery persisted a committed durable head; \
+                     proceeding to reconcile"
+                );
+                BrokenRepairDisposition::Repairable
+            }
+            Ok(CommittedBoundaryRepair::Unprovable { reason }) => {
+                tracing::error!(
+                    %identity,
+                    %session_id,
+                    reason = %reason,
+                    "continuity heal verdict: durable head unprovable; parking the \
+                     identity as Broken until an operator intervenes"
+                );
+                if !self
+                    .runtime
+                    .mark_continuity_unrecoverable(identity, reason)
+                    .await
+                {
+                    // The entry left Broken between the read and the mark
+                    // (an operator reset raced us); nothing to park.
+                    tracing::debug!(
+                        %identity,
+                        "unprovable verdict arrived after the identity left Broken"
+                    );
+                }
+                BrokenRepairDisposition::Unprovable
+            }
+            Err(error) => {
+                // Only the error tier is retryable per the heal contract
+                // (Busy mid-turn, store I/O, CAS races).
+                tracing::warn!(
+                    %identity,
+                    %session_id,
+                    error = %error,
+                    "committed-boundary recovery failed; retrying next repair pass"
+                );
+                BrokenRepairDisposition::RetryLater
+            }
+        }
+    }
+}
+
+/// What the repair pass may do with one Broken identity after consulting the
+/// bridge's heal authority.
+enum BrokenRepairDisposition {
+    /// Reconcile may retry this identity now (head committed, recovered, or
+    /// no heal seam to consult).
+    Repairable,
+    /// Terminal typed verdict recorded; excluded until an operator clears it.
+    Unprovable,
+    /// The recovery attempt itself failed transiently; retry next pass.
+    RetryLater,
 }
 
 /// Runtime-owned repair supervisor with cooperative idle cancellation.
@@ -2685,19 +2813,34 @@ impl IdentityRuntime {
             ttl: g.ttl,
             acquired_at: Instant::now(),
         });
-        let entry = IdentityEntry {
-            spec,
-            bootstrap_generation,
-            state,
-            continuity,
-            lease: lease_entry,
-            pending_lease_release: None,
-            checkpoint_version: cpv,
-            has_runtime_store: self.has_runtime_store,
-        };
-        let has_active_lease =
-            entry.state == IdentityLifecycleState::Active && entry.lease.is_some();
-        self.entries.write().await.insert(identity.clone(), entry);
+        let has_active_lease = state == IdentityLifecycleState::Active && lease_entry.is_some();
+        {
+            let mut entries = self.entries.write().await;
+            // A terminal heal verdict is about the durable head, not this
+            // entry instance: re-projecting Broken (a repair retry, an eager
+            // reconcile) must not silently forget it, while any non-Broken
+            // projection is a real lifecycle transition that supersedes it
+            // (2026-07-29 heal/re-Break incident).
+            let continuity_unrecoverable = if state == IdentityLifecycleState::Broken {
+                entries
+                    .get(&identity)
+                    .and_then(|existing| existing.continuity_unrecoverable.clone())
+            } else {
+                None
+            };
+            let entry = IdentityEntry {
+                spec,
+                bootstrap_generation,
+                state,
+                continuity,
+                lease: lease_entry,
+                pending_lease_release: None,
+                checkpoint_version: cpv,
+                has_runtime_store: self.has_runtime_store,
+                continuity_unrecoverable,
+            };
+            entries.insert(identity.clone(), entry);
+        }
 
         // Create event channel for this identity
         let (tx, _) = broadcast::channel(IDENTITY_EVENT_CHANNEL_CAPACITY);
@@ -6430,6 +6573,7 @@ impl IdentityRuntime {
             },
             lease: lease_info,
             continuity_health,
+            continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
         })
     }
 
@@ -7980,6 +8124,7 @@ impl IdentityRuntime {
                 },
                 lease: lease_info,
                 continuity_health,
+                continuity_unrecoverable: entry.continuity_unrecoverable.clone(),
             };
             result.insert(identity.clone(), (entry.spec.clone(), status));
         }
@@ -8128,6 +8273,90 @@ impl IdentityRuntime {
             .filter(|(_, entry)| entry.state == IdentityLifecycleState::Broken)
             .map(|(identity, _)| identity.clone())
             .collect()
+    }
+
+    /// Broken identities that do NOT carry a terminal heal verdict — the set
+    /// the continuity repair supervisor is allowed to keep retrying.
+    pub async fn repairable_broken_identities(&self) -> Vec<AgentIdentity> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|(_, entry)| {
+                entry.state == IdentityLifecycleState::Broken
+                    && entry.continuity_unrecoverable.is_none()
+            })
+            .map(|(identity, _)| identity.clone())
+            .collect()
+    }
+
+    /// The terminal heal verdict recorded for an identity, if any.
+    pub async fn continuity_unrecoverable(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<ContinuityUnrecoverable> {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .and_then(|entry| entry.continuity_unrecoverable.clone())
+    }
+
+    /// Record a terminal heal verdict against a Broken identity.
+    ///
+    /// Returns `false` (without writing) when the identity is unknown or no
+    /// longer Broken — the verdict only ever parks an already-Broken entry;
+    /// it never degrades a live one. While recorded, the repair supervisor
+    /// skips the identity and reconcile keeps its Broken projection instead
+    /// of cosmetically resetting it (2026-07-29 heal/re-Break incident).
+    pub async fn mark_continuity_unrecoverable(
+        &self,
+        identity: &AgentIdentity,
+        reason: String,
+    ) -> bool {
+        let marked = {
+            let mut entries = self.entries.write().await;
+            match entries.get_mut(identity) {
+                Some(entry) if entry.state == IdentityLifecycleState::Broken => {
+                    entry.continuity_unrecoverable = Some(ContinuityUnrecoverable {
+                        reason: reason.clone(),
+                    });
+                    true
+                }
+                _ => false,
+            }
+        };
+        if marked {
+            // Keep the bootstrap status surface honest about WHY the
+            // identity stays broken (operators read this, not the log).
+            self.mark_bootstrap_from_lifecycle(
+                identity,
+                IdentityLifecycleState::Broken,
+                Some(reason),
+            );
+        }
+        marked
+    }
+
+    /// Clear a previously recorded terminal heal verdict (operator retry).
+    pub async fn clear_continuity_unrecoverable(&self, identity: &AgentIdentity) -> bool {
+        let mut entries = self.entries.write().await;
+        match entries.get_mut(identity) {
+            Some(entry) => entry.continuity_unrecoverable.take().is_some(),
+            None => false,
+        }
+    }
+
+    /// The durable session currently bound to an identity, if any.
+    pub(crate) async fn continuity_session_id(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<SessionId> {
+        self.entries
+            .read()
+            .await
+            .get(identity)
+            .and_then(|entry| entry.continuity.as_ref().map(|c| c.session_id.clone()))
     }
 
     /// Get the continuity store reference.
