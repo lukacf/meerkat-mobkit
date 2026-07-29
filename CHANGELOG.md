@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.8.8] - 2026-07-29
+### Fixed
+
+- **Sender-side conversation view now renders outgoing peer communications
+  after a history rebuild.** An outgoing peer send exists in the sender's
+  transcript only as an assistant tool call (`send_message` / `send_request` /
+  `send_response`) plus a nameless tool result; the session-history projection
+  kept assistant text blocks only, so any conversation rebuilt from session
+  history (console log lost or reset, live projection never attached for the
+  turn) showed the RECIPIENT's arrivals — incoming typed comms notices survive
+  history — while silently dropping the SENDER's own outgoing communications.
+  The history projection now re-emits the live edge's `tool_call_requested`
+  frame ({id, tool_call_id, name, args}) for each comms send call, so the
+  console pairs it with the backfilled tool result by `tool_call_id` and
+  renders the same outgoing peer item as a live turn; a live twin collapses
+  through a new tool-call arm of the history counterpart fingerprint (keyed on
+  the provider-minted tool_use_id). Regression coverage runs the two-member
+  scenario through both projection sources (live drain and history-only
+  rebuild) in `unified_console`.
 
 Observability release. No behaviour changes to storage, resume, or provisioning
 — every change here makes an existing path *report itself*. Cut in response to

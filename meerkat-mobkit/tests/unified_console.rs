@@ -15,16 +15,20 @@
     clippy::unwrap_in_result,
     clippy::useless_vec
 )]
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode, header};
+use futures::stream;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
-use meerkat_client::TestClient;
+use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
 use meerkat_core::SessionId;
+use meerkat_core::{Message, Provider, StopReason};
 // meerkat 0.7: the MeerkatId alias was deleted; member ids are AgentIdentity.
 use meerkat_mob::ids::AgentIdentity as MobMemberId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
@@ -1080,4 +1084,390 @@ async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() 
 
     let shutdown = fixture.runtime.shutdown().await;
     assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Sender-side comms projection: a member that SENDS peer communications must
+// see those outgoing items in its OWN conversation timeline, and the
+// recipient must see the arrivals. Regression for the console defect where
+// the sender's conversation view showed only the text reply while the
+// recipient rendered both communications.
+// ──────────────────────────────────────────────────────────────────────────
+
+const SENDER_MEMBER: &str = "console-sender";
+const RECEIVER_MEMBER: &str = "console-receiver";
+const OUTGOING_MESSAGE_BODY: &str = "Direct peer message: lights schedule updated.";
+const OUTGOING_REQUEST_BODY: &str = "Structured request: report current device status.";
+const SENDER_REPLY_TEXT: &str = "Reply to operator: home domain updated.";
+
+/// Scripted LLM shared by both members. The sender's first real turn emits a
+/// plain peer message AND a structured request to the receiver via the
+/// agent-facing comms tools, then closes with a text reply; the receiver
+/// acknowledges everything with text. The receiver's peer id is resolved
+/// after spawn (the shared client is constructed before any member exists),
+/// so it arrives through a set-once slot that is filled strictly before the
+/// sender's scripted turn is triggered.
+struct CommsScriptClient {
+    receiver_peer_id: Arc<std::sync::OnceLock<String>>,
+    sender_turn_calls: AtomicUsize,
+}
+
+fn text_only_turn(
+    text: &str,
+) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'static>> {
+    Box::pin(stream::iter(vec![
+        Ok(LlmEvent::TextDelta {
+            delta: text.to_string(),
+            meta: None,
+        }),
+        Ok(LlmEvent::Done {
+            outcome: LlmDoneOutcome::Success {
+                stop_reason: StopReason::EndTurn,
+            },
+        }),
+    ]))
+}
+
+impl LlmClient for CommsScriptClient {
+    fn project_replay_messages(&self, messages: &[Message]) -> Result<Vec<Message>, LlmError> {
+        Ok(messages.to_vec())
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: &'a LlmRequest,
+    ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        if matches!(
+            request.messages.last(),
+            Some(Message::User(user)) if user.text_content().contains("You have been spawned as")
+        ) {
+            return Box::pin(stream::iter(vec![Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: StopReason::EndTurn,
+                },
+            })]));
+        }
+        let transcript = serde_json::to_string(&request.messages).unwrap_or_default();
+        if !transcript.contains(&format!("You are {SENDER_MEMBER}")) {
+            return text_only_turn("Acknowledged.");
+        }
+        let call = self.sender_turn_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            let peer_id = self
+                .receiver_peer_id
+                .get()
+                .cloned()
+                .unwrap_or_else(|| "unresolved-peer".to_string());
+            Box::pin(stream::iter(vec![
+                Ok(LlmEvent::ToolCallComplete {
+                    id: "outgoing-peer-message".to_string(),
+                    name: "send_message".to_string(),
+                    args: json!({
+                        "peer_id": peer_id,
+                        "body": OUTGOING_MESSAGE_BODY,
+                        "handling_mode": "queue",
+                    }),
+                    meta: None,
+                }),
+                Ok(LlmEvent::ToolCallComplete {
+                    id: "outgoing-peer-request".to_string(),
+                    name: "send_request".to_string(),
+                    // The typed request vocabulary is closed
+                    // (supervisor.bridge / checksum_token); a structured
+                    // status request rides the checksum_token contract.
+                    args: json!({
+                        "peer_id": peer_id,
+                        "intent": "checksum_token",
+                        "params": { "subject": "device_status_report" },
+                        "blocks": [{ "type": "text", "text": OUTGOING_REQUEST_BODY }],
+                        "handling_mode": "queue",
+                    }),
+                    meta: None,
+                }),
+                Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                }),
+            ]))
+        } else {
+            text_only_turn(SENDER_REPLY_TEXT)
+        }
+    }
+
+    fn provider(&self) -> Provider {
+        Provider::Other
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+async fn post_console_rpc(app: &Router, payload: &Value) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.to_string()))
+                .expect("rpc request"),
+        )
+        .await
+        .expect("rpc response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("rpc body");
+    serde_json::from_slice(&body).expect("rpc json")
+}
+
+/// Query an identity's conversation timeline the way the console front-end
+/// loads a chat pane (recent window with an explicit limit).
+async fn query_conversation_frames(app: &Router, identity: &str) -> Vec<Value> {
+    let query_json = post_console_rpc(
+        app,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "query-conversation",
+            "method": "mobkit/console/query_timeline",
+            "params": { "identity": identity, "mode": "recent", "limit": 400 }
+        }),
+    )
+    .await;
+    query_json["result"]["frames"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Poll an identity's conversation timeline until `predicate` matches, or
+/// panic with a frame dump after ~30s.
+async fn wait_for_timeline(
+    app: &Router,
+    identity: &str,
+    label: &str,
+    predicate: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let mut frames = Vec::new();
+    for _ in 0..300 {
+        frames = query_conversation_frames(app, identity).await;
+        if predicate(&frames) {
+            return frames;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "timed out waiting for {label} in {identity} timeline; frames:\n{}",
+        serde_json::to_string_pretty(&frames).unwrap_or_default()
+    );
+}
+
+fn frames_contain_text(frames: &[Value], needle: &str) -> bool {
+    frames
+        .iter()
+        .any(|frame| frame.to_string().contains(needle))
+}
+
+/// True when a frame is renderable by the console conversation view as an
+/// OUTGOING comms item for the given send tool: a tool-call frame carrying
+/// the tool name + args (the view derives peer/body/intent from the args), or
+/// a typed comms system notice with direction "outgoing".
+fn is_outgoing_comms_frame(frame: &Value, tool_name: &str, body: &str) -> bool {
+    let kind = frame["kind"].as_str().unwrap_or_default();
+    let payload = &frame["payload"];
+    match kind {
+        "tool_call_requested" | "tool_call" | "tool_execution_started" => {
+            payload["name"] == json!(tool_name) && payload["args"].to_string().contains(body)
+        }
+        "system_notice" => {
+            let message = &payload["message"];
+            message["kind"] == json!("comms")
+                && message["blocks"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| {
+                        block["type"] == json!("comms")
+                            && block["direction"] == json!("outgoing")
+                            && block.to_string().contains(body)
+                    })
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Two-member comms scenario: the sender emits a plain peer message AND a
+/// structured request to the receiver, then replies with text. Asserts the
+/// receiver's conversation shows both arrivals and the sender's OWN
+/// conversation shows both outgoing items.
+///
+/// `drain_live_events` selects the projection source under test:
+/// - `true`: the embedding host drains mob agent events (reference gateway
+///   mode) — the conversation view is fed by live console events.
+/// - `false`: no live projection ever runs, so the conversation view is
+///   rebuilt purely from session-history backfill. This is the console-log
+///   loss / restart mode where the sender-side omission was observed: the
+///   recipient's arrivals survive (incoming typed comms notices live in its
+///   transcript) while the sender's outgoing comms exist only as assistant
+///   tool calls the history projection used to drop.
+async fn run_outgoing_comms_console_scenario(drain_live_events: bool) {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "comms-console-mob"
+
+[profiles.lead]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+
+[wiring]
+auto_wire_orchestrator = false
+
+[[wiring.role_wiring]]
+a = "lead"
+b = "lead"
+"#,
+    )
+    .expect("parse comms console mob definition");
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+
+    let peer_id_slot = Arc::new(std::sync::OnceLock::new());
+    let script_client = Arc::new(CommsScriptClient {
+        receiver_peer_id: peer_id_slot.clone(),
+        sender_turn_calls: AtomicUsize::new(0),
+    });
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(script_client),
+        });
+    let runtime = UnifiedRuntime::bootstrap(
+        mob_spec,
+        MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "comms-console".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        },
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("bootstrap comms console runtime");
+    let runtime = Arc::new(runtime);
+    let event_drain = drain_live_events.then(|| runtime.clone().spawn_event_drain_task());
+
+    runtime
+        .spawn(console_member_spec(RECEIVER_MEMBER))
+        .await
+        .expect("spawn receiver member");
+    let (receiver_peer_id, _, _) = runtime
+        .local_member_peer_info(RECEIVER_MEMBER)
+        .await
+        .expect("receiver peer info");
+    peer_id_slot
+        .set(receiver_peer_id)
+        .expect("peer id slot set once");
+    runtime
+        .spawn(console_member_spec(SENDER_MEMBER))
+        .await
+        .expect("spawn sender member");
+
+    let app = runtime.build_reference_app_router(decision_state(false));
+
+    // Trigger the sender's scripted turn through the console send pipeline.
+    let send_json = post_console_rpc(
+        &app,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "send-comms-1",
+            "method": "mobkit/console/send",
+            "params": {
+                "identity": SENDER_MEMBER,
+                "origin": "test",
+                "idempotency_key": "sender-outgoing-comms-1",
+                "content": "Update the home domain and report back."
+            }
+        }),
+    )
+    .await;
+    assert!(
+        send_json.get("error").is_none() || send_json["error"].is_null(),
+        "console send failed: {send_json}"
+    );
+
+    // Sender finishes a turn with the text reply.
+    wait_for_timeline(&app, SENDER_MEMBER, "sender text reply", |frames| {
+        frames_contain_text(frames, SENDER_REPLY_TEXT)
+    })
+    .await;
+
+    // The recipient's conversation shows BOTH communications arriving.
+    wait_for_timeline(&app, RECEIVER_MEMBER, "peer message arrival", |frames| {
+        frames_contain_text(frames, OUTGOING_MESSAGE_BODY)
+    })
+    .await;
+    wait_for_timeline(&app, RECEIVER_MEMBER, "peer request arrival", |frames| {
+        frames_contain_text(frames, OUTGOING_REQUEST_BODY)
+    })
+    .await;
+
+    // THE REGRESSION: the sender's OWN conversation view must contain both
+    // outgoing communications as renderable items (not just the text reply).
+    let sender_frames = wait_for_timeline(
+        &app,
+        SENDER_MEMBER,
+        "outgoing peer message item",
+        |frames| {
+            frames
+                .iter()
+                .any(|frame| is_outgoing_comms_frame(frame, "send_message", OUTGOING_MESSAGE_BODY))
+        },
+    )
+    .await;
+    assert!(
+        sender_frames.iter().any(|frame| is_outgoing_comms_frame(
+            frame,
+            "send_request",
+            OUTGOING_REQUEST_BODY
+        )),
+        "sender timeline must render the outgoing structured request; frames:\n{}",
+        serde_json::to_string_pretty(&sender_frames).unwrap_or_default()
+    );
+
+    if let Some(event_drain) = event_drain {
+        event_drain.abort();
+    }
+    let shutdown = runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_conversation_view_renders_outgoing_peer_comms_live() {
+    run_outgoing_comms_console_scenario(true).await;
+}
+
+/// The observed defect: with the conversation rebuilt from session history
+/// (console log lost/reset, live projection never attached), the sender's
+/// view kept only the text reply while the recipient rendered both arrivals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_conversation_view_renders_outgoing_peer_comms_after_history_rebuild() {
+    run_outgoing_comms_console_scenario(false).await;
 }
