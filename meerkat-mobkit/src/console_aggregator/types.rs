@@ -379,6 +379,7 @@ pub struct ConsoleReplayUnavailable {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod timeline_window_query_defaults {
     use super::*;
 
