@@ -538,14 +538,16 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
     );
 }
 
-/// Retained rewrite-commit revisions on the durable session row, read
-/// directly from the store. Pre/postcondition probe for the A-then-B
-/// composition test: the precondition read proves the instrument can witness
-/// a positive (a retained commit exists) before the assertion that matters.
-async fn retained_commit_revisions(
+/// Store-level probe for the prompt-update acceptance: the durable session's
+/// System-message contents (in transcript order) and its retained
+/// transcript-rewrite-commit revisions. The System contents carry the
+/// +0/+1 append-counting invariants; the rewrite revisions pin that prompt
+/// updates mint NO rewrite commits (the mint class behind the 60-100×
+/// revision-bloat incident stays dead).
+async fn persisted_prompt_probe(
     state_path: &std::path::Path,
     session_id: &meerkat_core::types::SessionId,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     use meerkat::SessionStore as _;
     let db_path = ["sessions.sqlite3", "sessions.db", "sessions.sqlite"]
         .iter()
@@ -553,13 +555,21 @@ async fn retained_commit_revisions(
         .find(|path| path.exists())
         .expect("a session store file exists in the state dir");
     let store = meerkat_store::SqliteSessionStore::open(db_path)
-        .expect("open the session store for the retained-commit probe");
+        .expect("open the session store for the prompt probe");
     let session = store
         .load(session_id)
         .await
         .expect("load the durable session")
         .expect("the durable session exists");
-    session
+    let system_contents = session
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            meerkat_core::Message::System(system) => Some(system.content.clone()),
+            _ => None,
+        })
+        .collect();
+    let rewrite_revisions = session
         .transcript_history_state()
         .expect("decode transcript history state")
         .map(|state| {
@@ -569,36 +579,53 @@ async fn retained_commit_revisions(
                 .map(|commit| commit.revision.clone())
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (system_contents, rewrite_revisions)
 }
 
-/// HomeCore field incident (2026-07-29): a GENUINE system-prompt edit over a
-/// member that already holds retained transcript rewrite commits must
-/// RESUME — the new prompt-drift rewrite composes onto the retained chain.
-/// On the released 0.8.10/0.8.8 stack the second edit's save was refused
-/// ("incoming rewrite save would drop retained transcript rewrite commits"),
-/// marking 9 of 17 HomeCore identities Broken at certification. An agent
-/// platform configured BY prompts cannot treat a prompt edit as a
-/// fleet-breaking operation — and the exposure is not legacy-only: a fresh
-/// fleet accumulates retained commits from its FIRST genuine edit, so the
-/// SECOND edit walks this exact path.
+/// Count the prompt-bearing System messages (those carrying the assembled
+/// base) — robust against runtime system-context appends, which either
+/// mutate an existing System message in place (today) or carry only rendered
+/// context without the base (either way, this count moves ONLY on a genuine
+/// prompt update).
+fn prompt_bearing(system_contents: &[String], base_marker: &str) -> usize {
+    system_contents
+        .iter()
+        .filter(|content| content.contains(base_marker))
+        .count()
+}
+
+/// Gateway-composed acceptance for prompt updates on resumed members
+/// (HomeCore field incident 2026-07-29, task #41; the 0.8.6 lesson says a
+/// library-level test alone can miss composition divergence, so the meerkat
+/// factory-level acceptance gets this gateway counterpart).
 ///
-/// Meerkat 0.8.11 gates on the A-then-B LeadingSystem composition at the
-/// factory-resume level; this is the gateway-composed counterpart (the 0.8.6
-/// lesson: a library-level test alone can miss composition divergence).
+/// Two production failure shapes drive it. On the released 0.8.10/0.8.8
+/// stack a genuine prompt edit over members holding retained transcript
+/// rewrite commits REFUSED the save ("incoming rewrite save would drop
+/// retained transcript rewrite commits") and Broke 9/17 HomeCore identities.
+/// On the pre-fix 0.8.11 lineage the same edit was silently INERT for
+/// resumed members (OB3 measured 0/449 stored rows carrying their deployed
+/// prompt fix). An agent platform configured BY prompts can afford neither.
+///
+/// The meerkat 0.8.11 contract this encodes (2026-07-29 22:17 ruling):
+/// prompt drift on resume compares against the latest applicable
+/// `Message::System` and — when genuinely changed — APPENDS exactly one
+/// ordinary System message at the transcript tail. No LeadingSystem rewrite,
+/// no rewrite-commit mint, prior messages and graph prefix untouched.
+///
 /// Shape: boot 1 creates the member and runs a turn. Boot 2 edits the
-/// assembled prompt (paragraph A) — the resume mints and RETAINS rewrite
-/// commit A, asserted as a store-level precondition: without a retained
-/// commit this test cannot witness the defect. Boot 3 edits the prompt again
-/// (paragraph B): the resume must compose B onto [A] — Resumed, same durable
-/// session, transcript replayed, A still retained, B appended.
+/// assembled role instructions (paragraph A): Resumed, same session, the
+/// edit reaches the live request, prompt-bearing System count +1, zero
+/// rewrite commits minted. Boot 3 is prompt-neutral: +0. Boot 4 edits again
+/// (paragraph B): +1, transcript replay intact (token from turn 1). Boot 5
+/// is neutral again: +0. Rewrite commits stay untouched throughout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "red until the meerkat 0.8.11 contract-stable SHA: (1) mob-member resume must \
-            deliver the current assembled profile prompt into the factory reconcile seam \
-            (meerkat-mob build_resumed_agent_config currently forces SystemPromptOverride::\
-            Inherit, making prompt edits structurally inert on resume — proven by this \
-            test's instrument assert), and (2) the reconcile rewrite must compose onto \
-            retained commits (HomeCore 9/17-Broken, task #41). Un-ignore at repin."]
+#[ignore = "red until the meerkat 0.8.11 contract-stable SHA: mob-member resume must \
+            deliver the current assembled profile prompt (mobkit half landed f9da6c1c; \
+            meerkat-mob half statically landed in rel089), and prompt drift must follow \
+            the append-System semantics (+0 neutral / exactly +1 genuine edit, no \
+            rewrite mint — 22:17 ruling). Un-ignore at repin (task #41/#43)."]
 async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
     let logs = LogCapture::default();
     let subscriber = tracing_subscriber::fmt()
@@ -669,8 +696,15 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
         unified.shutdown().await;
     }
 
-    // --- Boot 2: prompt edit A. The resume mints the drift rewrite onto an
-    // empty retained set — this worked even on the broken released stack. ---
+    let (systems_after_create, rewrites_baseline) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    let base_count = prompt_bearing(&systems_after_create, ROLE_BASE);
+    assert!(
+        base_count >= 1,
+        "the created member must carry the assembled base prompt: {systems_after_create:?}"
+    );
+
+    // --- Boot 2: prompt edit A over the untouched member. ---
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(
@@ -730,18 +764,76 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
         unified.shutdown().await;
     }
 
-    // PRECONDITION: edit A minted and RETAINED a rewrite commit. Without
-    // retained history the boot-3 assertion below cannot witness the defect
-    // (a green here would be the instrument failing to see a positive).
-    let retained_after_a = retained_commit_revisions(&state_path, &original_session_id).await;
-    assert!(
-        !retained_after_a.is_empty(),
-        "boot 2's prompt edit must mint and retain a transcript rewrite commit; \
-         an empty retained set means this test cannot witness the A-then-B defect"
+    // Edit A appended exactly ONE prompt-bearing System message and minted
+    // ZERO rewrite commits (the 60-100× revision-bloat mint class stays dead).
+    let (systems_after_a, rewrites_after_a) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        prompt_bearing(&systems_after_a, ROLE_BASE),
+        base_count + 1,
+        "a genuine prompt edit must append exactly one System message: {systems_after_a:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_after_a, PARAGRAPH_A),
+        1,
+        "the appended System must carry the edited instructions: {systems_after_a:?}"
+    );
+    assert_eq!(
+        rewrites_after_a, rewrites_baseline,
+        "a prompt update must not mint transcript rewrite commits"
     );
 
-    // --- Boot 3: prompt edit B over retained [A] — THE incident moment.
-    // On the released stack this resume was refused and the identity Broken. ---
+    // --- Boot 3: prompt-neutral resume — must append NOTHING. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            definition_with(&format!("{ROLE_BASE} {PARAGRAPH_A}")),
+            "prompt-edit-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (neutral boot 3)");
+        assert!(
+            matches!(
+                result.outcomes.get(&alice).expect("alice outcome"),
+                RestoreOutcome::Resumed { .. }
+            ),
+            "a prompt-neutral boot must resume"
+        );
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("neutral ping".to_string()),
+            )
+            .await
+            .expect("send neutral-boot turn");
+        wait_for_request(&capture, 30, "the neutral-boot turn").await;
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+    let (systems_after_neutral, rewrites_after_neutral) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        prompt_bearing(&systems_after_neutral, ROLE_BASE),
+        base_count + 1,
+        "a prompt-neutral resume must append zero System messages: {systems_after_neutral:?}"
+    );
+    assert_eq!(
+        rewrites_after_neutral, rewrites_baseline,
+        "a prompt-neutral resume must not mint transcript rewrite commits"
+    );
+
+    // --- Boot 4: prompt edit B — the second genuine edit (the released
+    // stack refused this shape outright; the pre-fix 0.8.11 lineage ignored
+    // it silently). ---
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(
@@ -758,7 +850,7 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
             Some(&NoopCustomizer as &dyn AgentCustomizer),
         )
         .await
-        .expect("restore_flow (boot 3)");
+        .expect("restore_flow (boot 4, edit B)");
         match result.outcomes.get(&alice).expect("alice outcome") {
             RestoreOutcome::Resumed { record, .. } => {
                 assert_eq!(
@@ -767,9 +859,8 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
                 );
             }
             other => panic!(
-                "a prompt edit over retained rewrite commits must RESUME — the drift \
-                 rewrite composes onto the retained chain (HomeCore 9/17-Broken \
-                 incident, 2026-07-29) — got: {other:?}"
+                "a prompt edit over an already-edited resumed member must RESUME \
+                 (HomeCore 9/17-Broken incident, 2026-07-29) — got: {other:?}"
             ),
         }
         identity_rt
@@ -793,13 +884,77 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
         unified.shutdown().await;
     }
 
-    // POSTCONDITION: B was APPENDED onto the retained chain — A intact,
-    // nothing silently flattened.
-    let retained_after_b = retained_commit_revisions(&state_path, &original_session_id).await;
-    assert!(
-        retained_after_b.len() > retained_after_a.len()
-            && retained_after_b[..retained_after_a.len()] == retained_after_a[..],
-        "rewrite B must extend the retained chain with A intact: \
-         after A {retained_after_a:?}, after B {retained_after_b:?}"
+    // Edit B appended exactly one more prompt-bearing System; still zero
+    // rewrite mints; the A-carrying System from boot 2 remains in place
+    // (PARAGRAPH_A "…alpha." and PARAGRAPH_B "…alpha, beta." are disjoint
+    // markers — neither is a substring of the other).
+    let (systems_after_b, rewrites_after_b) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        prompt_bearing(&systems_after_b, ROLE_BASE),
+        base_count + 2,
+        "the second genuine edit must append exactly one System message: {systems_after_b:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_after_b, PARAGRAPH_B),
+        1,
+        "the appended System must carry the second edit: {systems_after_b:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_after_b, PARAGRAPH_A),
+        1,
+        "the prior edit's System message must remain untouched: {systems_after_b:?}"
+    );
+    assert_eq!(
+        rewrites_after_b, rewrites_baseline,
+        "prompt updates must never mint transcript rewrite commits"
+    );
+
+    // --- Boot 5: neutral again — the trailing +0 of the acceptance. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            definition_with(&format!("{ROLE_BASE} {PARAGRAPH_B}")),
+            "prompt-edit-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (neutral boot 5)");
+        assert!(
+            matches!(
+                result.outcomes.get(&alice).expect("alice outcome"),
+                RestoreOutcome::Resumed { .. }
+            ),
+            "the trailing prompt-neutral boot must resume"
+        );
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("neutral ping 2".to_string()),
+            )
+            .await
+            .expect("send trailing neutral-boot turn");
+        wait_for_request(&capture, 30, "the trailing neutral-boot turn").await;
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+    let (systems_final, rewrites_final) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        prompt_bearing(&systems_final, ROLE_BASE),
+        base_count + 2,
+        "the trailing neutral resume must append zero System messages: {systems_final:?}"
+    );
+    assert_eq!(
+        rewrites_final, rewrites_baseline,
+        "the trailing neutral resume must not mint transcript rewrite commits"
     );
 }
