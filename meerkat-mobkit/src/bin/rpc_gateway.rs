@@ -7435,6 +7435,11 @@ external_addressable = true
         } else {
             None
         };
+        // Heal seam (2026-07-29 incident): the CONCRETE persistent service is
+        // the committed-boundary recoverer for the identity repair supervisor.
+        let committed_boundary_recoverer: Arc<
+            dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
+        > = Arc::clone(&concrete_service) as _;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> = concrete_service;
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_session_write_epochs(&session_write_epochs)
@@ -7451,6 +7456,7 @@ external_addressable = true
                 notify_orchestrator_on_resume: true,
                 default_llm_client: default_llm_client.clone(),
             });
+        spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         if let Some((_, admission_slot, workgraph_state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the
             // tool-plane admission slot and the sidecar lock beside it.
@@ -7673,6 +7679,12 @@ external_addressable = true
         let mut transcript_edit_service: Option<
             Arc<dyn meerkat_mobkit::memory::hygienist::TranscriptEditSessionService>,
         > = None;
+        // Heal seam (2026-07-29 incident): captured from the CONCRETE
+        // persistent service below; the erased MobSessionService does not
+        // carry the heal API.
+        let mut committed_boundary_recoverer: Option<
+            Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
+        > = None;
         let mut session_store_incremental: Option<bool> = None;
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             if let Some(session_adapter) = identity_session_store_adapter.clone() {
@@ -7722,6 +7734,7 @@ external_addressable = true
                     blob_store.clone(),
                 ));
                 transcript_edit_service = Some(Arc::clone(&concrete) as _);
+                committed_boundary_recoverer = Some(Arc::clone(&concrete) as _);
                 concrete
             } else {
                 Arc::new(EphemeralSessionService::new(
@@ -7739,6 +7752,7 @@ external_addressable = true
                 notify_orchestrator_on_resume: true,
                 default_llm_client: default_llm_client.clone(),
             });
+        spec.committed_boundary_recoverer = committed_boundary_recoverer;
         for slot in workgraph_admission_slots {
             spec = spec.with_workgraph_admission_slot(slot);
         }

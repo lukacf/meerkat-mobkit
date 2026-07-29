@@ -551,6 +551,55 @@ pub trait CommittedBoundaryRecoverer: Send + Sync {
     ) -> Result<CommittedBoundaryRepair, BridgeError>;
 }
 
+/// The production heal authority: meerkat's `PersistentSessionService`
+/// driving the durable head to a boundary-commit-provenance checkpoint
+/// through machine-authorized recovery (meerkat >= 0.8.11).
+///
+/// Contract mapping, per the heal API: the typed `Unprovable` VERDICT is
+/// terminal and stable across calls (callers must not retry-loop it); only
+/// the error tier (`Busy` mid-turn, store I/O, CAS races) is retryable and
+/// maps to `Err` here.
+#[async_trait]
+impl<B> CommittedBoundaryRecoverer for meerkat_session::PersistentSessionService<B>
+where
+    B: meerkat_session::SessionAgentBuilder + 'static,
+{
+    async fn recover_committed_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<CommittedBoundaryRepair, BridgeError> {
+        // Fully qualified: the inherent method and this trait method share a
+        // name, and the inherent one is the upstream API being consumed.
+        match meerkat_session::PersistentSessionService::recover_committed_boundary(
+            self, session_id,
+        )
+        .await
+        {
+            Ok(meerkat_session::CommittedBoundaryRecovery::AlreadyCommitted) => {
+                Ok(CommittedBoundaryRepair::AlreadyCommitted)
+            }
+            Ok(meerkat_session::CommittedBoundaryRecovery::Recovered {
+                provenance,
+                message_count,
+            }) => {
+                tracing::info!(
+                    %session_id,
+                    ?provenance,
+                    message_count,
+                    "machine-authorized recovery persisted a committed durable head"
+                );
+                Ok(CommittedBoundaryRepair::Recovered)
+            }
+            Ok(meerkat_session::CommittedBoundaryRecovery::Unprovable { reason }) => {
+                Ok(CommittedBoundaryRepair::Unprovable { reason })
+            }
+            Err(error) => Err(BridgeError::Mob(format!(
+                "committed-boundary recovery: {error}"
+            ))),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SessionBridge trait
 // ---------------------------------------------------------------------------

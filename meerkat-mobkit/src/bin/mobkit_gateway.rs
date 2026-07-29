@@ -1288,10 +1288,16 @@ async fn run() -> anyhow::Result<()> {
         // service (mirrors rpc_gateway.rs). This branch already shared via the
         // runtime_store handed to PersistentSessionService, so this is defensive;
         // the default ephemeral branch below is the one that was actually broken.
+        // Heal seam (2026-07-29 incident): the CONCRETE persistent service is
+        // the committed-boundary recoverer for the identity repair supervisor.
+        let committed_boundary_recoverer: Arc<
+            dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
+        > = service.clone();
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
             .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
             .with_workgraph_service(workgraph_service.clone());
+        spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         if let Some((_, admission_slot, state_dir)) = &workgraph {
             // Durable (cross-process shareable) store: register the tool-plane
             // admission slot and the sidecar lock beside the store.

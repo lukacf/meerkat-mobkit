@@ -4465,6 +4465,12 @@ impl MobBootstrapSpec {
             dyn meerkat::session_runtime::llm_reconfigure::SessionRuntimeLlmReconfigureService,
         > = concrete_session_service.clone();
         session_llm_reconfigure_blueprint.install(&runtime_adapter, reconfigure_service);
+        // Heal seam (2026-07-29 incident): the CONCRETE persistent service is
+        // the committed-boundary recoverer; the erased MobSessionService does
+        // not carry the heal API, so the typed handle is captured here.
+        let committed_boundary_recoverer: Arc<
+            dyn crate::identity_first::bridge::CommittedBoundaryRecoverer,
+        > = concrete_session_service.clone();
         let session_service: Arc<dyn MobSessionService> = concrete_session_service;
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let session_service = Arc::new(PreBuildMobSessionService {
@@ -4490,6 +4496,7 @@ impl MobBootstrapSpec {
             Some(session_llm_default_client_slot),
         );
         let mut spec = Self::new(definition, storage, session_service);
+        spec.committed_boundary_recoverer = Some(committed_boundary_recoverer);
         spec.session_write_epochs = Some(session_read_epochs);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
