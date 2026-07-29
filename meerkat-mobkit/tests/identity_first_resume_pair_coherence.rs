@@ -367,15 +367,31 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
 
 const DIVERGENCE_LINE: &str = "resume restored an LLM identity";
 
-/// When NO coherent pair is resolvable from the declaration (a model the
-/// catalog does not know, no provider key, no `[models.<id>]` entry),
-/// neither field is masked: durable truth wins whole, the resume proceeds on
-/// the durable pair, and the unified divergence line fires — ONCE per
-/// identity per boot, printing BOTH halves of the pair. A second resume of
-/// the same identity in the same boot (mob-plane retire, then restore again)
-/// must not repeat it.
+/// When NO coherent (model, provider) pair is resolvable from the
+/// declaration (a model the catalog does not know, no `provider` key, no
+/// `[models.<id>]` entry), NOTHING may be half-applied and durable truth
+/// must survive untouched.
+///
+/// Under meerkat 0.8.11 definition validation this state is refused at BOOT,
+/// typed (`UnknownModel`, naming the profile and model) — a definition that
+/// cannot resolve a coherent pair never reaches the resume path at all, so
+/// the quiet unmasked-divergence state this test originally exercised
+/// (durable-wins-whole resume + once-per-boot INFO tripwire) is
+/// unrepresentable end to end for inline profiles: every load-valid inline
+/// declaration is auto-marked as a coherent masked pair, and every
+/// unresolvable one refuses to boot. The loud typed refusal replaced the
+/// quiet INFO line as the tripwire. The pure divergence seam
+/// (`unmasked_resume_divergence`) stays unit-covered in
+/// `identity_first::bridge`.
+///
+/// This test encodes the surviving contract: the refused boot leaves the
+/// durable store untouched (no half-applied pair, no lost transcript), the
+/// refusal names the unresolvable declaration, and the next boot on a
+/// resolvable definition resumes the SAME durable session with the
+/// transcript intact — and no divergence line fires for that coherent,
+/// masked resume.
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_divergence_line_fires_once_per_identity_per_boot() {
+async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
     let logs = LogCapture::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -389,8 +405,10 @@ async fn resume_divergence_line_fires_once_per_identity_per_boot() {
     let state_path = temp.path().join("state");
     let bob = id("personal:bob");
     let roster = vec![spec("personal:bob", "personal")];
+    const TOKEN: &str = "MARKER-PAIR-7-VICTOR";
 
     // --- Boot 1: create on gpt-5.5, deliver a turn, shut down ---
+    let original_session_id;
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(
@@ -408,39 +426,68 @@ async fn resume_divergence_line_fires_once_per_identity_per_boot() {
         )
         .await
         .expect("restore_flow (boot 1)");
-        assert!(
-            matches!(
-                result.outcomes.get(&bob).expect("bob outcome"),
-                RestoreOutcome::Created { .. }
-            ),
-            "boot 1 creates"
-        );
+        match result.outcomes.get(&bob).expect("bob outcome") {
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
+            other => panic!("expected Created on first boot, got {other:?}"),
+        }
         identity_rt
-            .send(&bob, &meerkat_core::ContentInput::Text("hello".to_string()))
+            .send(
+                &bob,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
             .await
             .expect("send turn 1");
         wait_for_request(&capture, 20, "turn 1").await;
         sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
-    assert!(
-        !logs.contents().contains(DIVERGENCE_LINE),
-        "no divergence line before any resume"
-    );
 
     // --- Boot 2: the profile now declares a model NOBODY can resolve a
-    // provider for. No coherent pair exists, so nothing is masked and the
-    // durable identity must win whole — with the tripwire line. ---
+    // provider for. No coherent pair exists, so the runtime must refuse to
+    // boot, typed, naming the unresolvable declaration — never half-apply
+    // it over the durable identity. ---
+    {
+        let capture = CaptureClient::default();
+        let error = UnifiedRuntimeBuilder::default()
+            .definition(definition(
+                "pair-divergence",
+                "model = \"model-nobody-knows\"",
+            ))
+            .persistent_state(&state_path)
+            .comms(true)
+            .default_llm_client(Arc::new(capture))
+            .build()
+            .await
+            .err()
+            .expect(
+                "a declared model with no resolvable provider must refuse the boot typed, \
+                 not half-apply over durable truth",
+            );
+        let rendered = format!("{error:?}");
+        for needle in ["UnknownModel", "model-nobody-knows", "profiles.personal"] {
+            assert!(
+                rendered.contains(needle),
+                "the boot refusal must name the unresolvable declaration \
+                 (missing `{needle}`): {rendered}"
+            );
+        }
+    }
+
+    // --- Boot 3: back on a resolvable definition. The refused boot must
+    // have left durable truth untouched: the SAME session resumes, the
+    // transcript replays, the turn runs on the durable pair, and the
+    // coherent masked resume fires no divergence line. ---
     {
         let capture = CaptureClient::default();
         let (unified, identity_rt) = boot(
             &state_path,
             capture.clone(),
-            definition("pair-divergence", "model = \"model-nobody-knows\""),
+            definition("pair-divergence", "model = \"gpt-5.5\""),
             "pair-divergence-rt",
         )
         .await;
-
         let result = restore_flow(
             &identity_rt,
             &roster,
@@ -448,108 +495,45 @@ async fn resume_divergence_line_fires_once_per_identity_per_boot() {
             Some(&NoopCustomizer as &dyn AgentCustomizer),
         )
         .await
-        .expect("restore_flow (boot 2)");
+        .expect("restore_flow (boot 3)");
         match result.outcomes.get(&bob).expect("bob outcome") {
-            RestoreOutcome::Resumed { .. } => {}
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "the refused boot must not have touched the durable session binding"
+                );
+            }
             other => panic!(
-                "an unresolvable declared model must leave the durable identity untouched \
-                 and still resume (durable-wins whole), got: {other:?}"
+                "after a refused boot, a resolvable definition must resume the preserved \
+                 durable session, got: {other:?}"
             ),
         }
 
-        let contents = logs.contents();
-        let occurrences = contents.matches(DIVERGENCE_LINE).count();
-        assert_eq!(
-            occurrences, 1,
-            "the unified divergence line fires exactly once for the first resume"
-        );
-        let line = contents
-            .lines()
-            .find(|line| line.contains(DIVERGENCE_LINE))
-            .expect("divergence line present");
-        for field in [
-            "restored_model",
-            "restored_provider",
-            "profile_model",
-            "profile_provider",
-            "model_unmasked_divergent=true",
-            "provider_unmasked_divergent=false",
-        ] {
-            assert!(
-                line.contains(field),
-                "the divergence line must print the whole pair (missing `{field}`): {line}"
-            );
-        }
-
-        // NOTHING half-applied: the turn runs on the durable pair.
         identity_rt
             .send(
                 &bob,
-                &meerkat_core::ContentInput::Text("still there?".to_string()),
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
             )
             .await
-            .expect("send post-divergence turn");
-        wait_for_request(&capture, 30, "the post-divergence turn").await;
-        let last_request = capture
-            .last()
-            .expect("a post-divergence request was captured");
+            .expect("send post-refusal turn");
+        wait_for_request(&capture, 30, "the post-refusal turn").await;
+        let last_request = capture.last().expect("a post-refusal request was captured");
         assert!(
             last_request.contains("\"model\":\"gpt-5.5\""),
-            "durable truth must win whole — the unresolvable declared model must never \
-             apply: {last_request}"
+            "the resumed turn must run on the durable pair: {last_request}"
         );
-
-        // --- Second resume of the SAME identity in the SAME boot: mob-plane
-        // retire, then restore again (the revival path). The line must not
-        // repeat. ---
-        sleep(Duration::from_millis(500)).await;
-        let members = unified.mob_handle().list_members().await;
-        assert_eq!(members.len(), 1, "one durable member expected");
-        let member_id = members[0].agent_identity.clone();
-        unified
-            .mob_handle()
-            .retire(member_id.clone())
-            .await
-            .expect("mob-plane retire");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let members = unified.mob_handle().list_members().await;
-            let live = members
-                .iter()
-                .any(|entry| entry.agent_identity == member_id && !entry.is_final);
-            if !live {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for the mob-plane retire to finalize"
-            );
-            sleep(Duration::from_millis(100)).await;
-        }
-        sleep(Duration::from_millis(300)).await;
-
-        let result = restore_flow(
-            &identity_rt,
-            &roster,
-            Some(&EmptyTopology as &dyn TopologyProvider),
-            Some(&NoopCustomizer as &dyn AgentCustomizer),
-        )
-        .await
-        .expect("restore_flow (boot 2, second resume)");
         assert!(
-            matches!(
-                result.outcomes.get(&bob).expect("bob outcome"),
-                RestoreOutcome::Resumed { .. }
-            ),
-            "the revival resume succeeds on durable truth"
-        );
-        assert_eq!(
-            logs.contents().matches(DIVERGENCE_LINE).count(),
-            1,
-            "once per identity per boot: the second resume in the same boot must not \
-             repeat the divergence line"
+            last_request.contains(TOKEN),
+            "the resumed turn must replay the preserved transcript (token {TOKEN})"
         );
 
+        sleep(Duration::from_millis(500)).await;
         unified.shutdown().await;
     }
+
+    assert!(
+        !logs.contents().contains(DIVERGENCE_LINE),
+        "a coherent masked resume of an untouched durable identity must not fire the \
+         divergence tripwire"
+    );
 }
