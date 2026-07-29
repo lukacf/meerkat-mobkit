@@ -4925,6 +4925,45 @@ impl Default for CapabilityFlags {
 /// Backward-compatible alias for [`MobRuntime`].
 pub type RealMobRuntime = MobRuntime;
 
+/// "Profile declares it, profile means it": auto-mark every explicitly
+/// declared profile field as resume-overridden so a definition edit reaches
+/// identities that already hold durable sessions.
+///
+/// Durable session metadata restores model/provider/provider_params on
+/// resume; without a `resume_overrides` entry a profile declaration is inert
+/// on every resumed identity. Two production fleets shipped model migrations
+/// that silently did nothing (2026-07) — one ran a three-week-old model until
+/// a provider byte cap broke the deployment. Declaration is key PRESENCE, not
+/// value comparison: `model` is a required profile key (always declared);
+/// `provider`/`self_hosted_server_id` and `provider_params` are optional keys
+/// whose TOML presence is carried faithfully by their `Option` fields (TOML
+/// cannot express an explicit null). Undeclared fields keep durable-wins
+/// semantics exactly as before.
+///
+/// Applies to inline profile bindings only: realm-ref profiles resolve inside
+/// meerkat-mob at spawn time and never pass through this seam — the
+/// resume-divergence INFO line in the identity session bridge is the tripwire
+/// for those.
+pub fn auto_mark_declared_resume_overrides(definition: &mut MobDefinition) {
+    for binding in definition.profiles.values_mut() {
+        let Some(profile) = binding.as_inline_mut() else {
+            continue;
+        };
+        let mut declared = vec![meerkat_mob::ResumeOverrideField::Model];
+        if profile.provider.is_some() || profile.self_hosted_server_id.is_some() {
+            declared.push(meerkat_mob::ResumeOverrideField::Provider);
+        }
+        if profile.provider_params.is_some() {
+            declared.push(meerkat_mob::ResumeOverrideField::ProviderParams);
+        }
+        for field in declared {
+            if !profile.resume_overrides.contains(&field) {
+                profile.resume_overrides.push(field);
+            }
+        }
+    }
+}
+
 /// Live mob runtime backed by a `MobHandle`.
 #[derive(Clone)]
 pub struct MobRuntime {
@@ -4967,7 +5006,11 @@ pub struct MobRuntime {
 }
 
 impl MobRuntime {
-    pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+    pub async fn bootstrap(mut spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        // Every mobkit surface funnels its definition through here, so this
+        // is the one ingress where declared-field resume overrides are
+        // marked before the definition reaches meerkat-mob.
+        auto_mark_declared_resume_overrides(&mut spec.definition);
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
         let binary_blob_store = spec.binary_blob_store.clone();
@@ -8661,6 +8704,157 @@ realm_profile = "worker-v2"
             spec_adapter.has_session_llm_reconfigure_host(),
             "the retained runtime authority must carry the live LLM reconfiguration host"
         );
+    }
+
+    /// "Profile declares it, profile means it" (2026-07 resume-inertness
+    /// traps): every explicitly declared profile field is auto-marked
+    /// resume-overridden so profile edits reach resumed durable identities.
+    #[test]
+    fn auto_mark_marks_declared_profile_fields() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n[profiles.worker.provider_params]\nthinking_budget_tokens = 1024\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        for field in [
+            meerkat_mob::ResumeOverrideField::Model,
+            meerkat_mob::ResumeOverrideField::Provider,
+            meerkat_mob::ResumeOverrideField::ProviderParams,
+        ] {
+            assert!(
+                profile.resume_overrides.contains(&field),
+                "declared field {field:?} must be auto-marked resume-overridden"
+            );
+        }
+    }
+
+    /// Undeclared fields keep durable-wins semantics exactly as before: only
+    /// `model` (a required profile key, hence always declared) is marked.
+    #[test]
+    fn auto_mark_leaves_undeclared_fields_on_durable_wins() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model),
+            "model is a required key: declared, so profile-wins on resume"
+        );
+        assert!(
+            !profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "undeclared provider must keep durable-wins"
+        );
+        assert!(
+            !profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::ProviderParams),
+            "undeclared provider_params must keep durable-wins"
+        );
+    }
+
+    /// An explicit `resume_overrides` list is preserved, declared fields are
+    /// added without duplicates, and the pass is idempotent across boots.
+    #[test]
+    fn auto_mark_mixed_preserves_explicit_list_without_duplicates() {
+        let Ok(mut definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\nprovider = \"openai\"\nresume_overrides = [\"model\"]\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        auto_mark_declared_resume_overrides(&mut definition);
+        auto_mark_declared_resume_overrides(&mut definition);
+        let profile = definition
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        let model_entries = profile
+            .resume_overrides
+            .iter()
+            .filter(|field| **field == meerkat_mob::ResumeOverrideField::Model)
+            .count();
+        assert_eq!(
+            model_entries, 1,
+            "an explicitly listed field must not be duplicated"
+        );
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "declared provider must be added alongside the explicit list"
+        );
+        assert!(
+            !profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::ProviderParams),
+            "undeclared provider_params must stay durable-wins"
+        );
+    }
+
+    /// The auto-mark runs at the single bootstrap ingress: the definition the
+    /// runtime installs (the one resumes resolve profiles from) carries the
+    /// declared-field masks without the host writing `resume_overrides`.
+    #[tokio::test]
+    async fn bootstrap_auto_marks_declared_resume_overrides() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"auto-mark\"\n\n[profiles.worker]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        let spec = MobBootstrapSpec::ephemeral_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+            None,
+        );
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let profile = runtime
+            .handle
+            .definition()
+            .profiles
+            .get(&ProfileName::from("worker"))
+            .and_then(|binding| binding.as_inline())
+            .unwrap_or_else(|| panic!("worker profile must be inline"));
+        assert!(
+            profile
+                .resume_overrides
+                .contains(&meerkat_mob::ResumeOverrideField::Model)
+                && profile
+                    .resume_overrides
+                    .contains(&meerkat_mob::ResumeOverrideField::Provider),
+            "bootstrap must install the definition with declared fields auto-marked"
+        );
+        runtime
+            .handle
+            .shutdown()
+            .await
+            .unwrap_or_else(|e| panic!("failed to quiesce runtime: {e}"));
     }
 
     /// Regression: public ephemeral image-generation builds must expose the same

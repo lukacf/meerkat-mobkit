@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Profile-declared fields are auto-marked as resume overrides** ("profile
+  declares it, profile means it"). Durable session metadata restores `model`,
+  `provider`, and `provider_params` on resume, so a profile edit was inert on
+  every identity that already had a session unless the profile also listed the
+  field in `resume_overrides` — two production fleets shipped model migrations
+  that silently did nothing (one had identities running a three-week-old model
+  until a provider byte cap broke the deployment). Now, at runtime bootstrap,
+  every inline definition profile gets its explicitly declared fields marked
+  resume-overridden automatically: `model` (a required key, hence always
+  declared), `provider` (when the `provider` or `self_hosted_server_id` key is
+  present), and `provider_params` (when present). Undeclared fields keep
+  durable-wins semantics exactly as before, and an explicit `resume_overrides`
+  list is preserved (declared fields are added, never removed).
+
+  **Migration note:** fleets that relied on durable-wins for a *declared*
+  profile field — e.g. a profile that names `model = "x"` but expects resumed
+  identities to keep whatever model their durable session recorded — must now
+  express that per-identity intent through a draft/identity-level override
+  instead of an outdated profile declaration, because the profile declaration
+  now wins on resume. Realm-referenced profiles (`realm_profile = "..."`) are
+  not auto-marked; the new resume-divergence INFO line is the tripwire for
+  those.
+
+### Added
+
+- **Resume-divergence tripwire**: when a resumed identity's durable session
+  metadata restores a `model`/`provider` that differs from the profile's
+  declaration and no `resume_overrides` mask covers the field, the identity
+  session bridge logs an INFO line with both values, the profile name, and the
+  identity — once per identity per boot. After declared-field auto-mark this
+  fires only for mask-off cases (realm-ref profiles, pre-existing persisted
+  profile snapshots) and future restored fields.
+
 ## [0.8.8] - 2026-07-29
 
 Observability release. No behaviour changes to storage, resume, or provisioning

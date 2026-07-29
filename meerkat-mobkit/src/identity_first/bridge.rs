@@ -833,6 +833,31 @@ pub struct MemberInspection {
     pub peer_reachable_count: usize,
 }
 
+/// Which restored LLM-identity fields diverge from the profile declaration
+/// with no resume-override mask covering them. Pure comparison seam behind
+/// [`MobSessionBridge::log_unmasked_resume_divergence`]: a field counts only
+/// when it is unmasked (durable metadata will win), declared (for provider —
+/// an undeclared provider states no intent), and different.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnmaskedResumeDivergence {
+    model: bool,
+    provider: bool,
+}
+
+fn unmasked_resume_divergence(
+    mask: &meerkat_core::service::ResumeOverrideMask,
+    declared_model: &str,
+    declared_provider: Option<meerkat_core::Provider>,
+    restored_model: &str,
+    restored_provider: meerkat_core::Provider,
+) -> UnmaskedResumeDivergence {
+    UnmaskedResumeDivergence {
+        model: !mask.model && restored_model != declared_model,
+        provider: !mask.provider
+            && declared_provider.is_some_and(|declared| restored_provider != declared),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MobSessionBridge — real implementation backed by MobHandle
 // ---------------------------------------------------------------------------
@@ -862,6 +887,10 @@ pub struct MobSessionBridge {
     /// heal seam ([`CommittedBoundaryRepair::Unsupported`]); composition
     /// injects the concrete meerkat-backed recoverer where available.
     committed_boundary_recoverer: Option<Arc<dyn CommittedBoundaryRecoverer>>,
+    /// Identities whose unmasked resume divergence was already logged this
+    /// boot (the bridge lives for one boot). See
+    /// [`Self::log_unmasked_resume_divergence`].
+    resume_divergence_logged: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Budget one delivery attempt may spend waiting on the mob actor.
     /// Resolved once at construction so the success path pays nothing per
     /// call. See [`BRIDGE_ACTOR_ADMISSION_BUDGET`].
@@ -880,6 +909,7 @@ impl MobSessionBridge {
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -898,6 +928,7 @@ impl MobSessionBridge {
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -916,6 +947,7 @@ impl MobSessionBridge {
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -935,6 +967,7 @@ impl MobSessionBridge {
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -954,6 +987,7 @@ impl MobSessionBridge {
             runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             generated_external_owner_session: std::sync::OnceLock::new(),
             committed_boundary_recoverer: None,
+            resume_divergence_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             actor_admission_budget: bridge_actor_admission_budget(),
         }
     }
@@ -1195,6 +1229,100 @@ impl MobSessionBridge {
             .definition()
             .resolve_inline_profile(&spec.profile)
             .cloned()
+    }
+
+    /// Resume-divergence tripwire: when the durable session restores a
+    /// model/provider different from the profile's declaration and no
+    /// `resume_overrides` mask covers the field, say so at INFO — once per
+    /// identity per boot. Declared-field auto-mark
+    /// (`crate::mob_handle_runtime::auto_mark_declared_resume_overrides`)
+    /// makes the mask cover declared fields on inline profiles, so this fires
+    /// only for mask-off cases (realm-ref profiles, pre-existing persisted
+    /// profile snapshots) and future restored fields.
+    ///
+    /// Never fails the resume: metadata read faults are skipped at debug.
+    async fn log_unmasked_resume_divergence(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+        base_profile: Option<&meerkat_mob::Profile>,
+        session_id: &meerkat_core::types::SessionId,
+    ) {
+        let Some(profile) = base_profile else {
+            return;
+        };
+        let mask = profile.resume_override_mask();
+        if mask.model && mask.provider {
+            return;
+        }
+        {
+            let logged = self
+                .resume_divergence_logged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if logged.contains(identity.as_str()) {
+                return;
+            }
+        }
+        let Some(service) = self.session_service.as_ref() else {
+            return;
+        };
+        let metadata = match service.load_persisted_session_metadata(session_id).await {
+            Ok(Some(view)) => view.session_metadata,
+            Ok(None) => None,
+            Err(error) => {
+                tracing::debug!(
+                    identity = %identity,
+                    session_id = %session_id,
+                    %error,
+                    "resume-divergence check skipped: durable metadata read failed"
+                );
+                None
+            }
+        };
+        let Some(metadata) = metadata else {
+            return;
+        };
+        // The declaration the profile (plus a draft model pin) would apply if
+        // it were masked — mirrors the candidate side of meerkat-mob's
+        // `effective_resumed_session_llm_identity`.
+        let declared_model = draft.model.as_ref().unwrap_or(&profile.model);
+        let divergence = unmasked_resume_divergence(
+            &mask,
+            declared_model,
+            profile.provider,
+            &metadata.model,
+            metadata.provider,
+        );
+        if divergence.model {
+            tracing::info!(
+                identity = %identity,
+                profile = %spec.profile.as_str(),
+                session_id = %session_id,
+                restored_model = %metadata.model,
+                profile_model = %declared_model,
+                "resume restored a model that differs from the profile declaration; \
+                 durable metadata wins (no resume_overrides mask for 'model')"
+            );
+        }
+        if divergence.provider {
+            tracing::info!(
+                identity = %identity,
+                profile = %spec.profile.as_str(),
+                session_id = %session_id,
+                restored_provider = %metadata.provider.as_str(),
+                profile_provider = ?profile.provider.map(|provider| provider.as_str()),
+                "resume restored a provider that differs from the profile declaration; \
+                 durable metadata wins (no resume_overrides mask for 'provider')"
+            );
+        }
+        if divergence.model || divergence.provider {
+            self.resume_divergence_logged
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(identity.as_str().to_string());
+        }
     }
 
     async fn resolve_runtime_session_id(
@@ -1904,6 +2032,14 @@ impl SessionBridge for MobSessionBridge {
         session_id: &meerkat_core::types::SessionId,
         _snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
+        self.log_unmasked_resume_divergence(
+            identity,
+            spec,
+            draft,
+            self.base_profile_for_spec(spec).as_ref(),
+            session_id,
+        )
+        .await;
         if spec_uses_external_binding(spec) {
             let spawn_spec = build_resume_spawn_spec(
                 runtime_id,
@@ -2507,6 +2643,55 @@ mod tests {
                 message: "not implemented".to_string(),
             })
         }
+    }
+
+    /// Resume-divergence tripwire semantics: unmasked + declared + different
+    /// flags the field; a mask or an absent declaration silences it.
+    #[test]
+    fn unmasked_resume_divergence_flags_only_unmasked_declared_differences() {
+        let unmasked = meerkat_core::service::ResumeOverrideMask::default();
+        let divergence = unmasked_resume_divergence(
+            &unmasked,
+            "claude-opus-4-8",
+            Some(meerkat_core::Provider::Anthropic),
+            "claude-sonnet-4-5",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(divergence.model, "unmasked differing model must be flagged");
+        assert!(
+            divergence.provider,
+            "unmasked differing declared provider must be flagged"
+        );
+
+        let masked = meerkat_core::service::ResumeOverrideMask {
+            model: true,
+            provider: true,
+            ..Default::default()
+        };
+        let divergence = unmasked_resume_divergence(
+            &masked,
+            "claude-opus-4-8",
+            Some(meerkat_core::Provider::Anthropic),
+            "claude-sonnet-4-5",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(
+            !divergence.model && !divergence.provider,
+            "a mask covering the field silences the tripwire (the profile wins anyway)"
+        );
+
+        let divergence = unmasked_resume_divergence(
+            &unmasked,
+            "claude-opus-4-8",
+            None,
+            "claude-opus-4-8",
+            meerkat_core::Provider::OpenAI,
+        );
+        assert!(!divergence.model, "an identical model is not a divergence");
+        assert!(
+            !divergence.provider,
+            "an undeclared provider states no intent to diverge from"
+        );
     }
 
     fn durable_spec() -> DurableAgentSpec {
