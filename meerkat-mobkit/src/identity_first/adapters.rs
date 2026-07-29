@@ -649,6 +649,14 @@ pub struct ContinuitySessionStoreAdapter {
     /// [`Self::whole_document_passes`]: the compare-token pass serializes
     /// inside meerkat and its byte count is not observable here.
     whole_document_encode_bytes: AtomicU64,
+    /// First head-canonical read declined for want of an incremental channel.
+    ///
+    /// A blob-only store has `incremental == None` from construction, so the
+    /// decline fires on EVERY read of every session — 6,504 WARN lines in one
+    /// observed production boot. The fault signal ("a head-canonical
+    /// deployment lost its delta channel") only needs to be loud once per
+    /// adapter; repeats carry no new information and drown real warnings.
+    no_incremental_channel_warned: std::sync::atomic::AtomicBool,
 }
 
 impl ContinuitySessionStoreAdapter {
@@ -669,6 +677,7 @@ impl ContinuitySessionStoreAdapter {
             lazy_checkpoint_adoption: false,
             whole_document_passes: AtomicU64::new(0),
             whole_document_encode_bytes: AtomicU64::new(0),
+            no_incremental_channel_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1621,12 +1630,26 @@ impl ContinuitySessionStoreAdapter {
         let Some(incremental) = self.incremental.as_ref() else {
             // A head-canonical deployment losing its delta channel is a real
             // fault: every head-canonical session on it becomes unreadable
-            // through this path. Warn, not debug.
-            tracing::warn!(
-                session_id = %id,
-                gate = "no_incremental_channel",
-                "head-canonical read declined"
-            );
+            // through this path. But a blob-only store has no channel from
+            // construction and hits this on EVERY read, so the fault is loud
+            // exactly once per adapter and debug thereafter — one line keeps
+            // the signal, repeats only drown other warnings.
+            if self
+                .no_incremental_channel_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::debug!(
+                    session_id = %id,
+                    gate = "no_incremental_channel",
+                    "head-canonical read declined"
+                );
+            } else {
+                tracing::warn!(
+                    session_id = %id,
+                    gate = "no_incremental_channel",
+                    "head-canonical read declined (further declines log at debug)"
+                );
+            }
             return Ok(None);
         };
         if self.parked_deltas.is_parked(id) {

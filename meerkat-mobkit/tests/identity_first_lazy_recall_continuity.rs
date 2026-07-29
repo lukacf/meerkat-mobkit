@@ -1,0 +1,1598 @@
+//! LazyMaterialize cross-boot recall guard (OB3 field report, 2026-07-29:
+//! "silent resume context loss").
+//!
+//! # The coverage hole this closes
+//!
+//! Two deterministic guards cover the EAGER bootstrap arm
+//! (`identity_first_cold_restart_continuity`,
+//! `identity_first_respawn_continuity`) and both are green. Nothing paired the
+//! LAZY arm with a recall assertion, and the two arms diverge in
+//! `IdentityFirstRuntimeContext::apply_roster_controlled`:
+//! `EagerMaterialize` runs `orchestrator::restore_flow` (resume at bootstrap),
+//! while `LazyMaterialize | LazyWithBackgroundWarm` run
+//! `orchestrator::lazy_register_flow`, which registers every identity as
+//! Dormant with its `ContinuityRecord` attached and materializes NOTHING.
+//! Materialization is deferred to the first `send`/`dispatch`, which gates on
+//! `Dormant | Uninitialized` and calls `materialize_inner`.
+//!
+//! The field report: boot A takes a turn and the post-turn document lands in
+//! the store with correctly-ordered messages; after a kill -9 and boot B every
+//! resume signature is clean (0 conflicts, 0 held, 0 quarantined, 0 Broken),
+//! yet the agent answers the next message with no record of the earlier
+//! exchange. The store is right and the model's working context was empty —
+//! completely silent, nothing in logs. So the property to pin is not a status
+//! or a store row: it is the BYTES OF THE POST-RESTART LLM REQUEST.
+//!
+//! # Harness shape (and the trap it avoids)
+//!
+//! Same trap as `identity_first_head_canonical_resume`: plain
+//! `persistent_state()` + `roster_provider()` gives sessions a
+//! `SqliteSessionStore` and uses continuity for identity metadata only, which
+//! exercises neither the continuity adapter nor the resume read path the
+//! deployment runs. `continuity_from_state_dir` installs the substrate as BOTH
+//! the identity authority and (via `ContinuitySessionStoreAdapter`) meerkat's
+//! `SessionStore` — the gateway/OB3 topology. Every boot therefore probes
+//! `assert_durable_continuity_document` before asserting behavior, so a
+//! mis-wired harness fails as MIS-WIRED instead of passing while proving
+//! nothing.
+//!
+//! Scope note: OB3's store is a BigQuery WHOLE-BLOB store behind that same
+//! adapter; this runs the local `LocalContinuityStore` behind it. What is held
+//! constant with the field deployment is the bootstrap mode and the adapter
+//! seam, not the remote store implementation.
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_core::types::StopReason;
+use meerkat_mob::{MobDefinition, ProfileName};
+use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, RosterProvider};
+use meerkat_mobkit::identity_first::{
+    AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, ContinuityResolveState,
+    ContinuitySessionStoreAdapter, ContinuityStore, CustomizerError, DurableAgentSpec,
+    FencingToken, IdentityLifecycleState, LocalContinuityStore, RosterContext, RosterError,
+    SessionSnapshot,
+};
+use meerkat_mobkit::storage_layout::MobKitStorageLayout;
+use meerkat_mobkit::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
+use tokio::time::sleep;
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const MOB_TOML: &str = r#"
+[mob]
+id = "lazy-recall-continuity"
+
+[profiles.personal]
+model = "gpt-5.5"
+external_addressable = true
+runtime_mode = "turn_driven"
+
+[profiles.personal.tools]
+comms = true
+"#;
+
+const MEMBER: &str = "personal:alice";
+const RUNTIME_INSTANCE: &str = "lazy-recall-continuity";
+
+/// Serializes this binary's tests: in the parent one memo-free child runs at a
+/// time, and inside a child its single test owns the process.
+static SERIAL_WINDOW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Set on the re-exec'd child so it runs the test body instead of re-execing
+/// again.
+const MEMO_FREE_CHILD: &str = "MEERKAT_LAZY_RECALL_MEMO_FREE_CHILD";
+
+/// Run this test in a child process with meerkat's PROCESS-GLOBAL memos
+/// disabled; returns `true` in the parent (which has just proxied the whole
+/// test) and `false` in the child (which must run the body).
+///
+/// # Why every test here needs it
+///
+/// Integration tests in one binary share one process, and meerkat keeps memos
+/// that outlive a runtime: the transcript-graph decode memo, the digest
+/// accumulator's memo, and the slim-materialization snapshot registry that
+/// `SessionHead::from_session` seeds on the PRODUCER side of a save (see
+/// `identity_first_subprocess_reboot.rs`, which exists because of them). Any
+/// of those can hand a later same-process "boot" a decoded, digested or fully
+/// materialized transcript that a real `execve` could never inherit —
+/// precisely how a legacy-decode or crash-recovery defect hides behind a green
+/// same-process test. `MEERKAT_DISABLE_GRAPH_DECODE_MEMO` is the established
+/// kill switch for all of them.
+///
+/// It cannot be set in-process: `unsafe_code` is FORBIDDEN workspace-wide and
+/// `std::env::set_var` is unsafe on edition 2024. So this follows the sibling
+/// subprocess test's idiom — put it in a CHILD's environment — by re-execing
+/// this test binary for the one named test. The child's output is forwarded, so
+/// a failure reads exactly as it would have in-process.
+fn proxied_to_memo_free_child(test_name: &str) -> bool {
+    if std::env::var_os(MEMO_FREE_CHILD).is_some() {
+        return false;
+    }
+    let exe = std::env::current_exe().expect("this test binary's own path");
+    let output = std::process::Command::new(exe)
+        // `--include-ignored` matters: without it a child running an
+        // `#[ignore]`d test would filter it out and exit 0, and the parent
+        // would report a PASS for a test that never ran.
+        .args([
+            test_name,
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+            "--include-ignored",
+        ])
+        .env(MEMO_FREE_CHILD, "1")
+        .env("MEERKAT_DISABLE_GRAPH_DECODE_MEMO", "1")
+        .output()
+        .expect("spawn the memo-free child");
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "the memo-free child running `{test_name}` failed ({}); its output is above",
+        output.status
+    );
+    true
+}
+
+/// A system prompt only the customizer can install: the profile has none, so
+/// its presence in a captured request means `customize_build` ran for that
+/// member's build.
+const CUSTOMIZER_PROMPT: &str = "You are alice. CUSTOMIZER-PROMPT-MARKER-4-QUEBEC.";
+
+fn id(name: &str) -> AgentIdentity {
+    AgentIdentity::parse(name).expect("parse identity")
+}
+
+fn definition() -> MobDefinition {
+    MobDefinition::from_toml(MOB_TOML).expect("parse lazy-recall mob definition")
+}
+
+fn durable_spec(name: &str) -> DurableAgentSpec {
+    DurableAgentSpec {
+        identity: id(name),
+        profile: ProfileName::from("personal"),
+        addressability: AgentAddressability::Addressable,
+        display_name: None,
+        labels: BTreeMap::new(),
+        context: None,
+        additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
+        backend: None,
+        binding: None,
+    }
+}
+
+struct OneMemberRoster;
+
+#[async_trait]
+impl RosterProvider for OneMemberRoster {
+    async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
+        Ok(vec![durable_spec(MEMBER)])
+    }
+}
+
+/// Installs a marker system prompt at build time.
+///
+/// On the lazy arm the customizer is not passed to `lazy_register_flow` at
+/// all; `materialize_inner` reads it from runtime state (installed by the
+/// builder via `set_agent_customizer`) when the first send materializes the
+/// member. A lazily materialized agent losing its host prompt would be a
+/// second, independent defect, so both boots assert the marker.
+struct MarkerPromptCustomizer;
+
+#[async_trait]
+impl AgentCustomizer for MarkerPromptCustomizer {
+    async fn customize_build(
+        &self,
+        _context: &AgentBuildContext,
+        _spec: &DurableAgentSpec,
+        draft: &mut AgentBuildDraft,
+    ) -> Result<(), CustomizerError> {
+        draft.system_prompt = Some(CUSTOMIZER_PROMPT.to_string());
+        Ok(())
+    }
+}
+
+/// Records the serialized LLM request each turn and answers "ok" so turns
+/// complete without a real provider.
+///
+/// `hang` turns it into a mid-turn stall: the request is still recorded, but
+/// the stream then waits for [`CaptureClient::release`] instead of answering,
+/// so the turn stays IN FLIGHT and no boundary save can land.
+#[derive(Clone)]
+struct CaptureClient {
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
+    hang: Arc<AtomicBool>,
+    /// Consumed by the first hanging turn, which spends it on a TOOL ROUND
+    /// TRIP so the turn has in-flight work (and therefore durable intra-turn
+    /// state) before it dies.
+    tool_step: Arc<AtomicBool>,
+    gate: Arc<tokio::sync::Semaphore>,
+    /// Provider-reported input tokens. `last_input_tokens` (the compaction
+    /// trigger, `compact.rs`: "compaction triggers when `last_input_tokens >=
+    /// auto_compact_threshold`") comes from exactly this, so declaring it here
+    /// makes compaction fire deterministically instead of depending on
+    /// transcript size.
+    usage_input_tokens: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for CaptureClient {
+    fn default() -> Self {
+        Self {
+            requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+            hang: Arc::new(AtomicBool::new(false)),
+            tool_step: Arc::new(AtomicBool::new(false)),
+            // Starts closed; only a hanging stream ever waits on it.
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            usage_input_tokens: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+}
+
+impl CaptureClient {
+    fn count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+    fn last(&self) -> Option<String> {
+        self.requests.lock().unwrap().last().cloned()
+    }
+    /// Stall the next turn: it first spends one tool round trip (in-flight
+    /// work), then hangs on its follow-up LLM call.
+    fn hang_turns(&self) {
+        self.tool_step.store(true, Ordering::SeqCst);
+        self.hang.store(true, Ordering::SeqCst);
+    }
+    /// Report `input_tokens` on every turn, which is what the compaction
+    /// threshold reads.
+    fn report_input_tokens(&self, tokens: u64) {
+        self.usage_input_tokens.store(tokens, Ordering::SeqCst);
+    }
+    /// Let stalled turns (and any later one) complete, so the runtime can be
+    /// shut down cleanly instead of being left wedged for the rest of the
+    /// binary.
+    fn release(&self) {
+        self.hang.store(false, Ordering::SeqCst);
+        self.gate
+            .add_permits(tokio::sync::Semaphore::MAX_PERMITS >> 4);
+    }
+}
+
+impl meerkat_client::LlmClient for CaptureClient {
+    fn project_replay_messages(
+        &self,
+        messages: &[meerkat_core::Message],
+    ) -> Result<Vec<meerkat_core::Message>, LlmError> {
+        Ok(messages.to_vec())
+    }
+    fn stream<'a>(
+        &'a self,
+        request: &'a LlmRequest,
+    ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(serde_json::to_string(request).unwrap_or_default());
+        let hang = self.hang.load(Ordering::SeqCst);
+        // One tool round trip before the stall: a turn that dies with NO
+        // in-flight work has nothing durable to leave behind, and a mid-turn
+        // kill would then be indistinguishable from a pre-turn one.
+        let tool_step = hang && self.tool_step.swap(false, Ordering::SeqCst);
+        let gate = self.gate.clone();
+        let usage_input_tokens = self.usage_input_tokens.load(Ordering::SeqCst);
+        Box::pin(async_stream::stream! {
+            if tool_step {
+                yield Ok(LlmEvent::ToolCallComplete {
+                    id: "midturn-peers-1".to_string(),
+                    name: "peers".to_string(),
+                    args: serde_json::json!({}),
+                    meta: None,
+                });
+                yield Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                });
+                return;
+            }
+            if hang {
+                // Mid-turn stall: the request is already recorded (so the
+                // barrier can see the turn started) and the turn never reaches
+                // its boundary save.
+                let _permit = gate.acquire().await;
+            }
+            if usage_input_tokens > 0 {
+                yield Ok(LlmEvent::UsageUpdate {
+                    usage: meerkat_core::types::Usage {
+                        input_tokens: usage_input_tokens,
+                        output_tokens: 1,
+                        cache_creation_tokens: None,
+                        cache_read_tokens: None,
+                    },
+                });
+            }
+            yield Ok(LlmEvent::TextDelta { delta: "ok".to_string(), meta: None });
+            yield Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::EndTurn },
+            });
+        })
+    }
+    fn provider(&self) -> meerkat::Provider {
+        meerkat::Provider::OpenAI
+    }
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gateway-shaped harness
+// ---------------------------------------------------------------------------
+
+/// Build a runtime whose session I/O rides the continuity adapter (as
+/// `rpc_gateway` composes it) under the requested bootstrap mode.
+async fn boot(
+    state: &Path,
+    capture: CaptureClient,
+    mode: IdentityBootstrapMode,
+) -> meerkat_mobkit::UnifiedRuntime {
+    boot_with_compaction(state, capture, mode, None).await
+}
+
+/// `boot`, optionally with a host compaction policy. Compaction is how a
+/// document acquires a transcript graph at all (it is the rewrite the legacy
+/// fixture below needs), so the axis that needs one declares it explicitly.
+async fn boot_with_compaction(
+    state: &Path,
+    capture: CaptureClient,
+    mode: IdentityBootstrapMode,
+    compaction: Option<meerkat_core::config::CompactionRuntimeConfig>,
+) -> meerkat_mobkit::UnifiedRuntime {
+    let mut builder = UnifiedRuntimeBuilder::default()
+        .definition(definition())
+        .persistent_state(state)
+        .continuity_from_state_dir(state)
+        .await
+        .expect("open the state-dir identity substrate")
+        .roster_provider(Arc::new(OneMemberRoster))
+        .agent_customizer(Arc::new(MarkerPromptCustomizer))
+        .identity_bootstrap_mode(mode)
+        .identity_runtime_instance_id(RUNTIME_INSTANCE)
+        .comms(true)
+        .default_llm_client(Arc::new(capture));
+    if let Some(compaction) = compaction {
+        builder = builder.compaction(compaction);
+    }
+    Box::pin(builder.build())
+        .await
+        .expect("build the gateway-shaped UnifiedRuntime")
+}
+
+/// A compaction policy that fires on the FIRST turn that reports tokens.
+fn eager_compaction() -> meerkat_core::config::CompactionRuntimeConfig {
+    meerkat_core::config::CompactionRuntimeConfig {
+        auto_compact_threshold: 1,
+        auto_compact_threshold_explicit: true,
+        recent_turn_budget: 1,
+        max_summary_tokens: 256,
+        min_turns_between_compactions: 0,
+    }
+}
+
+fn continuity_db(state: &Path) -> std::path::PathBuf {
+    MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None)
+        .continuity_db()
+        .expect("resolve continuity db")
+        .path
+}
+
+// ---------------------------------------------------------------------------
+// Precondition probe
+// ---------------------------------------------------------------------------
+
+/// What the continuity file durably holds for one boot.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ContinuityCensus {
+    /// `continuity_session_heads` rows: (session_id, message_count).
+    heads: Vec<(String, i64)>,
+    /// `continuity_strand_messages` row count. Rows can legally exist BEYOND
+    /// the head's `message_count`: that is the crash window between
+    /// `append_messages` and the head write that adopts them (named in
+    /// `local_store.rs`'s schema comment), i.e. the mid-turn shape.
+    strand_messages: i64,
+    /// `continuity_session_rewrites` row count — ADOPTED transcript rewrite
+    /// commits. Zero means the document has no transcript graph at all.
+    rewrites: i64,
+    /// `session_snapshots` rows (the whole-blob representation).
+    snapshots: Vec<String>,
+    /// `continuity_records` rows: (identity, session_id).
+    records: Vec<(String, String)>,
+}
+
+fn table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        rusqlite::params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        == 1
+}
+
+/// Read-only census of the continuity file. Opened as an ordinary read/write
+/// path deliberately: `?immutable=1` ignores the `-wal` sidecar (and silently
+/// manufactures a 0-byte file at a missing path), which is exactly how a probe
+/// lies about durability.
+fn census(db: &Path) -> ContinuityCensus {
+    assert!(
+        db.exists(),
+        "continuity file {} does not exist — the runtime never opened it",
+        db.display()
+    );
+    let conn = rusqlite::Connection::open(db).expect("open continuity db");
+    // Polled while the runtime is LIVE; tolerate a briefly-locked writer
+    // instead of panicking on SQLITE_BUSY.
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("set continuity census busy timeout");
+    let mut out = ContinuityCensus::default();
+
+    if table_exists(&conn, "continuity_session_heads") {
+        let mut stmt = conn
+            .prepare("SELECT session_id, message_count FROM continuity_session_heads ORDER BY 1")
+            .expect("prepare heads");
+        out.heads = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .expect("query heads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect heads");
+    }
+    if table_exists(&conn, "continuity_strand_messages") {
+        out.strand_messages = conn
+            .query_row(
+                "SELECT COUNT(*) FROM continuity_strand_messages",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count strand messages");
+    }
+    if table_exists(&conn, "continuity_session_rewrites") {
+        out.rewrites = conn
+            .query_row(
+                "SELECT COUNT(*) FROM continuity_session_rewrites",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rewrite commits");
+    }
+    if table_exists(&conn, "session_snapshots") {
+        let mut stmt = conn
+            .prepare("SELECT session_id FROM session_snapshots ORDER BY 1")
+            .expect("prepare snapshots");
+        out.snapshots = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query snapshots")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect snapshots");
+    }
+    if table_exists(&conn, "continuity_records") {
+        let mut stmt = conn
+            .prepare("SELECT identity, session_id FROM continuity_records ORDER BY 1")
+            .expect("prepare records");
+        out.records = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect records");
+    }
+    out
+}
+
+fn sibling_files(state: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(state)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| {
+                    let len = entry.metadata().map(|m| m.len()).unwrap_or_default();
+                    format!("{}({len}B)", entry.file_name().to_string_lossy())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// THE PRECONDITION. Fails the test as MIS-WIRED (not as a behavior
+/// regression) unless the continuity file holds a durable session document —
+/// a `continuity_session_heads` row (head-canonical) or a `session_snapshots`
+/// row (whole-blob). Returns the census so callers can assert on shape.
+fn assert_durable_continuity_document(state: &Path, phase: &str) -> ContinuityCensus {
+    let db = continuity_db(state);
+    let census = census(&db);
+    assert!(
+        !census.heads.is_empty() || !census.snapshots.is_empty(),
+        "PRECONDITION FAILED ({phase}): {} holds NO durable session document \
+         (continuity_session_heads: 0 rows, session_snapshots: 0 rows). The harness is \
+         MIS-WIRED — session I/O is not going through the continuity adapter, so nothing \
+         asserted after this point is meaningful. Census: {census:?}. Sibling files: {:?}",
+        db.display(),
+        sibling_files(state),
+    );
+    census
+}
+
+async fn wait_for_turn(capture: &CaptureClient, want: usize, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while capture.count() < want {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what} to reach the LLM"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Deterministic turn-boundary barrier: wait until the continuity file holds
+/// exactly ONE durable session document with at least `floor` messages,
+/// returning `(session_id, observed_count)`. The row is written by the same
+/// boundary save that persists the transcript, so once it shows the growth the
+/// turn is durable and the restart below cannot race it.
+async fn wait_for_durable_document_at_least(state: &Path, floor: i64, what: &str) -> (String, i64) {
+    let db = continuity_db(state);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let census = census(&db);
+        if let [(session, count)] = census.heads.as_slice()
+            && *count >= floor
+        {
+            return (session.clone(), *count);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: want one durable head with >= {floor} messages, \
+             census: {census:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Axis helpers: crash images and pre-0.8.10 document encoding
+// ---------------------------------------------------------------------------
+
+/// Copy a whole state directory (recursively, every SQLite sidecar included).
+///
+/// Taken mid-turn this is a CRASH IMAGE: the same on-disk state a `kill -9`
+/// leaves behind, `-wal`/`-shm` and all, with no clean-shutdown flush applied.
+/// SQLite recovers it on the next open exactly as it would after a kill.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create image dir");
+    let mut copied = 0_usize;
+    for entry in std::fs::read_dir(from).expect("read state dir") {
+        let entry = entry.expect("state dir entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy state file");
+        }
+        copied += 1;
+    }
+    assert!(
+        copied > 0,
+        "state dir {} was empty — the crash image would be vacuous",
+        from.display()
+    );
+}
+
+/// What the re-spelling changed, so the fixture can prove it actually armed.
+#[derive(Debug)]
+struct LegacyRespell {
+    /// `rebase` splice entries the 0.8.10 ENCODER produces for this exact
+    /// state. Greater than zero is the proof that the two spellings genuinely
+    /// differ here — a one-entry chain is identical either way, and
+    /// re-spelling it would arm nothing.
+    canonical_rebase_entries: usize,
+    /// `rebase` entries in the source document as it was stored.
+    _source_rebase_entries: usize,
+    /// Self-contained `messages` entries after re-spelling.
+    full_entries_after: usize,
+    rebase_entries_after: usize,
+}
+
+/// Re-spell a 0.8.10 session document into the PRE-0.8.10 inline encoding.
+///
+/// Only the revision chain's SPELLING changes. 0.8.10 serializes
+/// `session_transcript_history_state_v1.revisions` as an anchor plus inverse
+/// splices (`encode_revision_chain`); a pre-0.8.10 document carried every
+/// retained revision as a self-contained body. Decode accepts both
+/// (`RevisionEntryWire` takes `messages` OR `rebase`), so this deserializes
+/// the state through `TranscriptHistoryState` — which materializes full bodies
+/// — and re-emits `revisions` as `TranscriptRevisionBody` objects, whose own
+/// `Serialize` IS the full spelling. `head`, `commits`, `digest_format`,
+/// `replay_cursor` and the entire session envelope around them are carried
+/// through untouched, so the document remains the SAME state: every content
+/// address, digest and checkpoint stamp still binds.
+///
+/// Not a byte-identical replica of a June-era document: it is legacy in the
+/// revision-chain spelling and (installed as a blob with no delta rows) in
+/// representation, but it was minted by 0.8.10 and therefore carries a
+/// current checkpoint stamp and digest format. A fixture minted by a real
+/// 0.8.5 binary would drop straight into `install_blob_document` below.
+fn respell_history_as_legacy_full_bodies(document: &[u8]) -> (Vec<u8>, LegacyRespell) {
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(document).expect("0.8.10 document parses as JSON");
+    let key = meerkat_core::SESSION_TRANSCRIPT_HISTORY_STATE_KEY;
+    let state_value = doc
+        .get("metadata")
+        .and_then(|metadata| metadata.get(key))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "minted document carries no {key} — the legacy-encoding fixture cannot be \
+                 armed from it (metadata keys: {:?})",
+                doc.get("metadata")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|map| map.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            )
+        });
+    let source_rebase_entries = count_entries_with(&state_value, "rebase");
+    let state: meerkat_core::TranscriptHistoryState =
+        serde_json::from_value(state_value).expect("history state decodes through the typed value");
+    // What 0.8.10 WOULD write for this state, whatever spelling the source
+    // document happened to be stored in (the store's evidence-rebuild paths
+    // emit self-contained bodies of their own accord).
+    let canonical_rebase_entries = count_entries_with(
+        &serde_json::to_value(&state).expect("history state re-encodes through the 0.8.10 writer"),
+        "rebase",
+    );
+    let full_bodies = state
+        .revisions
+        .iter()
+        .map(|body| serde_json::to_value(body).expect("revision body serializes in full"))
+        .collect::<Vec<_>>();
+    let full_entries_after = full_bodies.len();
+    doc["metadata"][key]["revisions"] = serde_json::Value::Array(full_bodies);
+    let rebase_entries_after = count_entries_with(&doc["metadata"][key], "rebase");
+    let bytes = serde_json::to_vec(&doc).expect("legacy document re-serializes");
+    (
+        bytes,
+        LegacyRespell {
+            canonical_rebase_entries,
+            _source_rebase_entries: source_rebase_entries,
+            full_entries_after,
+            rebase_entries_after,
+        },
+    )
+}
+
+fn count_entries_with(state: &serde_json::Value, field: &str) -> usize {
+    state
+        .get("revisions")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.get(field).is_some())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// The layout-authoritative runtime store path.
+fn runtime_db(state: &Path) -> std::path::PathBuf {
+    MobKitStorageLayout::with_injected_roots(state.to_path_buf(), None).runtime_db()
+}
+
+/// Every whole-session document the runtime store holds, as parsed JSON.
+///
+/// The runtime store persists WHOLE documents (`runtime_session_snapshots`),
+/// which is the one 0.8.10 write path that still carries the transcript graph
+/// INLINE — the head-canonical continuity representation deliberately does not
+/// (`SessionHead::from_session` strips
+/// `session_transcript_history_state_v1` and keeps only the witness digest,
+/// with retained history out-of-line in rewrite rows).
+fn runtime_store_documents(state: &Path) -> Vec<(serde_json::Value, Vec<u8>)> {
+    let db = runtime_db(state);
+    if !db.exists() {
+        return Vec::new();
+    }
+    let conn = rusqlite::Connection::open(&db).expect("open runtime store");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("set runtime store busy timeout");
+    if !table_exists(&conn, "runtime_session_snapshots") {
+        return Vec::new();
+    }
+    let mut stmt = conn
+        .prepare("SELECT session_snapshot FROM runtime_session_snapshots")
+        .expect("prepare runtime snapshots");
+    let blobs = stmt
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .expect("query runtime snapshots")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect runtime snapshots");
+    blobs
+        .into_iter()
+        .filter_map(|blob| {
+            serde_json::from_slice::<serde_json::Value>(&blob)
+                .ok()
+                .map(|value| (value, blob))
+        })
+        .collect()
+}
+
+/// Read a durable session document for the member out of a state dir,
+/// preferring one that still carries the INLINE transcript graph.
+///
+/// The continuity materialization is the fallback: it is the same adapter the
+/// gateway installs as meerkat's `SessionStore`, but on the head-canonical
+/// representation it hands back a document whose graph lives out-of-line, which
+/// cannot be re-spelled into the pre-0.8.10 inline form. The runtime store's
+/// whole-document snapshot can.
+async fn read_durable_document(state: &Path) -> (meerkat_core::types::SessionId, Vec<u8>) {
+    let store = Arc::new(
+        LocalContinuityStore::open(continuity_db(state)).expect("open the minted continuity store"),
+    );
+    let identity = id(MEMBER);
+    let resolved = store
+        .resolve_many(std::slice::from_ref(&identity))
+        .await
+        .expect("resolve the minted identity");
+    let record = match resolved.get(&identity) {
+        Some(ContinuityResolveState::Ready { record }) => record.clone(),
+        other => panic!("minted identity must resolve Ready, got {other:?}"),
+    };
+    let session_text = record.session_id.to_string();
+    let key = meerkat_core::SESSION_TRANSCRIPT_HISTORY_STATE_KEY;
+    for (value, blob) in runtime_store_documents(state) {
+        let names_session =
+            value.get("id").and_then(serde_json::Value::as_str) == Some(session_text.as_str());
+        let carries_graph = value
+            .get("metadata")
+            .and_then(|metadata| metadata.get(key))
+            .is_some();
+        eprintln!(
+            "PROBE runtime-store document: names_session={names_session} \
+             carries_inline_graph={carries_graph} bytes={}",
+            blob.len()
+        );
+        if names_session && carries_graph {
+            return (record.session_id, blob);
+        }
+    }
+    let adapter = ContinuitySessionStoreAdapter::new(store as Arc<dyn ContinuityStore>);
+    let session = meerkat::SessionStore::load(&adapter, &record.session_id)
+        .await
+        .expect("load the minted durable session")
+        .expect("the minted session exists");
+    let document = session
+        .to_persisted_bytes()
+        .expect("minted session serializes to its persisted document");
+    (record.session_id, document)
+}
+
+/// Install `document` into a FRESH state dir as a whole-blob session snapshot
+/// plus the continuity record that binds the identity to it — and nothing
+/// else.
+///
+/// No head row and no strand rows: `load_canonical_head` therefore reports
+/// `None`, which is what makes this the PRE-DELTA-RETENTION representation.
+/// The adapter's `resolve_persistence_capability` sees `(_, None)` and treats
+/// the blob as the session's canonical durable form, exactly as it does for a
+/// file written before the head-canonical channel existed — the first
+/// post-upgrade resume shape.
+async fn install_blob_document(
+    state: &Path,
+    session_id: &meerkat_core::types::SessionId,
+    document: Vec<u8>,
+) {
+    std::fs::create_dir_all(state).expect("create legacy state dir");
+    let store = LocalContinuityStore::open(continuity_db(state)).expect("open the legacy store");
+    let identity = id(MEMBER);
+    let record = meerkat_mobkit::identity_first::ContinuityRecord {
+        identity: identity.clone(),
+        agent_runtime_id: meerkat_mobkit::identity_first::AgentRuntimeId::parse(&format!(
+            "rt:{MEMBER}:0"
+        ))
+        .expect("runtime id"),
+        session_id: session_id.clone(),
+        generation: meerkat_mobkit::identity_first::ContinuityGeneration::new(0),
+        checkpoint_version: meerkat_mobkit::identity_first::CheckpointVersion::new(0),
+    };
+    let fence = FencingToken::new(1);
+    store
+        .upsert_continuity_record(&record, fence)
+        .await
+        .expect("seed the legacy continuity record");
+    // Snapshot versions are monotonic per `(identity, generation)`: the
+    // document must present a version ABOVE the record's, or the store
+    // (correctly) refuses it as stale.
+    store
+        .save_session_snapshot(
+            &identity,
+            session_id,
+            record.generation,
+            meerkat_mobkit::identity_first::CheckpointVersion::new(1),
+            fence,
+            &SessionSnapshot { data: document },
+        )
+        .await
+        .expect("install the legacy whole-blob document");
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// The OB3 report, deterministically: with `LazyMaterialize`, a restart that
+/// materializes the member ON FIRST SEND must replay the persisted transcript
+/// into the LLM request.
+///
+/// Both boots prove the lazy arm was genuinely taken rather than silently
+/// falling back to eager restore: the bootstrap pass reports the member
+/// Dormant (`ready == false`, `counts.dormant == 1`) with no session yet, and
+/// the identity only becomes Active AFTER the send. Without those assertions a
+/// green run could be the eager path wearing a lazy label, proving nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn lazy_materialize_cross_boot_recall_replays_the_transcript() {
+    const TOKEN: &str = "MARKER-LAZY-RECALL-3-XRAY";
+    if proxied_to_memo_free_child("lazy_materialize_cross_boot_recall_replays_the_transcript") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: lazy register, then materialize on demand from turn 1 ---
+    let session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+
+        let bootstrap = identity_runtime.identity_bootstrap_status();
+        eprintln!("PROBE boot 1 bootstrap: {bootstrap:?}");
+        assert_eq!(
+            bootstrap.mode,
+            IdentityBootstrapMode::LazyMaterialize,
+            "the runtime must be running the lazy arm; bootstrap: {bootstrap:?}"
+        );
+        assert!(
+            bootstrap.complete,
+            "the lazy bootstrap pass must have finished; bootstrap: {bootstrap:?}"
+        );
+        assert!(
+            !bootstrap.ready,
+            "lazy bootstrap must leave the roster UNmaterialized (ready == false); \
+             bootstrap: {bootstrap:?}"
+        );
+        assert_eq!(
+            (bootstrap.counts.dormant, bootstrap.counts.active),
+            (1, 0),
+            "lazy bootstrap must register the member dormant and materialize nothing; \
+             bootstrap: {bootstrap:?}"
+        );
+        let before = identity_runtime
+            .status(&member)
+            .await
+            .expect("dormant identity is inspectable");
+        assert_eq!(
+            before.state,
+            IdentityLifecycleState::Dormant,
+            "boot 1 must start Dormant, not eagerly restored; status: {before:?}"
+        );
+
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the first send");
+        assert_eq!(
+            after.state,
+            IdentityLifecycleState::Active,
+            "the FIRST SEND is what must have materialized the member (on-demand \
+             materialization from Dormant); status: {after:?}"
+        );
+        session_id = after
+            .session_id
+            .as_ref()
+            .expect("a materialized identity owns a durable session")
+            .to_string();
+
+        // The customizer must reach a freshly materialized member, otherwise
+        // the post-restart prompt assertion below would be vacuous.
+        let first = capture.last().expect("a boot-1 request was captured");
+        assert!(
+            first.contains(CUSTOMIZER_PROMPT),
+            "the customizer's system prompt must reach the lazily materialized member's \
+             first request; request: {first}"
+        );
+
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        eprintln!("PROBE boot 1 durable head: {head} at {count} messages");
+        assert_eq!(
+            head, session_id,
+            "the durable document must belong to the materialized session"
+        );
+        runtime.shutdown().await;
+    }
+
+    let census = assert_durable_continuity_document(&state, "boot 1 + one turn");
+    eprintln!("PROBE census after boot 1: {census:?}");
+    assert_eq!(
+        census.records.len(),
+        1,
+        "one identity must own one continuity record; census: {census:?}"
+    );
+    assert_eq!(
+        census.records[0].1, session_id,
+        "the continuity record must name the session the turn was written to; \
+         census: {census:?}"
+    );
+
+    // --- Boot 2: lazy again. First send must materialize AND recall. ---
+    {
+        let capture = CaptureClient::default(); // fresh: only boot-2 requests
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+
+        let pre = assert_durable_continuity_document(&state, "boot 2 (pre-turn)");
+        assert_eq!(
+            pre.records.first().map(|(_, session)| session.clone()),
+            Some(session_id.clone()),
+            "boot 2 must still bind the identity to the boot-1 session; census: {pre:?}"
+        );
+
+        let bootstrap = identity_runtime.identity_bootstrap_status();
+        eprintln!("PROBE boot 2 bootstrap: {bootstrap:?}");
+        assert_eq!(
+            (bootstrap.counts.dormant, bootstrap.counts.active),
+            (1, 0),
+            "boot 2 must ALSO take the lazy arm (dormant registration, nothing \
+             materialized) — otherwise this test silently exercises eager restore; \
+             bootstrap: {bootstrap:?}"
+        );
+        let before = identity_runtime
+            .status(&member)
+            .await
+            .expect("dormant identity is inspectable after restart");
+        assert_eq!(
+            before.state,
+            IdentityLifecycleState::Dormant,
+            "boot 2 must start Dormant with its continuity record attached; status: {before:?}"
+        );
+
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send turn 2");
+        wait_for_turn(&capture, 1, "the post-restart turn").await;
+
+        let last = capture.last().expect("a post-restart request was captured");
+        // THE PROPERTY THE FIELD REPORT FOUND VIOLATED. The store document is
+        // correct in the field; what was empty was the model's working
+        // context, so this asserts the REQUEST BYTES, not a status or a row.
+        assert!(
+            last.contains(TOKEN),
+            "post-restart LLM request must replay the persisted transcript (token {TOKEN}); \
+             on-demand materialization served an empty or stale document. Durable census: \
+             {pre:?}. Request: {last}"
+        );
+        // Independent second property: on resume the bridge clears
+        // `system_prompt_override` (`build_resume_spawn_spec`) because the
+        // persisted System message is authoritative — so this pins that the
+        // host prompt survives a lazy restart rather than that it is
+        // re-applied.
+        assert!(
+            last.contains(CUSTOMIZER_PROMPT),
+            "post-restart LLM request must still carry the host system prompt; \
+             request: {last}"
+        );
+
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-restart send");
+        assert_eq!(
+            after.state,
+            IdentityLifecycleState::Active,
+            "the post-restart send must have materialized the member; status: {after:?}"
+        );
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(session_id.clone()),
+            "on-demand materialization must RESUME the durable session, not create a \
+             fresh one; status: {after:?}"
+        );
+        runtime.shutdown().await;
+    }
+}
+
+/// Same property for `LazyWithBackgroundWarm`, which shares the
+/// `lazy_register_flow` match arm and then materializes from the background
+/// warmer instead of from the first send. Cheap to cover and a different
+/// materialization trigger over the same dormant registration.
+#[tokio::test(flavor = "multi_thread")]
+async fn lazy_with_background_warm_cross_boot_recall_replays_the_transcript() {
+    const TOKEN: &str = "MARKER-LAZY-WARM-8-SIERRA";
+    if proxied_to_memo_free_child(
+        "lazy_with_background_warm_cross_boot_recall_replays_the_transcript",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let mode = IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 1 };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1: background warm materializes, then turn 1 ---
+    let session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(&state, capture.clone(), mode.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+
+        let (bootstrap, timed_out) = identity_runtime
+            .wait_identity_bootstrap_terminal(Duration::from_secs(30))
+            .await;
+        eprintln!("PROBE warm boot 1 bootstrap: {bootstrap:?}");
+        assert!(
+            !timed_out,
+            "background warm must reach a terminal state; bootstrap: {bootstrap:?}"
+        );
+        assert_eq!(bootstrap.mode, mode, "bootstrap: {bootstrap:?}");
+        assert_eq!(
+            (bootstrap.counts.active, bootstrap.counts.broken),
+            (1, 0),
+            "the warmer must materialize the roster it registered dormant; \
+             bootstrap: {bootstrap:?}"
+        );
+
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        wait_for_turn(&capture, 1, "warm boot 1's turn").await;
+
+        let first = capture.last().expect("a warm boot-1 request was captured");
+        assert!(
+            first.contains(CUSTOMIZER_PROMPT),
+            "the customizer's system prompt must reach the background-warmed member; \
+             request: {first}"
+        );
+
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 2, "warm boot 1's turn to commit").await;
+        eprintln!("PROBE warm boot 1 durable head: {head} at {count} messages");
+        session_id = head;
+        runtime.shutdown().await;
+    }
+
+    // --- Boot 2: warm again, then a turn that must recall turn 1 ---
+    {
+        let capture = CaptureClient::default(); // fresh: only boot-2 requests
+        let runtime = boot(&state, capture.clone(), mode.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+
+        let pre = assert_durable_continuity_document(&state, "warm boot 2 (pre-turn)");
+        assert_eq!(
+            pre.records.first().map(|(_, session)| session.clone()),
+            Some(session_id.clone()),
+            "warm boot 2 must still bind the identity to the boot-1 session; census: {pre:?}"
+        );
+
+        let (bootstrap, timed_out) = identity_runtime
+            .wait_identity_bootstrap_terminal(Duration::from_secs(30))
+            .await;
+        eprintln!("PROBE warm boot 2 bootstrap: {bootstrap:?}");
+        assert!(
+            !timed_out,
+            "background warm must reach a terminal state after a restart; \
+             bootstrap: {bootstrap:?}"
+        );
+        assert_eq!(
+            (bootstrap.counts.active, bootstrap.counts.broken),
+            (1, 0),
+            "the warmer must re-materialize the persisted member; bootstrap: {bootstrap:?}"
+        );
+
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send turn 2");
+        wait_for_turn(&capture, 1, "the post-restart warm turn").await;
+
+        let last = capture
+            .last()
+            .expect("a post-restart warm request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "post-restart LLM request must replay the persisted transcript (token {TOKEN}); \
+             background-warm materialization served an empty or stale document. Durable \
+             census: {pre:?}. Request: {last}"
+        );
+        assert!(
+            last.contains(CUSTOMIZER_PROMPT),
+            "post-restart warm request must still carry the host system prompt; \
+             request: {last}"
+        );
+
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-restart warm send");
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(session_id.clone()),
+            "background-warm materialization must RESUME the durable session; \
+             status: {after:?}"
+        );
+        runtime.shutdown().await;
+    }
+}
+
+/// AXIS 1 — the FIRST post-upgrade resume of a PRE-0.8.10-ENCODED document.
+///
+/// The field matrix narrowed the failure to this case: a June-era document
+/// (inline transcript graph, full-body revisions, no delta rows) loses its
+/// context on the first 0.8.10 resume, and once one 0.8.10 boundary save has
+/// rewritten it, every later resume recalls fine. That "first resume only"
+/// signature is invisible to every other test in this repo, all of which
+/// resume documents their own binary just wrote.
+///
+/// The fixture is minted, not hand-authored: compacting turns produce a real
+/// document with real retained revisions, then
+/// `respell_history_as_legacy_full_bodies` converts ONLY the revision chain's
+/// spelling back to the pre-0.8.10 form, and `install_blob_document` installs
+/// it as the sole durable state of a fresh store with no head row and no
+/// strand rows.
+///
+/// Three arming probes stand in front of the recall assertion, because a
+/// fixture that quietly failed to become legacy would pass while proving
+/// nothing: compaction must have committed a rewrite, the 0.8.10 encoder must
+/// produce `rebase` splices for that state (otherwise both spellings are the
+/// same bytes), and the installed store must be blob-canonical.
+///
+/// Honesty note: this is legacy in the revision-chain SPELLING and in
+/// REPRESENTATION (blob, pre-delta-retention). It was minted by 0.8.10, so it
+/// carries a current checkpoint stamp and digest format; a document minted by
+/// a real 0.8.5 binary drops into `install_blob_document` unchanged and would
+/// cover those dimensions too.
+// History: first landed `#[ignore]`d as "no transcript-history graph to
+// respell". Two things were wrong with the fixture, not with the assertions.
+// (1) Plain boot/turn cycles mint an EMPTY graph on 0.8.10 —
+// `build_resume_spawn_spec` clears the prompt override so resume no longer
+// commits a system-prompt-refresh rewrite, which is exactly the rewrite the
+// field fleet accumulated 79 of. Compaction is now the rewrite source.
+// (2) The head-canonical materialization deliberately carries NO inline graph
+// (`SessionHead::from_session` strips the key and keeps only the witness
+// digest), so the document had to come from the runtime store's whole-document
+// snapshot, the one 0.8.10 write path that still inlines the graph.
+// Measured once armed: 7 retained revisions, 6 splices converted, document
+// 15_756 -> 29_006 bytes (the pre-0.8.10 inflation signature), and the first
+// post-upgrade resume replays the transcript.
+#[tokio::test(flavor = "multi_thread")]
+async fn lazy_resume_of_a_pre_0_8_10_encoded_document_replays_the_transcript() {
+    const TOKEN: &str = "MARKER-LEGACY-ENCODED-5-VICTOR";
+    if proxied_to_memo_free_child(
+        "lazy_resume_of_a_pre_0_8_10_encoded_document_replays_the_transcript",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let mint = temp.path().join("mint");
+    let legacy = temp.path().join("legacy");
+    let member = id(MEMBER);
+
+    // --- Mint phase: one boot whose turns COMPACT, then a turn carrying the
+    // token.
+    //
+    // Compaction is the mechanism: it is the transcript rewrite that puts
+    // retained revisions in the graph at all. (0.8.10's resume no longer
+    // commits a system-prompt-refresh rewrite — `build_resume_spawn_spec`
+    // clears the prompt override so the persisted System message stands — so
+    // plain boot/turn cycles mint a document with an EMPTY graph and nothing
+    // to legacy-encode.) The token goes in the LAST turn so it lives in the
+    // retained tail rather than in the summary the fake client would write.
+    {
+        let capture = CaptureClient::default();
+        capture.report_input_tokens(500_000);
+        let runtime = boot_with_compaction(
+            &mint,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+            Some(eager_compaction()),
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        for turn in 1..=3_usize {
+            identity_runtime
+                .send(
+                    &member,
+                    &meerkat_core::ContentInput::Text(format!("Mint turn {turn}: filler.")),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("mint turn {turn} send: {error}"));
+            wait_for_turn(&capture, turn, &format!("mint turn {turn}")).await;
+            sleep(Duration::from_millis(300)).await;
+        }
+        let requests_before_token = capture.count();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("mint the token turn");
+        wait_for_turn(&capture, requests_before_token + 1, "the token turn").await;
+        sleep(Duration::from_millis(500)).await;
+        let minted = census(&continuity_db(&mint));
+        eprintln!("PROBE minted census: {minted:?}");
+        assert!(
+            minted.rewrites > 0,
+            "FIXTURE DID NOT ARM: compaction never committed a transcript rewrite, so the \
+             minted document has no transcript graph to encode in the legacy form. \
+             Census: {minted:?}"
+        );
+        runtime.shutdown().await;
+    }
+
+    // --- Re-spell the minted document into the pre-0.8.10 inline encoding ---
+    let (session_id, current_document) = read_durable_document(&mint).await;
+    let (legacy_document, respell) = respell_history_as_legacy_full_bodies(&current_document);
+    eprintln!(
+        "PROBE respell: {respell:?} (0.8.10 document {} bytes -> legacy document {} bytes)",
+        current_document.len(),
+        legacy_document.len()
+    );
+    assert!(
+        respell.canonical_rebase_entries > 0,
+        "FIXTURE DID NOT ARM: the 0.8.10 encoder writes NO `rebase` splices for this state, so \
+         the legacy full-body spelling is byte-identical to the current one and this axis would \
+         pass without ever decoding a legacy encoding. Respell: {respell:?}"
+    );
+    assert_eq!(
+        respell.rebase_entries_after, 0,
+        "the legacy fixture must carry NO splice entries; respell: {respell:?}"
+    );
+    assert!(
+        respell.full_entries_after >= 2,
+        "a single-entry chain is identical in both spellings — the fixture needs at least two \
+         retained revisions to be legacy at all; respell: {respell:?}"
+    );
+
+    // --- Install it as the ONLY durable state of a fresh store ---
+    install_blob_document(&legacy, &session_id, legacy_document).await;
+    let seeded = census(&continuity_db(&legacy));
+    eprintln!("PROBE legacy fixture census: {seeded:?}");
+    assert_eq!(
+        seeded.snapshots,
+        vec![session_id.to_string()],
+        "the legacy document must be installed as the whole-blob representation; \
+         census: {seeded:?}"
+    );
+    assert!(
+        seeded.heads.is_empty(),
+        "a pre-0.8.10 file has NO head row — otherwise the resume takes the head-canonical \
+         path and this axis is not exercised; census: {seeded:?}"
+    );
+    assert_eq!(
+        (seeded.strand_messages, seeded.rewrites),
+        (0, 0),
+        "pre-delta-retention: the fixture must carry no strand rows and no rewrite-commit rows \
+         — the graph must be readable ONLY from the document's inline encoding; census: {seeded:?}"
+    );
+
+    // --- The test: first post-upgrade resume, materialized on first send ---
+    let capture = CaptureClient::default();
+    let runtime = boot(
+        &legacy,
+        capture.clone(),
+        IdentityBootstrapMode::LazyMaterialize,
+    )
+    .await;
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .clone();
+    let before = identity_runtime
+        .status(&member)
+        .await
+        .expect("the seeded identity is inspectable");
+    assert_eq!(
+        before.state,
+        IdentityLifecycleState::Dormant,
+        "the seeded identity must register Dormant on the lazy arm; status: {before:?}"
+    );
+
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+        )
+        .await
+        .expect("send the first post-upgrade turn");
+    wait_for_turn(&capture, 1, "the first post-upgrade turn").await;
+
+    let last = capture.last().expect("a post-upgrade request was captured");
+    assert!(
+        last.contains(TOKEN),
+        "the FIRST resume of a pre-0.8.10-encoded document must replay its transcript (token \
+         {TOKEN}); the legacy inline revision chain decoded to an empty or short working \
+         context. Respell: {respell:?}. Fixture census: {seeded:?}. Request: {last}"
+    );
+    assert!(
+        last.contains(CUSTOMIZER_PROMPT),
+        "the post-upgrade request must still carry the host system prompt; request: {last}"
+    );
+
+    runtime.shutdown().await;
+}
+
+/// The durable mid-turn shape a crash image was taken over.
+///
+/// Read through `Debug` in the PROBE line and in the silent-amnesia failure
+/// message; the fields exist to make that report specific.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct MidTurnState {
+    head_messages: i64,
+    strand_messages: i64,
+    shape: &'static str,
+}
+
+/// Barrier: wait until the in-flight turn has left DURABLE state behind, so
+/// the crash image below is genuinely mid-turn.
+///
+/// Two legal shapes, both mid-turn: strand rows past the head (the crash
+/// window between `append_messages` and the head write that adopts them,
+/// named in `local_store.rs`'s schema comment), or a head that advanced past
+/// the last committed boundary. If NEITHER appears, a mid-turn kill is
+/// indistinguishable from a pre-turn kill on this path and the axis cannot
+/// arm — which this fails loudly rather than passing vacuously.
+async fn wait_for_mid_turn_durable_state(state: &Path, committed: i64, what: &str) -> MidTurnState {
+    let db = continuity_db(state);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let census = census(&db);
+        let head_messages = census.heads.first().map(|(_, count)| *count).unwrap_or(0);
+        if census.strand_messages > head_messages {
+            return MidTurnState {
+                head_messages,
+                strand_messages: census.strand_messages,
+                shape: "uncommitted strand rows beyond the head",
+            };
+        }
+        if head_messages > committed {
+            return MidTurnState {
+                head_messages,
+                strand_messages: census.strand_messages,
+                shape: "head advanced mid-turn (user message committed, reply not)",
+            };
+        }
+        assert!(
+            Instant::now() < deadline,
+            "MID-TURN FIXTURE DID NOT ARM waiting for {what}: no durable mid-turn state appeared \
+             (committed head was {committed}, census: {census:?}). A mid-turn kill would be \
+             indistinguishable from a pre-turn one, so this axis cannot be asserted honestly."
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// AXIS 2 — a kill that lands MID-TURN, with in-flight work.
+///
+/// The field's other failing case. Turn 2 is stalled inside the LLM call, so
+/// its boundary save never lands, and the state directory is copied in that
+/// window: `-wal`/`-shm` included, no clean-shutdown flush — the on-disk state
+/// a `kill -9` leaves. Boot 2 runs against that image.
+///
+/// The contract asserted is deliberately two-sided, because recovery has two
+/// legitimate answers and one illegitimate one:
+///
+/// - LOUD is fine: a typed rejection / degraded identity ("the only durable
+///   checkpoint is an intra-turn projection" — forbidden as an authority base,
+///   `checkpoint.rs`) tells the operator recovery needs attention. Two of the
+///   field's three identities did exactly this.
+/// - RECALL is fine: the send is accepted and replays the pre-crash
+///   transcript.
+/// - SILENT AMNESIA is not: an accepted turn whose request carries none of the
+///   prior transcript, which then saves cleanly over the durable head. That is
+///   the shape the deployment observed mid-cycle, and the store looks perfect
+///   afterwards precisely because the save re-merges — so only the request
+///   bytes can tell the two apart.
+// The fixture cannot yet be armed, and the reason is a finding in itself.
+//
+// MEASURED: with the turn stalled inside the LLM call — and stalled AFTER a
+// completed `peers` tool round trip, so the turn had in-flight work behind it
+// — the continuity file did not move for 20s: head 3 messages, 3 strand rows,
+// 0 rewrite commits, i.e. exactly the pre-turn boundary. On this substrate
+// NOTHING between a turn's admission and its boundary save is durable: not the
+// user message, not the assistant tool-call message, not the tool result. A
+// mid-turn kill is therefore byte-identical to a pre-turn kill, so a resume
+// after one reads an intact committed boundary and this axis cannot be
+// asserted honestly (the barrier fails loudly rather than certify that).
+//
+// WHERE THE FIELD'S SHAPE MUST COME FROM INSTEAD: the intra-turn projection
+// stamp ("the only durable checkpoint is an intra-turn projection", forbidden
+// as an authority base by `checkpoint.rs`) is minted in exactly one place —
+// `meerkat-session/src/persistent.rs:1899` and `:1932`, the head bridging
+// inside a transcript-REWRITE sequence. So the field state implicates a crash
+// during a COMPACTION rewrite, not a crash during an ordinary turn. Arming
+// this axis needs a kill inside that multi-step rewrite persist (or a
+// whole-blob substrate that checkpoints mid-turn), which the in-process LLM
+// seam cannot reach; the subprocess harness
+// (identity_first_subprocess_reboot.rs) can land a real kill -9 mid-persist.
+// Un-ignore once armed; the loud-or-recalls assertion is ready.
+#[ignore = "fixture arming: no durable mid-turn write exists to crash over (see the note above)"]
+#[tokio::test(flavor = "multi_thread")]
+async fn lazy_resume_after_a_mid_turn_kill_is_loud_or_recalls_never_silently_empty() {
+    const TOKEN: &str = "MARKER-MIDTURN-KILL-6-WHISKEY";
+    if proxied_to_memo_free_child(
+        "lazy_resume_after_a_mid_turn_kill_is_loud_or_recalls_never_silently_empty",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let live = temp.path().join("live");
+    let image = temp.path().join("crash-image");
+    let member = id(MEMBER);
+
+    // --- Boot 1: one COMPLETE turn — the history a mid-turn crash can lose ---
+    let capture = CaptureClient::default();
+    let runtime = boot(
+        &live,
+        capture.clone(),
+        IdentityBootstrapMode::LazyMaterialize,
+    )
+    .await;
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .clone();
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+        )
+        .await
+        .expect("send turn 1");
+    wait_for_turn(&capture, 1, "turn 1").await;
+    let (session_id, committed) =
+        wait_for_durable_document_at_least(&live, 2, "turn 1 to commit").await;
+    eprintln!("PROBE committed head before the mid-turn turn: {session_id} at {committed}");
+
+    // --- Turn 2 stalls IN FLIGHT: its boundary save can never land ---
+    capture.hang_turns();
+    identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("This turn dies in flight.".to_string()),
+        )
+        .await
+        .expect("send the mid-turn turn");
+    // Request 2 is the tool call, request 3 is the follow-up that hangs — so
+    // the turn dies AFTER a completed tool round trip, i.e. with in-flight
+    // work behind it.
+    wait_for_turn(&capture, 3, "the mid-turn turn's post-tool LLM call").await;
+    let mid = wait_for_mid_turn_durable_state(&live, committed, "the mid-turn durable write").await;
+    eprintln!("PROBE mid-turn durable state: {mid:?}");
+
+    // --- The crash image, taken with the turn still in flight ---
+    copy_tree(&live, &image);
+
+    // Release the stalled turn so boot 1 can shut down cleanly. The image is
+    // already captured and `live` is never read again.
+    capture.release();
+    runtime.shutdown().await;
+
+    // --- Boot 2 over the crash image ---
+    let capture = CaptureClient::default();
+    let runtime = boot(
+        &image,
+        capture.clone(),
+        IdentityBootstrapMode::LazyMaterialize,
+    )
+    .await;
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime")
+        .clone();
+    let recovered = census(&continuity_db(&image));
+    eprintln!("PROBE crash-image census after recovery open: {recovered:?}");
+
+    let outcome = identity_runtime
+        .send(
+            &member,
+            &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+        )
+        .await;
+    match outcome {
+        Err(error) => {
+            let status = identity_runtime.status(&member).await;
+            eprintln!(
+                "PROBE loud path: the post-crash send was REJECTED: {error} (status: {status:?})"
+            );
+        }
+        Ok(_) => {
+            wait_for_turn(&capture, 1, "the post-crash turn").await;
+            let last = capture.last().expect("a post-crash request was captured");
+            assert!(
+                last.contains(TOKEN),
+                "SILENT AMNESIA after a mid-turn kill: the post-crash turn was ACCEPTED (no \
+                 error, no degraded identity) but its request does not replay the pre-crash \
+                 transcript (token {TOKEN}). Mid-turn state at image time: {mid:?}. Recovered \
+                 census: {recovered:?}. Request: {last}"
+            );
+        }
+    }
+
+    runtime.shutdown().await;
+}

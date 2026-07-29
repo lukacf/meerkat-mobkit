@@ -1130,6 +1130,18 @@ fn migrate_legacy_blob_in_txn(
     // for `id`, and every read path gates on the head row, so nothing can
     // observe these rows. The blob is the authority being migrated.
     delete_orphan_head_canonical_rows_in_txn(tx, id)?;
+    // This one-time conversion is the ONE phase of a boot guaranteed to be
+    // slow (minutes of CPU on a large legacy document) and it previously
+    // emitted nothing — a supervised deploy read the silence as a stalled
+    // candidate and aborted its activation. Say what is happening, at entry
+    // and completion, so a long migration is visibly a long migration.
+    let started = std::time::Instant::now();
+    tracing::info!(
+        session_id = %id,
+        identity = %identity,
+        messages = session.messages().len(),
+        "head-canonical conversion of a legacy blob starting"
+    );
     let (layout, head) = layout_for_blob_session(&session)?;
     for (strand, rows) in &layout.strands {
         insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
@@ -1151,6 +1163,14 @@ fn migrate_legacy_blob_in_txn(
         )?;
     }
     let token = write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
+    tracing::info!(
+        session_id = %id,
+        identity = %identity,
+        strands = layout.strands.len(),
+        rewrite_rows = layout.rewrites.len(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "head-canonical conversion of a legacy blob complete"
+    );
     Ok(Some((head, token)))
 }
 
