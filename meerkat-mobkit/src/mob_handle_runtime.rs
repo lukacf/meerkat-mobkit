@@ -3680,6 +3680,13 @@ pub struct MobBootstrapSpec {
     /// (console session-history discovery); `None` means no such witness and
     /// callers must fall back to reading.
     pub(crate) session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
+    /// Committed-boundary heal authority for the identity-first continuity
+    /// repair supervisor (2026-07-29 heal/re-Break incident). The stock
+    /// persistent constructors record the concrete meerkat-backed recoverer;
+    /// externally-composed specs may leave it `None` (no heal seam — the
+    /// repair supervisor falls back to plain reconcile retries).
+    pub committed_boundary_recoverer:
+        Option<Arc<dyn crate::identity_first::bridge::CommittedBoundaryRecoverer>>,
     /// Holds the ephemeral temp directory alive for the lifetime of the spec.
     /// Only populated when the builder creates an ephemeral runtime.
     pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -3721,6 +3728,7 @@ impl MobBootstrapSpec {
             workgraph_admission_sidecar: None,
             resolved_storage: None,
             session_write_epochs: None,
+            committed_boundary_recoverer: None,
             _ephemeral_dir: None,
         }
     }
@@ -4942,6 +4950,10 @@ pub struct MobRuntime {
     /// (persistent runtime-backed path only); see
     /// [`Self::session_document_write_epoch`].
     session_write_epochs: Option<Arc<SessionSnapshotWriteEpochs>>,
+    /// Committed-boundary heal authority carried from the bootstrap spec so
+    /// the identity-first wiring can inject it into the session bridge.
+    committed_boundary_recoverer:
+        Option<Arc<dyn crate::identity_first::bridge::CommittedBoundaryRecoverer>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -5043,6 +5055,7 @@ impl MobRuntime {
             workgraph_admission,
             resolved_storage: spec.resolved_storage,
             session_write_epochs: spec.session_write_epochs,
+            committed_boundary_recoverer: spec.committed_boundary_recoverer,
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -5066,6 +5079,7 @@ impl MobRuntime {
             workgraph_admission,
             resolved_storage: None,
             session_write_epochs: None,
+            committed_boundary_recoverer: None,
             _ephemeral_dir: None,
         }
     }
@@ -5324,6 +5338,15 @@ impl MobRuntime {
     /// history reach through this accessor.
     pub fn session_service(&self) -> Option<&Arc<dyn MobSessionService>> {
         self.session_service.as_ref()
+    }
+
+    /// Access the committed-boundary heal authority recorded at bootstrap,
+    /// if any (2026-07-29 incident: injected into the identity-first session
+    /// bridge so the continuity repair supervisor heals for real).
+    pub fn committed_boundary_recoverer(
+        &self,
+    ) -> Option<Arc<dyn crate::identity_first::bridge::CommittedBoundaryRecoverer>> {
+        self.committed_boundary_recoverer.clone()
     }
 
     pub fn binary_blob_store(&self) -> Option<Arc<dyn BinaryBlobStore>> {

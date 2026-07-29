@@ -7987,27 +7987,29 @@ external_addressable = true
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
         // session_bridge() won't be set — build it directly.
         let mob_handle = runtime.mob_handle();
+        let mut identity_bridge = if let Some(adapter) = identity_session_store_adapter.clone() {
+            meerkat_mobkit::identity_first::MobSessionBridge::with_continuity_session_store(
+                mob_handle.clone(),
+                adapter,
+                runtime.mob_runtime().session_service().cloned(),
+            )
+        } else if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+            meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
+                mob_handle.clone(),
+                session_service,
+            )
+        } else {
+            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle.clone())
+        };
+        // Heal seam (2026-07-29 incident): the continuity repair supervisor
+        // asks this recoverer to commit the durable head before declaring an
+        // identity healed; without it, heal is a cosmetic entry reset that
+        // the next materialization re-Breaks.
+        if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
+            identity_bridge = identity_bridge.with_committed_boundary_recoverer(recoverer);
+        }
         let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
-            if let Some(adapter) = identity_session_store_adapter.clone() {
-                Arc::new(
-                    meerkat_mobkit::identity_first::MobSessionBridge::with_continuity_session_store(
-                        mob_handle.clone(),
-                        adapter,
-                        runtime.mob_runtime().session_service().cloned(),
-                    ),
-                )
-            } else if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
-                Arc::new(
-                    meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
-                        mob_handle.clone(),
-                        session_service,
-                    ),
-                )
-            } else {
-                Arc::new(meerkat_mobkit::identity_first::MobSessionBridge::new(
-                    mob_handle.clone(),
-                ))
-            };
+            Arc::new(identity_bridge);
 
         let irt = Arc::new(
             IdentityRuntime::new(IdentityRuntimeConfig {

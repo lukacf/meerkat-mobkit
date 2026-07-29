@@ -1040,39 +1040,37 @@ impl UnifiedRuntimeBuilder {
             let handle = runtime.mob_runtime.handle();
             let session_service = runtime.mob_runtime.session_service().cloned();
             let session_store = self.custom_session_store.clone();
-            let bridge: Arc<dyn crate::identity_first::bridge::SessionBridge> =
-                if let Some(store) = continuity_session_store.clone() {
-                    Arc::new(
-                    crate::identity_first::bridge::MobSessionBridge::with_continuity_session_store(
-                        handle,
-                        store,
-                        session_service,
-                    ),
+            let mut bridge: crate::identity_first::bridge::MobSessionBridge = if let Some(store) =
+                continuity_session_store.clone()
+            {
+                crate::identity_first::bridge::MobSessionBridge::with_continuity_session_store(
+                    handle,
+                    store,
+                    session_service,
                 )
-                } else if let (Some(store), Some(service)) =
-                    (session_store.clone(), session_service.clone())
-                {
-                    Arc::new(
-                    crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
-                        handle, store, service,
-                    ),
+            } else if let (Some(store), Some(service)) =
+                (session_store.clone(), session_service.clone())
+            {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
+                    handle, store, service,
                 )
-                } else if let Some(store) = session_store {
-                    Arc::new(
-                        crate::identity_first::bridge::MobSessionBridge::with_session_store(
-                            handle, store,
-                        ),
-                    )
-                } else if let Some(service) = session_service {
-                    Arc::new(
-                        crate::identity_first::bridge::MobSessionBridge::with_session_service(
-                            handle, service,
-                        ),
-                    )
-                } else {
-                    Arc::new(crate::identity_first::bridge::MobSessionBridge::new(handle))
-                };
-            Some(bridge)
+            } else if let Some(store) = session_store {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store(handle, store)
+            } else if let Some(service) = session_service {
+                crate::identity_first::bridge::MobSessionBridge::with_session_service(
+                    handle, service,
+                )
+            } else {
+                crate::identity_first::bridge::MobSessionBridge::new(handle)
+            };
+            // Heal seam (2026-07-29 incident): without the recoverer, the
+            // continuity repair supervisor can only reset entries — a
+            // cosmetic heal that materialization re-Breaks when the durable
+            // head is an intra-turn projection.
+            if let Some(recoverer) = runtime.mob_runtime.committed_boundary_recoverer() {
+                bridge = bridge.with_committed_boundary_recoverer(recoverer);
+            }
+            Some(Arc::new(bridge) as Arc<dyn crate::identity_first::bridge::SessionBridge>)
         };
 
         // Construct the durable control-plane authority before identity

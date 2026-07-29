@@ -1506,15 +1506,20 @@ async fn run() -> anyhow::Result<()> {
             .map_err(|e| anyhow!("{e}"))?;
 
         let mob_handle = runtime.mob_handle();
-        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
+        let mut bridge =
             if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
-                Arc::new(MobSessionBridge::with_session_service(
-                    mob_handle.clone(),
-                    session_service,
-                ))
+                MobSessionBridge::with_session_service(mob_handle.clone(), session_service)
             } else {
-                Arc::new(MobSessionBridge::new(mob_handle.clone()))
+                MobSessionBridge::new(mob_handle.clone())
             };
+        // Heal seam (2026-07-29 incident): the continuity repair supervisor
+        // asks this recoverer to commit the durable head before declaring an
+        // identity healed; without it, heal is a cosmetic entry reset that
+        // the next materialization re-Breaks.
+        if let Some(recoverer) = runtime.mob_runtime().committed_boundary_recoverer() {
+            bridge = bridge.with_committed_boundary_recoverer(recoverer);
+        }
+        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(bridge);
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store: substrate.continuity_store,
