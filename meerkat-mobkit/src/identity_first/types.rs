@@ -460,6 +460,26 @@ pub struct ContinuityUnrecoverable {
     pub reason: String,
 }
 
+/// Typed park for a build the HOST deterministically rejected (the
+/// candidate-mode effect gate class).
+///
+/// The app-side `callback/build_agent` round trip COMPLETED and the host
+/// answered with an error, so retrying the SAME spec re-asks the same gate
+/// the same question — each attempt burning a full member build plus a
+/// callback round trip (the herd-investigation churn: Broken with continuous
+/// repair at 30s→10min forever). While parked, materialization fails fast
+/// with a typed error (no bridge call) and the continuity repair supervisor
+/// skips the identity. The park clears when the identity's roster spec
+/// CHANGES (digest mismatch) or via operator clear; it is in-memory, so a
+/// gateway restart re-attempts once and re-parks if the gate still rejects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRejectedBuildPark {
+    /// The host's rejection, verbatim, for operators.
+    pub reason: String,
+    /// Digest of the exact [`DurableAgentSpec`] whose build was rejected.
+    pub spec_digest: u64,
+}
+
 // ---------------------------------------------------------------------------
 // ContinuityResolveState
 // ---------------------------------------------------------------------------

@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Host-rejected builds park typed instead of Broken-with-continuous-repair**
+  (the herd-investigation gate-rejection class). When a member build fails
+  because the app-side `callback/build_agent` round trip COMPLETED and the
+  host answered with an error (the candidate-mode effect gate), the identity
+  now parks with a typed, operator-visible verdict on the first attempt:
+  materialization fails fast with `HostRejectedBuild` (no bridge/callback
+  churn) and the continuity repair supervisor skips the identity instead of
+  retrying at 30s→10min forever — each retry previously re-asked the same
+  deterministic gate the same question at the cost of a full member build
+  plus a callback round trip. The park is scoped to the exact roster spec:
+  a spec change (digest mismatch) clears it and re-admits exactly one new
+  attempt, as does `clear_host_rejected_build_park` (operator retry).
+  Transport-tier callback failures (closed transport, timeouts) are NOT
+  parked — those stay on the existing retry lanes, whose backoff is fixed
+  separately upstream.
+
 - **Resume-divergence tripwire**: when a resumed identity's durable session
   metadata restores a `model`/`provider` that differs from the profile's
   declaration and no `resume_overrides` mask covers the field, the identity
