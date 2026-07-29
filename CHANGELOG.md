@@ -7,9 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-07-29
+
+Observability release. No behaviour changes to storage, resume, or provisioning
+— every change here makes an existing path *report itself*. Cut in response to
+two overnight field investigations where the platform behaved correctly but said
+nothing, and the silence itself cost hours: one 42-minute diagnosis that a single
+log line would have made instant, and one deploy abort caused by a supervisor
+reading a silent-but-working phase as a hung one.
+
 ### Added
 
-- **Incremental continuity persistence: identity-member turns append
+- **Head-canonical conversion of a legacy blob logs entry and completion**
+  (identity, message count, strand/rewrite-row counts, elapsed). This one-time
+  per-session conversion is the slowest phase of a boot on a large legacy
+  document — minutes of CPU — and it previously emitted nothing at any level. A
+  supervised deploy read that silence as a stalled candidate and aborted a live
+  activation. A long migration is now visibly a long migration.
+
+- **Deterministic cross-boot recall guards for the LAZY bootstrap arm**
+  (`identity_first_lazy_recall_continuity`). Both existing continuity guards
+  covered `EagerMaterialize` only, so `LazyMaterialize` and
+  `LazyWithBackgroundWarm` — which register identities Dormant and defer
+  materialization to first send — shipped with no proof that a resumed agent can
+  see its own history. The new guards assert on the BYTES of the post-restart LLM
+  request (never on model wording) and run in memo-free child processes, so
+  process-global decode/digest/snapshot memos cannot fake a resume that a real
+  `execve` would fail. Two further axes — resume of a pre-0.8.10-encoded document
+  and a mid-turn kill — ship `#[ignore]`d with their arming requirements
+  recorded: their fixtures fail loudly rather than certify a vacuous pass.
+
+### Changed
+
+- **The `no_incremental_channel` head-canonical read decline warns once per
+  adapter**, then logs at debug. On a blob-canonical store the incremental
+  channel is absent from construction, so the previous per-read WARN fired on
+  every load of every session — 6,504 lines in one observed production boot,
+  drowning the signal the level exists for. The genuine fault case (a
+  head-canonical deployment losing its delta channel) still surfaces on the
+  first line.
+
+### Added
   O(delta) instead of rewriting the whole session document (M4b
   un-deferral).** `LocalContinuityStore` now advertises the session-delta
   channel (`ContinuityStore::as_incremental_sessions`), and head+rows become
