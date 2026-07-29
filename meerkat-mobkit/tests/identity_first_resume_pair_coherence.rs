@@ -537,3 +537,269 @@ async fn unresolvable_model_edit_refuses_boot_and_durable_truth_survives() {
          divergence tripwire"
     );
 }
+
+/// Retained rewrite-commit revisions on the durable session row, read
+/// directly from the store. Pre/postcondition probe for the A-then-B
+/// composition test: the precondition read proves the instrument can witness
+/// a positive (a retained commit exists) before the assertion that matters.
+async fn retained_commit_revisions(
+    state_path: &std::path::Path,
+    session_id: &meerkat_core::types::SessionId,
+) -> Vec<String> {
+    use meerkat::SessionStore as _;
+    let db_path = ["sessions.sqlite3", "sessions.db", "sessions.sqlite"]
+        .iter()
+        .map(|name| state_path.join(name))
+        .find(|path| path.exists())
+        .expect("a session store file exists in the state dir");
+    let store = meerkat_store::SqliteSessionStore::open(db_path)
+        .expect("open the session store for the retained-commit probe");
+    let session = store
+        .load(session_id)
+        .await
+        .expect("load the durable session")
+        .expect("the durable session exists");
+    session
+        .transcript_history_state()
+        .expect("decode transcript history state")
+        .map(|state| {
+            state
+                .commits
+                .iter()
+                .map(|commit| commit.revision.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// HomeCore field incident (2026-07-29): a GENUINE system-prompt edit over a
+/// member that already holds retained transcript rewrite commits must
+/// RESUME — the new prompt-drift rewrite composes onto the retained chain.
+/// On the released 0.8.10/0.8.8 stack the second edit's save was refused
+/// ("incoming rewrite save would drop retained transcript rewrite commits"),
+/// marking 9 of 17 HomeCore identities Broken at certification. An agent
+/// platform configured BY prompts cannot treat a prompt edit as a
+/// fleet-breaking operation — and the exposure is not legacy-only: a fresh
+/// fleet accumulates retained commits from its FIRST genuine edit, so the
+/// SECOND edit walks this exact path.
+///
+/// Meerkat 0.8.11 gates on the A-then-B LeadingSystem composition at the
+/// factory-resume level; this is the gateway-composed counterpart (the 0.8.6
+/// lesson: a library-level test alone can miss composition divergence).
+/// Shape: boot 1 creates the member and runs a turn. Boot 2 edits the
+/// assembled prompt (paragraph A) — the resume mints and RETAINS rewrite
+/// commit A, asserted as a store-level precondition: without a retained
+/// commit this test cannot witness the defect. Boot 3 edits the prompt again
+/// (paragraph B): the resume must compose B onto [A] — Resumed, same durable
+/// session, transcript replayed, A still retained, B appended.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "red until the meerkat 0.8.11 contract-stable SHA: (1) mob-member resume must \
+            deliver the current assembled profile prompt into the factory reconcile seam \
+            (meerkat-mob build_resumed_agent_config currently forces SystemPromptOverride::\
+            Inherit, making prompt edits structurally inert on resume — proven by this \
+            test's instrument assert), and (2) the reconcile rewrite must compose onto \
+            retained commits (HomeCore 9/17-Broken, task #41). Un-ignore at repin."]
+async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
+    let logs = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("this test owns the process's global tracing subscriber");
+
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let alice = id("personal:alice");
+    const TOKEN: &str = "MARKER-PROMPT-EDIT-A-THEN-B";
+    const PARAGRAPH_A: &str = "Source-index collections available: alpha.";
+    const PARAGRAPH_B: &str = "Source-index collections available: alpha, beta.";
+
+    // The drift vector is the definition-owned assembled role instructions
+    // (an inline profile skill) — the same surface HomeCore edited. Roster
+    // spec edits deliberately do NOT drift the resumed prompt (durable spec
+    // wins), so the edit must come through the definition.
+    let definition_with = |role_instructions: &str| {
+        let toml = format!(
+            "[mob]\nid = \"prompt-edit\"\n\n[profiles.personal]\nmodel = \"gpt-5.5\"\n\
+             skills = [\"role\"]\nexternal_addressable = true\nruntime_mode = \"turn_driven\"\n\n\
+             [profiles.personal.tools]\ncomms = true\n\n\
+             [skills.role]\nsource = \"inline\"\ncontent = \"{role_instructions}\"\n"
+        );
+        MobDefinition::from_toml(&toml).expect("parse prompt-edit mob definition")
+    };
+    const ROLE_BASE: &str = "You are alice, the personal assistant.";
+    let roster = vec![spec("personal:alice", "personal")];
+
+    // --- Boot 1: create the member, run a turn, shut down. ---
+    let original_session_id;
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            definition_with(ROLE_BASE),
+            "prompt-edit-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
+            other => panic!("expected Created on first boot, got {other:?}"),
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        wait_for_request(&capture, 20, "turn 1").await;
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // --- Boot 2: prompt edit A. The resume mints the drift rewrite onto an
+    // empty retained set — this worked even on the broken released stack. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            definition_with(&format!("{ROLE_BASE} {PARAGRAPH_A}")),
+            "prompt-edit-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 2)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "the first prompt edit must resume the SAME durable session"
+                );
+            }
+            other => panic!("the FIRST prompt edit must resume, got {other:?}"),
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("ping after edit A".to_string()),
+            )
+            .await
+            .expect("send post-edit-A turn");
+        wait_for_request(&capture, 30, "the post-edit-A turn").await;
+        let last_request = capture.last().expect("a post-edit-A request was captured");
+        if !last_request.contains(PARAGRAPH_A) {
+            let log_contents = logs.contents();
+            let prompt_lines: Vec<&str> = log_contents
+                .lines()
+                .filter(|line| {
+                    line.contains("reconcil")
+                        || line.contains("system prompt")
+                        || line.contains("system_prompt")
+                })
+                .map(|line| line.trim())
+                .take(30)
+                .collect();
+            panic!(
+                "the edited instructions must reach the assembled prompt — without prompt \
+                 drift this test exercises nothing.\nprompt-relevant log lines: {:#?}\n\
+                 head of live system message: {}",
+                prompt_lines,
+                &last_request[..last_request.len().min(400)]
+            );
+        }
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // PRECONDITION: edit A minted and RETAINED a rewrite commit. Without
+    // retained history the boot-3 assertion below cannot witness the defect
+    // (a green here would be the instrument failing to see a positive).
+    let retained_after_a = retained_commit_revisions(&state_path, &original_session_id).await;
+    assert!(
+        !retained_after_a.is_empty(),
+        "boot 2's prompt edit must mint and retain a transcript rewrite commit; \
+         an empty retained set means this test cannot witness the A-then-B defect"
+    );
+
+    // --- Boot 3: prompt edit B over retained [A] — THE incident moment.
+    // On the released stack this resume was refused and the identity Broken. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            definition_with(&format!("{ROLE_BASE} {PARAGRAPH_B}")),
+            "prompt-edit-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 3)");
+        match result.outcomes.get(&alice).expect("alice outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "the second prompt edit must resume the SAME durable session"
+                );
+            }
+            other => panic!(
+                "a prompt edit over retained rewrite commits must RESUME — the drift \
+                 rewrite composes onto the retained chain (HomeCore 9/17-Broken \
+                 incident, 2026-07-29) — got: {other:?}"
+            ),
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send post-edit-B turn");
+        wait_for_request(&capture, 30, "the post-edit-B turn").await;
+        let last_request = capture.last().expect("a post-edit-B request was captured");
+        assert!(
+            last_request.contains(PARAGRAPH_B),
+            "the second edit must reach the assembled prompt: {last_request}"
+        );
+        assert!(
+            last_request.contains(TOKEN),
+            "the resumed turn must replay the persisted transcript (token {TOKEN})"
+        );
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // POSTCONDITION: B was APPENDED onto the retained chain — A intact,
+    // nothing silently flattened.
+    let retained_after_b = retained_commit_revisions(&state_path, &original_session_id).await;
+    assert!(
+        retained_after_b.len() > retained_after_a.len()
+            && retained_after_b[..retained_after_a.len()] == retained_after_a[..],
+        "rewrite B must extend the retained chain with A intact: \
+         after A {retained_after_a:?}, after B {retained_after_b:?}"
+    );
+}
