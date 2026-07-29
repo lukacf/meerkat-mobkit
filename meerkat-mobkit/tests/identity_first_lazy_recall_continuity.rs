@@ -390,6 +390,7 @@ fn eager_compaction() -> meerkat_core::config::CompactionRuntimeConfig {
         recent_turn_budget: 1,
         max_summary_tokens: 256,
         min_turns_between_compactions: 0,
+        max_request_bytes: None,
     }
 }
 

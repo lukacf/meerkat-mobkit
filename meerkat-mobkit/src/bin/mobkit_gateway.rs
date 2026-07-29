@@ -52,6 +52,7 @@ type PersistentSessionServiceParts = (
     Option<WorkGraphParts>,
     meerkat_mobkit::storage_health::ResolvedStorageSummary,
     meerkat_mobkit::mob_handle_runtime::SessionWriteEpochsHandle,
+    Arc<dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer>,
 );
 
 #[derive(Debug, Deserialize)]
@@ -573,6 +574,12 @@ fn build_persistent_session_service(
         workgraph_slot,
     ];
     slots.extend(meerkat_mobkit::storage_health::scratch_ring_buffer_slots());
+    // Heal seam (2026-07-29 incident): the CONCRETE persistent service is the
+    // committed-boundary recoverer; cast here, before the tuple erases it to
+    // `dyn MobSessionService` (mirrors rpc_gateway.rs).
+    let committed_boundary_recoverer: Arc<
+        dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
+    > = service.clone();
     Ok((
         service,
         adapter,
@@ -585,6 +592,7 @@ fn build_persistent_session_service(
         )
         .with_slots(slots),
         session_write_epochs,
+        committed_boundary_recoverer,
     ))
 }
 
@@ -1268,6 +1276,7 @@ async fn run() -> anyhow::Result<()> {
             workgraph,
             resolved_storage,
             session_write_epochs,
+            committed_boundary_recoverer,
         ) = build_persistent_session_service(
             &layout,
             runtime_root.clone(),
@@ -1288,11 +1297,6 @@ async fn run() -> anyhow::Result<()> {
         // service (mirrors rpc_gateway.rs). This branch already shared via the
         // runtime_store handed to PersistentSessionService, so this is defensive;
         // the default ephemeral branch below is the one that was actually broken.
-        // Heal seam (2026-07-29 incident): the CONCRETE persistent service is
-        // the committed-boundary recoverer for the identity repair supervisor.
-        let committed_boundary_recoverer: Arc<
-            dyn meerkat_mobkit::identity_first::CommittedBoundaryRecoverer,
-        > = service.clone();
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service)
             .with_session_write_epochs(&session_write_epochs)
             .with_session_runtime_adapter(adapter.clone())
