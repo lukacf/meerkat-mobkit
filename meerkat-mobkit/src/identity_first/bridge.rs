@@ -1936,25 +1936,22 @@ pub(crate) fn build_spawn_spec(
 
 /// Build the spawn spec for a RESUME of `session_id`.
 ///
-/// Differs from a fresh spawn in exactly one way: `launch_mode = Resume`,
-/// so meerkat loads the persisted session (conversation history intact)
-/// instead of creating a new one.
-///
-/// The spec deliberately carries the SAME prompt authority as a fresh spawn
-/// — the draft's explicit prompt when a customizer declared one, otherwise
-/// the mob's assembly from the CURRENT profile + definition. Meerkat's
-/// factory reconciles that assembled prompt against the persisted System
-/// message on resume (meerkat ≥ 0.8.11 `reconcile_resumed_system_prompt`):
-/// unchanged or volatile-only bases are preserved byte-for-byte with no
-/// rewrite minted; a genuinely edited base becomes one audited LeadingSystem
-/// rewrite composed onto the retained history. Clearing the override here
-/// (as this function did until the 0.8.11 wave) made prompt edits silently
-/// INERT for resumed members — the factory only assembles under `Inherit`
-/// for fresh or pre-created-empty sessions, so definition prompt edits never
-/// reached the fleet (resume-inertness trap #4). The hazard the clear
-/// originally guarded against (blind re-assembly tripping the transcript-
-/// continuity guard over runtime context appends — the cold-restart
-/// transcript-loss class) is exactly what the reconcile seam solves.
+/// Differs from a fresh spawn in two deliberate ways:
+/// - `launch_mode = Resume`, so meerkat loads the persisted session
+///   (conversation history intact) instead of creating a new one.
+/// - `system_prompt_override` is cleared: RESUME AUTHORS NOTHING (meerkat
+///   0.8.11 prompt contract, 2026-07-29 ruling). `Message::System` is an
+///   ordinary ordered authored transcript message; prompt policy
+///   materializes only when creating an empty transcript, and the only way
+///   to change durable instructions mid-thread is a caller EXPLICITLY
+///   authoring a new System message as part of a turn
+///   (`StartTurnRequest.system_messages`). Re-sending assembled
+///   configuration on every activation would append a byte-duplicate System
+///   per boot — the prompt-refresh depth leak reborn — so the +0-on-neutral-
+///   resume invariant is achieved STRUCTURALLY by the absence of an append
+///   command here, not by an unchanged-value comparison anywhere. Dynamic
+///   regenerated projections belong in the transient turn-context seam (or
+///   tool reads), never in boot-time prompt authoring.
 pub(crate) fn build_resume_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
@@ -1966,6 +1963,7 @@ pub(crate) fn build_resume_spawn_spec(
     spawn_spec.launch_mode = MemberLaunchMode::Resume {
         bridge_session_id: session_id.clone(),
     };
+    spawn_spec.system_prompt_override = None;
     Ok(spawn_spec)
 }
 
@@ -3470,17 +3468,18 @@ mod tests {
         );
     }
 
-    /// Resume carries the SAME prompt authority as a fresh spawn: an
-    /// explicit customizer prompt is re-sent as `Replace`, and meerkat's
-    /// factory reconcile seam (≥ 0.8.11) decides — an unchanged or
-    /// volatile-only base is preserved byte-for-byte with no rewrite minted,
-    /// a genuine edit becomes one audited LeadingSystem rewrite composed
-    /// onto the retained history. Clearing the override here (the pre-0.8.11
-    /// contract this test used to pin) made prompt edits silently INERT for
-    /// resumed members; the guard-trip hazard the clear once avoided is
-    /// exactly what the reconcile seam solves.
+    /// RESUME AUTHORS NOTHING (meerkat 0.8.11 prompt contract): even when
+    /// the draft carries an explicit customizer prompt, the resume spawn
+    /// spec must NOT re-send it. `Message::System` is ordinary ordered
+    /// authored transcript content; re-sending assembled configuration at
+    /// every activation would append a byte-duplicate System per boot (the
+    /// prompt-refresh depth leak, reborn). The +0-on-neutral-resume
+    /// invariant is structural — no append command exists on this path —
+    /// and mid-thread instruction changes are a caller EXPLICITLY authoring
+    /// a System message via `StartTurnRequest.system_messages`, exactly
+    /// once, as part of a turn.
     #[test]
-    fn resume_spawn_spec_carries_current_prompt_authority_for_reconcile() {
+    fn resume_spawn_spec_authors_nothing() {
         let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
         let draft = AgentBuildDraft {
             model: None,
@@ -3499,12 +3498,9 @@ mod tests {
                 .expect("resume spawn spec");
 
         assert_eq!(
-            spawn.system_prompt_override,
-            Some(SpawnSystemPromptOverride::Replace(
-                "explicit customizer prompt".to_string()
-            )),
-            "resume must re-send the draft's explicit prompt so the factory reconcile \
-             seam can apply genuine edits — clearing it makes prompt edits inert on resume"
+            spawn.system_prompt_override, None,
+            "resume must not author or re-send prompt configuration; explicit System \
+             authoring via a turn is the only mid-thread instruction change"
         );
         match &spawn.launch_mode {
             MemberLaunchMode::Resume { bridge_session_id } => {
