@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Gateway stderr passthrough
+
+- Gateway stderr (tracing lines, panic hooks, storage-migration progress) is
+  piped to the host process's stderr by default; previously it was ignored
+  entirely. Opt out with `MOBKIT_GATEWAY_STDERR=devnull`, or append to a file
+  with `MOBKIT_GATEWAY_STDERR_FILE=<path>` — same shape as the Python SDK.
+
 ### Durable detached jobs
 
 - Added durable detached callback registration with runner identity, restart

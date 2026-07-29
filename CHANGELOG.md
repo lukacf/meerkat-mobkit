@@ -32,6 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   not auto-marked; the new resume-divergence INFO line is the tripwire for
   those.
 
+- **The 0.8.8 observability lines are now visible at default configuration**
+  (all four legs of the field investigation). (a) Both gateway binaries
+  default their tracing filter to `warn,meerkat_mobkit=info,<gateway>=info`
+  instead of a blanket `warn`, so this crate's own INFO reporting (conversion
+  progress, continuity repair) passes at default config while dependencies
+  stay at WARN; `RUST_LOG` still overrides everything. (b) The Python SDK now
+  inherits gateway stderr by default (`MOBKIT_GATEWAY_STDERR=devnull` opts
+  out; `MOBKIT_GATEWAY_STDERR_FILE=<path>` redirects). (c) The TypeScript SDK
+  pipes gateway stderr to the host process's stderr by default, same opt-out
+  shape. (d) `mobkit_gateway` installs its tracing subscriber BEFORE the
+  storage maintenance verbs (`storage-migrate`, `storage-prune`,
+  `storage-adopt-checkpoints`), so migration progress prints live instead of
+  being dropped pre-init. A production deploy was aborted because a
+  supervisor read a silent-but-working migration as a hang, and a week of
+  panic-hook lines went to `/dev/null` — these four legs are why.
+
 ### Added
 
 - **Resume-divergence tripwire**: when a resumed identity's durable session

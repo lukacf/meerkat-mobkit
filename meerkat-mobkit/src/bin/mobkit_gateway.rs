@@ -44,6 +44,12 @@ type WorkGraphParts = (
     meerkat_mobkit::workgraph_admission::WorkGraphAdmissionSlot,
     PathBuf,
 );
+
+/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
+/// at INFO, dependencies at WARN (mirrors rpc_gateway). The one-time
+/// head-canonical conversion and the storage maintenance verbs report
+/// progress at INFO from `meerkat_mobkit`; a blanket "warn" default hid them.
+const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,mobkit_gateway=info";
 type PersistentSessionServiceParts = (
     Arc<dyn meerkat_mob::MobSessionService>,
     Arc<meerkat_runtime::MeerkatMachine>,
@@ -1096,6 +1102,27 @@ fn main() {
         );
         return;
     }
+    // Install the tracing subscriber FIRST — before the maintenance verbs,
+    // not just before the gateway boot. The storage verbs drive the same
+    // migration code whose progress reports through tracing; dispatching
+    // them ahead of this init dropped every progress line, and a 2026-07
+    // production deploy was aborted because a supervisor read the
+    // silent-but-working migration as a hang. Also (meerkat-studio K1/K2):
+    // without any init, runtime failures, console internal-error logs, and
+    // the schedule claim watchdog's stall diagnosis all vanish on the child
+    // gateways their app spawns. Stderr, never stdout: stdout carries the
+    // init JSON handshake and the verbs' report output.
+    //
+    // Default: this crate's own targets at INFO, dependencies at WARN;
+    // RUST_LOG overrides everything.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
     if args.first().map(String::as_str) == Some("storage-adopt-checkpoints") {
         std::process::exit(run_storage_adopt_checkpoints(&args[1..]));
     }
@@ -1105,21 +1132,6 @@ fn main() {
     if args.first().map(String::as_str) == Some("storage-prune") {
         std::process::exit(run_storage_prune(&args[1..]));
     }
-    // Install the tracing subscriber FIRST (mirrors rpc_gateway). Without it
-    // every tracing event in the process is silently dropped: runtime
-    // failures, console internal-error logs, and the schedule claim
-    // watchdog's stall diagnosis all vanish — meerkat-studio root-caused
-    // their opaque K1/K2 failures to exactly this missing init on the child
-    // gateways their app spawns. Stderr, never stdout: stdout carries the
-    // init JSON handshake.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "mobkit_gateway starting (console/HTTP gateway)"
@@ -1713,6 +1725,38 @@ async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default tracing filter (RUST_LOG unset) must surface this crate's
+    /// own INFO lines — storage-verb/migration progress was invisible at the
+    /// old blanket "warn" default — while keeping dependencies at WARN.
+    #[test]
+    fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() -> anyhow::Result<()> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)?;
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                tracing::enabled!(
+                    target: "meerkat_mobkit::identity_first::local_store",
+                    tracing::Level::INFO
+                ),
+                "the crate's own INFO lines (conversion progress) must pass the default filter"
+            );
+            assert!(
+                tracing::enabled!(target: "mobkit_gateway", tracing::Level::INFO),
+                "the gateway binary's own INFO lines must pass the default filter"
+            );
+            assert!(
+                !tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::INFO),
+                "dependency INFO noise must stay filtered"
+            );
+            assert!(
+                tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::WARN),
+                "dependency warnings must still pass"
+            );
+        });
+        Ok(())
+    }
 
     #[test]
     fn init_params_parse_console_read_only() -> anyhow::Result<()> {

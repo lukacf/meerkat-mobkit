@@ -17,6 +17,14 @@
 )]
 //! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
 
+/// Default tracing filter when `RUST_LOG` is unset: this crate's own targets
+/// at INFO, dependencies at WARN. Operationally significant boot phases (the
+/// one-time head-canonical conversion, continuity repair) report at INFO from
+/// `meerkat_mobkit`; the old blanket "warn" default hid them, and a 2026-07
+/// production deploy was aborted when a supervisor read a silent-but-working
+/// migration as a hang.
+const DEFAULT_TRACING_FILTER: &str = "warn,meerkat_mobkit=info,rpc_gateway=info";
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
@@ -431,6 +439,39 @@ mod tests {
     use meerkat_mobkit::mob_handle_runtime::MobRuntimeError;
     use meerkat_mobkit::unified_runtime::types::IdentityAuthorityReleaseOutcome;
     use meerkat_mobkit::{RuntimeShutdownReport, ShutdownDrainReport};
+
+    /// The default tracing filter (RUST_LOG unset) must surface this crate's
+    /// own INFO lines — the 0.8.8 conversion-progress observability was
+    /// invisible at the old blanket "warn" default — while keeping
+    /// dependencies at WARN.
+    #[test]
+    fn default_tracing_filter_surfaces_own_info_keeps_deps_at_warn() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let filter = tracing_subscriber::EnvFilter::try_new(DEFAULT_TRACING_FILTER)
+            .expect("default filter must parse");
+        let subscriber = tracing_subscriber::registry().with(filter);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(
+                tracing::enabled!(
+                    target: "meerkat_mobkit::identity_first::local_store",
+                    tracing::Level::INFO
+                ),
+                "the crate's own INFO lines (conversion progress) must pass the default filter"
+            );
+            assert!(
+                tracing::enabled!(target: "rpc_gateway", tracing::Level::INFO),
+                "the gateway binary's own INFO lines must pass the default filter"
+            );
+            assert!(
+                !tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::INFO),
+                "dependency INFO noise must stay filtered"
+            );
+            assert!(
+                tracing::enabled!(target: "meerkat_runtime::ops_lifecycle", tracing::Level::WARN),
+                "dependency warnings must still pass"
+            );
+        });
+    }
 
     #[test]
     fn gateway_module_boundary_becomes_pre_spawn_data() {
@@ -6642,10 +6683,18 @@ async fn run_persistent_inner() {
     // are visible on stderr. Without this, all tracing events are silently
     // dropped and runtime failures (agent build, LLM calls, comms drain)
     // are invisible.
+    //
+    // Default: this crate's own targets at INFO, dependencies at WARN.
+    // Operationally significant boot phases (the one-time head-canonical
+    // conversion, continuity repair) report at INFO from meerkat_mobkit; at
+    // the old blanket "warn" default they were invisible, and a 2026-07
+    // production deploy was aborted because a supervisor read a
+    // silent-but-working migration as a hang. RUST_LOG still overrides
+    // everything.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
