@@ -4226,6 +4226,86 @@ fn frames_from_session_history_message_with_namespace(
             assistant,
             &payload_hash,
         ));
+        frames.extend(outgoing_comms_tool_call_frames_from_assistant(
+            runtime_key,
+            identity,
+            session_id,
+            offset,
+            assistant,
+            &payload_hash,
+        ));
+    }
+    frames
+}
+
+/// Agent-facing peer-comms send tools whose calls the sender's conversation
+/// must render as outgoing communications (mirrors the console front-end's
+/// peer-tool vocabulary).
+const OUTGOING_COMMS_SEND_TOOLS: [&str; 3] = ["send_message", "send_request", "send_response"];
+
+/// Backfill parity for the SENDER side of peer comms.
+///
+/// An outgoing peer communication exists in the sender's transcript only as
+/// an assistant tool call (`send_message`/`send_request`/`send_response`)
+/// plus a nameless tool result — neither of which the base history
+/// projection preserved as an identifiable comms item (assistant history
+/// keeps text blocks only; tool results carry no tool name). The RECIPIENT's
+/// transcript, by contrast, records a typed incoming comms notice that DOES
+/// survive history projection. Any history-rebuilt conversation therefore
+/// showed arrivals but silently dropped the sender's own outgoing comms.
+///
+/// Re-emit the live edge's `tool_call_requested` frame ({id, tool_call_id,
+/// name, args}) for each comms send call: the console pairs it with the
+/// backfilled tool result by `tool_call_id` exactly like a live turn, and a
+/// live twin (same tool_use_id) collapses through the tool-call arm of
+/// [`transcript_fingerprint`].
+fn outgoing_comms_tool_call_frames_from_assistant(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    offset: usize,
+    assistant: &meerkat_core::types::BlockAssistantMessage,
+    payload_hash: &str,
+) -> Vec<NewConsoleFrame> {
+    let mut frames = Vec::new();
+    for (tool_idx, tool) in assistant.tool_calls().enumerate() {
+        if !OUTGOING_COMMS_SEND_TOOLS.contains(&tool.name) {
+            continue;
+        }
+        let Ok(args) = serde_json::from_str::<Value>(tool.args.get()) else {
+            continue;
+        };
+        frames.push(NewConsoleFrame {
+            id: None,
+            dedupe_key: format!(
+                "session-history:{runtime_key}:{session_id}:{offset}:comms-out:{tool_idx}:{payload_hash}"
+            ),
+            timestamp_ms: assistant.created_at.timestamp_millis().max(0) as u64,
+            runtime_key: runtime_key.to_string(),
+            identity: identity.to_string(),
+            conversation_id: Some(identity.to_string()),
+            session_id: Some(session_id.to_string()),
+            kind: "tool_call_requested".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "id": tool.id,
+                "tool_call_id": tool.id,
+                "name": tool.name,
+                "args": args,
+                "source_event_type": "session_history",
+                "type": "session_history",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some(format!("{session_id}:{offset}:comms-out:{tool_idx}")),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        });
     }
     frames
 }
@@ -4462,6 +4542,15 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .map(stable_value_fingerprint)
             .or_else(|| payload.get("message").map(stable_value_fingerprint)),
         "tool_execution_completed" => tool_result_fingerprint(payload),
+        // Tool CALL frames key on the provider-minted tool_use_id: a
+        // history-backfilled `tool_call_requested` (outgoing peer comms
+        // parity) collapses with its live twin, which carried the same id
+        // through the runtime event edge.
+        "tool_call_requested" | "tool_call" | "tool_execution_started" => payload
+            .get("tool_call_id")
+            .or_else(|| payload.get("id"))
+            .and_then(Value::as_str)
+            .map(|tool_call_id| format!("tool-call:{tool_call_id}")),
         "text_delta" => {
             text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
         }
@@ -10666,6 +10755,97 @@ comms = true
         assert_eq!(frame.kind, "interaction_complete");
         assert_eq!(frame.payload["result"], json!(""));
         assert_eq!(frame.payload["text"], json!(""));
+    }
+
+    /// Sender-side comms parity: assistant history whose tool calls are the
+    /// peer send tools re-emits live-shaped `tool_call_requested` frames (and
+    /// only for those tools), and the live↔history twin collapses through
+    /// the tool-call fingerprint.
+    #[test]
+    fn session_history_projection_emits_outgoing_comms_tool_calls() {
+        let frames = frames_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            3,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    { "block_type": "text", "data": { "text": "Sending updates." } },
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "toolu-send-1",
+                            "name": "send_message",
+                            "args": { "peer_id": "peer-1", "body": "lights updated" }
+                        }
+                    },
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "toolu-req-1",
+                            "name": "send_request",
+                            "args": {
+                                "peer_id": "peer-1",
+                                "intent": "checksum_token",
+                                "params": { "subject": "status" }
+                            }
+                        }
+                    },
+                    {
+                        "block_type": "tool_use",
+                        "data": { "id": "toolu-other", "name": "workgraph_get", "args": {} }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.010Z"
+            }),
+        );
+
+        let tool_frames: Vec<_> = frames
+            .iter()
+            .filter(|frame| frame.kind == "tool_call_requested")
+            .collect();
+        assert_eq!(
+            tool_frames.len(),
+            2,
+            "exactly the two comms send calls project (not workgraph_get): {frames:?}"
+        );
+        let message_frame = tool_frames
+            .iter()
+            .find(|frame| frame.payload["name"] == json!("send_message"))
+            .expect("send_message history frame");
+        assert_eq!(message_frame.payload["tool_call_id"], json!("toolu-send-1"));
+        assert_eq!(
+            message_frame.payload["args"]["body"],
+            json!("lights updated")
+        );
+        assert_eq!(message_frame.conversation_id.as_deref(), Some("agent-a"));
+        let request_frame = tool_frames
+            .iter()
+            .find(|frame| frame.payload["name"] == json!("send_request"))
+            .expect("send_request history frame");
+        assert_eq!(
+            request_frame.payload["args"]["params"]["subject"],
+            json!("status")
+        );
+
+        // A live twin (same provider-minted tool_use_id) shares the
+        // counterpart fingerprint, so the backfill skips the duplicate.
+        let history_fingerprint =
+            transcript_fingerprint(&message_frame.kind, &message_frame.payload);
+        let live_fingerprint = transcript_fingerprint(
+            "tool_call_requested",
+            &json!({
+                "id": "toolu-send-1",
+                "tool_call_id": "toolu-send-1",
+                "name": "send_message",
+                "args": { "peer_id": "peer-1", "body": "lights updated" },
+                "source_event_type": "tool_call_requested",
+            }),
+        );
+        assert_eq!(history_fingerprint, live_fingerprint);
+        assert!(history_fingerprint.is_some());
     }
 
     #[test]
