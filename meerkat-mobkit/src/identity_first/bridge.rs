@@ -593,10 +593,33 @@ where
             Ok(meerkat_session::CommittedBoundaryRecovery::Unprovable { reason }) => {
                 Ok(CommittedBoundaryRepair::Unprovable { reason })
             }
-            Err(error) => Err(BridgeError::Mob(format!(
-                "committed-boundary recovery: {error}"
-            ))),
+            Err(error) => map_committed_boundary_recovery_error(error),
         }
+    }
+}
+
+/// Disposition of the heal authority's error tier, per the heal contract:
+/// `Err` is reserved for failures retrying can genuinely clear (`Busy`
+/// mid-turn, store I/O, CAS races, a held tail awaiting the recovery commit
+/// itself). Typed refusals that only an EXTERNAL change can clear — a
+/// conflicting live runtime quiescing (`DurableTailRecoveryRefused`) or an
+/// operator resolving forked evidence (`DurableEvidenceQuarantined`) — are
+/// terminal `Unprovable` verdicts. Letting them escape as `Err` loops the
+/// reconcile repair pass forever against a verdict no retry can change,
+/// instead of parking the identity with the refusal in front of an operator.
+fn map_committed_boundary_recovery_error(
+    error: meerkat_core::SessionError,
+) -> Result<CommittedBoundaryRepair, BridgeError> {
+    match error {
+        error @ (meerkat_core::SessionError::DurableTailRecoveryRefused { .. }
+        | meerkat_core::SessionError::DurableEvidenceQuarantined { .. }) => {
+            Ok(CommittedBoundaryRepair::Unprovable {
+                reason: error.to_string(),
+            })
+        }
+        error => Err(BridgeError::Mob(format!(
+            "committed-boundary recovery: {error}"
+        ))),
     }
 }
 
@@ -3836,5 +3859,67 @@ mod tests {
             "the deadline must not be re-armed per hop: two further hops spent \
              {spent_after_first:?} against a {budget:?} budget"
         );
+    }
+
+    /// Heal contract: `DurableTailRecoveryRefused` is a typed refusal only an
+    /// external change clears — it must PARK as the terminal `Unprovable`
+    /// verdict, not escape as a retryable bridge error that loops the
+    /// reconcile repair pass forever (the HomeCore 9/17-Broken shape would
+    /// then never reach an operator as a parked reason).
+    #[test]
+    fn heal_error_tier_recovery_refused_parks_terminal_unprovable() {
+        let id = meerkat_core::SessionId::new();
+        let verdict = map_committed_boundary_recovery_error(
+            meerkat_core::SessionError::DurableTailRecoveryRefused { id: id.clone() },
+        );
+        match verdict {
+            Ok(CommittedBoundaryRepair::Unprovable { reason }) => {
+                assert!(
+                    reason.contains(&id.to_string()),
+                    "park reason must carry the session id for the operator: {reason}"
+                );
+                assert!(
+                    reason.contains("refused"),
+                    "park reason must state the refusal: {reason}"
+                );
+            }
+            other => panic!("refused must park as Unprovable, got {other:?}"),
+        }
+    }
+
+    /// Forked/unverifiable durable evidence is the same class: no retry can
+    /// un-fork evidence, so it parks with the reason instead of retrying.
+    #[test]
+    fn heal_error_tier_quarantined_evidence_parks_terminal_unprovable() {
+        let verdict = map_committed_boundary_recovery_error(
+            meerkat_core::SessionError::DurableEvidenceQuarantined {
+                id: meerkat_core::SessionId::new(),
+            },
+        );
+        assert!(
+            matches!(verdict, Ok(CommittedBoundaryRepair::Unprovable { .. })),
+            "quarantined evidence must park as Unprovable, got {verdict:?}"
+        );
+    }
+
+    /// The genuinely retryable tier stays in `Err`: a live session owning the
+    /// head mid-turn (`Busy`) and a held tail awaiting the recovery commit
+    /// itself (`DurableTailHeldForRecovery`) both clear on a later pass.
+    #[test]
+    fn heal_error_tier_busy_and_held_stay_retryable_errors() {
+        for error in [
+            meerkat_core::SessionError::Busy {
+                id: meerkat_core::SessionId::new(),
+            },
+            meerkat_core::SessionError::DurableTailHeldForRecovery {
+                id: meerkat_core::SessionId::new(),
+            },
+        ] {
+            let verdict = map_committed_boundary_recovery_error(error);
+            assert!(
+                matches!(verdict, Err(BridgeError::Mob(_))),
+                "retryable-tier errors must stay bridge errors, got {verdict:?}"
+            );
+        }
     }
 }
