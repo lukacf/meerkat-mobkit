@@ -1028,11 +1028,11 @@ async fn lazy_materialize_cross_boot_recall_replays_the_transcript() {
              on-demand materialization served an empty or stale document. Durable census: \
              {pre:?}. Request: {last}"
         );
-        // Independent second property: on resume the bridge clears
-        // `system_prompt_override` (`build_resume_spawn_spec`) because the
-        // persisted System message is authoritative — so this pins that the
-        // host prompt survives a lazy restart rather than that it is
-        // re-applied.
+        // Independent second property: on resume the bridge re-sends the
+        // draft's prompt (`build_resume_spawn_spec`) and the factory
+        // reconcile seam preserves an UNCHANGED base byte-for-byte — so this
+        // pins that the host prompt survives a lazy restart through
+        // reconciliation, without a rewrite being minted for it.
         assert!(
             last.contains(CUSTOMIZER_PROMPT),
             "post-restart LLM request must still carry the host system prompt; \

@@ -715,7 +715,7 @@ async fn second_prompt_edit_over_retained_rewrite_commits_resumes() {
                         || line.contains("system prompt")
                         || line.contains("system_prompt")
                 })
-                .map(|line| line.trim())
+                .map(str::trim)
                 .take(30)
                 .collect();
             panic!(
