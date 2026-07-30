@@ -68,7 +68,8 @@ use meerkat_core::service::SessionService as _;
 use meerkat_core::session::SystemContextSource;
 use meerkat_core::types::{AssistantBlock, ContentInput, Message, SessionId, StopReason, Usage};
 use meerkat_core::{
-    Config, ConfigError, CoreRenderable, PendingSystemContextAppend, RealtimeTranscriptEvent,
+    Config, ConfigError, CoreRenderable, PendingSystemContextAppend, Provider,
+    RealtimeTranscriptEvent, SessionLlmIdentity,
 };
 use meerkat_live::{
     LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelCloseObservation,
@@ -962,6 +963,19 @@ struct GatewayLiveOpenParams {
     /// not realtime-capable open the channel against this model instead.
     #[serde(default)]
     model: Option<String>,
+    /// Strict optional per-open provider selection (HomeCore cross-provider
+    /// regression): pairs with `model` so a member whose text profile lives
+    /// on another provider (e.g. Anthropic) can open the channel against a
+    /// provider that has a realtime lane (`provider = "openai"`,
+    /// `model = "gpt-realtime-2"`). Parsed against the typed provider
+    /// vocabulary via [`Provider::parse_strict`] - an unrecognized name is
+    /// a typed invalid-params error, never a silent fallthrough to the
+    /// inherited provider. Requires `model` (the pair is mutated together);
+    /// when the selection differs from the inherited provider the inherited
+    /// provider-specific auth binding is cleared so the selected provider's
+    /// configured default credential resolution applies.
+    #[serde(default)]
+    provider: Option<String>,
     /// Per-open ephemeral instruction overlay. Rides the runtime
     /// system-context lane of the open projection, so it reaches the
     /// provider's instructions channel without ever touching the member's
@@ -1235,6 +1249,35 @@ fn apply_live_open_instruction_overlay(
         });
 }
 
+/// Fold the per-open `(provider, model)` selection into the projected
+/// channel identity (design §6 + the HomeCore cross-provider regression).
+///
+/// `model` alone swaps the realtime model for this channel without touching
+/// the member's text identity - the pre-existing v1 override, byte-identical
+/// when `provider` is absent. A `provider` that differs from the member's
+/// inherited text provider re-pairs the channel identity AND clears the
+/// inherited provider-specific auth binding, so the selected provider's
+/// configured default credential resolution applies (an Anthropic binding
+/// must never ride into an OpenAI realtime open). A `provider` matching the
+/// inherited one is a no-op beyond the model swap: the member's binding
+/// stays valid for its own provider. The caller guarantees `provider` never
+/// arrives without `model` (the pair is mutated together).
+fn apply_live_open_identity_selection(
+    llm_identity: &mut SessionLlmIdentity,
+    provider: Option<Provider>,
+    model: Option<String>,
+) {
+    if let Some(model) = model {
+        llm_identity.model = model;
+    }
+    if let Some(provider) = provider
+        && provider != llm_identity.provider
+    {
+        llm_identity.provider = provider;
+        llm_identity.auth_binding = None;
+    }
+}
+
 /// #176: project the factory's typed realtime audio policy into the typed
 /// [`LiveAudioConfig`] the snapshot carries. `None` when the factory does
 /// not advertise both directions of audio, so the caller fails closed
@@ -1342,14 +1385,35 @@ async fn close_live_channel_after_open_failure(
 ) {
     match host.reserve_channel_close_observation(channel_id).await {
         Ok(observation) => {
-            let committed = commit_live_close_for_open_failure(
-                host,
-                machine,
-                session_id,
-                channel_id,
-                &observation,
-            )
-            .await;
+            // Reference order: the host commit requires the adapter
+            // physically closed and detached first (otherwise it fails
+            // closed as `CloseNotAuthorized` and this cleanup always
+            // degraded to admission eviction instead of the graceful
+            // close it documents). Physical-close failure keeps the
+            // fail-closed eviction fallback below.
+            let physically_closed = match host.prepare_channel_physical_close(&observation).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "meerkat_mobkit::live_wiring",
+                        ?channel_id,
+                        ?session_id,
+                        ?err,
+                        "physical adapter close failed during open-failure cleanup; \
+                         evicting admission"
+                    );
+                    false
+                }
+            };
+            let committed = physically_closed
+                && commit_live_close_for_open_failure(
+                    host,
+                    machine,
+                    session_id,
+                    channel_id,
+                    &observation,
+                )
+                .await;
             if !committed {
                 abandon_live_open_admission(machine, session_id, channel_id).await;
             }
@@ -1445,6 +1509,37 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
             );
         }
     }
+    // HomeCore cross-provider regression: resolve the strict optional
+    // `provider` selection BEFORE any session work, so an unrecognized name
+    // is a pure typed parameter error (`Provider::from_name` would coerce
+    // it to `Other` and fall through to a misleading downstream rejection).
+    let provider_override = match parsed.provider.as_deref() {
+        None => None,
+        Some(name) => match Provider::parse_strict(name) {
+            Some(provider) => Some(provider),
+            None => {
+                return live_error(
+                    rpc_id,
+                    INVALID_PARAMS_CODE,
+                    format!(
+                        "unknown provider '{name}'; expected one of: \
+                         anthropic, openai, gemini, self_hosted"
+                    ),
+                );
+            }
+        },
+    };
+    // The channel identity's (provider, model) pair is mutated together: a
+    // provider selection without a model would pair the new provider with
+    // the member's text model, which is never what a cross-provider live
+    // open means.
+    if provider_override.is_some() && parsed.model.is_none() {
+        return live_error(
+            rpc_id,
+            INVALID_PARAMS_CODE,
+            "live/open `provider` requires an explicit `model`",
+        );
+    }
 
     // R3-1: honor the caller's optional `turning_mode`; default
     // `ProviderManaged`. Text-only callers that drive `commit_input` must
@@ -1478,11 +1573,15 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         };
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
-    // the member's text identity. Applied before precheck + admission so
-    // both gate — and the machine binds — the identity actually opened.
-    if let Some(model) = parsed.model {
-        open_config.llm_identity.model = model;
-    }
+    // the member's text identity, and an explicit `provider` re-pairs the
+    // channel identity for a cross-provider open. Applied before precheck +
+    // admission so both gate — and the machine binds — the identity
+    // actually opened.
+    apply_live_open_identity_selection(
+        &mut open_config.llm_identity,
+        provider_override,
+        parsed.model,
+    );
     // Per-open ephemeral instruction overlay — runtime system-context lane
     // (see apply_live_open_instruction_overlay for the lane rationale).
     if let Some(instructions) = parsed.instructions {
@@ -2124,6 +2223,22 @@ async fn handle_live_close(
         .await
     {
         Ok(observation) => {
+            // Reference order (`close_live_channel` in the facade's live
+            // orchestration): reserve -> PHYSICAL close -> generated close
+            // authority -> host commit. The host commit fails closed
+            // (`CloseNotAuthorized`) unless the adapter was physically
+            // closed and detached first; the original port omitted this
+            // step, so every RPC-initiated close of an attached channel
+            // died typed instead of closing.
+            if let Err(error) = ctx.host.prepare_channel_physical_close(&observation).await {
+                return live_error(
+                    rpc_id,
+                    INTERNAL_ERROR_CODE,
+                    format!(
+                        "physical adapter close failed before generated terminal authority: {error}"
+                    ),
+                );
+            }
             let authority = match machine
                 .resolve_live_close_result(&session_id, &observation)
                 .await
@@ -2626,6 +2741,78 @@ mod tests {
         apply_live_open_instruction_overlay(&mut config, Vec::new());
         apply_live_open_instruction_overlay(&mut config, vec!["  ".to_string(), String::new()]);
         assert!(config.runtime_system_context.is_empty());
+    }
+
+    /// An Anthropic-profile text identity carrying a realm-scoped auth
+    /// binding, the HomeCore shape the cross-provider live open starts from.
+    fn anthropic_identity_with_binding() -> meerkat_core::SessionLlmIdentity {
+        meerkat_core::SessionLlmIdentity {
+            model: "claude-sonnet-4-5".to_string(),
+            provider: meerkat_core::Provider::Anthropic,
+            self_hosted_server_id: None,
+            provider_params: None,
+            auth_binding: Some(meerkat_core::AuthBindingRef {
+                realm: meerkat_core::RealmId::parse("mob.homecore").expect("realm id"),
+                binding: meerkat_core::BindingId::parse("anthropic-main").expect("binding id"),
+                profile: None,
+                origin: meerkat_core::BindingOrigin::Configured,
+            }),
+        }
+    }
+
+    /// HomeCore cross-provider regression: a differing `provider` re-pairs
+    /// the channel identity as a (provider, model) pair AND clears the
+    /// inherited provider-specific auth binding, so the selected provider's
+    /// configured default credential resolution applies for this open.
+    #[test]
+    fn provider_selection_repairs_identity_and_clears_auth_binding() {
+        let mut identity = anthropic_identity_with_binding();
+        apply_live_open_identity_selection(
+            &mut identity,
+            Some(meerkat_core::Provider::OpenAI),
+            Some("gpt-realtime-2".to_string()),
+        );
+        assert_eq!(identity.provider, meerkat_core::Provider::OpenAI);
+        assert_eq!(identity.model, "gpt-realtime-2");
+        assert_eq!(
+            identity.auth_binding, None,
+            "the Anthropic binding must not ride into an OpenAI realtime open"
+        );
+    }
+
+    /// A `provider` matching the inherited one is a no-op beyond the model
+    /// swap: the member's binding stays valid for its own provider.
+    #[test]
+    fn matching_provider_selection_keeps_the_inherited_auth_binding() {
+        let mut identity = anthropic_identity_with_binding();
+        let inherited_binding = identity.auth_binding.clone();
+        apply_live_open_identity_selection(
+            &mut identity,
+            Some(meerkat_core::Provider::Anthropic),
+            Some("claude-opus-5".to_string()),
+        );
+        assert_eq!(identity.provider, meerkat_core::Provider::Anthropic);
+        assert_eq!(identity.model, "claude-opus-5");
+        assert_eq!(identity.auth_binding, inherited_binding);
+    }
+
+    /// Absent `provider` is the pre-existing v1 surface, byte-identical:
+    /// `model` alone swaps the model, absent both leaves the identity
+    /// untouched - provider and auth binding are never mutated.
+    #[test]
+    fn absent_provider_selection_preserves_the_legacy_model_override() {
+        let mut identity = anthropic_identity_with_binding();
+        let inherited_binding = identity.auth_binding.clone();
+
+        apply_live_open_identity_selection(&mut identity, None, Some("gpt-realtime-2".to_string()));
+        assert_eq!(identity.provider, meerkat_core::Provider::Anthropic);
+        assert_eq!(identity.model, "gpt-realtime-2");
+        assert_eq!(identity.auth_binding, inherited_binding);
+
+        let untouched = anthropic_identity_with_binding();
+        let mut identity = anthropic_identity_with_binding();
+        apply_live_open_identity_selection(&mut identity, None, None);
+        assert_eq!(identity, untouched);
     }
 
     /// #301 port: the surface mapper routes through the canonical typed

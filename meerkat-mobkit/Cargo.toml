@@ -139,3 +139,8 @@ meerkat-schedule = "=0.8.10"
 # Value-equal to meerkat's canonical one. Dev-dependency: not enabled in release
 # builds, so the production binary keeps the lean (no-schemars) meerkat-mob.
 meerkat-mob = { version = "=0.8.10", features = ["schema"] }
+# `test-realtime-fixtures` (test-only) exposes meerkat's shared
+# ScriptedRealtimeSessionFactory so the live-open cross-provider regression
+# tests (tests/gateway_live.rs) can observe the exact channel identity handed
+# to the provider lane without a provider socket or credential.
+meerkat = { version = "=0.8.10", features = ["test-realtime-fixtures"] }
