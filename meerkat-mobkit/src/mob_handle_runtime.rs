@@ -1654,6 +1654,18 @@ impl SessionStoreBackedRuntimeStore {
 
 #[async_trait]
 impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
+    fn session_persistence_profile(
+        &self,
+    ) -> meerkat_runtime::store::RuntimeSessionPersistenceProfile {
+        self.inner.session_persistence_profile()
+    }
+
+    fn session_boundary_authority_read_cost(
+        &self,
+    ) -> meerkat_runtime::store::RuntimeSessionAuthorityReadCost {
+        self.inner.session_boundary_authority_read_cost()
+    }
+
     fn auth_authority_key(&self) -> Option<String> {
         self.inner.auth_authority_key()
     }
@@ -1681,7 +1693,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
     async fn commit_session_snapshot(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: meerkat_runtime::store::SessionDelta,
+        session_delta: meerkat_runtime::store::SerializedSessionSnapshot,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
         self.note_session_scoped_write(runtime_id);
         let result = self
@@ -1692,25 +1704,311 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         result
     }
 
-    async fn commit_session_transcript_rewrite_snapshot(
+    async fn commit_prepared_session_boundary(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: meerkat_runtime::store::SessionDelta,
-        commit: &meerkat_core::TranscriptRewriteCommit,
-    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        request: meerkat_runtime::store::PreparedRuntimeSessionCommit,
+    ) -> Result<
+        meerkat_runtime::store::PreparedRuntimeSessionCommitResult,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
         self.note_session_scoped_write(runtime_id);
         let result = self
             .inner
-            .commit_session_transcript_rewrite_snapshot(runtime_id, session_delta, commit)
+            .commit_prepared_session_boundary(runtime_id, request)
             .await;
         self.note_session_scoped_write(runtime_id);
         result
     }
 
+    async fn load_session_boundary_authority(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::RuntimeSessionAuthority>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_session_boundary_authority(runtime_id).await
+    }
+
+    async fn load_whole_blob_store_authority(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::WholeBlobStoreAuthority>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_whole_blob_store_authority(runtime_id).await
+    }
+
+    async fn load_committed_whole_blob_snapshot(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::CommittedWholeBlobSnapshot>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_committed_whole_blob_snapshot(runtime_id)
+            .await
+    }
+
+    async fn commit_prepared_whole_blob_snapshot_cas(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        prepared: meerkat_runtime::store::PreparedWholeBlobSnapshotCas,
+    ) -> Result<
+        meerkat_runtime::store::WholeBlobSnapshotCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_prepared_whole_blob_snapshot_cas(runtime_id, prepared)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn commit_prepared_whole_blob_rewrite_boundary(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        boundary: meerkat_runtime::store::PreparedWholeBlobRewriteStoreParts,
+    ) -> Result<
+        meerkat_runtime::store::WholeBlobStoreAuthority,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .commit_prepared_whole_blob_rewrite_boundary(runtime_id, boundary)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn delete_runtime_session_catalog_entry(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .delete_runtime_session_catalog_entry(runtime_id)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn load_runtime_session_catalog_entry(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::RuntimeSessionCatalogEntry>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_runtime_session_catalog_entry(runtime_id)
+            .await
+    }
+
+    async fn list_runtime_session_catalog_entries(
+        &self,
+        filter: meerkat_core::SessionFilter,
+    ) -> Result<
+        Vec<meerkat_runtime::store::RuntimeSessionCatalogEntry>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .list_runtime_session_catalog_entries(filter)
+            .await
+    }
+
+    async fn write_prepared_whole_blob_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        prepared: meerkat_runtime::store::PreparedWholeBlobProvisionalTail,
+    ) -> Result<
+        meerkat_runtime::store::WholeBlobProvisionalTailAuthority,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .write_prepared_whole_blob_provisional_tail(runtime_id, prepared)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn load_whole_blob_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::CommittedWholeBlobProvisionalTail>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_whole_blob_provisional_tail(runtime_id)
+            .await
+    }
+
+    async fn discard_whole_blob_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected: &meerkat_runtime::store::WholeBlobProvisionalTailAuthority,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .discard_whole_blob_provisional_tail(runtime_id, expected)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn write_prepared_head_canonical_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        prepared: meerkat_runtime::store::PreparedHeadCanonicalProvisionalTail,
+    ) -> Result<
+        meerkat_runtime::store::HeadCanonicalProvisionalTailAuthority,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .write_prepared_head_canonical_provisional_tail(runtime_id, prepared)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn load_head_canonical_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::HeadCanonicalProvisionalTailAuthority>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_head_canonical_provisional_tail(runtime_id)
+            .await
+    }
+
+    async fn discard_head_canonical_provisional_tail(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected: &meerkat_runtime::store::HeadCanonicalProvisionalTailAuthority,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        self.note_session_scoped_write(runtime_id);
+        let result = self
+            .inner
+            .discard_head_canonical_provisional_tail(runtime_id, expected)
+            .await;
+        self.note_session_scoped_write(runtime_id);
+        result
+    }
+
+    async fn load_durable_tail_recovery_source(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::PreparedDurableTailRecoverySource>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_durable_tail_recovery_source(runtime_id)
+            .await
+    }
+
+    async fn load_durable_tail_recovery_receipts(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<
+        Vec<meerkat_runtime::store::PreparedRecoveryReceiptSource>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_durable_tail_recovery_receipts(runtime_id, run_id)
+            .await
+    }
+
+    async fn load_committed_recovery_boundary(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        candidate_id: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::CommittedRecoveryBoundary>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_committed_recovery_boundary(runtime_id, candidate_id)
+            .await
+    }
+
+    async fn load_runtime_delivery_authority(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::store::RuntimeDeliveryAuthorityRecord>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_runtime_delivery_authority(runtime_id).await
+    }
+
+    async fn load_runtime_delivery_record(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        delivery_id: &str,
+    ) -> Result<
+        Option<meerkat_runtime::store::RuntimeDeliveryStoreRecord>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_runtime_delivery_record(runtime_id, delivery_id)
+            .await
+    }
+
+    async fn compare_and_swap_runtime_delivery_authority(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_revision: Option<u64>,
+        replacement: meerkat_runtime::store::RuntimeDeliveryAuthorityRecord,
+        inserted_delivery: Option<meerkat_runtime::store::RuntimeDeliveryStoreRecord>,
+    ) -> Result<
+        meerkat_runtime::store::RuntimeDeliveryAuthorityCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_runtime_delivery_authority(
+                runtime_id,
+                expected_revision,
+                replacement,
+                inserted_delivery,
+            )
+            .await
+    }
+
+    async fn list_runtime_delivery_records(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<
+        Vec<meerkat_runtime::store::RuntimeDeliveryStoreRecord>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .list_runtime_delivery_records(runtime_id, after_sequence, limit)
+            .await
+    }
+
     async fn atomic_apply(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: Option<meerkat_runtime::store::SessionDelta>,
+        session_delta: Option<meerkat_runtime::store::SerializedSessionSnapshot>,
         receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
         input_updates: Vec<InputStatePersistenceRecord>,
         session_store_key: Option<meerkat_core::types::SessionId>,
@@ -1733,7 +2031,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
     async fn atomic_apply_with_machine_lifecycle(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: meerkat_runtime::store::SessionDelta,
+        session_delta: meerkat_runtime::store::SerializedSessionSnapshot,
         receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
         machine_lifecycle: MachineLifecycleCommit,
         input_updates: Vec<InputStatePersistenceRecord>,
@@ -1755,85 +2053,6 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         result
     }
 
-    // The three legacy-history-evidence variants MUST be forwarded, not left
-    // to their trait defaults. A default drops the evidence and delegates to
-    // the plain method, which fails closed on the one shape the evidence
-    // exists for: the first slim boundary save over a pre-0.8.9 runtime row
-    // that still carries its transcript-history graph inline. Every write
-    // through this facade is session-scoped, so each keeps the same
-    // pre/post write-epoch bumps as its plain counterpart.
-
-    async fn commit_session_snapshot_with_legacy_history_evidence(
-        &self,
-        runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: meerkat_runtime::store::SessionDelta,
-        evidence: meerkat_core::TranscriptHistoryState,
-    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.note_session_scoped_write(runtime_id);
-        let result = self
-            .inner
-            .commit_session_snapshot_with_legacy_history_evidence(
-                runtime_id,
-                session_delta,
-                evidence,
-            )
-            .await;
-        self.note_session_scoped_write(runtime_id);
-        result
-    }
-
-    async fn atomic_apply_with_legacy_history_evidence(
-        &self,
-        runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: Option<meerkat_runtime::store::SessionDelta>,
-        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
-        input_updates: Vec<InputStatePersistenceRecord>,
-        session_store_key: Option<meerkat_core::types::SessionId>,
-        evidence: Option<meerkat_core::TranscriptHistoryState>,
-    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.note_session_scoped_write(runtime_id);
-        let result = self
-            .inner
-            .atomic_apply_with_legacy_history_evidence(
-                runtime_id,
-                session_delta,
-                receipt,
-                input_updates,
-                session_store_key,
-                evidence,
-            )
-            .await;
-        self.note_session_scoped_write(runtime_id);
-        result
-    }
-
-    async fn atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
-        &self,
-        runtime_id: &meerkat_runtime::LogicalRuntimeId,
-        session_delta: meerkat_runtime::store::SessionDelta,
-        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
-        machine_lifecycle: MachineLifecycleCommit,
-        input_updates: Vec<InputStatePersistenceRecord>,
-        session_store_key: meerkat_core::types::SessionId,
-        evidence: Option<meerkat_core::TranscriptHistoryState>,
-    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        self.note_session_scoped_write(runtime_id);
-        let result = self
-            .inner
-            .atomic_apply_with_machine_lifecycle_and_legacy_history_evidence(
-                runtime_id,
-                session_delta,
-                receipt,
-                machine_lifecycle,
-                input_updates,
-                session_store_key,
-                evidence,
-            )
-            .await;
-        self.note_session_scoped_write(runtime_id);
-        result
-    }
-
     async fn load_input_states(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
@@ -1844,6 +2063,121 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         // no longer poison an entire runtime's input-state load; the facade
         // must not collapse that back to a whole-call failure.
         self.inner.load_input_states(runtime_id).await
+    }
+
+    async fn load_input_states_strict(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Vec<meerkat_runtime::input_state::StoredInputState>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_input_states_strict(runtime_id).await
+    }
+
+    async fn load_input_states_with_versions(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        meerkat_runtime::store::PreparedRecoveryInputSnapshot,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_input_states_with_versions(runtime_id).await
+    }
+
+    async fn load_input_state_by_idempotency_key(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        key: &meerkat_runtime::IdempotencyKey,
+    ) -> Result<
+        Option<meerkat_runtime::store::ExactInputStateObservation>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_input_state_by_idempotency_key(runtime_id, key)
+            .await
+    }
+
+    async fn load_input_states_by_ids(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        input_ids: &[meerkat_core::lifecycle::InputId],
+    ) -> Result<
+        Vec<Option<meerkat_runtime::input_state::StoredInputState>>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_input_states_by_ids(runtime_id, input_ids)
+            .await
+    }
+
+    async fn load_pending_terminal_owner_ids_page(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        after: Option<&meerkat_core::lifecycle::InputId>,
+        limit: usize,
+    ) -> Result<Vec<meerkat_core::lifecycle::InputId>, meerkat_runtime::store::RuntimeStoreError>
+    {
+        self.inner
+            .load_pending_terminal_owner_ids_page(runtime_id, after, limit)
+            .await
+    }
+
+    fn input_state_batch_cas_implementation_profile(
+        &self,
+    ) -> meerkat_runtime::store::InputStateBatchCasImplementationProfile {
+        self.inner.input_state_batch_cas_implementation_profile()
+    }
+
+    async fn compare_and_swap_recovery_input_states_atomically(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_revision: meerkat_runtime::store::RecoveryInputSetRevision,
+        mutations: &[meerkat_runtime::store::RecoveryInputStateMutation],
+    ) -> Result<
+        meerkat_runtime::store::InputStateBatchCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_recovery_input_states_atomically(
+                runtime_id,
+                expected_revision,
+                mutations,
+            )
+            .await
+    }
+
+    async fn compare_and_swap_recovery_input_states_atomically_with_fence(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_revision: meerkat_runtime::store::RecoveryInputSetRevision,
+        mutations: &[meerkat_runtime::store::RecoveryInputStateMutation],
+        write_fence: Arc<dyn meerkat_runtime::store::RuntimeStoreWriteFence>,
+    ) -> Result<
+        meerkat_runtime::store::FencedInputStateBatchCasOutcome,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .compare_and_swap_recovery_input_states_atomically_with_fence(
+                runtime_id,
+                expected_revision,
+                mutations,
+                write_fence,
+            )
+            .await
+    }
+
+    async fn load_committed_boundary_receipts(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        run_id: &meerkat_core::lifecycle::RunId,
+    ) -> Result<
+        Vec<meerkat_core::lifecycle::RunBoundaryReceipt>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_committed_boundary_receipts(runtime_id, run_id)
+            .await
     }
 
     async fn load_boundary_receipt(
@@ -1863,7 +2197,7 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
     async fn load_session_snapshot(
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
-    ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
+    ) -> Result<Option<Arc<Vec<u8>>>, meerkat_runtime::store::RuntimeStoreError> {
         self.inner.load_session_snapshot(runtime_id).await
     }
 
@@ -2881,61 +3215,30 @@ macro_rules! delegate_mob_session_service {
                 }
                 result
             }
-            async fn apply_runtime_context_appends(
-                &self,
-                session_id: &meerkat_core::types::SessionId,
-                run_id: meerkat_core::lifecycle::RunId,
-                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-                contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
-            ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-                self.inner
-                    .apply_runtime_context_appends(
-                        session_id,
-                        run_id,
-                        appends,
-                        contributing_input_ids,
-                    )
-                    .await
-            }
-            async fn apply_runtime_context_appends_with_boundary(
-                &self,
-                session_id: &meerkat_core::types::SessionId,
-                run_id: meerkat_core::lifecycle::RunId,
-                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-                boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
-                contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
-            ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-                self.inner
-                    .apply_runtime_context_appends_with_boundary(
-                        session_id,
-                        run_id,
-                        appends,
-                        boundary,
-                        contributing_input_ids,
-                    )
-                    .await
-            }
-            async fn apply_runtime_system_context_for_turn(
-                &self,
-                session_id: &meerkat_core::types::SessionId,
-                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-            ) -> Result<(), SessionError> {
-                self.inner
-                    .apply_runtime_system_context_for_turn(session_id, appends)
-                    .await
-            }
-            async fn prepare_runtime_system_context_for_active_turn(
+            async fn prepare_transient_turn_context_for_active_turn(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
                 expected_run_id: &meerkat_core::lifecycle::RunId,
-                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+                contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
             ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
             {
                 self.inner
-                    .prepare_runtime_system_context_for_active_turn(
+                    .prepare_transient_turn_context_for_active_turn(
                         session_id,
                         expected_run_id,
-                        appends,
+                        contexts,
+                    )
+                    .await
+            }
+            async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+                        session_id,
+                        authority,
                     )
                     .await
             }
@@ -2953,7 +3256,7 @@ macro_rules! delegate_mob_session_service {
             async fn checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
-                session_snapshot: &[u8],
+                session_snapshot: Arc<Vec<u8>>,
             ) -> Result<(), SessionError> {
                 self.inner
                     .checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
@@ -3025,7 +3328,7 @@ macro_rules! delegate_mob_session_service {
             async fn checkpoint_committed_runtime_session_snapshot(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
-                session_snapshot: &[u8],
+                session_snapshot: Arc<Vec<u8>>,
             ) -> Result<(), SessionError> {
                 self.inner
                     .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
@@ -3536,52 +3839,25 @@ impl MobSessionService for AfterCreateMobSessionService {
             .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
             .await
     }
-    async fn apply_runtime_context_appends(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-        run_id: meerkat_core::lifecycle::RunId,
-        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
-    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-        self.inner
-            .apply_runtime_context_appends(session_id, run_id, appends, contributing_input_ids)
-            .await
-    }
-    async fn apply_runtime_context_appends_with_boundary(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-        run_id: meerkat_core::lifecycle::RunId,
-        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-        boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
-        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
-    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-        self.inner
-            .apply_runtime_context_appends_with_boundary(
-                session_id,
-                run_id,
-                appends,
-                boundary,
-                contributing_input_ids,
-            )
-            .await
-    }
-    async fn apply_runtime_system_context_for_turn(
-        &self,
-        session_id: &meerkat_core::types::SessionId,
-        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
-    ) -> Result<(), SessionError> {
-        self.inner
-            .apply_runtime_system_context_for_turn(session_id, appends)
-            .await
-    }
-    async fn prepare_runtime_system_context_for_active_turn(
+    async fn prepare_transient_turn_context_for_active_turn(
         &self,
         session_id: &meerkat_core::types::SessionId,
         expected_run_id: &meerkat_core::lifecycle::RunId,
-        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+        contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
     ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError> {
         self.inner
-            .prepare_runtime_system_context_for_active_turn(session_id, expected_run_id, appends)
+            .prepare_transient_turn_context_for_active_turn(session_id, expected_run_id, contexts)
+            .await
+    }
+    async fn acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        authority: &meerkat_core::CommittedSessionBoundaryAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .acknowledge_committed_runtime_session_boundary_under_turn_finalization_boundary(
+                session_id, authority,
+            )
             .await
     }
     async fn acquire_runtime_turn_finalization_guard(
@@ -3596,7 +3872,7 @@ impl MobSessionService for AfterCreateMobSessionService {
     async fn checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
         &self,
         session_id: &meerkat_core::types::SessionId,
-        session_snapshot: &[u8],
+        session_snapshot: Arc<Vec<u8>>,
     ) -> Result<(), SessionError> {
         self.inner
             .checkpoint_committed_runtime_session_snapshot_under_turn_finalization_boundary(
@@ -3666,7 +3942,7 @@ impl MobSessionService for AfterCreateMobSessionService {
     async fn checkpoint_committed_runtime_session_snapshot(
         &self,
         session_id: &meerkat_core::types::SessionId,
-        session_snapshot: &[u8],
+        session_snapshot: Arc<Vec<u8>>,
     ) -> Result<(), SessionError> {
         self.inner
             .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
@@ -7788,14 +8064,14 @@ realm_profile = "worker-v2"
             Ok(true)
         }
 
-        async fn prepare_runtime_system_context_for_active_turn(
+        async fn prepare_transient_turn_context_for_active_turn(
             &self,
             _session_id: &meerkat_core::types::SessionId,
             _expected_run_id: &meerkat_core::lifecycle::RunId,
-            _appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+            _contexts: Vec<meerkat_core::lifecycle::run_primitive::TurnRequestContext>,
         ) -> Result<meerkat_core::CoreBoundaryStageOutput, meerkat_core::CoreBoundaryStageError>
         {
-            self.record("prepare_runtime_system_context_for_active_turn");
+            self.record("prepare_transient_turn_context_for_active_turn");
             Err(meerkat_core::CoreBoundaryStageError::unavailable(
                 "probe has no boundary authority",
             ))
@@ -7892,19 +8168,13 @@ realm_profile = "worker-v2"
 
         assert_eq!(staged.accepted_result_count, 7);
         let preparation_error = wrapped
-            .prepare_runtime_system_context_for_active_turn(
+            .prepare_transient_turn_context_for_active_turn(
                 &session_id,
                 &meerkat_core::lifecycle::RunId::new(),
-                vec![meerkat_core::session::PendingSystemContextAppend {
-                    content: meerkat_core::lifecycle::run_primitive::CoreRenderable::Text {
-                        text: "steer".to_string(),
-                    },
-                    source: Some("test".to_string()),
-                    idempotency_key: Some("test".to_string()),
-                    source_kind: meerkat_core::session::SystemContextSource::default(),
-                    peer_response_terminal: None,
-                    accepted_at: meerkat_core::time_compat::SystemTime::now(),
-                }],
+                vec![
+                    meerkat_core::lifecycle::run_primitive::TurnRequestContext::new("steer")
+                        .expect("non-empty transient turn context"),
+                ],
             )
             .await
             .expect_err("probe preparation error should forward unchanged");
@@ -7930,7 +8200,7 @@ realm_profile = "worker-v2"
                 "stage_tool_results",
                 "read_transcript_revision",
                 "list_transcript_revisions",
-                "prepare_runtime_system_context_for_active_turn",
+                "prepare_transient_turn_context_for_active_turn",
                 "session_known_to_archive_authority",
             ]
         );

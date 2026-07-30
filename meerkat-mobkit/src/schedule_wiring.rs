@@ -856,6 +856,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
     async fn deliver_mob_target(
         &self,
         occurrence: &meerkat::Occurrence,
+        identity: &meerkat::ScheduleDeliveryIdentity,
         binding: &MobTargetBinding,
     ) -> Result<meerkat::DeliveryDispatch, meerkat::ScheduleDomainError> {
         if let MobTargetBinding::Member {
@@ -869,7 +870,9 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
         {
             return Ok(dispatch);
         }
-        self.inner.deliver_mob_target(occurrence, binding).await
+        self.inner
+            .deliver_mob_target(occurrence, identity, binding)
+            .await
     }
 
     async fn probe_identity_target(
@@ -882,6 +885,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
     async fn deliver_identity_target(
         &self,
         occurrence: &meerkat::Occurrence,
+        delivery_identity: &meerkat::ScheduleDeliveryIdentity,
         binding: &meerkat::IdentityTargetBinding,
     ) -> Result<Option<meerkat::DeliveryDispatch>, meerkat::ScheduleDomainError> {
         if let Some(identity) = parse_mob_member_schedule_identity(binding.identity())
@@ -906,7 +910,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             return Ok(Some(dispatch));
         }
         self.inner
-            .deliver_identity_target(occurrence, binding)
+            .deliver_identity_target(occurrence, delivery_identity, binding)
             .await
     }
 }

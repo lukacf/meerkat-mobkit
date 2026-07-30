@@ -584,13 +584,9 @@ where
             Ok(meerkat_session::CommittedBoundaryRecovery::AlreadyCommitted) => {
                 Ok(CommittedBoundaryRepair::AlreadyCommitted)
             }
-            Ok(meerkat_session::CommittedBoundaryRecovery::Recovered {
-                provenance,
-                message_count,
-            }) => {
+            Ok(meerkat_session::CommittedBoundaryRecovery::Recovered { message_count }) => {
                 tracing::info!(
                     %session_id,
-                    ?provenance,
                     message_count,
                     "machine-authorized recovery persisted a committed durable head"
                 );
