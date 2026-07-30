@@ -133,12 +133,101 @@ pub(crate) const MOBKIT_CONTINUITY_DOMAIN: meerkat_sqlite::SchemaDomain =
                 apply: migration_0002_head_canonical_sessions,
             },
         ],
+        initialize_current: initialize_current_continuity_schema,
+        allowed_existing_versions: &[1, 2],
+        released_predecessors: &[meerkat_sqlite::SchemaPredecessor {
+            version: 1,
+            verify: verify_released_v1_continuity_schema,
+        }],
+        owned_objects: CONTINUITY_OWNED_OBJECTS,
+        retired_objects: &[],
     };
 
-/// The open-time domain: migration 0001 only. Opening a fresh or pre-ledger
-/// file converges it to v1 exactly as every previous release did, and an
-/// already-v2 file is left alone (the version check below runs against the
-/// FULL domain, so a v2 file is not "from the future").
+const RELEASED_V1_CONTINUITY_OBJECTS: &[meerkat_sqlite::SchemaObject] = &[
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_records",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "session_snapshots",
+    },
+];
+
+const CONTINUITY_OWNED_OBJECTS: &[meerkat_sqlite::SchemaObject] = &[
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_records",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "session_snapshots",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_session_heads",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_strand_messages",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "continuity_session_rewrites",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_records_session_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_heads_identity_gen_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_strands_identity_gen_idx",
+    },
+    meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Index,
+        name: "continuity_rewrites_identity_gen_idx",
+    },
+];
+
+fn initialize_current_continuity_schema(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), rusqlite::Error> {
+    migration_0001_continuity_schema(tx)?;
+    migration_0002_head_canonical_sessions(tx)
+}
+
+/// Frozen v1 verifier honoring the deferred-stamp design: a delta write may
+/// commit the head-canonical DDL inside its own transaction and leave the
+/// ledger at v1 until head state actually exists, so a v1 file legally
+/// carries either the plain two-table v1 catalog or the complete current DDL.
+fn verify_released_v1_continuity_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    meerkat_sqlite::verify_released_schema_fingerprint(
+        conn,
+        &MOBKIT_CONTINUITY_DOMAIN,
+        RELEASED_V1_CONTINUITY_OBJECTS,
+        migration_0001_continuity_schema,
+    )
+    .or_else(|plain| {
+        meerkat_sqlite::verify_released_schema_fingerprint(
+            conn,
+            &MOBKIT_CONTINUITY_DOMAIN,
+            CONTINUITY_OWNED_OBJECTS,
+            initialize_current_continuity_schema,
+        )
+        .map_err(|full| {
+            format!("v1 catalog: {plain}; v1 + deferred head-canonical DDL catalog: {full}")
+        })
+    })
+}
+
+/// The open-time domain: migration 0001 only. Opening a fresh file converges
+/// it to v1 exactly as every previous release did, and an already-v2 file is
+/// left alone (the version check below runs against the FULL domain, so a v2
+/// file is not "from the future").
 const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
     meerkat_sqlite::SchemaDomain {
         name: "mobkit-continuity",
@@ -147,6 +236,11 @@ const MOBKIT_CONTINUITY_BASELINE_DOMAIN: meerkat_sqlite::SchemaDomain =
             name: "base-schema",
             apply: migration_0001_continuity_schema,
         }],
+        initialize_current: migration_0001_continuity_schema,
+        allowed_existing_versions: &[1],
+        released_predecessors: &[],
+        owned_objects: RELEASED_V1_CONTINUITY_OBJECTS,
+        retired_objects: &[],
     };
 
 fn migration_0001_continuity_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
@@ -159,6 +253,29 @@ fn migration_0002_head_canonical_sessions(
     tx.execute_batch(SCHEMA_HEAD_CANONICAL)
 }
 
+/// Refuse a file whose `mobkit-continuity` ledger is ahead of this binary.
+///
+/// Local replacement for the retired `meerkat_sqlite::refuse_future_schema`:
+/// deliberately ONLY a future-version check, because the deferred-stamp
+/// design legally leaves a v1 ledger over committed head-canonical DDL, a
+/// shape exact per-version catalog eligibility would refuse at every open.
+fn refuse_future_continuity_schema(conn: &Connection) -> Result<(), ContinuityStoreError> {
+    let supported = MOBKIT_CONTINUITY_DOMAIN.supported_version();
+    let found = meerkat_sqlite::domain_version(conn, MOBKIT_CONTINUITY_DOMAIN.name)
+        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    match found {
+        Some(found) if found > supported => Err(mechanics_err(
+            "continuity schema preflight",
+            meerkat_sqlite::SqliteStoreError::SchemaFromTheFuture {
+                domain: MOBKIT_CONTINUITY_DOMAIN.name.to_string(),
+                found,
+                supported,
+            },
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Open-time schema convergence that never commits the one-way v2 bump.
 ///
 /// Returns whether the file already carries the head-canonical channel.
@@ -169,8 +286,7 @@ fn migration_0002_head_canonical_sessions(
 /// - no ledger row (fresh or pre-ledger file) => baseline v1 applied, exactly
 ///   as before this release.
 fn converge_schema_at_open(conn: &mut Connection) -> Result<bool, ContinuityStoreError> {
-    meerkat_sqlite::refuse_future_schema(conn, &MOBKIT_CONTINUITY_DOMAIN)
-        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    refuse_future_continuity_schema(conn)?;
     let version = meerkat_sqlite::domain_version(conn, MOBKIT_CONTINUITY_DOMAIN.name)
         .map_err(|e| mechanics_err("read continuity ledger", e))?;
     match version {
@@ -200,8 +316,7 @@ fn converge_schema_at_open(conn: &mut Connection) -> Result<bool, ContinuityStor
 /// continuity ledger row (every opener converges one; its absence under a
 /// write transaction is corruption, not a fresh file).
 fn converge_head_canonical_schema_in_txn(tx: &Transaction<'_>) -> Result<(), ContinuityStoreError> {
-    meerkat_sqlite::refuse_future_schema(tx, &MOBKIT_CONTINUITY_DOMAIN)
-        .map_err(|e| mechanics_err("continuity schema preflight", e))?;
+    refuse_future_continuity_schema(tx)?;
     let current = meerkat_sqlite::domain_version(tx, MOBKIT_CONTINUITY_DOMAIN.name)
         .map_err(|e| mechanics_err("read continuity ledger", e))?
         .ok_or_else(|| {
@@ -1081,22 +1196,166 @@ fn blob_session_in_txn(
     Ok(Some(session))
 }
 
+/// Full-vector projection of the 0.8.11 splice-based [`StrandLayout`].
+///
+/// The continuity schema stores every strand as its complete message vector
+/// (there is no strand-link table), so the append-only suffix/splice layout
+/// is materialized back into full per-strand rows. The walk mirrors the
+/// lineage validation in meerkat's own blob conversion: parent-transition
+/// splice, parent-suffix extension, successor replacement splice, tail.
+struct MaterializedBlobLayout {
+    /// Full rows per strand, in first-appearance order. A strand id extended
+    /// across rewrites (exact-append parents) holds its final, longest vector.
+    strands: Vec<(TranscriptStrandId, Vec<Message>)>,
+    rewrites: Vec<RewriteRow>,
+    head_strand: TranscriptStrandId,
+}
+
+impl MaterializedBlobLayout {
+    fn from_layout(
+        id: &meerkat_core::types::SessionId,
+        layout: &StrandLayout,
+    ) -> Result<Self, SessionStoreError> {
+        fn decode_rows(
+            id: &meerkat_core::types::SessionId,
+            rows: &[Vec<u8>],
+        ) -> Result<Vec<Message>, SessionStoreError> {
+            rows.iter()
+                .map(|bytes| {
+                    serde_json::from_slice::<Message>(bytes).map_err(|error| {
+                        SessionStoreError::InvalidTranscriptRewrite {
+                            id: id.clone(),
+                            reason: format!("layout strand row does not decode: {error}"),
+                        }
+                    })
+                })
+                .collect()
+        }
+        fn splice_rows(
+            id: &meerkat_core::types::SessionId,
+            source: &[Message],
+            start: u64,
+            end: u64,
+            replacement: &[Message],
+        ) -> Result<Vec<Message>, SessionStoreError> {
+            let start =
+                usize::try_from(start).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            let end = usize::try_from(end).map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            if start > end || end > source.len() {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            let mut rows = Vec::with_capacity(source.len() - (end - start) + replacement.len());
+            rows.extend_from_slice(&source[..start]);
+            rows.extend_from_slice(replacement);
+            rows.extend_from_slice(&source[end..]);
+            Ok(rows)
+        }
+        fn upsert(
+            strands: &mut Vec<(TranscriptStrandId, Vec<Message>)>,
+            strand: &TranscriptStrandId,
+            rows: Vec<Message>,
+        ) {
+            if let Some(entry) = strands.iter_mut().find(|(sid, _)| sid == strand) {
+                entry.1 = rows;
+            } else {
+                strands.push((strand.clone(), rows));
+            }
+        }
+
+        let mut strands: Vec<(TranscriptStrandId, Vec<Message>)> = Vec::new();
+        let mut current = decode_rows(id, &layout.serialized_anchor)?;
+        let mut current_strand = layout.anchor_strand.clone();
+        upsert(&mut strands, &current_strand, current.clone());
+        let mut rewrites = Vec::with_capacity(layout.rewrites.len());
+        for rewrite in &layout.rewrites {
+            match &rewrite.parent_transition {
+                meerkat_core::session_store::PreparedHeadCanonicalParentTransition::ExactAppend => {
+                    if rewrite.parent_strand != current_strand {
+                        return Err(SessionStoreError::Corrupted(id.clone()));
+                    }
+                }
+                meerkat_core::session_store::PreparedHeadCanonicalParentTransition::ExactSplice(
+                    parent_splice,
+                ) => {
+                    let link = parent_splice.link_splice();
+                    let replacement = decode_rows(id, parent_splice.serialized_replacement())?;
+                    current = splice_rows(
+                        id,
+                        &current,
+                        link.splice_start,
+                        link.splice_end,
+                        &replacement,
+                    )?;
+                    current_strand = rewrite.parent_strand.clone();
+                }
+            }
+            if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+                != rewrite.parent_base_seq
+            {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            current.extend(decode_rows(id, &rewrite.serialized_parent_suffix)?);
+            let parent_len = u64::try_from(current.len())
+                .map_err(|_| SessionStoreError::Corrupted(id.clone()))?;
+            upsert(&mut strands, &current_strand, current.clone());
+            let replacement = decode_rows(id, &rewrite.serialized_replacement)?;
+            current = splice_rows(
+                id,
+                &current,
+                rewrite.link_splice.splice_start,
+                rewrite.link_splice.successor_end,
+                &replacement,
+            )?;
+            if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+                != rewrite.link_splice.strand_len
+            {
+                return Err(SessionStoreError::Corrupted(id.clone()));
+            }
+            current_strand = rewrite.strand.clone();
+            upsert(&mut strands, &current_strand, current.clone());
+            rewrites.push(RewriteRow {
+                commit: rewrite.commit.clone(),
+                parent_strand: rewrite.parent_strand.clone(),
+                parent_len,
+                strand: rewrite.strand.clone(),
+                strand_len: rewrite.link_splice.strand_len,
+            });
+        }
+        if layout.head_strand != current_strand {
+            return Err(SessionStoreError::Corrupted(id.clone()));
+        }
+        current.extend(decode_rows(id, &layout.serialized_tail)?);
+        if u64::try_from(current.len()).map_err(|_| SessionStoreError::Corrupted(id.clone()))?
+            != layout.head_len
+        {
+            return Err(SessionStoreError::Corrupted(id.clone()));
+        }
+        upsert(&mut strands, &current_strand, current);
+        Ok(Self {
+            strands,
+            rewrites,
+            head_strand: layout.head_strand.clone(),
+        })
+    }
+}
+
 fn layout_for_blob_session(
     session: &Session,
-) -> Result<(StrandLayout, SessionHead), SessionStoreError> {
-    let state = session.transcript_history_state().map_err(|err| {
-        SessionStoreError::InvalidTranscriptRewrite {
+) -> Result<(MaterializedBlobLayout, SessionHead), SessionStoreError> {
+    let history = session
+        .validated_transcript_history_state()
+        .map_err(|err| SessionStoreError::InvalidTranscriptRewrite {
             id: session.id().clone(),
             reason: format!("stored transcript history state is malformed: {err}"),
-        }
-    })?;
-    let layout = strand_layout_for_history(session.id(), state.as_ref(), session.messages())?;
+        })?;
+    let layout = strand_layout_for_history(session, history.as_ref())?;
+    let materialized = MaterializedBlobLayout::from_layout(session.id(), &layout)?;
     let head = SessionHead::from_session(
         session,
-        layout.head_strand.clone(),
-        layout.rewrites.len() as u64,
+        materialized.head_strand.clone(),
+        materialized.rewrites.len() as u64,
     )?;
-    Ok((layout, head))
+    Ok((materialized, head))
 }
 
 /// One-time per-session migration inside the caller's transaction: lay the
@@ -1147,20 +1406,7 @@ fn migrate_legacy_blob_in_txn(
         insert_strand_rows_in_txn(tx, id, strand, 0, rows, identity, generation)?;
     }
     for (idx, rewrite) in layout.rewrites.iter().enumerate() {
-        insert_rewrite_row_in_txn(
-            tx,
-            id,
-            idx as u64,
-            &RewriteRow {
-                commit: rewrite.commit.clone(),
-                parent_strand: rewrite.parent_strand.clone(),
-                parent_len: rewrite.parent_len,
-                strand: rewrite.strand.clone(),
-                strand_len: rewrite.strand_len,
-            },
-            identity,
-            generation,
-        )?;
+        insert_rewrite_row_in_txn(tx, id, idx as u64, rewrite, identity, generation)?;
     }
     let token = write_head_row_in_txn(tx, &head, identity, generation, version, fencing_token)?;
     tracing::info!(

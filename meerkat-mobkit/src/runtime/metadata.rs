@@ -318,6 +318,14 @@ const MOBKIT_METADATA_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Sch
         name: "base-schema",
         apply: migration_0001_metadata_schema,
     }],
+    initialize_current: migration_0001_metadata_schema,
+    allowed_existing_versions: &[1],
+    released_predecessors: &[],
+    owned_objects: &[meerkat_sqlite::SchemaObject {
+        kind: meerkat_sqlite::SchemaObjectKind::Table,
+        name: "mobkit_metadata",
+    }],
+    retired_objects: &[],
 };
 
 fn migration_0001_metadata_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {

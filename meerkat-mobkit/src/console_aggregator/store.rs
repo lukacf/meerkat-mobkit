@@ -465,6 +465,28 @@ const MOBKIT_CONSOLE_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Sche
         name: "base-schema",
         apply: migration_0001_console_schema,
     }],
+    initialize_current: migration_0001_console_schema,
+    allowed_existing_versions: &[1],
+    released_predecessors: &[],
+    owned_objects: &[
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "console_frames",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "console_source_watermarks",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "idx_console_frames_identity_cursor",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "idx_console_frames_conversation_cursor",
+        },
+    ],
+    retired_objects: &[],
 };
 
 fn migration_0001_console_schema(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {

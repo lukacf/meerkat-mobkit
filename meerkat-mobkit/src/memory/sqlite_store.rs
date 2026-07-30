@@ -217,10 +217,81 @@ const MOBKIT_MEMORY_DOMAIN: meerkat_sqlite::SchemaDomain = meerkat_sqlite::Schem
             apply: migration_0002_quarantine_and_taint_columns,
         },
     ],
+    initialize_current: initialize_current_memory_schema,
+    // Version 2 is the mobkit 0.8.8 floor and current shape: every supported
+    // realm file was created (or upgraded) by a binary whose SCHEMA_SQL
+    // already carried the quarantine/taint columns inline, so v1 files are
+    // pre-floor and refused typed.
+    allowed_existing_versions: &[2],
+    released_predecessors: &[],
+    owned_objects: &[
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "records",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "records_scope_idx",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "records_scope_hash_idx",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "proposals",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "audit",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "stage",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "injections",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "injections_record_idx",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "pending_harvests",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "pending_promotions",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "dream_runs",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "dream_runs_completed",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Table,
+            name: "dream_audit_verdicts",
+        },
+        meerkat_sqlite::SchemaObject {
+            kind: meerkat_sqlite::SchemaObjectKind::Index,
+            name: "dream_audit_verdicts_open",
+        },
+    ],
+    retired_objects: &[],
 };
 
 fn migration_0001_base_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     tx.execute_batch(SCHEMA_SQL)
+}
+
+fn initialize_current_memory_schema(tx: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    migration_0001_base_schema(tx)?;
+    migration_0002_quarantine_and_taint_columns(tx)
 }
 
 /// Column migrations for stores created before the columns joined
