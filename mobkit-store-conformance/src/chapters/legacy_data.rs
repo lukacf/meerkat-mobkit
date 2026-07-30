@@ -2,18 +2,19 @@
 //!
 //! Release-day incidents have been legacy-shape issues, not fresh-store
 //! bugs. These chapters fabricate the exact on-disk shapes older MobKit
-//! lines persisted and pin that today's bundled stores open them, preserve
-//! their rows, and keep their write discipline. Both chapters are scoped to
-//! the bundled implementations by construction — they fabricate those
-//! stores' schemas.
+//! lines persisted and pin the 0.8.11 contract for them: a pre-ledger
+//! database is BELOW the supported floor (mobkit 0.8.8 stamped a schema
+//! ledger row at every open, so every supported corpus is ledgered), and
+//! today's bundled stores refuse it typed at open — an unledgered file
+//! whose owned tables already exist is never silently converged the way
+//! every earlier line converged it — while leaving its logical content
+//! untouched for the operator. Both chapters are scoped to the bundled
+//! implementations by construction — they fabricate those stores' schemas.
 
 use std::path::Path;
 
-use meerkat_core::SessionCheckpointState;
 use meerkat_mobkit::identity_first::{
-    AgentIdentity, AgentMemoryProvider, CheckpointVersion, ContinuityGeneration,
-    ContinuityResolveState, ContinuityStore, ContinuityStoreError, FencingToken,
-    LocalContinuityStore, NewAgentMemory, SessionSnapshot,
+    AgentIdentity, AgentMemoryProvider, LocalContinuityStore, NewAgentMemory,
 };
 use meerkat_mobkit::memory::SqliteAgentMemoryStore;
 use meerkat_store_conformance::ConformanceFailure;
@@ -41,20 +42,24 @@ const LEGACY_CONTINUITY_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS continuity_re
         data           BLOB NOT NULL
     );";
 
-/// A pre-ledger continuity database holding a session snapshot whose payload
-/// is an UNSTAMPED current-envelope Meerkat session (the exact bytes a 0.7.x
-/// fleet persisted) must open, resolve its record, serve the snapshot bytes
-/// unchanged (still `LegacyUnverified` — adoption is H3's job, never a side
-/// effect of open), keep its fencing/version CAS, and report the persisted
-/// fencing high-water on open.
+/// A pre-ledger continuity database (the exact file shape a pre-floor fleet
+/// persisted) must be refused typed at open: the file carries the domain's
+/// owned tables but no `meerkat_schema` row, which is below the mobkit
+/// 0.8.8 floor. The refusal must leave the fabricated rows untouched —
+/// fail-closed means the operator still owns byte-exact evidence.
+///
+/// This chapter pinned silent pre-ledger convergence (plus LegacyUnverified
+/// snapshot service) until the 0.8.11 reset deleted both the embedded
+/// checkpoint vocabulary and pre-floor convergence; it now pins the typed
+/// refusal that replaced them.
 pub async fn legacy_continuity_database(dir: &Path) -> Result<(), ConformanceFailure> {
     let steps = Steps::chapter("legacy_continuity_database");
     let db_path = dir.join("continuity.db");
 
     // --- fabricate the legacy database ---------------------------------------
     let step = "fabricate_legacy_database";
-    let session = fixtures::session_with_texts(&["legacy turn one", "legacy turn two"]);
-    let legacy_blob = fixtures::legacy_session_blob(&session)?;
+    let session = fixtures::session_with_texts(&["legacy turn one", "legacy turn two"])?;
+    let legacy_blob = steps.wrap(step, serde_json::to_vec(&session))?;
     let session_key = session.id().to_string();
     {
         let connection = steps.wrap(step, rusqlite::Connection::open(&db_path))?;
@@ -79,115 +84,68 @@ pub async fn legacy_continuity_database(dir: &Path) -> Result<(), ConformanceFai
         )?;
     }
 
-    // --- open + fencing floor ---------------------------------------------------
-    let step = "open_reports_persisted_fencing_floor";
-    let (store, floor) = steps.wrap(
-        step,
-        LocalContinuityStore::open_with_fencing_floor(db_path.clone()).await,
-    )?;
-    steps.ensure(
-        step,
-        floor == 9,
-        format!("open must report the persisted fencing high-water (expected 9, got {floor})"),
-    )?;
-
-    // --- record resolves ----------------------------------------------------------
-    let step = "legacy_record_resolves";
-    let identity = steps.wrap(step, AgentIdentity::parse("legacy:main"))?;
-    let resolved = steps.wrap(
-        step,
-        store.resolve_many(std::slice::from_ref(&identity)).await,
-    )?;
-    match resolved.get(&identity) {
-        Some(ContinuityResolveState::Ready { record }) => {
-            steps.ensure(
-                step,
-                record.session_id == *session.id()
-                    && record.generation.get() == 3
-                    && record.checkpoint_version.get() == 7,
-                format!("the legacy record must resolve unchanged, got {record:?}"),
-            )?;
-        }
-        other => {
-            return Err(steps.fail(
-                step,
-                format!("the legacy record must resolve Ready, got {other:?}"),
-            ));
-        }
-    }
-
-    // --- snapshot bytes served unchanged --------------------------------------------
-    let step = "legacy_snapshot_bytes_unchanged";
-    let snapshot = steps
-        .wrap(step, store.load_session_snapshot(session.id()).await)?
-        .ok_or_else(|| steps.fail(step, "the legacy snapshot must load"))?;
-    steps.ensure(
-        step,
-        snapshot.data == legacy_blob,
-        "the legacy snapshot bytes must be served byte-for-byte unchanged — open must never \
-         rewrite or adopt them (adoption is H3's explicit maintenance job)",
-    )?;
-    let parsed: meerkat_core::Session = steps.wrap(step, serde_json::from_slice(&snapshot.data))?;
-    steps.ensure(
-        step,
-        matches!(
-            steps.wrap(step, parsed.try_checkpoint_state())?,
-            SessionCheckpointState::LegacyUnverified { .. }
-        ),
-        "the served legacy document must still report LegacyUnverified",
-    )?;
-
-    // --- CAS still works over the legacy rows ------------------------------------------
-    let step = "cas_still_enforced";
-    let mut advanced = session;
-    fixtures::push_text(&mut advanced, "post-upgrade turn");
-    let advanced_snapshot = fixtures::session_snapshot(&advanced)?;
-    steps.wrap(
-        step,
-        store
-            .save_session_snapshot(
-                &identity,
-                advanced.id(),
-                ContinuityGeneration::new(3),
-                CheckpointVersion::new(8),
-                FencingToken::new(9),
-                &advanced_snapshot,
-            )
-            .await,
-    )?;
-    match store
-        .save_session_snapshot(
-            &identity,
-            advanced.id(),
-            ContinuityGeneration::new(3),
-            CheckpointVersion::new(9),
-            FencingToken::new(8),
-            &SessionSnapshot {
-                data: advanced_snapshot.data.clone(),
-            },
-        )
+    // --- open is refused typed -------------------------------------------------
+    let step = "pre_ledger_open_is_refused";
+    if LocalContinuityStore::open_with_fencing_floor(db_path.clone())
         .await
+        .is_ok()
     {
-        Err(ContinuityStoreError::StaleFencingToken { .. }) => {}
-        Err(other) => {
-            return Err(steps.fail(
-                step,
-                format!("a stale fence must stay rejected on a legacy database, got: {other}"),
-            ));
-        }
-        Ok(()) => {
-            return Err(steps.fail(
-                step,
-                "a stale fence must stay rejected on a legacy database",
-            ));
-        }
+        return Err(steps.fail(
+            step,
+            "opening a pre-ledger continuity database must refuse typed: unledgered owned \
+             tables are below the mobkit 0.8.8 floor and must never be silently converged",
+        ));
     }
+
+    // --- refusal left the logical content untouched ----------------------------
+    let step = "refusal_preserves_rows";
+    let connection = steps.wrap(step, rusqlite::Connection::open(&db_path))?;
+    let (identity, generation, version, fence): (String, u64, u64, u64) = steps.wrap(
+        step,
+        connection.query_row(
+            "SELECT identity, generation, checkpoint_version, fencing_token \
+             FROM continuity_records WHERE session_id = ?1",
+            rusqlite::params![session_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ),
+    )?;
+    steps.ensure(
+        step,
+        identity == "legacy:main" && generation == 3 && version == 7 && fence == 9,
+        "the refused open must leave the continuity record intact",
+    )?;
+    let stored_blob: Vec<u8> = steps.wrap(
+        step,
+        connection.query_row(
+            "SELECT data FROM session_snapshots WHERE session_id = ?1",
+            rusqlite::params![session_key],
+            |row| row.get(0),
+        ),
+    )?;
+    steps.ensure(
+        step,
+        stored_blob == steps.wrap(step, serde_json::to_vec(&session))?,
+        "the refused open must leave the snapshot payload bytes intact",
+    )?;
+    let ledgered: bool = steps.wrap(
+        step,
+        connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'meerkat_schema')",
+            [],
+            |row| row.get(0),
+        ),
+    )?;
+    steps.ensure(
+        step,
+        !ledgered,
+        "the refusal must not stamp a schema ledger onto a file it refused to own",
+    )?;
     Ok(())
 }
 
 /// The pre-`ever_quarantined` / pre-`proposals.taint` agent-memory schema:
-/// `SCHEMA_SQL` as it existed before those columns, so opening the store
-/// exercises the `ensure_column` upgrade path.
+/// `SCHEMA_SQL` as it existed before those columns, and before the schema
+/// ledger.
 const LEGACY_MEMORY_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS records (
     memory_id       TEXT PRIMARY KEY,
@@ -244,16 +202,14 @@ CREATE TABLE IF NOT EXISTS stage (
 );
 ";
 
-/// The load-bearing backfill sentinel. Preserved byte-for-byte from
-/// `memory/sqlite_store.rs`; operator flows key off this exact string.
-const TAINT_SENTINEL: &str = "pre-migration proposal: propose-time taint fact unrecoverable";
-
-/// A memory-realm database with genuine `ensure_column` scar tissue: rows
-/// written before `records.ever_quarantined` and `proposals.taint` existed.
-/// Opening the store must add the columns, preserve every legacy row
-/// unchanged, backfill `ever_quarantined = 1` for quarantined rows, and
-/// stamp pending proposals with the exact taint sentinel — applied rows stay
-/// NULL.
+/// A memory-realm database with pre-column, pre-ledger scar tissue must be
+/// refused typed at the realm connection: the file carries the domain's
+/// owned tables but no `meerkat_schema` row, which is below the mobkit
+/// 0.8.8 floor. The refusal must leave the fabricated rows untouched.
+///
+/// This chapter pinned the open-time `ensure_column` upgrade (column adds,
+/// quarantine/taint backfills) until the 0.8.11 reset retired pre-floor
+/// convergence; it now pins the typed refusal that replaced it.
 pub async fn legacy_memory_database(root: &Path) -> Result<(), ConformanceFailure> {
     let steps = Steps::chapter("legacy_memory_database");
     // The bundled store keys one database per realm:
@@ -265,135 +221,75 @@ pub async fn legacy_memory_database(root: &Path) -> Result<(), ConformanceFailur
     {
         let connection = steps.wrap(step, rusqlite::Connection::open(&db_path))?;
         steps.wrap(step, connection.execute_batch(LEGACY_MEMORY_SCHEMA))?;
-        for (memory_id, title, body, status_kind, hash) in [
-            (
-                "legacy-mem-active",
-                "Legacy active title",
-                "legacy active body",
-                "active",
-                "legacy-hash-active",
+        steps.wrap(
+            step,
+            connection.execute(
+                "INSERT INTO records \
+                 (memory_id, scope_kind, scope_key, kind, title, description, body, tags, \
+                  provenance, trust, status_kind, content_hash, created_at_ms, \
+                  updated_at_ms, usage_stats) \
+                 VALUES ('legacy-mem-active', 'identity', 'conformance:memory', 'fact', \
+                         'Legacy active title', '', 'legacy active body', '[]', \
+                         '{\"source\":\"legacy-fixture\"}', 'application', 'active', \
+                         'legacy-hash-active', 1000, 1000, '{}')",
+                [],
             ),
-            (
-                "legacy-mem-quarantined",
-                "Legacy quarantined title",
-                "legacy quarantined body",
-                "quarantined",
-                "legacy-hash-quarantined",
-            ),
-        ] {
-            steps.wrap(
-                step,
-                connection.execute(
-                    "INSERT INTO records \
-                     (memory_id, scope_kind, scope_key, kind, title, description, body, tags, \
-                      provenance, trust, status_kind, content_hash, created_at_ms, \
-                      updated_at_ms, usage_stats) \
-                     VALUES (?1, 'identity', 'conformance:memory', 'fact', ?2, '', ?3, '[]', \
-                             '{\"source\":\"legacy-fixture\"}', 'application', ?4, ?5, 1000, \
-                             1000, '{}')",
-                    rusqlite::params![memory_id, title, body, status_kind, hash],
-                ),
-            )?;
-        }
-        for (proposal_id, status) in [
-            ("legacy-prop-pending", "pending"),
-            ("legacy-prop-applied", "applied"),
-        ] {
-            steps.wrap(
-                step,
-                connection.execute(
-                    "INSERT INTO proposals \
-                     (proposal_id, scope_kind, scope_key, record, author, status, created_at_ms) \
-                     VALUES (?1, 'identity', 'conformance:memory', '{}', 'application', ?2, 1000)",
-                    rusqlite::params![proposal_id, status],
-                ),
-            )?;
-        }
+        )?;
     }
 
-    // --- open the store and force the realm connection (ensure_column runs) -----
-    let step = "open_runs_ensure_column_upgrade";
+    // --- realm connection is refused typed --------------------------------------
+    let step = "pre_ledger_realm_is_refused";
     let store = steps.wrap(step, SqliteAgentMemoryStore::open(root))?;
     let identity = steps.wrap(step, AgentIdentity::parse("conformance:upgrade"))?;
-    steps.wrap(
-        step,
-        store
-            .remember(
-                "default",
-                &identity,
-                NewAgentMemory {
-                    title: "Upgrade trigger".to_string(),
-                    body: "Written to force the realm connection open.".to_string(),
-                    tags: Vec::new(),
-                },
-            )
-            .await,
-    )?;
+    if store
+        .remember(
+            "default",
+            &identity,
+            NewAgentMemory {
+                title: "Upgrade trigger".to_string(),
+                body: "Written to force the realm connection open.".to_string(),
+                tags: Vec::new(),
+            },
+        )
+        .await
+        .is_ok()
+    {
+        return Err(steps.fail(
+            step,
+            "a pre-ledger memory realm must refuse typed at the realm connection: \
+             unledgered owned tables are below the mobkit 0.8.8 floor",
+        ));
+    }
 
-    // --- legacy rows preserved, backfills applied ---------------------------------
-    let step = "rows_preserved_and_backfilled";
+    // --- refusal left the legacy rows untouched ----------------------------------
+    let step = "refusal_preserves_rows";
     let connection = steps.wrap(step, rusqlite::Connection::open(&db_path))?;
-    let (title, body, quarantined_flag): (String, String, i64) = steps.wrap(
+    let (title, body): (String, String) = steps.wrap(
         step,
         connection.query_row(
-            "SELECT title, body, ever_quarantined FROM records WHERE memory_id = ?1",
-            rusqlite::params!["legacy-mem-quarantined"],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            "SELECT title, body FROM records WHERE memory_id = 'legacy-mem-active'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         ),
     )?;
     steps.ensure(
         step,
-        title == "Legacy quarantined title" && body == "legacy quarantined body",
-        "legacy record content must survive the ensure_column upgrade unchanged",
+        title == "Legacy active title" && body == "legacy active body",
+        "the refused realm connection must leave legacy record content unchanged",
     )?;
-    steps.ensure(
-        step,
-        quarantined_flag == 1,
-        "the ever_quarantined backfill must mark quarantined legacy rows",
-    )?;
-    let active_flag: i64 = steps.wrap(
+    let has_quarantine_column: bool = steps.wrap(
         step,
         connection.query_row(
-            "SELECT ever_quarantined FROM records WHERE memory_id = ?1",
-            rusqlite::params!["legacy-mem-active"],
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('records') \
+             WHERE name = 'ever_quarantined')",
+            [],
             |row| row.get(0),
         ),
     )?;
     steps.ensure(
         step,
-        active_flag == 0,
-        "active legacy rows must keep the ever_quarantined default of 0",
-    )?;
-
-    let step = "taint_sentinel_byte_for_byte";
-    let pending_taint: Option<String> = steps.wrap(
-        step,
-        connection.query_row(
-            "SELECT taint FROM proposals WHERE proposal_id = ?1",
-            rusqlite::params!["legacy-prop-pending"],
-            |row| row.get(0),
-        ),
-    )?;
-    steps.ensure(
-        step,
-        pending_taint.as_deref() == Some(TAINT_SENTINEL),
-        format!(
-            "pending legacy proposals must carry the exact backfill sentinel {TAINT_SENTINEL:?}, \
-             got {pending_taint:?} — operator flows key off these bytes"
-        ),
-    )?;
-    let applied_taint: Option<String> = steps.wrap(
-        step,
-        connection.query_row(
-            "SELECT taint FROM proposals WHERE proposal_id = ?1",
-            rusqlite::params!["legacy-prop-applied"],
-            |row| row.get(0),
-        ),
-    )?;
-    steps.ensure(
-        step,
-        applied_taint.is_none(),
-        "non-pending legacy proposals must stay untainted (NULL)",
+        !has_quarantine_column,
+        "the refusal must not half-apply the retired ensure_column upgrade",
     )?;
     Ok(())
 }

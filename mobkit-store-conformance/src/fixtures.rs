@@ -15,7 +15,7 @@ use meerkat_mobkit::memory::{MemoryKind, NewMemoryRecord};
 use meerkat_mobkit::types::UnifiedEvent;
 use meerkat_mobkit::unified_runtime::PersistedEvent;
 use meerkat_store_conformance::ConformanceFailure;
-pub use meerkat_store_conformance::fixtures::{legacy_session_blob, push_text, session_with_texts};
+pub use meerkat_store_conformance::fixtures::{push_text, session_with_texts};
 
 /// Serialize a session into the canonical continuity-snapshot payload: the
 /// Meerkat `Session` JSON document (what `ContinuitySessionStoreAdapter` and
