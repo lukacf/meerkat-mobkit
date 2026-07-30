@@ -47,13 +47,9 @@
 //!    registered backup naming. **No synthesis** — continuity fencing
 //!    tokens and console `AUTOINCREMENT` cursors are per-database sequences;
 //!    merging them corrupts CAS and cursor replay.
-//! 4. **Continuity checkpoint adoption.** H3's
-//!    [`crate::identity_first::checkpoint_adoption`] walk over the
-//!    canonical-resolved continuity database, invoked under the SAME fence
-//!    pass via
-//!    [`crate::identity_first::adopt_continuity_snapshots_already_fenced`]
-//!    (the fence lock is not re-entrant, so case 4 composes with the held
-//!    fence instead of re-acquiring); its report is merged.
+//! 4. **(Retired with the 0.8.11 reset.)** Continuity checkpoint adoption
+//!    minted embedded checkpoint stamps meerkat no longer reads; released
+//!    0.8.10 documents now convert through the explicit one-time importer.
 //! 5. **Deprecated leftovers (report-only).** The doctor's artifact
 //!    findings (legacy sharded-FS blobs, `*.pre-*` backups, `*.corrupt-*`
 //!    quarantines, the admission sidecar, fence lock files) plus dead
@@ -61,7 +57,7 @@
 //!    Nothing in case 5 is ever moved.
 //!
 //! Any unresolved twin fails the whole run closed (mirroring `rkat storage
-//! migrate`): the divergence report is the entire output and cases 1/2/4
+//! migrate`): the divergence report is the entire output and cases 1/2
 //! do not run, because every one of them would have to pick a spelling.
 
 use std::collections::BTreeMap;
@@ -79,20 +75,12 @@ use sha2::{Digest, Sha256};
 
 use crate::console_aggregator::SqliteConsoleLogStore;
 use crate::identity_first::LocalContinuityStore;
-use crate::identity_first::checkpoint_adoption::{
-    AdoptionMode, ContinuityAdoptionReport, adopt_continuity_snapshots_already_fenced,
-    adopt_continuity_snapshots_blocking,
-};
 use crate::memory::sqlite_store::SqliteAgentMemoryStore;
 use crate::runtime::SqliteMetadataStore;
 use crate::storage_doctor::{self, DATABASE_FAMILIES, MEMORY_LEDGER_DOMAIN, MEMORY_ROOT_SPELLINGS};
 use crate::storage_layout::{
     DatabaseProvenance, DatabaseSlot, MobKitStorageLayout, RUNTIME_REGISTRY_FILE_NAME,
     StorageLayoutError,
-};
-use crate::storage_marker_stamp::{
-    MarkerStampError, MarkerStampMode, SessionDocumentStore, SessionMarkerStampReport,
-    stamp_session_document_markers_already_fenced, stamp_session_document_markers_blocking,
 };
 use crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE;
 
@@ -329,16 +317,6 @@ pub struct MobKitMigrateReport {
     /// File-name twins and their resolution (case 3).
     #[serde(default)]
     pub twins: Vec<TwinReport>,
-    /// Continuity checkpoint-evidence adoption outcome (case 4).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adoption: Option<CheckpointAdoptionOutcome>,
-    /// Digest-format marker stamping per session-document store (case 6):
-    /// verified-but-marker-less documents (written by pre-marker builds)
-    /// are respelled in place so decode-time heal probes stop re-running
-    /// on every load. One outcome per store (continuity, runtime,
-    /// sessions).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub marker_stamping: Vec<MarkerStampStoreOutcome>,
     /// Deprecated-leftover findings (case 5; report-only), reusing the
     /// doctor finding vocabulary.
     #[serde(default)]
@@ -526,38 +504,6 @@ pub enum TwinResolution {
         /// Archive paths of the non-adopted copies.
         archived: Vec<PathBuf>,
     },
-}
-
-/// Case 4 outcome: the merged H3 adoption walk (or why it did not run).
-#[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointAdoptionOutcome {
-    /// The continuity database the walk covered (canonical-resolved).
-    pub database: PathBuf,
-    /// The H3 walk report (`None` when skipped).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<ContinuityAdoptionReport>,
-    /// Set when adoption did not run (no continuity database).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skipped: Option<String>,
-}
-
-/// Case 6 outcome: the digest-format marker-stamping walk over one
-/// session-document store (or why it did not run).
-#[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MarkerStampStoreOutcome {
-    /// Store label (`continuity`, `runtime`, `sessions`).
-    pub store: String,
-    /// The database the walk covered (canonical-resolved).
-    pub database: PathBuf,
-    /// The walk report (`None` when skipped).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<SessionMarkerStampReport>,
-    /// Set when the walk did not run (no database, wrong schema, unfenced
-    /// after a rename).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skipped: Option<String>,
 }
 
 /// The full `storage-prune` report for one state directory. Shape mirrors
@@ -827,14 +773,12 @@ pub fn migrate_state_dir(
         );
     }
 
-    // ── Case 4: continuity checkpoint-evidence adoption (H3 machinery). ──
-    run_checkpoint_adoption(&layout, mode, &unfenced, &mut report);
-
-    // ── Case 6: digest-format marker stamping over every session-document
-    // store (runs after adoption so freshly adopted rows — which adoption's
-    // re-serialization already marker-stamps — classify already-current
-    // here, and remaining legacy rows stay adoption's population). ────────
-    run_marker_stamping(&layout, mode, &unfenced, &mut report);
+    // Cases 4 and 6 (continuity checkpoint adoption, digest-format marker
+    // stamping) were retired with the 0.8.11 reset: the checkpoint stamps
+    // adoption minted and the marker the stamping walk respelled are
+    // vocabulary meerkat no longer reads. Released 0.8.10 documents now
+    // surface in the doctor census and convert through the explicit
+    // one-time importer instead.
 
     // ── Case 5: deprecated leftovers (report-only). ──────────────────────
     let scope = DiagnoseScope::new(vec![state_dir.to_path_buf()]);
@@ -1037,177 +981,6 @@ fn open_stores_through_ledgered_constructors(
         && let Err(error) = meerkat::SqliteDetachedJobStore::open(&jobs)
     {
         errors.push(format!("detached-job store open failed: {error}"));
-    }
-}
-
-/// Case 4: the H3 adoption walk over the canonical-resolved continuity
-/// database. Apply composes with the already-held pass fence; dry-run takes
-/// H3's own short-lived fence (nothing else is held). A continuity database
-/// in `unfenced` (canonical fence lost after a rename) is skipped
-/// fail-closed; the fence failure is already recorded as an error.
-fn run_checkpoint_adoption(
-    layout: &MobKitStorageLayout,
-    mode: MigrateMode,
-    unfenced: &[PathBuf],
-    report: &mut MobKitMigrateReport,
-) {
-    let resolved = match layout.continuity_db() {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            report.errors.push(format!(
-                "continuity locator unresolved for adoption: {error}"
-            ));
-            return;
-        }
-    };
-    if unfenced.contains(&resolved.path) {
-        report.adoption = Some(CheckpointAdoptionOutcome {
-            database: resolved.path,
-            report: None,
-            skipped: Some(
-                "continuity database is not fenced at its canonical path after rename; \
-                 adoption skipped (fail-closed)"
-                    .to_string(),
-            ),
-        });
-        return;
-    }
-    if !resolved.path.is_file() {
-        report.adoption = Some(CheckpointAdoptionOutcome {
-            database: resolved.path,
-            report: None,
-            skipped: Some("no continuity database materialized; nothing to adopt".to_string()),
-        });
-        return;
-    }
-    let result = match mode {
-        MigrateMode::Apply => {
-            adopt_continuity_snapshots_already_fenced(&resolved.path, AdoptionMode::Apply)
-        }
-        _ => adopt_continuity_snapshots_blocking(&resolved.path, AdoptionMode::DryRun),
-    };
-    match result {
-        Ok(walk) => {
-            if !walk.is_clean() {
-                report.errors.push(format!(
-                    "{} continuity snapshot row(s) refused checkpoint adoption; see the \
-                     adoption report",
-                    walk.refused.len()
-                ));
-            }
-            report.adoption = Some(CheckpointAdoptionOutcome {
-                database: resolved.path,
-                report: Some(walk),
-                skipped: None,
-            });
-        }
-        Err(error) => report
-            .errors
-            .push(format!("continuity checkpoint adoption failed: {error}")),
-    }
-}
-
-/// Case 6: digest-format marker stamping over every session-document store
-/// (continuity `session_snapshots`, meerkat runtime
-/// `runtime_session_snapshots`, meerkat legacy headless `sessions` rows).
-/// Same fence discipline as case 4: apply composes with the already-held
-/// pass fence; dry-run takes the walk's own short-lived fence and read-only
-/// connection. A database in `unfenced` (canonical fence lost after a
-/// rename) is skipped fail-closed. Refusals surface in
-/// [`MobKitMigrateReport::errors`] ⇒ nonzero exit.
-fn run_marker_stamping(
-    layout: &MobKitStorageLayout,
-    mode: MigrateMode,
-    unfenced: &[PathBuf],
-    report: &mut MobKitMigrateReport,
-) {
-    let stamp_mode = match mode {
-        MigrateMode::Apply => MarkerStampMode::Apply,
-        _ => MarkerStampMode::DryRun,
-    };
-    for (slot, store) in [
-        (DatabaseSlot::Continuity, SessionDocumentStore::Continuity),
-        (
-            DatabaseSlot::Runtime,
-            SessionDocumentStore::RuntimeSnapshots,
-        ),
-        (DatabaseSlot::Sessions, SessionDocumentStore::SessionStore),
-    ] {
-        let resolved = match layout.resolve_database(slot) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                report.errors.push(format!(
-                    "{} locator unresolved for marker stamping: {error}",
-                    store.label()
-                ));
-                continue;
-            }
-        };
-        if unfenced.contains(&resolved.path) {
-            report.marker_stamping.push(MarkerStampStoreOutcome {
-                store: store.label().to_string(),
-                database: resolved.path,
-                report: None,
-                skipped: Some(
-                    "database is not fenced at its canonical path after rename; \
-                     marker stamping skipped (fail-closed)"
-                        .to_string(),
-                ),
-            });
-            continue;
-        }
-        if !resolved.path.is_file() {
-            report.marker_stamping.push(MarkerStampStoreOutcome {
-                store: store.label().to_string(),
-                database: resolved.path,
-                report: None,
-                skipped: Some("no database materialized; nothing to stamp".to_string()),
-            });
-            continue;
-        }
-        let result = match stamp_mode {
-            MarkerStampMode::Apply => {
-                stamp_session_document_markers_already_fenced(&resolved.path, store, stamp_mode)
-            }
-            MarkerStampMode::DryRun => {
-                stamp_session_document_markers_blocking(&resolved.path, store, stamp_mode)
-            }
-        };
-        match result {
-            Ok(walk) => {
-                if !walk.is_clean() {
-                    report.errors.push(format!(
-                        "{} session document row(s) in the {} store refused digest-format \
-                         marker stamping; see the marker-stamping report",
-                        walk.refused.len(),
-                        store.label()
-                    ));
-                }
-                report.marker_stamping.push(MarkerStampStoreOutcome {
-                    store: store.label().to_string(),
-                    database: resolved.path,
-                    report: Some(walk),
-                    skipped: None,
-                });
-            }
-            // A file without this store's table is not this store (for
-            // example a runtime.sqlite created before runtime snapshots
-            // existed): skipped, never an error.
-            Err(MarkerStampError::MissingTable { table, .. }) => {
-                report.marker_stamping.push(MarkerStampStoreOutcome {
-                    store: store.label().to_string(),
-                    database: resolved.path,
-                    report: None,
-                    skipped: Some(format!(
-                        "database carries no {table} table; not this session-document store"
-                    )),
-                });
-            }
-            Err(error) => report.errors.push(format!(
-                "{} digest-format marker stamping failed: {error}",
-                store.label()
-            )),
-        }
     }
 }
 

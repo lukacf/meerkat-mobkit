@@ -46,8 +46,7 @@
 //! The censused stores are the meerkat session store, the continuity store,
 //! and the meerkat runtime store's retained `runtime_session_snapshots` (a
 //! full-envelope session copy kept across restarts and decoded on the
-//! authoritative resume path; the same three stores
-//! [`crate::storage_marker_stamp`] enumerates). Classification is by minimal
+//! authoritative resume path). Classification is by minimal
 //! raw-JSON field parses, never by decoding whole `Session`s (decoding runs
 //! validation and can refuse; a refusing document is itself a reportable
 //! fact, carried with its error string). [`DoctorOptions::verbose`] adds one
@@ -57,13 +56,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use meerkat_core::Session;
 use meerkat_core::storage_diagnostics::{
     DatabaseInventory, DiagnoseScope, FindingSeverity, StorageDiagnosis, StorageDiagnosticsError,
     StorageFinding, StorageInventoryEntry, StorageMigrator,
-};
-use meerkat_core::{
-    SESSION_CHECKPOINT_STAMP_KEY, SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY, Session,
-    SessionCheckpointMetadataState, SessionCheckpointState, session_metadata_document_from_slice,
 };
 use meerkat_sqlite::JsonColumnBytes;
 use rusqlite::Connection;
@@ -72,7 +68,6 @@ use crate::auth::GATEWAY_PEER_KEY_FILE;
 use crate::blob_store::is_valid_blob_id_value;
 use crate::schedule_wiring::SCHEDULE_STORE_FILE;
 use crate::storage_health::ResolvedStorageSummary;
-use crate::storage_marker_stamp::SessionDocumentStore;
 use crate::workgraph_admission::WORKGRAPH_ADMISSION_SIDECAR_FILE;
 use crate::workgraph_wiring::WORKGRAPH_STORE_FILE;
 
@@ -90,21 +85,26 @@ pub const FINDING_NO_SCHEMA_LEDGER: &str = "no-schema-ledger";
 pub const FINDING_EMPTY_DATABASE_SHELL: &str = "empty-database-shell";
 /// A database file that cannot be opened or queried read-only.
 pub const FINDING_DATABASE_UNREADABLE: &str = "database-unreadable";
-/// Continuity session snapshots without a typed checkpoint stamp (the census
-/// H3's dry-run adoption consumes; finding is per identity).
-pub const FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS: &str =
-    "legacy-unverified-continuity-snapshots";
-/// Snapshot checkpoint metadata that is present but malformed (never
-/// laundered into "legacy").
-pub const FINDING_CHECKPOINT_METADATA_INVALID: &str = "checkpoint-metadata-invalid";
-/// A stamped continuity snapshot whose checkpoint digest does not verify
-/// against its payload bytes (tampered or corrupted; restore rejects it).
-/// Bounded work: digests are verified only for the stamped rows the census
-/// already materializes — the payload bytes are in hand, only stamped rows
-/// pay the full-session decode + digest.
-pub const FINDING_CHECKPOINT_DIGEST_MISMATCH: &str = "checkpoint-digest-mismatch";
+/// Continuity session documents still in the released 0.8.10 envelope,
+/// awaiting their one-time import (finding is per identity). The 0.8.11
+/// reset deleted the embedded checkpoint vocabulary; released documents are
+/// interpretable only through the explicit one-time importer.
+pub const FINDING_RELEASED_0810_CONTINUITY_SNAPSHOTS: &str = "released-0810-continuity-snapshots";
+/// A head-canonical continuity session whose head or strand rows fail to
+/// materialize into the document restore would load (corrupted rows or a
+/// head/strand mismatch; restore rejects it).
+pub const FINDING_CONTINUITY_HEAD_MATERIALIZATION_FAILED: &str =
+    "continuity-head-materialization-failed";
 /// Continuity snapshot payloads that do not decode as a session document.
 pub const FINDING_CONTINUITY_SNAPSHOT_UNDECODABLE: &str = "continuity-snapshot-undecodable";
+
+/// Released 0.8.10 metadata key spellings, frozen locally for the raw-JSON
+/// censuses. meerkat 0.8.11 deleted the typed checkpoint vocabulary, but the
+/// strings still exist inside stored released documents and remain census
+/// evidence until their one-time import.
+const RELEASED_CHECKPOINT_STAMP_KEY: &str = "session_checkpoint_stamp_v1";
+const RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: &str =
+    "session_transcript_history_checkpoint_digest_v1";
 /// `session_snapshots` rows shadowed by a head-canonical session
 /// (`continuity_session_heads`): frozen migration archives that are never
 /// read or written again. Inventory-grade — they are dead weight until
@@ -766,17 +766,12 @@ fn inspect_database(
     inventory
 }
 
-/// Checkpoint-evidence census over a continuity store: raw read-only SQL
-/// over `session_snapshots.data`, each payload decoded as a Meerkat session
-/// document and classified through the core metadata census helper. This is
-/// the per-identity stamped/legacy count H3's dry-run adoption consumes.
-///
-/// A structural stamp is not counted as healthy on its own: restore verifies
-/// the stamp digest against the full document, so the census does too — a
-/// stamped row whose digest fails verification is an error-severity
-/// [`FINDING_CHECKPOINT_DIGEST_MISMATCH`] naming the session. The payload
-/// bytes are already loaded for the structural check; only stamped rows pay
-/// the additional full-session decode + digest.
+/// Document-format census over a continuity store: raw read-only SQL over
+/// `session_snapshots.data`, each payload classified as a current 0.8.11
+/// document, a released 0.8.10 envelope (interpretable only through the
+/// explicit one-time importer), or undecodable. The 0.8.11 reset deleted the
+/// embedded checkpoint verification lattice, so there is no stamp census any
+/// more — envelope vintage and decodability are the remaining real facts.
 fn census_continuity_snapshots(
     db_path: &Path,
     identity_filter: Option<&str>,
@@ -792,13 +787,12 @@ fn census_continuity_snapshots(
         Err(_) => return, // already reported by inspect_database
     }
 
-    // identity -> (stamped-and-verified, legacy)
+    // identity -> (current-format, released-0.8.10)
     let mut census: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut invalid = 0usize;
     let mut undecodable = 0usize;
-    // (session id, identity, verification error) per stamped row whose
-    // digest fails against the payload bytes.
-    let mut digest_failures: Vec<(String, String, String)> = Vec::new();
+    // (session id, identity, error) per head-canonical session whose head or
+    // strand rows fail to materialize into the document restore would load.
+    let mut materialization_failures: Vec<(String, String, String)> = Vec::new();
     // Sessions whose blob row is shadowed by a head-canonical head row.
     let mut archived: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -824,31 +818,14 @@ fn census_continuity_snapshots(
                 continue;
             }
             let data: Vec<u8> = row.get(2)?;
-            let Ok(document) = session_metadata_document_from_slice(&data) else {
+            if serde_json::from_slice::<Session>(&data).is_ok() {
+                census.entry(identity).or_default().0 += 1;
+            } else if meerkat_core::import_released_0810_session(&data).is_ok() {
+                // Read-only classification: the import receipt is discarded,
+                // nothing is adopted or rewritten here.
+                census.entry(identity).or_default().1 += 1;
+            } else {
                 undecodable += 1;
-                continue;
-            };
-            match document.try_checkpoint_metadata_state() {
-                Ok(SessionCheckpointMetadataState::Stamped(_)) => {
-                    match serde_json::from_slice::<Session>(&data) {
-                        Ok(session) => match session.try_checkpoint_state() {
-                            Ok(SessionCheckpointState::Verified(_)) => {
-                                census.entry(identity).or_default().0 += 1;
-                            }
-                            Ok(SessionCheckpointState::LegacyUnverified { .. }) => {
-                                census.entry(identity).or_default().1 += 1;
-                            }
-                            Err(error) => {
-                                digest_failures.push((session_id, identity, error.to_string()));
-                            }
-                        },
-                        Err(_) => undecodable += 1,
-                    }
-                }
-                Ok(SessionCheckpointMetadataState::LegacyUnverified { .. }) => {
-                    census.entry(identity).or_default().1 += 1;
-                }
-                Err(_) => invalid += 1,
             }
         }
         Ok(())
@@ -859,9 +836,8 @@ fn census_continuity_snapshots(
             &conn,
             identity_filter,
             &mut census,
-            &mut invalid,
             &mut undecodable,
-            &mut digest_failures,
+            &mut materialization_failures,
         );
     }
 
@@ -877,15 +853,16 @@ fn census_continuity_snapshots(
         return;
     }
 
-    for (identity, (stamped, legacy)) in &census {
-        if *legacy > 0 {
+    for (identity, (current, released)) in &census {
+        if *released > 0 {
             out.findings.push(
                 StorageFinding::new(
                     FindingSeverity::Warning,
-                    FINDING_LEGACY_UNVERIFIED_CONTINUITY_SNAPSHOTS,
+                    FINDING_RELEASED_0810_CONTINUITY_SNAPSHOTS,
                     format!(
-                        "{legacy} legacy-unverified session snapshot(s) ({stamped} stamped) for \
-                         identity '{identity}'; checkpoint adoption arrives with H3"
+                        "{released} released-0.8.10 session document(s) ({current} current) for \
+                         identity '{identity}'; interpretable only through the one-time 0.8.11 \
+                         import"
                     ),
                 )
                 .with_path(db_path.to_path_buf())
@@ -893,31 +870,18 @@ fn census_continuity_snapshots(
             );
         }
     }
-    for (session_id, identity, error) in &digest_failures {
+    for (session_id, identity, error) in &materialization_failures {
         out.findings.push(
             StorageFinding::new(
                 FindingSeverity::Error,
-                FINDING_CHECKPOINT_DIGEST_MISMATCH,
+                FINDING_CONTINUITY_HEAD_MATERIALIZATION_FAILED,
                 format!(
-                    "stamped snapshot for session '{session_id}' fails checkpoint digest \
-                     verification ({error}); restore will reject it"
+                    "head-canonical session '{session_id}' fails to materialize ({error}); \
+                     restore will reject it"
                 ),
             )
             .with_path(db_path.to_path_buf())
             .with_realm(identity.clone()),
-        );
-    }
-    if invalid > 0 {
-        out.findings.push(
-            StorageFinding::new(
-                FindingSeverity::Error,
-                FINDING_CHECKPOINT_METADATA_INVALID,
-                format!(
-                    "{invalid} snapshot(s) carry malformed checkpoint metadata \
-                     (present-but-invalid evidence is never laundered into legacy)"
-                ),
-            )
-            .with_path(db_path.to_path_buf()),
         );
     }
     if undecodable > 0 {
@@ -956,17 +920,16 @@ fn session_is_head_canonical(conn: &Connection, session_id: &str) -> Result<bool
 }
 
 /// Census the head-canonical half of the file: each `continuity_session_heads`
-/// row is classified structurally from the head's metadata, and stamped heads
-/// pay the same full verification the blob path pays — materializing the
-/// head-covered strand rows and verifying the checkpoint digest against the
-/// document restore will actually load.
+/// row is classified by envelope vintage from its raw metadata (a released
+/// 0.8.10 stamp key marks it importer-only), and current heads pay the full
+/// materialization the blob path pays — decoding the head-covered strand rows
+/// into the document restore will actually load.
 fn census_head_canonical_sessions(
     conn: &Connection,
     identity_filter: Option<&str>,
     census: &mut BTreeMap<String, (usize, usize)>,
-    invalid: &mut usize,
     undecodable: &mut usize,
-    digest_failures: &mut Vec<(String, String, String)>,
+    materialization_failures: &mut Vec<(String, String, String)>,
 ) {
     let mut statement = match conn
         .prepare("SELECT session_id, identity, head_json FROM continuity_session_heads")
@@ -989,35 +952,31 @@ fn census_head_canonical_sessions(
         if identity_filter.is_some_and(|filter| filter != identity) {
             continue;
         }
+        let Ok(head_value) = serde_json::from_slice::<serde_json::Value>(&head_json) else {
+            *undecodable += 1;
+            continue;
+        };
+        if head_value
+            .get("metadata")
+            .and_then(|metadata| metadata.get(RELEASED_CHECKPOINT_STAMP_KEY))
+            .is_some()
+        {
+            census.entry(identity).or_default().1 += 1;
+            continue;
+        }
         let Ok(head) =
             serde_json::from_slice::<meerkat_core::session_store::SessionHead>(&head_json)
         else {
             *undecodable += 1;
             continue;
         };
-        match meerkat_core::session_checkpoint_metadata_state(&head.id, &head.metadata) {
-            Ok(SessionCheckpointMetadataState::Stamped(_)) => {
-                match materialize_head_canonical_session(conn, &head) {
-                    Ok(session) => match session.try_checkpoint_state() {
-                        Ok(SessionCheckpointState::Verified(_)) => {
-                            census.entry(identity).or_default().0 += 1;
-                        }
-                        Ok(SessionCheckpointState::LegacyUnverified { .. }) => {
-                            census.entry(identity).or_default().1 += 1;
-                        }
-                        Err(error) => {
-                            digest_failures.push((session_id, identity, error.to_string()));
-                        }
-                    },
-                    Err(error) => {
-                        digest_failures.push((session_id, identity, error));
-                    }
-                }
+        match materialize_head_canonical_session(conn, &head) {
+            Ok(_) => {
+                census.entry(identity).or_default().0 += 1;
             }
-            Ok(SessionCheckpointMetadataState::LegacyUnverified { .. }) => {
-                census.entry(identity).or_default().1 += 1;
+            Err(error) => {
+                materialization_failures.push((session_id, identity, error));
             }
-            Err(_) => *invalid += 1,
         }
     }
 }
@@ -1091,7 +1050,7 @@ impl RepresentationAuthority {
 }
 
 /// Checkpoint-stamp schema evidence, from the minimal
-/// `metadata[SESSION_CHECKPOINT_STAMP_KEY].schema_version` parse — no
+/// `metadata[RELEASED_CHECKPOINT_STAMP_KEY].schema_version` parse — no
 /// verification pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StampSchemaEvidence {
@@ -1143,11 +1102,11 @@ impl WitnessFormatEvidence {
     }
 }
 
-/// `metadata[SESSION_CHECKPOINT_STAMP_KEY].schema_version`, minimally.
+/// `metadata[RELEASED_CHECKPOINT_STAMP_KEY].schema_version`, minimally.
 fn classify_stamp_schema(
     metadata: &serde_json::Map<String, serde_json::Value>,
 ) -> StampSchemaEvidence {
-    let Some(stamp) = metadata.get(SESSION_CHECKPOINT_STAMP_KEY) else {
+    let Some(stamp) = metadata.get(RELEASED_CHECKPOINT_STAMP_KEY) else {
         return StampSchemaEvidence::Absent;
     };
     let Some(fields) = stamp.as_object() else {
@@ -1173,7 +1132,7 @@ fn classify_witness_format(
     metadata: &serde_json::Map<String, serde_json::Value>,
     stamp: &StampSchemaEvidence,
 ) -> WitnessFormatEvidence {
-    match metadata.get(SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY) {
+    match metadata.get(RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY) {
         Some(serde_json::Value::String(_)) => WitnessFormatEvidence::Format(2),
         Some(serde_json::Value::Object(fields)) => match fields
             .get("witness_format")
@@ -1536,9 +1495,7 @@ fn census_continuity_rows(
 
 /// Compatibility rows of the runtime store: `runtime_session_snapshots`
 /// rows are retained full-envelope session documents, kept across restarts
-/// and decoded on the authoritative resume path — the same table/column
-/// shape the marker-stamp walker rewrites
-/// ([`SessionDocumentStore::RuntimeSnapshots`]), censused through the same
+/// and decoded on the authoritative resume path, censused through the same
 /// envelope extraction the continuity census uses rather than a decoder of
 /// its own. Every row is whole-blob (the runtime store has no
 /// head-canonical channel) and carries no identity; rows are keyed by
@@ -1547,10 +1504,7 @@ fn census_runtime_rows(
     conn: &Connection,
     census: &mut CompatCensus,
 ) -> Result<CompatSweep, rusqlite::Error> {
-    if !table_exists(
-        conn,
-        SessionDocumentStore::RuntimeSnapshots.required_table(),
-    )? {
+    if !table_exists(conn, "runtime_session_snapshots")? {
         return Ok(CompatSweep::NoSessionTables);
     }
     let mut statement = conn.prepare(
@@ -2506,14 +2460,14 @@ mod tests {
 
         // Stamp schema 2, no carrier: implied witness 2.
         let (stamp, witness) = classify(json!({
-            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2}
+            RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 2}
         }));
         assert_eq!(stamp, StampSchemaEvidence::Version(2));
         assert_eq!(witness, WitnessFormatEvidence::Format(2));
 
         // Stamp schema 3, no carrier: implied witness 3.
         let (stamp, witness) = classify(json!({
-            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+            RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
         }));
         assert_eq!(stamp, StampSchemaEvidence::Version(3));
         assert_eq!(witness, WitnessFormatEvidence::Format(3));
@@ -2522,16 +2476,16 @@ mod tests {
         // the carrier IS the witness evidence, and the implied-format
         // fallback never overrides it.
         let (stamp, witness) = classify(json!({
-            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
-            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: "sha256:abc"
+            RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
+            RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: "sha256:abc"
         }));
         assert_eq!(stamp, StampSchemaEvidence::Version(3));
         assert_eq!(witness, WitnessFormatEvidence::Format(2));
 
         // An object carrier declares its own witness_format.
         let (stamp, witness) = classify(json!({
-            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
-            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {
+            RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
+            RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: {
                 "witness_format": 3,
                 "revision_digest_format": 2,
                 "digest": "sha256:abc"
@@ -2542,17 +2496,17 @@ mod tests {
 
         // Malformed evidence is never laundered into a format number.
         let (_, witness) = classify(json!({
-            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {"digest": "sha256:abc"}
+            RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: {"digest": "sha256:abc"}
         }));
         assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
         assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
         let (stamp, _) = classify(json!({
-            SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
+            RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
         }));
         assert!(matches!(stamp, StampSchemaEvidence::Malformed(_)));
         assert_eq!(stamp.census_key(), MALFORMED_CENSUS_KEY);
         let (_, witness) = classify(json!({
-            SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: 7
+            RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: 7
         }));
         assert!(matches!(witness, WitnessFormatEvidence::Malformed(_)));
         assert_eq!(witness.census_key(), MALFORMED_CENSUS_KEY);
@@ -2599,7 +2553,7 @@ mod tests {
                 &conn,
                 "s-v3",
                 &serde_json::json!({
-                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                    RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
                 })
                 .to_string(),
             );
@@ -2610,8 +2564,8 @@ mod tests {
                 &conn,
                 "s-head",
                 &serde_json::json!({
-                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
-                    SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: "sha256:abc"
+                    RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 2},
+                    RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: "sha256:abc"
                 })
                 .to_string(),
             );
@@ -2623,8 +2577,8 @@ mod tests {
                 &conn,
                 "s-head-v3",
                 &serde_json::json!({
-                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
-                    SESSION_TRANSCRIPT_HISTORY_CHECKPOINT_DIGEST_KEY: {
+                    RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3},
+                    RELEASED_TRANSCRIPT_HISTORY_WITNESS_KEY: {
                         "witness_format": 3,
                         "revision_digest_format": 2,
                         "digest": "sha256:def"
@@ -2747,7 +2701,7 @@ mod tests {
             // blob archive (excluded from the census).
             let head_json = serde_json::json!({
                 "metadata": {
-                    SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                    RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
                 }
             });
             conn.execute(
@@ -2866,7 +2820,7 @@ mod tests {
                 "session-runtime:v3",
                 &serde_json::to_vec(&serde_json::json!({
                     "metadata": {
-                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
+                        RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": 3}
                     }
                 }))
                 .unwrap(),
@@ -2877,7 +2831,7 @@ mod tests {
                 "session-runtime:malformed",
                 &serde_json::to_vec(&serde_json::json!({
                     "metadata": {
-                        SESSION_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
+                        RELEASED_CHECKPOINT_STAMP_KEY: {"schema_version": "three"}
                     }
                 }))
                 .unwrap(),

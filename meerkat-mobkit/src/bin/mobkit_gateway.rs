@@ -697,112 +697,11 @@ fn init_error(request_id: Value, code: i64, message: String) -> Value {
     })
 }
 
-const STORAGE_ADOPT_CHECKPOINTS_USAGE: &str = "usage: mobkit_gateway storage-adopt-checkpoints \
-     (--db <path> | --state-dir <dir>) [--apply] [--json]\n\
-     Adopt legacy (pre-typed) session documents inside continuity snapshots \
-     into typed checkpoint authority (storage-unification H3).\n\
-     Dry-run by default; --apply rewrites legacy rows in place under the \
-     exclusive maintenance fence.\n\
-     Exit codes: 0 clean, 1 refusals or fence/database failure, 2 usage error.";
-
-/// Maintenance verb: `mobkit_gateway storage-adopt-checkpoints`. Runs the H3
-/// continuity-snapshot adoption walk and prints the report. Deliberately a
-/// standalone argv verb that bypasses the stdin init handshake — adoption is
-/// never an eager side effect of ordinary gateway startup.
-fn run_storage_adopt_checkpoints(args: &[String]) -> i32 {
-    let mut db: Option<PathBuf> = None;
-    let mut state_dir: Option<PathBuf> = None;
-    let mut apply = false;
-    let mut json = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--db" => match iter.next() {
-                Some(value) => db = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!("--db requires a path\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
-                    return 2;
-                }
-            },
-            "--state-dir" => match iter.next() {
-                Some(value) => state_dir = Some(PathBuf::from(value)),
-                None => {
-                    eprintln!(
-                        "--state-dir requires a directory\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
-                    );
-                    return 2;
-                }
-            },
-            "--apply" => apply = true,
-            "--json" => json = true,
-            other => {
-                eprintln!("unknown argument {other:?}\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}");
-                return 2;
-            }
-        }
-    }
-    let db_path = match (db, state_dir) {
-        (Some(db), None) => db,
-        (None, Some(dir)) => {
-            // Standalone canonical-name-first probing over the state
-            // directory. The gateway home (runtime registry + peer key)
-            // plays no role in continuity resolution, so the layout is
-            // constructed with injected roots instead of reading XDG state
-            // in a maintenance verb.
-            let layout = MobKitStorageLayout::with_injected_roots(dir, None);
-            match layout.continuity_db() {
-                Ok(resolved) => resolved.path,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return 1;
-                }
-            }
-        }
-        _ => {
-            eprintln!(
-                "exactly one of --db / --state-dir is required\n{STORAGE_ADOPT_CHECKPOINTS_USAGE}"
-            );
-            return 2;
-        }
-    };
-    let mode = if apply {
-        meerkat_mobkit::identity_first::AdoptionMode::Apply
-    } else {
-        meerkat_mobkit::identity_first::AdoptionMode::DryRun
-    };
-    match meerkat_mobkit::identity_first::adopt_continuity_snapshots_blocking(&db_path, mode) {
-        Ok(report) => {
-            if json {
-                match serde_json::to_string_pretty(&report) {
-                    Ok(text) => println!("{text}"),
-                    Err(error) => {
-                        eprintln!("failed to serialize adoption report: {error}");
-                        return 1;
-                    }
-                }
-            } else {
-                println!(
-                    "continuity checkpoint adoption ({}) at {}",
-                    if apply { "apply" } else { "dry-run" },
-                    db_path.display()
-                );
-                println!("{report}");
-            }
-            i32::from(!report.is_clean())
-        }
-        Err(error) => {
-            eprintln!("{error}");
-            1
-        }
-    }
-}
-
 const STORAGE_MIGRATE_USAGE: &str = "usage: mobkit_gateway storage-migrate --state-dir <dir> \
      [--apply] [--adopt <path>] [--json]\n\
      Fenced offline migration of one MobKit state directory \
      (storage-unification M6): ledger baseline, legacy-spelling renames, \
-     twin reconciliation, continuity checkpoint adoption, digest-format \
-     marker stamping (stamp-digest-format-markers), leftover census.\n\
+     twin reconciliation, leftover census.\n\
      Dry-run by default; --apply mutates under the exclusive maintenance \
      fence. --adopt <path> resolves a divergent file-name twin by adopting \
      that copy and archiving the rest read-only (requires --apply).\n\
@@ -961,30 +860,6 @@ fn print_migrate_report_text(report: &meerkat_mobkit::MobKitMigrateReport) {
             describe(entry.after)
         );
     }
-    if let Some(adoption) = &report.adoption {
-        match (&adoption.skipped, &adoption.report) {
-            (Some(skipped), _) => println!("adoption: {skipped}"),
-            (None, Some(walk)) => {
-                println!("adoption at {}:\n{walk}", adoption.database.display());
-            }
-            (None, None) => {}
-        }
-    }
-    for outcome in &report.marker_stamping {
-        match (&outcome.skipped, &outcome.report) {
-            (Some(skipped), _) => {
-                println!("marker stamping [{}]: {skipped}", outcome.store);
-            }
-            (None, Some(walk)) => {
-                println!(
-                    "marker stamping [{}] at {}:\n{walk}",
-                    outcome.store,
-                    outcome.database.display()
-                );
-            }
-            (None, None) => {}
-        }
-    }
     for finding in &report.findings {
         let path = finding
             .path
@@ -1123,9 +998,6 @@ fn main() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
-    if args.first().map(String::as_str) == Some("storage-adopt-checkpoints") {
-        std::process::exit(run_storage_adopt_checkpoints(&args[1..]));
-    }
     if args.first().map(String::as_str) == Some("storage-migrate") {
         std::process::exit(run_storage_migrate(&args[1..]));
     }
