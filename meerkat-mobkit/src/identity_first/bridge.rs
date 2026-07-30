@@ -296,6 +296,12 @@ pub enum ResumeFallbackReason {
     /// The persisted session/runtime identity is incompatible with the current
     /// mob runtime binding.
     RuntimeIdentityIncompatible { detail: String },
+    /// The continuity record points at a session that meerkat reports as
+    /// typed-Absent AND the durable store confirms was never persisted (a
+    /// registration/rebind-minted head for a quiet member whose content-less
+    /// saves were skipped). There is no transcript to preserve, so a fresh
+    /// spawn is legitimate recovery, not data loss.
+    NeverPersisted { detail: String },
 }
 
 /// Result of attempting to materialize a persisted identity through resume.
@@ -1213,6 +1219,33 @@ impl MobSessionBridge {
     /// retired-with-intact-snapshot sessions auto-revive on resume). The
     /// probe stays as a regression tripwire: a GONE result on ≥0.7.29 is
     /// always a platform bug worth a loud, immediate signal.
+    /// Belt check for the never-persisted fresh-spawn fallback: true ONLY
+    /// when a durable read path positively answers "no row exists for this
+    /// session id". Probes, in order of directness: the raw session store
+    /// handle, the continuity session-store adapter, and finally the session
+    /// service (`read` returning typed `NotFound`). No available read path,
+    /// or any probe error, returns false - fail closed into the
+    /// never-abandon refusal, never into a fresh spawn.
+    async fn durable_session_row_is_absent(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> bool {
+        if let Some(store) = self.session_store.as_ref() {
+            return matches!(store.load_meta(session_id).await, Ok(None));
+        }
+        if let Some(store) = self.continuity_session_store.as_ref() {
+            use meerkat::SessionStore as _;
+            return matches!(store.load_meta(session_id).await, Ok(None));
+        }
+        if let Some(service) = self.session_service.as_ref() {
+            return matches!(
+                service.read(session_id).await,
+                Err(meerkat_core::SessionError::NotFound { .. })
+            );
+        }
+        false
+    }
+
     async fn verify_durable_session_after_rejected_resume(
         &self,
         identity: &AgentIdentity,
@@ -2157,7 +2190,57 @@ impl SessionBridge for MobSessionBridge {
             // would permanently abandon it (the HomeCore restart-loss bug).
             // Surface a typed rejection so the caller marks the identity
             // degraded and the next reconcile retries the resume.
+            //
+            // ONE narrowly-typed exception (OB3 2026-07-30 fleet wedge, 30
+            // identities): meerkat's typed Absent - "no durable session
+            // exists for this id" - combined with the store confirming no
+            // row was ever persisted, is the never-persisted continuity
+            // head shape (a registration/rebind-minted record whose quiet
+            // member skipped every content-less save). There is no
+            // transcript to preserve; refusing forever is a permanent
+            // Broken retry loop. Fall back to a FRESH spawn under a new
+            // session id. Both gates are required: typed Absent alone
+            // fails closed when the store probe errors or is absent, and
+            // every other refusal (archived-intact, held, quarantined,
+            // unknown) keeps the never-abandon contract above.
             Err(error) => {
+                if durable_snapshot_is_typed_absent(&error)
+                    && self.durable_session_row_is_absent(session_id).await
+                {
+                    tracing::warn!(
+                        identity = %identity,
+                        session_id = %session_id,
+                        error = %error,
+                        "resume target is typed-Absent and the durable store has no row for \
+                         it (never-persisted continuity head): falling back to a FRESH spawn \
+                         under a new session id. External row deletion produces this same \
+                         shape - investigate if unexpected"
+                    );
+                    // The failed resume attempt may have left a stale roster
+                    // entry; retire is inert when nothing matches (see the
+                    // collision arm above).
+                    if let Err(retire_error) =
+                        self.retire_session_owned_member_to_absence(&mid).await
+                    {
+                        return Err(resume_rejected(
+                            identity,
+                            session_id,
+                            &retire_error,
+                            "never-persisted retire before fresh fallback",
+                        ));
+                    }
+                    self.forget_runtime_member(runtime_id).await;
+                    let fresh_session_id = meerkat_core::types::SessionId::new();
+                    let created_session_id = self
+                        .create_session(identity, runtime_id, spec, draft, &fresh_session_id)
+                        .await?;
+                    return Ok(ResumeSessionOutcome::FreshSpawned {
+                        session_id: created_session_id,
+                        reason: ResumeFallbackReason::NeverPersisted {
+                            detail: error.to_string(),
+                        },
+                    });
+                }
                 self.verify_durable_session_after_rejected_resume(identity, session_id)
                     .await;
                 Err(resume_rejected(

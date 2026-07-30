@@ -700,3 +700,132 @@ async fn identity_first_resume_revives_terminally_retired_runtime() {
         unified.shutdown().await;
     }
 }
+
+/// OB3 production wedge (2026-07-30): a continuity head record pointing at a
+/// session that was NEVER persisted (a registration/rebind-minted head for a
+/// quiet member whose content-less saves were all skipped). meerkat resume
+/// answers typed Absent; before the fix the restore path refused fresh-spawn
+/// for EVERY resume failure (#218 never-abandon), so the identity stayed
+/// Broken and reconcile retried forever - 30 identities permanently wedged in
+/// the field. The narrowly-typed fix: typed Absent AND a store probe
+/// confirming no row was ever persisted authorize a FRESH spawn under a new
+/// session id, and the continuity record rebinds. Every other refusal keeps
+/// never-abandon semantics (the Bug I revival test above stays untouched:
+/// its archived row is present, so it can never enter this arm).
+#[tokio::test(flavor = "multi_thread")]
+async fn never_persisted_continuity_head_fresh_spawns_instead_of_wedging() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let alice = id("personal:alice");
+    let roster = vec![spec(
+        "personal:alice",
+        AgentAddressability::Addressable,
+        "personal",
+    )];
+
+    // --- Boot 1: register alice through the PUBLIC flow so the record has a
+    // production-shaped runtime id, then shut down cleanly. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        assert!(
+            matches!(
+                result.outcomes.get(&alice).expect("alice outcome"),
+                RestoreOutcome::Created { .. }
+            ),
+            "expected Created on first boot"
+        );
+        unified.shutdown().await;
+    }
+
+    // --- Forge the field shape through the continuity store's public API:
+    // rebind the record to a session id NOTHING ever persisted. ---
+    let phantom_session_id = meerkat_core::types::SessionId::new();
+    {
+        let store = LocalContinuityStore::open(state_path.join("continuity.db"))
+            .expect("open continuity store for the forge");
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&alice))
+            .await
+            .expect("resolve alice after boot 1");
+        let record = match resolved.get(&alice).expect("alice state") {
+            meerkat_mobkit::identity_first::ContinuityResolveState::Ready { record } => {
+                record.clone()
+            }
+            other => panic!("expected Ready after boot 1, got {other:?}"),
+        };
+        let mut forged = record;
+        forged.session_id = phantom_session_id.clone();
+        store
+            .upsert_continuity_record(
+                &forged,
+                meerkat_mobkit::identity_first::FencingToken::new(1),
+            )
+            .await
+            .expect("forge the never-persisted head");
+    }
+
+    // --- Boot 2: restore must FRESH-SPAWN (not Broken, not a retry loop),
+    // and a real turn must run on the fresh member. ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(&state_path, capture.clone()).await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 2)");
+        if let RestoreOutcome::Broken(failure) = result.outcomes.get(&alice).expect("alice outcome")
+        {
+            panic!(
+                "a never-persisted continuity head must fresh-spawn, not wedge Broken \
+                 (OB3 2026-07-30 fleet incident): {failure:?}"
+            );
+        }
+        identity_rt
+            .send(
+                &alice,
+                &meerkat_core::ContentInput::Text("hello after fresh fallback".to_string()),
+            )
+            .await
+            .expect("send post-fallback turn");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while capture.count() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the post-fallback turn to reach the LLM"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    // --- The record rebound off the phantom id durably. ---
+    let store = LocalContinuityStore::open(state_path.join("continuity.db"))
+        .expect("reopen continuity store");
+    let resolved = store
+        .resolve_many(std::slice::from_ref(&alice))
+        .await
+        .expect("re-resolve alice after the fallback");
+    match resolved.get(&alice).expect("alice state") {
+        meerkat_mobkit::identity_first::ContinuityResolveState::Ready { record } => {
+            assert_ne!(
+                record.session_id, phantom_session_id,
+                "the continuity record must rebind off the never-persisted id"
+            );
+        }
+        other => panic!("expected Ready after the fresh fallback, got {other:?}"),
+    }
+}
