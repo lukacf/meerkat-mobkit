@@ -49,8 +49,7 @@ use async_trait::async_trait;
 use meerkat::AgentFactory;
 use meerkat::session_runtime::LiveOpenPrecheckError;
 use meerkat::session_runtime::live_orchestration::{
-    precheck_identity, realtime_projection_messages, realtime_projection_root_system_message,
-    realtime_projection_runtime_system_context,
+    precheck_identity, realtime_projection_messages,
 };
 use meerkat::session_runtime::realtime_credentials::RealtimeCurrentConfigSource;
 use meerkat_client::realtime_session::{RealtimeSessionFactory, RealtimeSessionOpenConfig};
@@ -65,12 +64,8 @@ use meerkat_core::live_adapter::{
     LiveContinuityMode, LiveProjectionSnapshot, LiveTransportBootstrap,
 };
 use meerkat_core::service::SessionService as _;
-use meerkat_core::session::SystemContextSource;
 use meerkat_core::types::{AssistantBlock, ContentInput, Message, SessionId, StopReason, Usage};
-use meerkat_core::{
-    Config, ConfigError, CoreRenderable, PendingSystemContextAppend, Provider,
-    RealtimeTranscriptEvent, SessionLlmIdentity,
-};
+use meerkat_core::{Config, ConfigError, Provider, RealtimeTranscriptEvent, SessionLlmIdentity};
 use meerkat_live::{
     LiveAdapterHost, LiveAdapterHostError, LiveChannelCloseFeedback, LiveChannelCloseObservation,
     LiveChannelId, LiveChannelStatusFeedback, LiveChannelStatusObservation, LiveProjectionError,
@@ -1138,7 +1133,19 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
     session_id: &SessionId,
     turning_mode: RealtimeTurningMode,
     seed_max_chars: Option<usize>,
+    instruction_overlay: Option<Message>,
 ) -> Result<RealtimeSessionOpenConfig, meerkat_core::SessionError> {
+    // Mirror of the facade orchestrator: process-wide open-projection custody
+    // is acquired BEFORE the persistent service can hydrate blob-backed image
+    // history; the take-once slot on the returned config carries this same
+    // lease through provider seed acknowledgement.
+    let open_projection_lease = meerkat_core::RealtimeOpenProjectionAdmission::global()
+        .try_acquire()
+        .map_err(|error| {
+            meerkat_core::SessionError::Agent(meerkat_core::error::AgentError::InternalError(
+                error.to_string(),
+            ))
+        })?;
     let (session, canonical_user_image_decoded_bytes) = service
         .export_realtime_open_session_snapshot_with_image_usage(session_id)
         .await?;
@@ -1192,42 +1199,48 @@ async fn live_open_config_for_session<B: SessionAgentBuilder + 'static>(
         }
         None => realtime_projection_messages(&session)?,
     };
-    Ok(
-        RealtimeSessionOpenConfig::new(turning_mode, llm_identity, visible_tools, seed_projection)
-            .with_user_content_identities(session.realtime_user_content_identities())
-            .with_user_content_tombstones(session.realtime_user_content_tombstones())
-            .with_canonical_user_image_decoded_bytes(canonical_user_image_decoded_bytes)
-            .with_transcript_rewrite_generation(transcript_rewrite_generation)
-            .with_runtime_system_context(realtime_projection_runtime_system_context(&session)?)
-            .with_system_prompt(match realtime_projection_root_system_message(&session)? {
-                Some(Message::System(system)) => Some(system.content),
-                // The projector only ever yields `Message::System` (or `None`);
-                // any other shape means no root system prompt to project.
-                _ => None,
-            }),
+    // Per-open ephemeral instruction overlay: appended to the replay seed as
+    // an ordinary System row (adapters replay System seed rows natively in
+    // their transcript positions), while the canonical System drift witness
+    // is derived from the durable session only. The overlay therefore reaches
+    // the provider for exactly this open, never persists, and never trips the
+    // refresh drift check that compares the durable canonical sequence.
+    let mut seed_projection = seed_projection;
+    if let Some(overlay) = instruction_overlay {
+        seed_projection.push(overlay);
+    }
+    let open_config = RealtimeSessionOpenConfig::for_open_from_messages(
+        turning_mode,
+        llm_identity,
+        visible_tools,
+        seed_projection,
+        session.messages(),
     )
+    .map_err(|err| {
+        meerkat_core::SessionError::Agent(meerkat_core::error::AgentError::InternalError(
+            err.to_string(),
+        ))
+    })?;
+    Ok(open_config
+        .with_open_projection_lease(open_projection_lease)
+        .with_user_content_identities(session.realtime_user_content_identities())
+        .with_user_content_tombstones(session.realtime_user_content_tombstones())
+        .with_canonical_user_image_decoded_bytes(canonical_user_image_decoded_bytes)
+        .with_transcript_rewrite_generation(transcript_rewrite_generation))
 }
 
-/// Provenance marker on the runtime system-context append carrying the
-/// per-open instruction overlay from `mobkit/live/open` `instructions`.
-const LIVE_OPEN_INSTRUCTIONS_SOURCE: &str = "mobkit/live/open#instructions";
-
-/// Fold the per-open instruction overlay into the open config's runtime
-/// system-context lane.
+/// Build the per-open instruction overlay from `mobkit/live/open`
+/// `instructions` as one System seed row.
 ///
-/// Lane choice: `runtime_system_context` (NOT `with_system_prompt`). The
-/// typed `system_prompt` field is the projection of the member's durable
-/// prompt truth (R10: single owner of live prompt truth), so baking a
-/// per-open overlay into it would misreport the member's prompt to the
-/// provider and to every snapshot consumer. The runtime system-context lane
-/// is exactly the typed carrier for runtime-authored ephemeral context:
-/// adapters fold it into the provider session as authoritative instructions,
-/// and because this append exists only on this open's projection it never
-/// persists into the durable transcript.
-fn apply_live_open_instruction_overlay(
-    open_config: &mut RealtimeSessionOpenConfig,
-    instructions: Vec<String>,
-) {
+/// Lane choice (0.8.11 ordered-System world): the retired
+/// `runtime_system_context` lane is gone; provider adapters replay System
+/// rows from the replay seed natively, and the provider `instructions`
+/// channel is reserved for provider-owned configuration. Appending the
+/// overlay to the per-open seed (NOT to the canonical drift witness, which
+/// stays derived from the durable session) keeps the original semantics:
+/// authoritative for exactly this open, never persisted, never misreported
+/// as the member's durable prompt, never a refresh-drift trigger.
+fn live_open_instruction_overlay_message(instructions: Vec<String>) -> Option<Message> {
     let joined = instructions
         .iter()
         .map(|instruction| instruction.trim())
@@ -1235,18 +1248,11 @@ fn apply_live_open_instruction_overlay(
         .collect::<Vec<_>>()
         .join("\n\n");
     if joined.is_empty() {
-        return;
+        return None;
     }
-    open_config
-        .runtime_system_context
-        .push(PendingSystemContextAppend {
-            content: CoreRenderable::text(joined),
-            source: Some(LIVE_OPEN_INSTRUCTIONS_SOURCE.to_string()),
-            idempotency_key: None,
-            source_kind: SystemContextSource::RuntimeSteer,
-            peer_response_terminal: None,
-            accepted_at: std::time::SystemTime::now(),
-        });
+    Some(Message::System(meerkat_core::types::SystemMessage::new(
+        joined,
+    )))
 }
 
 /// Fold the per-open `(provider, model)` selection into the projected
@@ -1323,23 +1329,19 @@ fn build_live_projection_snapshot(
     LiveProjectionSnapshot {
         session_id: session_id.clone(),
         snapshot_version: 0,
-        seed_messages: open_config.seed_messages.clone(),
+        seed_messages: open_config.seed_messages().to_vec(),
         visible_tools: open_config.visible_tools.clone(),
         user_content_identities: open_config.user_content_identities.clone(),
         user_content_tombstones: open_config.user_content_tombstones.clone(),
         transcript_rewrite_generation: open_config.transcript_rewrite_generation,
         canonical_user_image_decoded_bytes: open_config.canonical_user_image_decoded_bytes,
-        // R10: the typed `system_prompt` field is the single owner of live
-        // prompt truth — never re-derived from `seed_messages[0]` (the
-        // history projector drops `Message::System`, so seed inference
-        // silently wipes the prompt on the refresh path).
-        system_prompt: open_config.system_prompt.clone(),
+        // 0.8.11: the exact canonical System payload sequence is the refresh
+        // drift witness; the actual System rows ride `seed_messages` and are
+        // replayed natively by provider adapters.
+        canonical_system_messages: open_config.canonical_system_messages_ref().to_vec(),
         model_id: open_config.llm_identity.model.clone(),
         provider_id: open_config.llm_identity.provider,
         audio_config,
-        // R3: typed runtime system-context rides the snapshot so adapters
-        // fold it into the provider session as authoritative instructions.
-        runtime_system_context: open_config.runtime_system_context.clone(),
     }
 }
 
@@ -1552,25 +1554,37 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     // `runtime_options.live.seed_max_chars`; windowing is upstream-owned
     // (0.7.28, ask 30 SHIPPED).
     let seed_max_chars = parsed.seed_max_chars.or(ctx.seed_max_chars);
-    let mut open_config =
-        match live_open_config_for_session(service, session_id, turning_mode, seed_max_chars).await
-        {
-            Ok(config) => config,
-            Err(meerkat_core::SessionError::NotFound { .. }) => {
-                return live_error(
-                    rpc_id,
-                    INVALID_PARAMS_CODE,
-                    format!("session {session_id} not found"),
-                );
-            }
-            Err(err) => {
-                return live_error(
-                    rpc_id,
-                    INTERNAL_ERROR_CODE,
-                    format!("failed to build session config: {err}"),
-                );
-            }
-        };
+    // Per-open ephemeral instruction overlay rides the replay seed (see
+    // live_open_instruction_overlay_message for the lane rationale), so it
+    // is woven in at config construction time.
+    let instruction_overlay = parsed
+        .instructions
+        .and_then(|instructions| live_open_instruction_overlay_message(instructions.into_vec()));
+    let mut open_config = match live_open_config_for_session(
+        service,
+        session_id,
+        turning_mode,
+        seed_max_chars,
+        instruction_overlay,
+    )
+    .await
+    {
+        Ok(config) => config,
+        Err(meerkat_core::SessionError::NotFound { .. }) => {
+            return live_error(
+                rpc_id,
+                INVALID_PARAMS_CODE,
+                format!("session {session_id} not found"),
+            );
+        }
+        Err(err) => {
+            return live_error(
+                rpc_id,
+                INTERNAL_ERROR_CODE,
+                format!("failed to build session config: {err}"),
+            );
+        }
+    };
     // Design §6: the member session's model decides; an explicit `model`
     // override swaps the realtime model for this channel without touching
     // the member's text identity, and an explicit `provider` re-pairs the
@@ -1582,12 +1596,6 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
         provider_override,
         parsed.model,
     );
-    // Per-open ephemeral instruction overlay — runtime system-context lane
-    // (see apply_live_open_instruction_overlay for the lane rationale).
-    if let Some(instructions) = parsed.instructions {
-        apply_live_open_instruction_overlay(&mut open_config, instructions.into_vec());
-    }
-
     // B19 precheck runs BEFORE any channel infra is minted (the reference
     // prechecks after `open_channel_with_authority` and then unwinds; with
     // the identity already resolved there is nothing to unwind here).
@@ -1709,7 +1717,7 @@ async fn handle_live_open<B: SessionAgentBuilder + 'static>(
     let resolved_audio_config =
         live_audio_config_from_capabilities(&ctx.session_factory.capabilities());
     // E25: open the provider-native adapter directly. The factory already
-    // consumed seed_messages + runtime_system_context, so no
+    // consumed the replay seed (including any per-open System overlay), so no
     // `LiveAdapterCommand::Open` is dispatched afterwards (R2: re-seeding
     // would compound the provider transcript).
     let capabilities: LiveChannelCapabilities;
@@ -2324,12 +2332,14 @@ async fn handle_live_refresh<B: SessionAgentBuilder + 'static>(
     };
 
     // Refresh re-projects from the durable session; the gateway-wide seed
-    // window applies (there is no per-refresh override on the wire).
+    // window applies (there is no per-refresh override on the wire), and no
+    // per-open instruction overlay exists on this path.
     let open_config = match live_open_config_for_session(
         service,
         &session_id,
         RealtimeTurningMode::ProviderManaged,
         ctx.seed_max_chars,
+        None,
     )
     .await
     {
@@ -2672,8 +2682,31 @@ mod tests {
         SessionId::parse("00000000-0000-0000-0000-000000000002").unwrap()
     }
 
-    fn test_open_config(seed_messages: Vec<Message>) -> RealtimeSessionOpenConfig {
-        RealtimeSessionOpenConfig::new(
+    fn user_message(text: &str) -> Message {
+        Message::User(meerkat_core::types::UserMessage::text(text))
+    }
+
+    fn system_message(text: &str) -> Message {
+        Message::System(meerkat_core::types::SystemMessage::new(text))
+    }
+
+    /// Fix 2 lane assertion (0.8.11 ordered-System shape): the per-open
+    /// overlay lands ONLY on the replay seed as a trailing System row — the
+    /// canonical System drift witness stays derived from the durable session,
+    /// and the projected seed history ahead of the overlay is untouched.
+    #[test]
+    fn instruction_overlay_rides_the_replay_seed_not_the_drift_witness() {
+        let canonical = vec![system_message("You are the member."), user_message("hello")];
+        let overlay = live_open_instruction_overlay_message(vec![
+            "Speak Swedish.".to_string(),
+            "   ".to_string(),
+            "Keep replies short.".to_string(),
+        ])
+        .expect("non-empty instructions produce an overlay row");
+        let mut seed = canonical.clone();
+        seed.push(overlay);
+
+        let config = RealtimeSessionOpenConfig::for_open_from_messages(
             RealtimeTurningMode::ProviderManaged,
             meerkat_core::SessionLlmIdentity {
                 model: "gpt-realtime-2".to_string(),
@@ -2683,64 +2716,33 @@ mod tests {
                 auth_binding: None,
             },
             Vec::new(),
-            seed_messages,
+            seed.clone(),
+            &canonical,
         )
-        .with_system_prompt(Some("You are the member.".to_string()))
-    }
+        .expect("open config construction");
 
-    fn user_message(text: &str) -> Message {
-        Message::User(meerkat_core::types::UserMessage::text(text))
-    }
-
-    fn system_message(text: &str) -> Message {
-        Message::System(meerkat_core::types::SystemMessage::new(text))
-    }
-
-    /// Fix 2 lane assertion: the per-open overlay lands ONLY on the runtime
-    /// system-context lane — the typed system prompt (durable prompt truth)
-    /// and the projected seed history stay byte-identical.
-    #[test]
-    fn instruction_overlay_rides_the_runtime_system_context_lane() {
-        let seed = vec![system_message("You are the member."), user_message("hello")];
-        let mut config = test_open_config(seed.clone());
-
-        apply_live_open_instruction_overlay(
-            &mut config,
-            vec![
-                "Speak Swedish.".to_string(),
-                "   ".to_string(),
-                "Keep replies short.".to_string(),
-            ],
-        );
-
-        assert_eq!(config.runtime_system_context.len(), 1);
-        let append = &config.runtime_system_context[0];
+        let Some(Message::System(overlay_row)) = config.seed_messages().last() else {
+            panic!("overlay must be the trailing System seed row");
+        };
+        assert_eq!(overlay_row.content, "Speak Swedish.\n\nKeep replies short.");
         assert_eq!(
-            append.content.render_text(),
-            "Speak Swedish.\n\nKeep replies short."
+            config.canonical_system_messages_ref(),
+            ["You are the member.".to_string()],
+            "the drift witness stays derived from the durable session only"
         );
         assert_eq!(
-            append.source.as_deref(),
-            Some(LIVE_OPEN_INSTRUCTIONS_SOURCE)
+            config.seed_messages()[..seed.len() - 1],
+            canonical[..],
+            "seed history ahead of the overlay untouched"
         );
-        assert!(
-            append.source_kind.is_runtime_steer(),
-            "overlay is a transient runtime steer"
-        );
-        assert_eq!(
-            config.system_prompt.as_deref(),
-            Some("You are the member."),
-            "the typed system prompt is not the overlay lane"
-        );
-        assert_eq!(config.seed_messages, seed, "seed history untouched");
     }
 
     #[test]
     fn empty_or_whitespace_instructions_append_nothing() {
-        let mut config = test_open_config(Vec::new());
-        apply_live_open_instruction_overlay(&mut config, Vec::new());
-        apply_live_open_instruction_overlay(&mut config, vec!["  ".to_string(), String::new()]);
-        assert!(config.runtime_system_context.is_empty());
+        assert!(live_open_instruction_overlay_message(Vec::new()).is_none());
+        assert!(
+            live_open_instruction_overlay_message(vec!["  ".to_string(), String::new()]).is_none()
+        );
     }
 
     /// An Anthropic-profile text identity carrying a realm-scoped auth
