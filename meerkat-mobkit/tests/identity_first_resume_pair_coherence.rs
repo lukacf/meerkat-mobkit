@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
-use meerkat_core::types::StopReason;
+use meerkat_core::types::{HandlingMode, StopReason};
 use meerkat_mob::{MobDefinition, ProfileName};
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, TopologyProvider};
@@ -612,9 +612,8 @@ fn prompt_bearing(system_contents: &[String], base_marker: &str) -> usize {
 /// reasons (the HomeCore 9/17-Broken class is structurally unreachable);
 /// and every ordered System survives resume byte-for-byte (token replay).
 ///
-/// The authored-System leg (+1 exactly once via an explicit turn) needs the
-/// 0.8.11 `system_messages` surface and lands at repin — see the ignored
-/// stub below.
+/// The authored-System leg (+1 exactly once via an explicit turn) is proven
+/// by `authored_system_turn_appends_exactly_once_and_replays` below.
 #[tokio::test(flavor = "multi_thread")]
 async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design() {
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -802,18 +801,355 @@ async fn resume_never_authors_prompts_and_definition_edits_are_inert_by_design()
     );
 }
 
-/// The authored-System leg of the prompt acceptance: an EXPLICIT
-/// `StartTurnRequest.system_messages` entry appends exactly ONE ordered
-/// System message at that turn boundary (no dedup, no replacement of prior
-/// Systems), it replays on the next resume, and a subsequent neutral resume
-/// appends zero. Requires the meerkat 0.8.11 `system_messages` turn surface
-/// threaded through the mob deliver path — not present on the current pin.
+/// Ordered `role:content` projection of the persisted transcript for ordinal
+/// assertions - the prompt probe above collapses to System contents only and
+/// cannot see position. Roles other than System/User project as an opaque
+/// label; the authored-leg ordering contract only needs those two.
+async fn persisted_ordered_rows(
+    state_path: &std::path::Path,
+    session_id: &meerkat_core::types::SessionId,
+) -> Vec<String> {
+    use meerkat::SessionStore as _;
+    let db_path = ["sessions.sqlite3", "sessions.db", "sessions.sqlite"]
+        .iter()
+        .map(|name| state_path.join(name))
+        .find(|path| path.exists())
+        .expect("a session store file exists in the state dir");
+    let store = meerkat_store::SqliteSessionStore::open(db_path)
+        .expect("open the session store for the ordinal probe");
+    let session = store
+        .load(session_id)
+        .await
+        .expect("load the durable session")
+        .expect("the durable session exists");
+    session
+        .messages()
+        .iter()
+        .map(|message| match message {
+            meerkat_core::Message::System(system) => format!("system:{}", system.content),
+            meerkat_core::Message::User(user) => format!("user:{}", user.text_content()),
+            _ => "other".to_string(),
+        })
+        .collect()
+}
+
+/// Index of the single transcript row containing `needle`, asserting
+/// uniqueness so an ordinal claim can never pass against a duplicated row
+/// (a duplicate IS the dedup/merge failure this file exists to catch).
+fn sole_index_containing(rows: &[String], needle: &str) -> usize {
+    let hits: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| row.contains(needle).then_some(index))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one transcript row containing {needle:?}: {rows:?}"
+    );
+    hits[0]
+}
+
+/// The authored-System leg of the FINAL meerkat 0.8.11 prompt contract
+/// (queue item 8b), composed through the mob deliver path itself: an
+/// explicit per-turn System instruction rides
+/// `SessionBridge::deliver_with_mode_context_and_system_prompt` ->
+/// `WorkSpec::system_prompt` (wave011 commit 6eb69017) ->
+/// `RuntimeTurnMetadata.system_prompts`, and meerkat appends it as ONE
+/// ordinary ordered `Message::System` row at that turn's admitted
+/// transcript boundary - after all prior history, before the turn's own
+/// user message.
+///
+/// Pinned here:
+/// - the authored turn appends EXACTLY ONE System row (+1 total, +1
+///   marker-bearing), ordered between the prior turn's history and its own
+///   user message - authorship happens at the turn boundary, never as a
+///   hoisted prompt rewrite;
+/// - prior System rows are untouched (the assembled base prompt survives at
+///   its create-time count - no replacement, no merge) and no transcript
+///   rewrite commits are minted (the 60-100x revision-bloat class stays dead
+///   for the authored leg too);
+/// - the row REPLAYS: after a cold restart/resume it is still present
+///   exactly once, at the SAME ordinal, with its full authored content, and
+///   it projects into the resumed turn's LLM request (no dedup, no hoist,
+///   no merge, no re-authoring on resume);
+/// - a subsequent turn WITHOUT an authored System prompt (the ordinary
+///   `IdentityRuntime::send` path, which rides the same carrier with `None`)
+///   appends ZERO additional System rows.
+///
+/// Per-wire projection (OpenAI in-place system role, Anthropic encoded
+/// placement, per-model typed projection failures) is deliberately out of
+/// scope: this harness injects a capture client whose replay projection is
+/// the identity, so it proves the persistence + replay contract only.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the meerkat 0.8.11 StartTurnRequest.system_messages surface through the \
-            mob deliver path; implement at repin (task #41/#43)"]
 async fn authored_system_turn_appends_exactly_once_and_replays() {
-    panic!(
-        "repin: author one System via system_messages, assert +1 ordered System, \
-         replay across a cold resume, then +0 on the following neutral resume"
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state_path = temp.path().join("state");
+    let carol = id("personal:carol");
+    let roster = vec![spec("personal:carol", "personal")];
+    const TOKEN: &str = "MARKER-AUTHORED-8B-KILO";
+    const AUTHORED_MARKER: &str = "MARKER-AUTHORED-SYS-8B";
+    const AUTHORED_PROMPT: &str =
+        "Standing instruction MARKER-AUTHORED-SYS-8B: address the operator as Commander.";
+    const TURN_2_TEXT: &str = "Acknowledge the standing instruction.";
+    const ROLE_BASE: &str = "You are carol, the records clerk.";
+
+    let mob_definition = || {
+        let toml = format!(
+            "[mob]\nid = \"authored-system\"\n\n[profiles.personal]\nmodel = \"gpt-5.5\"\n\
+             skills = [\"role\"]\nexternal_addressable = true\nruntime_mode = \"turn_driven\"\n\n\
+             [profiles.personal.tools]\ncomms = true\n\n\
+             [skills.role]\nsource = \"inline\"\ncontent = \"{ROLE_BASE}\"\n"
+        );
+        MobDefinition::from_toml(&toml).expect("parse authored-system mob definition")
+    };
+
+    // --- Boot 1: create the member, run a plain turn, shut down. ---
+    let original_session_id;
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            mob_definition(),
+            "authored-system-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 1)");
+        match result.outcomes.get(&carol).expect("carol outcome") {
+            RestoreOutcome::Created { record, .. } => {
+                original_session_id = record.session_id.clone();
+            }
+            other => panic!("expected Created on first boot, got {other:?}"),
+        }
+        identity_rt
+            .send(
+                &carol,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send turn 1");
+        wait_for_request(&capture, 20, "turn 1").await;
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    let (systems_baseline, rewrites_baseline) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    let base_count = prompt_bearing(&systems_baseline, ROLE_BASE);
+    assert!(
+        base_count >= 1,
+        "the created member must carry the assembled base prompt: {systems_baseline:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_baseline, AUTHORED_MARKER),
+        0,
+        "the authored marker must not predate the authored turn: {systems_baseline:?}"
+    );
+    let total_baseline = systems_baseline.len();
+
+    // --- Boot 2: resume, then author ONE System message through the mob
+    // deliver path itself (the WorkSpec.system_prompt carrier). ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            mob_definition(),
+            "authored-system-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 2)");
+        let runtime_id = match result.outcomes.get(&carol).expect("carol outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "boot 2 must resume the SAME durable session"
+                );
+                record.agent_runtime_id.clone()
+            }
+            other => panic!("expected Resumed on boot 2, got {other:?}"),
+        };
+
+        // The IdentityRuntime send surface has no per-turn System parameter;
+        // the mobkit ingress for the 0.8.11 carrier IS the session bridge
+        // (commit 6eb69017), so the authored leg drives it directly - the
+        // same object restore_flow just resumed the member through.
+        let bridge: Arc<dyn SessionBridge> = unified
+            .session_bridge()
+            .expect("session_bridge should exist")
+            .clone();
+        let delivered = bridge
+            .deliver_with_mode_context_and_system_prompt(
+                &runtime_id,
+                &meerkat_core::ContentInput::Text(TURN_2_TEXT.to_string()),
+                Some(AUTHORED_PROMPT),
+                &[],
+                HandlingMode::Queue,
+                None,
+            )
+            .await
+            .expect("deliver the authored-System turn");
+        assert_eq!(
+            delivered, original_session_id,
+            "the authored turn must land on the same durable session"
+        );
+        wait_for_request(&capture, 30, "the authored turn").await;
+        let last_request = capture.last().expect("the authored turn was captured");
+        assert!(
+            last_request.contains(AUTHORED_PROMPT),
+            "the authored System message must reach the very turn it was authored for: \
+             {last_request}"
+        );
+        assert!(
+            last_request.contains(TOKEN),
+            "the authored turn must replay the persisted transcript (token {TOKEN})"
+        );
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    let (systems_after_authored, rewrites_after_authored) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        systems_after_authored.len(),
+        total_baseline + 1,
+        "the authored turn must append EXACTLY ONE System row: {systems_after_authored:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_after_authored, AUTHORED_MARKER),
+        1,
+        "exactly one authored System row: {systems_after_authored:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_after_authored, ROLE_BASE),
+        base_count,
+        "an authored append must not replace or merge prior System rows: \
+         {systems_after_authored:?}"
+    );
+    assert_eq!(
+        rewrites_after_authored, rewrites_baseline,
+        "authoring a System message is an ordinary turn append - it must mint NO \
+         transcript rewrite commits"
+    );
+
+    let rows_after_authored = persisted_ordered_rows(&state_path, &original_session_id).await;
+    let authored_index = sole_index_containing(&rows_after_authored, AUTHORED_MARKER);
+    let turn_1_user_index = sole_index_containing(&rows_after_authored, TOKEN);
+    let turn_2_user_index = sole_index_containing(&rows_after_authored, TURN_2_TEXT);
+    assert!(
+        turn_1_user_index < authored_index,
+        "the authored System row belongs at ITS turn's boundary, not hoisted above prior \
+         history (turn-1 user at {turn_1_user_index}, authored System at {authored_index}): \
+         {rows_after_authored:?}"
+    );
+    assert!(
+        authored_index < turn_2_user_index,
+        "the authored System row must be ordered BEFORE its own turn's user message \
+         (authored System at {authored_index}, turn-2 user at {turn_2_user_index}): \
+         {rows_after_authored:?}"
+    );
+    assert!(
+        rows_after_authored[authored_index].contains(AUTHORED_PROMPT),
+        "the authored System row must carry the full authored content: {rows_after_authored:?}"
+    );
+
+    // --- Boot 3: cold resume, then a turn WITHOUT an authored System prompt
+    // (the ordinary send path - the same carrier, threaded as `None`). ---
+    {
+        let capture = CaptureClient::default();
+        let (unified, identity_rt) = boot(
+            &state_path,
+            capture.clone(),
+            mob_definition(),
+            "authored-system-rt",
+        )
+        .await;
+        let result = restore_flow(
+            &identity_rt,
+            &roster,
+            Some(&EmptyTopology as &dyn TopologyProvider),
+            Some(&NoopCustomizer as &dyn AgentCustomizer),
+        )
+        .await
+        .expect("restore_flow (boot 3)");
+        match result.outcomes.get(&carol).expect("carol outcome") {
+            RestoreOutcome::Resumed { record, .. } => {
+                assert_eq!(
+                    record.session_id, original_session_id,
+                    "boot 3 must resume the SAME durable session"
+                );
+            }
+            other => panic!("expected Resumed on boot 3, got {other:?}"),
+        }
+        identity_rt
+            .send(
+                &carol,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("send the neutral turn");
+        wait_for_request(&capture, 30, "the neutral turn").await;
+        let last_request = capture.last().expect("the neutral turn was captured");
+        assert!(
+            last_request.contains(AUTHORED_PROMPT),
+            "the authored System row must replay byte-for-byte into the resumed turn's \
+             request: {last_request}"
+        );
+        assert!(
+            last_request.contains(TOKEN),
+            "the resumed turn must replay the persisted transcript (token {TOKEN})"
+        );
+        sleep(Duration::from_millis(500)).await;
+        unified.shutdown().await;
+    }
+
+    let (systems_final, rewrites_final) =
+        persisted_prompt_probe(&state_path, &original_session_id).await;
+    assert_eq!(
+        systems_final.len(),
+        total_baseline + 1,
+        "a resume plus a turn WITHOUT an authored System prompt must append ZERO \
+         additional System rows: {systems_final:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_final, AUTHORED_MARKER),
+        1,
+        "no dedup, no re-authoring: the authored row survives exactly once: {systems_final:?}"
+    );
+    assert_eq!(
+        prompt_bearing(&systems_final, ROLE_BASE),
+        base_count,
+        "the base prompt rows survive the authored leg untouched: {systems_final:?}"
+    );
+    assert_eq!(
+        rewrites_final, rewrites_baseline,
+        "neither the authored turn nor its replay may mint transcript rewrite commits"
+    );
+
+    let rows_final = persisted_ordered_rows(&state_path, &original_session_id).await;
+    let authored_index_final = sole_index_containing(&rows_final, AUTHORED_MARKER);
+    assert_eq!(
+        authored_index_final, authored_index,
+        "the authored System row must replay at the SAME ordinal (no hoist, no merge, \
+         no move): {rows_final:?}"
+    );
+    assert!(
+        rows_final[authored_index_final].contains(AUTHORED_PROMPT),
+        "the replayed authored System row must keep its full authored content: {rows_final:?}"
     );
 }

@@ -9329,6 +9329,10 @@ comms = true
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "upstream meerkat-mob actor defect family (S2; NOT covered by #929, \
+                lead-confirmed 2026-07-31): the member actor task exits and a direct \
+                send fails 'autonomous dispatch inject failed: inbox closed'. \
+                Reproduces serially at ed7e42b75. Re-arm on the upstream fix SHA."]
     async fn explicit_identity_query_refreshes_stale_existing_session_history() -> Result<(), String>
     {
         let store = Arc::new(CountingConsoleLogStore::new());

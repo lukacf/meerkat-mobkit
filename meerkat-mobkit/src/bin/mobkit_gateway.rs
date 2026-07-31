@@ -452,13 +452,13 @@ fn build_persistent_session_service(
     // path (mirrors rpc_gateway.rs — without it the 5s discovery loop
     // re-reads whole session documents forever). The facade also owns the
     // durable session projection at meerkat 0.8.11 (the session service no
-    // longer writes the SessionStore itself); this runtime store is durable
-    // SQLite, so nothing mints.
+    // longer writes the SessionStore itself) and every-boot authority
+    // re-minting - a reset/lost runtime.sqlite reseeds from the durable
+    // session rows instead of refusing resume.
     let (runtime_store, session_write_epochs) =
         meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
             runtime_store,
             session_store.clone() as Arc<dyn meerkat::SessionStore>,
-            false,
         );
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         Arc::clone(&runtime_store),

@@ -1396,3 +1396,324 @@ async fn released_v2_document_mints_authority_imports_and_takes_a_turn() {
         );
     }
 }
+
+/// Regression (a) of the every-boot mint acceptance: a durable
+/// CURRENT-encoding session row and an EMPTY (pod-scratch) runtime store -
+/// the first send mints store-issued authority from the durable row,
+/// resumes the transcript, and runs a REAL turn whose boundary commit
+/// chains off the minted seed. Isolates mint-path failures from
+/// import-path failures; the released-envelope variant of the same chain is
+/// `released_v2_document_mints_authority_imports_and_takes_a_turn` above.
+#[tokio::test(flavor = "multi_thread")]
+async fn current_row_mints_authority_resumes_and_takes_a_turn() {
+    const TOKEN: &str = "MARKER-PLAIN-MINT-5-VICTOR";
+    if proxied_to_memo_free_child("current_row_mints_authority_resumes_and_takes_a_turn") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1 (scratch runtime): one turn carrying the marker. ---
+    let session_id;
+    let boot1_count;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        session_id = head;
+        boot1_count = count;
+        runtime.shutdown().await;
+    }
+
+    // --- Boot 2: a COLD pod (empty runtime store) over the durable
+    // current-encoding row. The first send must mint, resume, and run a
+    // REAL turn whose boundary commit lands durably. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("the cold send must mint runtime authority and resume the durable row");
+        wait_for_turn(&capture, 1, "the post-mint turn").await;
+        let last = capture.last().expect("a post-mint request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "the post-mint LLM request must replay the durable transcript (token {TOKEN}); \
+             request: {last}"
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-mint send");
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(session_id.clone()),
+            "the mint must RESUME the durable session, not create a fresh one; status: {after:?}"
+        );
+        // The turn's boundary commit chained off the minted seed and the
+        // write-through projection advanced the durable row.
+        wait_for_durable_document_at_least(
+            &state,
+            boot1_count + 2,
+            "the post-mint turn's boundary commit",
+        )
+        .await;
+        runtime.shutdown().await;
+    }
+}
+
+/// The sanctioned runtime-store-reset recovery path in miniature (the
+/// HomeCore 0.8.11 upgrade shape): continuity intact, runtime.sqlite
+/// DELETED. The next boot must reseed runtime authority from the durable
+/// continuity rows - the member resumes with the exact preserved
+/// transcript and takes a real turn whose boundary commits - instead of
+/// refusing with "missing durable session snapshot (<no runtime record>)".
+/// Unlike the pod-scratch tests above this runs the PERSISTENT (SQLite
+/// runtime store) composition: the mint arms for durable inner stores too.
+#[tokio::test(flavor = "multi_thread")]
+async fn reset_runtime_store_reseeds_from_continuity_and_resumes() {
+    const TOKEN: &str = "MARKER-RUNTIME-RESET-9-OSCAR";
+    if proxied_to_memo_free_child("reset_runtime_store_reseeds_from_continuity_and_resumes") {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1 (persistent runtime store): one turn with the marker. ---
+    let session_id;
+    let boot1_count;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        let (head, count) =
+            wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        session_id = head;
+        boot1_count = count;
+        runtime.shutdown().await;
+    }
+
+    // --- The RESET: delete the runtime.sqlite file SET (sidecars and
+    // maintenance-fence marker included - the field reset script removes
+    // them all, and half-deleted sidecar combinations behave differently);
+    // the continuity store is untouched. ---
+    let mut removed = 0;
+    for suffix in ["", "-wal", "-shm", ".mfence"] {
+        let path = state.join(format!(
+            "{}{suffix}",
+            meerkat_mobkit::storage_layout::RUNTIME_DB_FILE_NAME
+        ));
+        if path.exists() {
+            std::fs::remove_file(&path).expect("reset runtime store");
+            removed += 1;
+        }
+    }
+    assert!(
+        removed > 0,
+        "the persistent shape must have written runtime.sqlite"
+    );
+    assert!(
+        continuity_db(&state).exists(),
+        "the reset must leave the continuity store intact"
+    );
+
+    // --- Boot 2 over the reset store: resume + recall + a real turn. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot(
+            &state,
+            capture.clone(),
+            IdentityBootstrapMode::LazyMaterialize,
+        )
+        .await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("the post-reset send must reseed runtime authority and resume");
+        wait_for_turn(&capture, 1, "the post-reset turn").await;
+        let last = capture.last().expect("a post-reset request was captured");
+        assert!(
+            last.contains(TOKEN),
+            "the post-reset LLM request must replay the preserved transcript (token {TOKEN}); \
+             request: {last}"
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-reset send");
+        assert_eq!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(session_id.clone()),
+            "the reseed must RESUME the durable session, not create a fresh one; \
+             status: {after:?}"
+        );
+        wait_for_durable_document_at_least(
+            &state,
+            boot1_count + 2,
+            "the post-reset turn's boundary commit",
+        )
+        .await;
+        runtime.shutdown().await;
+    }
+}
+
+/// Destroy-deprojection regression (2026-07-31 verdict): deleting an
+/// identity must remove its durable session row along with the continuity
+/// record, and a COLD pod after the delete must not mint, resume, or
+/// otherwise resurrect the deleted transcript - on this pod-scratch shape a
+/// leftover external body is exactly what the activation mint would
+/// faithfully re-seed, so the delete is where the row must die.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_identity_leaves_no_durable_row_and_a_cold_boot_does_not_resurrect() {
+    const TOKEN: &str = "MARKER-DELETED-RESURRECTION-7-TANGO";
+    if proxied_to_memo_free_child(
+        "deleted_identity_leaves_no_durable_row_and_a_cold_boot_does_not_resurrect",
+    ) {
+        return;
+    }
+    let _serial = SERIAL_WINDOW.lock().await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let state = temp.path().join("state");
+    let member = id(MEMBER);
+
+    // --- Boot 1 (scratch runtime): one turn carrying the marker, then
+    // DELETE the identity through the public flow. ---
+    let deleted_session_id;
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text(format!("Please note this token: {TOKEN}")),
+            )
+            .await
+            .expect("send boot 1's turn");
+        wait_for_turn(&capture, 1, "boot 1's turn").await;
+        wait_for_durable_document_at_least(&state, 2, "boot 1's turn to commit").await;
+        deleted_session_id = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the turn")
+            .session_id
+            .expect("an active identity owns a durable session");
+        identity_runtime
+            .delete_identity(&member)
+            .await
+            .expect("delete the identity");
+        runtime.shutdown().await;
+    }
+
+    // --- The durable row died with the record. ---
+    let db = continuity_db(&state);
+    {
+        let store = LocalContinuityStore::open(&db).expect("reopen continuity store");
+        let resolved = store
+            .resolve_many(std::slice::from_ref(&member))
+            .await
+            .expect("resolve after delete");
+        assert!(
+            matches!(
+                resolved.get(&member),
+                Some(ContinuityResolveState::Uninitialized)
+            ),
+            "the deleted identity must resolve Uninitialized: {resolved:?}"
+        );
+        assert!(
+            store
+                .load_session_snapshot(&deleted_session_id)
+                .await
+                .expect("post-delete snapshot load")
+                .is_none(),
+            "the deleted identity's durable session row must not survive the delete"
+        );
+    }
+
+    // --- Cold pod: nothing to mint or resume. The first send fresh-spawns
+    // under a NEW session id and its request must NOT replay the deleted
+    // transcript. ---
+    {
+        let capture = CaptureClient::default();
+        let runtime = boot_scratch_runtime(&state, capture.clone()).await;
+        let identity_runtime = runtime
+            .identity_runtime()
+            .expect("identity runtime")
+            .clone();
+        identity_runtime
+            .send(
+                &member,
+                &meerkat_core::ContentInput::Text("What token did I give you earlier?".to_string()),
+            )
+            .await
+            .expect("the post-delete cold send must fresh-spawn, not wedge or resurrect");
+        wait_for_turn(&capture, 1, "the post-delete turn").await;
+        let last = capture.last().expect("a post-delete request was captured");
+        assert!(
+            !last.contains(TOKEN),
+            "a deleted transcript must not resurrect into the model's context; request: {last}"
+        );
+        let after = identity_runtime
+            .status(&member)
+            .await
+            .expect("status after the post-delete send");
+        assert_ne!(
+            after.session_id.as_ref().map(ToString::to_string),
+            Some(deleted_session_id.to_string()),
+            "the cold boot must fresh-spawn a NEW session, not resume the deleted id; \
+             status: {after:?}"
+        );
+        runtime.shutdown().await;
+    }
+}

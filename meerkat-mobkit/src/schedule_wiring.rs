@@ -738,6 +738,7 @@ impl InternalDeliveryScheduleMobHost {
     async fn deliver_internal_member_prompt(
         &self,
         occurrence: &meerkat::Occurrence,
+        delivery_identity: &meerkat::ScheduleDeliveryIdentity,
         mob_id: &str,
         member_id: &str,
         content: &meerkat_core::ContentInput,
@@ -761,32 +762,44 @@ impl InternalDeliveryScheduleMobHost {
                 .identity_for_member_mutation(&member_alias)
                 .await
         {
+            // meerkat 0.8.11: the driver replays this exact identity on every
+            // lease-expiry reclaim. NOTE: the identity dispatch path does not
+            // yet consume this key at admission (no reader of
+            // DispatchInput.idempotency_key exists), so crash-redelivery dedup
+            // for this sink is still ABSENT - carrying the key here stages the
+            // admission-threading follow-up, it does not implement it.
             let input = crate::identity_first::DispatchInput {
                 content: content.clone(),
                 origin: crate::identity_first::DispatchOrigin::Scheduler,
                 correlation_id: None,
-                idempotency_key: None,
+                idempotency_key: Some(crate::identity_first::DispatchIdempotencyKey::new(
+                    delivery_identity.idempotency_key.clone(),
+                )),
             };
             return Some(
                 match identity_runtime
                     .dispatch_member_alias_with_session_tracked(&identity, &member_alias, &input)
                     .await
                 {
-                    Ok(Some(_)) => {
-                        immediate_completed_dispatch(occurrence, Some(member_id.to_string()))
-                    }
+                    Ok(Some(_)) => immediate_completed_dispatch(
+                        occurrence,
+                        Some(delivery_identity.correlation_id.clone()),
+                    ),
                     Ok(None) => immediate_delivery_failure(
                         occurrence,
-                        "identity schedule delivery has no bound session bridge".to_string(),
+                        format!(
+                            "identity schedule delivery has no bound session bridge \
+                             (member {member_id})"
+                        ),
                         meerkat::DeliveryFailureReason::RuntimeRejected,
-                        Some(member_id.to_string()),
+                        Some(delivery_identity.correlation_id.clone()),
                         None,
                     ),
                     Err(error) => immediate_delivery_failure(
                         occurrence,
-                        format!("identity schedule delivery failed: {error}"),
+                        format!("identity schedule delivery failed (member {member_id}): {error}"),
                         meerkat::DeliveryFailureReason::RuntimeRejected,
-                        Some(member_id.to_string()),
+                        Some(delivery_identity.correlation_id.clone()),
                         None,
                     ),
                 },
@@ -799,7 +812,7 @@ impl InternalDeliveryScheduleMobHost {
                     "generated member alias requires current identity authority: {member_alias}"
                 ),
                 meerkat::DeliveryFailureReason::RuntimeRejected,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
                 None,
             ));
         }
@@ -810,9 +823,9 @@ impl InternalDeliveryScheduleMobHost {
             Err(error) => {
                 return Some(immediate_delivery_failure(
                     occurrence,
-                    format!("member lookup failed: {error}"),
+                    format!("member lookup failed (member {member_id}): {error}"),
                     meerkat::DeliveryFailureReason::RuntimeRejected,
-                    None,
+                    Some(delivery_identity.correlation_id.clone()),
                     None,
                 ));
             }
@@ -831,13 +844,13 @@ impl InternalDeliveryScheduleMobHost {
         {
             Ok(_receipt) => Some(immediate_completed_dispatch(
                 occurrence,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
             )),
             Err(error) => Some(immediate_delivery_failure(
                 occurrence,
-                format!("internal schedule delivery failed: {error}"),
+                format!("internal schedule delivery failed (member {member_id}): {error}"),
                 meerkat::DeliveryFailureReason::RuntimeRejected,
-                Some(member_id.to_string()),
+                Some(delivery_identity.correlation_id.clone()),
                 None,
             )),
         }
@@ -865,7 +878,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             action: ScheduledMobAction::Send { content, .. },
         } = binding
             && let Some(dispatch) = self
-                .deliver_internal_member_prompt(occurrence, mob_id, member_id, content)
+                .deliver_internal_member_prompt(occurrence, identity, mob_id, member_id, content)
                 .await
         {
             return Ok(dispatch);
@@ -901,6 +914,7 @@ impl SurfaceScheduleMobHost for InternalDeliveryScheduleMobHost {
             && let Some(dispatch) = self
                 .deliver_internal_member_prompt(
                     occurrence,
+                    delivery_identity,
                     &identity.mob_id,
                     &identity.member,
                     prompt,
@@ -2071,6 +2085,7 @@ external_addressable = true
         let dispatch = host
             .deliver_internal_member_prompt(
                 &occurrence,
+                &meerkat::ScheduleDeliveryIdentity::for_occurrence(&occurrence),
                 "schedule-none",
                 alias,
                 &meerkat_core::ContentInput::Text("deliver".to_string()),

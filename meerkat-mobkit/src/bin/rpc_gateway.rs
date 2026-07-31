@@ -7281,13 +7281,13 @@ external_addressable = true
         //
         // The facade also owns the durable session projection at meerkat
         // 0.8.11 (the session service no longer writes the SessionStore
-        // itself), and - on the declared-ephemeral runtime store only -
-        // every-boot runtime-authority re-minting from that durable store.
+        // itself) and every-boot runtime-authority re-minting from that
+        // durable store - a reset/lost runtime store reseeds instead of
+        // refusing resume.
         let (runtime_store, session_write_epochs) =
             meerkat_mobkit::mob_handle_runtime::epoch_tracking_runtime_store_with_durable_projection(
                 runtime_store,
                 session_store.clone(),
-                gateway_options.runtime_store_ephemeral,
             );
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),

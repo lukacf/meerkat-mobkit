@@ -3224,6 +3224,111 @@ mod tests {
         );
     }
 
+    /// Released 0.8.10 ZERO-REWRITE history (the universal mob-supervisor
+    /// shape: a transcript graph with one revision and zero commits) is
+    /// REFUSED TYPED by the shipping 0.8.11 strict importer, through our
+    /// adapter load path, with the durable row left untouched - a load
+    /// error scoped to that one session, never a crash or a store-wide
+    /// failure. The importer follow-ups that would have accepted this shape
+    /// (d6cafd405 and successors) deliberately did NOT ship; this test pins
+    /// the shipping contract so a later "fix" cannot silently turn the
+    /// refusal into a panic or an adoption.
+    ///
+    /// PROVENANCE: the fixture is RELEASED-MINTED bytes (a real 0.8.10
+    /// mob-supervisor snapshot from the HomeCore forensic bundle,
+    /// tests/fixtures/README.md), never re-synthesized by the pinned
+    /// writer - a self-minted fixture silently passes writer-drift bugs
+    /// (the released wire even omits the empty `commits` key, a spelling a
+    /// synthetic fixture gets wrong).
+    #[tokio::test]
+    async fn released_zero_rewrite_history_refuses_typed_on_adapter_load() {
+        const RELEASED: &[u8] =
+            include_bytes!("../../tests/fixtures/v0_8_10_zero_rewrite_supervisor_session.json");
+        let raw: serde_json::Value = serde_json::from_slice(RELEASED).expect("fixture JSON");
+        let session_id =
+            meerkat_core::types::SessionId::parse(raw["id"].as_str().expect("fixture id"))
+                .expect("fixture session id");
+        // The released envelope is exactly what the current decoder refuses,
+        // so the load below reaches the one-time importer.
+        assert!(meerkat_core::Session::from_persisted_bytes(RELEASED).is_err());
+
+        let identity = AgentIdentity::parse("agent:zero-rewrite-strict").expect("identity");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("continuity.sqlite3");
+        let store = Arc::new(LocalContinuityStore::open(&db_path).expect("store"));
+        // Seed the released bytes exactly as the 0.8.10 deployment left
+        // them: a raw durable row, never routed through current encoders.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("seed connection");
+            conn.execute(
+                "INSERT INTO session_snapshots \
+                 (session_id, identity, generation, checkpoint_version, fencing_token, data) \
+                 VALUES (?1, ?2, 0, 1, 3, ?3)",
+                rusqlite::params![session_id.to_string(), identity.to_string(), RELEASED],
+            )
+            .expect("seed released snapshot row");
+        }
+        store
+            .upsert_continuity_record(
+                &ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: AgentRuntimeId::parse("rt:agent:zero-rewrite-strict:0")
+                        .expect("runtime id"),
+                    session_id: session_id.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+                FencingToken::new(3),
+            )
+            .await
+            .expect("seed record");
+        let adapter = ContinuitySessionStoreAdapter::new(store);
+        adapter
+            .register_session(
+                &session_id,
+                SessionRuntimeState {
+                    identity: identity.clone(),
+                    generation: ContinuityGeneration::new(0),
+                    fencing_token: FencingToken::new(3),
+                    checkpoint_version: CheckpointVersion::new(1),
+                },
+            )
+            .await
+            .expect("register");
+
+        // The strict importer refuses the zero-rewrite graph as a TYPED load
+        // error for this session - not a panic, not an adoption.
+        let error = meerkat::SessionStore::load(&adapter, &session_id)
+            .await
+            .expect_err("the shipping strict importer must refuse a zero-rewrite graph");
+        assert!(
+            error.to_string().contains("import"),
+            "the refusal must surface as the typed import failure: {error}"
+        );
+
+        // Fail-closed means UNTOUCHED: the durable row still holds the exact
+        // released bytes (no partial adoption, no rewrite, no deletion), and
+        // an unrelated session on the same store still operates.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("probe connection");
+            let preserved: Vec<u8> = conn
+                .query_row(
+                    "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                    rusqlite::params![session_id.to_string()],
+                    |row| row.get(0),
+                )
+                .expect("released row preserved");
+            assert_eq!(
+                preserved, RELEASED,
+                "the refusal must leave the released bytes byte-identical"
+            );
+        }
+        let healthy = meerkat_core::Session::new();
+        meerkat::SessionStore::save(&adapter, &healthy)
+            .await
+            .expect("an unrelated session must keep working on the same store");
+    }
+
     #[tokio::test]
     async fn continuity_session_store_adapter_parallelizes_different_sessions() {
         let store = Arc::new(ConcurrentLoadStore::new(2));

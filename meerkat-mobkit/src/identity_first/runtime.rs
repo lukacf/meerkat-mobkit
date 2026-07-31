@@ -8045,6 +8045,77 @@ impl IdentityRuntime {
             )));
         }
 
+        // Destroy-deprojection (2026-07-31 verdict): the durable session row
+        // must not outlive the identity - a leftover external body is
+        // exactly what the ephemeral-runtime-store activation mint would
+        // faithfully resurrect on the next cold pod. Projection writes are
+        // already quiesced (member retired, session unregistered) and this
+        // delete transaction owns the ADVANCED identity fence, so the
+        // revision-CAS delete cannot race a live writer. `delete_continuity_record` below removes any
+        // remainder atomically for conforming stores; a store that cannot
+        // support session-scoped deletion (`Ok(false)` default) or a row the
+        // current decoder cannot token (an unimported released envelope)
+        // keeps the record-scoped contract and is surfaced loudly instead of
+        // silently retained.
+        if let Some(session_id) = session_id.as_ref() {
+            match self
+                .continuity_store
+                .load_session_snapshot(session_id)
+                .await
+            {
+                Ok(Some(snapshot)) => {
+                    let cas_token = serde_json::from_slice::<meerkat_core::Session>(&snapshot.data)
+                        .ok()
+                        .and_then(|current| {
+                            meerkat_core::session_store::session_projection_cas_token(&current).ok()
+                        });
+                    match cas_token {
+                        Some(token) => match self
+                            .continuity_store
+                            .delete_session_snapshot_if_current_revision(session_id, &token)
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::warn!(
+                                    identity = %identity,
+                                    session_id = %session_id,
+                                    "session-scoped snapshot delete unsupported or superseded; \
+                                     relying on delete_continuity_record's record-scoped \
+                                     deletion - a non-conforming external store may retain a \
+                                     resurrectable session body"
+                                );
+                            }
+                            Err(err) => {
+                                self.restore_broken_entry_and_release_grant(
+                                    identity,
+                                    registered_entry,
+                                    &grant,
+                                )
+                                .await;
+                                return Err(IdentityRuntimeError::Store(err));
+                            }
+                        },
+                        None => {
+                            tracing::warn!(
+                                identity = %identity,
+                                session_id = %session_id,
+                                "durable session row cannot be revision-tokened for CAS \
+                                 delete; relying on delete_continuity_record's record-scoped \
+                                 deletion"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    self.restore_broken_entry_and_release_grant(identity, registered_entry, &grant)
+                        .await;
+                    return Err(IdentityRuntimeError::Store(err));
+                }
+            }
+        }
+
         // Remove authoritative continuity record from the store
         if let Err(err) = self
             .continuity_store
